@@ -1,0 +1,60 @@
+{
+  "task_id": "018f3b5a-4b00-7000-9b11-000000000100",
+  "project_id": "018f3b5a-0000-7000-a000-000000000001",
+  "parent_id": null,
+  "template_id": "rag_index_build",
+  "template_version": "1.2.0",
+  "stage_gate": "implementation",
+  "status": "waiting_for_children",
+  "priority": 10,
+  "queue_position": 7,
+  "attempt": 1,
+  "escalation_count": 0,
+  "locked_by": null,
+  "locked_at": null,
+  "lock_expires_at": null,
+  "payload": {
+    "corpus": {
+      "document_count": 24830,
+      "total_size_mib": 512,
+      "mime_types": ["text/plain", "application/pdf"]
+    },
+    "decomposition_decision": {
+      "rule_matched": 1,
+      "reason": "large corpus triggers multi-shard embedding pipeline"
+    }
+  },
+  "summary": "Строим RAG-индекс корпуса ACME (большой, декомпозирован)",
+  "error": null,
+  "version": 5,
+  "created_at": "2026-04-15T13:10:00Z",
+  "updated_at": "2026-04-15T13:11:45Z",
+  "started_at": "2026-04-15T13:10:30Z",
+  "completed_at": null,
+  "inputs": [
+    {
+      "task_input_id": "018f3b5a-4b01-7000-a000-000000000111",
+      "task_id": "018f3b5a-4b00-7000-9b11-000000000100",
+      "input_name": "corpus_descriptor",
+      "artifact_id": "018f3b5a-aaaa-7000-0000-00000000cccc",
+      "artifact_type": "corpus_descriptor",
+      "source": "dependency",
+      "resolved_at": "2026-04-15T13:10:20Z"
+    }
+  ],
+  "outputs": [],
+  "dependencies": [
+    {
+      "dep_id": "018f3b5a-d000-7000-0000-000000000100",
+      "project_id": "018f3b5a-0000-7000-a000-000000000001",
+      "from_task_id": "018f3b5a-3aaa-7aaa-9b11-000000000050",
+      "to_task_id": "018f3b5a-4b00-7000-9b11-000000000100",
+      "kind": "hard",
+      "input_name": "corpus_descriptor",
+      "producer_output": "descriptor",
+      "artifact_ref": "018f3b5a-aaaa-7000-0000-00000000cccc",
+      "resolved_at": "2026-04-15T13:10:20Z",
+      "created_at": "2026-04-15T13:10:00Z"
+    }
+  ]
+}

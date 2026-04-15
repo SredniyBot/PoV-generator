@@ -1,0 +1,90 @@
+# Пример Executable LLM-шаблона: генерация ТЗ из опросника.
+# Файл валидируется specs/schemas/template.schema.json.
+id: requirements_synthesis
+version: 1.0.0
+type: executable
+description: >-
+  Принимает заполненный опросник и примеры данных, синтезирует
+  структурированное техническое задание в формате JSON.
+owner: g.orlov@pov-lab.ru
+status: active
+domain: common
+
+input_requirements:
+  - name: questionnaire
+    kind: hard
+    artifact_type: questionnaire
+    schema_ref: pov_lab:input.questionnaire@1.0.0
+    selector:
+      kind: by_producer
+      producer_template_id: questionnaire_intake
+      output_name: questionnaire
+    description: Заполненный заказчиком опросник.
+  - name: data_sample
+    kind: soft
+    artifact_type: dataset_sample
+    selector:
+      kind: by_type
+      artifact_type: dataset_sample
+    description: Репрезентативный срез данных заказчика (если предоставлен).
+  - name: best_practices
+    kind: semantic
+    artifact_type: memo
+    selector:
+      kind: semantic
+      query: "best practices for {{payload.domain}} requirements engineering"
+      k: 5
+    description: Релевантные внутренние заметки, найденные через RAG.
+
+output_contract:
+  - name: requirements_doc
+    artifact_type: requirements
+    mime_type: application/json
+    schema_ref: pov_lab:output.requirements@1.0.0
+    description: Структурированное ТЗ (sections, constraints, acceptance_criteria).
+    required: true
+    multiplicity: one
+  - name: open_questions
+    artifact_type: memo
+    mime_type: application/json
+    schema_ref: pov_lab:output.open_questions@1.0.0
+    description: Список неоднозначностей, требующих уточнения у заказчика.
+    required: false
+    multiplicity: one
+
+executable:
+  executor: llm
+  llm:
+    model: anthropic:claude-sonnet-4-6
+    prompt_ref: pov_lab:prompt.requirements_synthesis@1.0.0
+    tool_allowlist:
+      - filesystem_read
+    token_budget:
+      input_tokens_max: 32000
+      output_tokens_max: 8000
+      total_tokens_max: 40000
+    temperature: 0.1
+    json_mode: true
+
+escalation:
+  max_attempts: 3
+  max_llm_calls: 6
+  wall_clock_seconds: 600
+  on_escalation:
+    id: requirements_human_review
+    version: "1.0.0"
+
+metadata:
+  stage_gate: requirements
+  labels:
+    cost_class: "medium"
+    requires_domain_review: "false"
+  tags:
+    - requirements
+    - llm
+    - common
+
+provenance:
+  actor: engineer:g.orlov
+  timestamp: "2026-04-15T12:00:00Z"
+  reason: initial publication
