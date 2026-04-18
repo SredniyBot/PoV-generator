@@ -1,2186 +1,2422 @@
-# Спецификация шаблонов задач: Stage Gate 1 «Преобразование бизнес-запроса в ТЗ»
+# Спецификация Stage Gate 1 «Преобразование бизнес-запроса в ТЗ» (v2, модульная)
 
 **Область применения:** первый макро-гейт платформы E2E-генерации PoV.
-**Поддомены первой очереди (из `PoV.md`):** RAG-системы, простые ML-модели.
-**Принципы (сверка с `PoV.md`):** фокус на потребностях, прозрачность, воспроизводимость, самоконтроль.
-**Архитектурные контракты (сверка с `ТЗ_Архитектура.md`):** типология шаблонов (Composite / Executable / Dynamic), контракты зависимостей (Hard / Soft / Semantic), конечный автомат статусов, Interruption Gateway.
+**Поддомены первой очереди:** RAG-системы, простые ML-модели (согласно `PoV.md`).
+**Изменения относительно v1 (по комментарию заказчика):**
 
-Внутри гейта используются только два целевых поддомена. Там, где задачи зависят от выбранного поддомена (например, формирование разделов ТЗ), это отражено через Dynamic-шаблоны или через условия `spawn_conditions`. Универсальные задачи оставлены в базовом виде, но их промпты-подсказки заточены под RAG/ML.
-
----
-
-## Часть 1. Дерево задач
-
-```
-BIZ_TO_TZ_000 [Composite] — Преобразование бизнес-запроса в ТЗ (корень гейта)
-│
-├── BIZ_TO_TZ_100 [Composite] — Приём и нормализация запроса
-│   ├── BIZ_TO_TZ_101 [Executable] — Парсинг исходного запроса в структурированный формат
-│   ├── BIZ_TO_TZ_102 [Executable] — Проверка минимальной полноты сырого запроса
-│   └── BIZ_TO_TZ_103 [Executable] — Классификация поддомена (RAG / ML / вне поддержки)
-│
-├── BIZ_TO_TZ_200 [Composite] — Ранняя оценка выполнимости (early feasibility)
-│   ├── BIZ_TO_TZ_201 [Executable] — Проверка попадания в поддерживаемые поддомены
-│   ├── BIZ_TO_TZ_202 [Executable] — Поиск паттернов нерешаемости (этика, out-of-scope, физическая невозможность)
-│   └── BIZ_TO_TZ_203 [Executable] — Вердикт выполнимости с обоснованием
-│
-├── BIZ_TO_TZ_300 [Composite] — Понимание потребности (Why-анализ)
-│   ├── BIZ_TO_TZ_301 [Executable] — Извлечение декларируемой цели из запроса
-│   ├── BIZ_TO_TZ_302 [Executable] — Гипотезы о первопричине («зачем это клиенту?»)
-│   ├── BIZ_TO_TZ_303 [Executable] — Гипотезы о текущем baseline-процессе
-│   ├── BIZ_TO_TZ_304 [Executable] — Выявление стейкхолдеров и их интересов
-│   └── BIZ_TO_TZ_305 [Executable] — Консолидация модели потребности
-│
-├── BIZ_TO_TZ_400 [Composite] — Извлечение декларативного знания из запроса
-│   ├── BIZ_TO_TZ_401 [Executable] — Извлечение упоминаний данных
-│   ├── BIZ_TO_TZ_402 [Executable] — Извлечение упоминаний метрик и целевых значений
-│   ├── BIZ_TO_TZ_403 [Executable] — Извлечение упоминаний ограничений (время, ресурсы, стек)
-│   ├── BIZ_TO_TZ_404 [Executable] — Извлечение упоминаний критериев приёмки
-│   └── BIZ_TO_TZ_405 [Executable] — Извлечение упоминаний интеграций и внешних систем
-│
-├── BIZ_TO_TZ_500 [Composite] — Формирование gap-листа (что неизвестно)
-│   ├── BIZ_TO_TZ_501 [Executable] — Сверка извлечённого с чеклистом поддомена (RAG-чеклист / ML-чеклист)
-│   ├── BIZ_TO_TZ_502 [Executable] — Приоритезация пробелов (blocking / important / nice-to-have)
-│   └── BIZ_TO_TZ_503 [Executable] — Формирование структурированного gap-листа
-│
-├── BIZ_TO_TZ_600 [Dynamic] — Сбор недостающей информации у заказчика
-│   ├── BIZ_TO_TZ_601 [Executable] — Формирование пакетного опросника (если пробелов ≥ N)
-│   ├── BIZ_TO_TZ_602 [Executable] — Формирование точечного вопроса (если пробел единичный)
-│   ├── BIZ_TO_TZ_603 [Executable/Human] — Отправка запроса заказчику через Interruption Gateway
-│   ├── BIZ_TO_TZ_604 [Executable] — Парсинг ответа заказчика в структурированный формат
-│   └── BIZ_TO_TZ_605 [Executable] — Валидация ответа (отвечает ли на заданный вопрос)
-│
-├── BIZ_TO_TZ_700 [Composite] — Работа с данными
-│   ├── BIZ_TO_TZ_701 [Executable] — Инвентаризация источников данных
-│   ├── BIZ_TO_TZ_702 [Dynamic] — Уточнение характеристик источников
-│   │   ├── BIZ_TO_TZ_702_A [Executable] — Формирование вопросов о формате и объёме
-│   │   ├── BIZ_TO_TZ_702_B [Executable] — Формирование вопросов о качестве и разметке
-│   │   └── BIZ_TO_TZ_702_C [Executable] — Формирование вопросов о легальности и доступе
-│   ├── BIZ_TO_TZ_703 [Executable] — Оценка достаточности данных для выбранного поддомена
-│   └── BIZ_TO_TZ_704 [Executable] — Решение о необходимости синтетических данных
-│
-├── BIZ_TO_TZ_800 [Composite] — Формализация требований
-│   ├── BIZ_TO_TZ_801 [Executable] — Формулирование функциональных требований
-│   ├── BIZ_TO_TZ_802 [Executable] — Формулирование нефункциональных требований
-│   ├── BIZ_TO_TZ_803 [Executable] — Фиксация ограничений
-│   ├── BIZ_TO_TZ_804 [Executable] — Фиксация критериев приёмки с измеримыми метриками
-│   └── BIZ_TO_TZ_805 [Executable] — Проверка согласованности требований между собой
-│
-├── BIZ_TO_TZ_900 [Dynamic] — Архитектурный анализ (заточен под RAG / простой ML)
-│   ├── BIZ_TO_TZ_901 [Executable] — Определение класса задачи внутри поддомена
-│   ├── BIZ_TO_TZ_902 [Executable] — Выбор архитектурного шаблона для RAG (если поддомен = RAG)
-│   ├── BIZ_TO_TZ_903 [Executable] — Выбор архитектурного шаблона для ML (если поддомен = ML)
-│   ├── BIZ_TO_TZ_904 [Executable] — Обоснование выбранного подхода
-│   └── BIZ_TO_TZ_905 [Executable] — Определение baseline-решения
-│
-├── BIZ_TO_TZ_A00 [Composite] — Сборка документа ТЗ
-│   ├── BIZ_TO_TZ_A01 [Executable] — Раздел «Контекст и потребность»
-│   ├── BIZ_TO_TZ_A02 [Executable] — Раздел «Данные»
-│   ├── BIZ_TO_TZ_A03 [Executable] — Раздел «Функциональные и нефункциональные требования»
-│   ├── BIZ_TO_TZ_A04 [Executable] — Раздел «Архитектурный подход»
-│   ├── BIZ_TO_TZ_A05 [Executable] — Раздел «Критерии приёмки»
-│   ├── BIZ_TO_TZ_A06 [Executable] — Раздел «Ограничения и допущения»
-│   └── BIZ_TO_TZ_A07 [Executable] — Сборка финального документа (оглавление, сквозная нумерация)
-│
-└── BIZ_TO_TZ_B00 [Composite] — Валидация и согласование ТЗ
-    ├── BIZ_TO_TZ_B01 [Executable] — Проверка полноты по чеклисту ТЗ
-    ├── BIZ_TO_TZ_B02 [Executable] — Проверка внутренней непротиворечивости
-    ├── BIZ_TO_TZ_B03 [Executable] — Проверка трассируемости требований к исходному запросу
-    ├── BIZ_TO_TZ_B04 [Executable/Human] — Отправка ТЗ заказчику на согласование
-    ├── BIZ_TO_TZ_B05 [Executable] — Парсинг и классификация комментариев заказчика
-    └── BIZ_TO_TZ_B06 [Executable] — Финальная фиксация согласованного ТЗ
-```
-
-**Замечания к дереву:**
-
-- **Итеративность через Obsolete.** Комментарии заказчика в `B05` могут привести к перепланированию — ранее завершённые задачи (например, `800` или `900`) помечаются `Obsolete` и перепорождаются. Механизм — штатный Bubble Up из `ТЗ_Архитектура.md`, 3.3.
-- **Параллельные ветки.** `300` (понимание потребности) и `400` (извлечение декларативного знания) независимы — могут идти параллельно, оба потребляют только нормализованный запрос из `100`.
-- **Ветка `600` — точка нативного вмешательства человека.** Это Dynamic-задача: решение «опросник или точечный вопрос» принимается на лету по `gap_list.priority_counts`.
-- **Ветка `700` зависит от `400.401`.** Инвентаризация источников использует уже извлечённые упоминания данных; если их нет — порождает `600` для уточнения.
+- Задачи сделаны переиспользуемыми — отвязаны от конкретного гейта, без префикса `BIZ_TO_TZ_`.
+- Доменные знания вынесены в плагины (**Domain Pack**) — добавление поддомена не требует редактирования задач.
+- Граф задач перенесён на отдельный слой (**Workflow**) — структура пайплайна отделена от спецификации самих задач.
 
 ---
 
-## Часть 2. Шаблоны задач
+## Часть 0. Архитектурная модель
 
-Далее идут полные YAML-шаблоны. Для краткости поля `input_requirements.description` и `outputs.description` лаконичны, но однозначны.
+Спецификация организована в три слоя с явным разделением ответственности.
 
-### 2.0. Корень гейта
-
-```yaml
-task_id: BIZ_TO_TZ_000
-name: "Преобразование бизнес-запроса в ТЗ"
-type: Composite
-description: "Корневая задача Stage Gate 1. Статически маршрутизирует последовательность блоков от приёма запроса до согласованного ТЗ."
-parent_task: null
-spawn_conditions: "Создаётся Stage-Gate Manager при старте проекта после получения сырого бизнес-запроса."
-input_requirements:
-  - artifact: "raw_business_request"
-    contract: Hard
-    description: "Исходный запрос заказчика в свободной форме (текст, возможно с приложениями). Загружается Системой общения с пользователем."
-outputs:
-  - artifact: "approved_technical_specification"
-    format: "Структурированный Markdown-документ + JSON-метаданные"
-    description: "Согласованное ТЗ с трассируемостью к исходному запросу. Сигнализирует Stage-Gate Manager о готовности к переходу на следующий гейт."
-possible_children:
-  - task_id: BIZ_TO_TZ_100
-    condition: "Всегда (первый шаг)"
-  - task_id: BIZ_TO_TZ_200
-    condition: "После успешного завершения BIZ_TO_TZ_100"
-  - task_id: BIZ_TO_TZ_300
-    condition: "После успешного завершения BIZ_TO_TZ_200 с вердиктом feasible=true"
-  - task_id: BIZ_TO_TZ_400
-    condition: "После успешного завершения BIZ_TO_TZ_200 с вердиктом feasible=true (параллельно с 300)"
-  - task_id: BIZ_TO_TZ_500
-    condition: "После завершения BIZ_TO_TZ_300 и BIZ_TO_TZ_400"
-  - task_id: BIZ_TO_TZ_600
-    condition: "Если gap_list не пуст"
-  - task_id: BIZ_TO_TZ_700
-    condition: "После сбора базовой информации (600 завершён хотя бы один раз или gap_list не содержит data-пробелов)"
-  - task_id: BIZ_TO_TZ_800
-    condition: "После 600 и 700"
-  - task_id: BIZ_TO_TZ_900
-    condition: "После 800"
-  - task_id: BIZ_TO_TZ_A00
-    condition: "После 900"
-  - task_id: BIZ_TO_TZ_B00
-    condition: "После A00"
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│  Слой 1: Task Templates (универсальные задачи)                  │
+│  — Чистые I/O-контракты                                         │
+│  — Не знают, в каком гейте используются                         │
+│  — Принимают Domain Pack как входной параметр                   │
+│  — Пример: extract_typed_mentions, generate_document_section    │
+└─────────────────────────────────────────────────────────────────┘
+                          ▲                    ▲
+                          │                    │
+                          │ use (инстанцирует) │ parameterizes
+                          │                    │
+┌──────────────────────────┴───┐   ┌──────────┴──────────────────┐
+│  Слой 2: Workflow Templates  │   │  Слой 3: Domain Packs       │
+│  — Граф вызовов Task Templ.  │   │  — Плагины поддоменов       │
+│  — Привязка данных           │   │  — Чеклисты, паттерны,      │
+│  — Специфика гейта           │   │    шаблоны требований       │
+│  — Политика эскалаций        │   │  — Пример: rag_v1, ml_v1    │
+└──────────────────────────────┘   └─────────────────────────────┘
+```
+
+### 0.1. Task Templates
+
+Универсальные задачи-шаблоны. Каждая имеет:
+
+- **`template_id`** — глобально уникальный, без привязки к гейту.
+- **Контракт входов и выходов** в терминах типов, а не конкретных артефактов.
+- **`domain_pack` как необязательный вход** — через него задача получает доменные подсказки (примеры, чеклисты, паттерны).
+- **`escalation_signals`** — чистые сигналы вида `low_confidence`, `ambiguous_input`, `limit_exhausted`. Что делать при сигнале — решает Workflow, не задача.
+- **Три типа:** Executable, Composite, Dynamic (как в `ТЗ_Архитектура.md`).
+
+**Принцип:** задача знает, ЧТО делает. Не знает, КОГДА и ЗАЧЕМ её вызвали и ЧТО БУДЕТ после её завершения.
+
+### 0.2. Domain Packs
+
+Плагины поддоменов. Каждый пак — структурированный артефакт в `Template Registry`, соответствующий единой схеме (раздел Части 2). Содержит:
+
+- Сигналы классификации (как опознать поддомен)
+- Типовые упоминания для каждой категории (данные, метрики, ...) — используется как контекст для `extract_typed_mentions`
+- Чеклист обязательных полей для полноты запроса
+- Шаблоны функциональных и нефункциональных требований
+- Таксономию классов задач внутри поддомена
+- Каталог архитектурных паттернов с правилами применимости
+- Эвристики достаточности данных
+- Политику синтетических данных
+- Определения baseline-решений
+
+**Добавление поддомена = создание нового Domain Pack + регистрация в реестре.** Код задач не меняется.
+
+### 0.3. Workflow Templates
+
+Графы вызовов задач для конкретных гейтов. Workflow описывает:
+
+- Последовательность вызовов (фазы + узлы)
+- Привязку данных между узлами (выход одного узла = вход другого)
+- Политику реакции на escalation_signals от задач
+- Условия перехода между фазами
+- Выбор активного Domain Pack (обычно однократно в начале)
+
+**Принцип разделения «механики от политики»:** задачи — механика (как сделать), Workflow — политика (когда, зачем, что при сбое). Это позволяет переиспользовать задачи в других гейтах с другой политикой.
+
+### 0.4. Как это соотносится с архитектурой платформы
+
+- **Template Registry** хранит всё три слоя: Task Templates, Domain Packs, Workflow Templates — разграничены по namespace.
+- **Stage-Gate Manager** работает с Workflow Templates (выбирает и запускает подходящий для гейта).
+- **Task Router** работает с экземплярами Task Templates (создаваемыми Workflow-движком).
+- **Context Engine** при сборке контекста задачи подгружает активный Domain Pack и передаёт его как входной артефакт.
 
 ---
 
-### 2.1. Блок 100 — Приём и нормализация запроса
+## Часть 1. Каталог Task Templates
+
+Задачи сгруппированы по функциональным категориям. Одна и та же задача может вызываться в Workflow многократно с разными параметрами (пример: `extract_typed_mentions` вызывается 5 раз с разными значениями `mention_type`).
+
+### 1.1. Категория: Обработка входного текста
 
 ```yaml
-task_id: BIZ_TO_TZ_100
-name: "Приём и нормализация запроса"
-type: Composite
-description: "Контейнер для трёх задач первичной обработки: парсинг → проверка полноты → классификация поддомена."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "Порождается корневой задачей в первую очередь."
-input_requirements:
-  - artifact: "raw_business_request"
-    contract: Hard
-    description: "Сырой текст запроса от заказчика."
-outputs:
-  - artifact: "normalized_request"
-    format: "JSON"
-    description: "Структурированное представление запроса + классификация поддомена."
-possible_children:
-  - task_id: BIZ_TO_TZ_101
-    condition: "Всегда (первая подзадача)"
-  - task_id: BIZ_TO_TZ_102
-    condition: "После успешного завершения 101"
-  - task_id: BIZ_TO_TZ_103
-    condition: "После успешного завершения 102"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_101
-name: "Парсинг сырого запроса в структурированный формат"
+template_id: parse_free_text_to_structured
+name: "Парсинг свободного текста в структуру"
 type: Executable
-description: "Преобразует свободный текст заказчика в JSON со стандартными полями: заголовок, тело, приложения, метаданные. Не интерпретирует смысл — только структурирует то, что явно присутствует."
-parent_task: BIZ_TO_TZ_100
-spawn_conditions: "Первой в блоке 100."
-input_requirements:
-  - artifact: "raw_business_request"
-    contract: Hard
-    description: "Сырой текст запроса."
-outputs:
-  - artifact: "parsed_request"
-    format: "JSON {title, body, attachments[], raw_metadata}"
-    description: "Структурированный запрос без семантической интерпретации."
-execution_type: LLM
-prompt_template_hint: "Извлеки из текста: (1) краткий заголовок, (2) основное тело запроса, (3) список упомянутых вложений/ссылок, (4) явные метаданные (дата, автор, контакты). Не придумывай отсутствующее — помечай null. Верни строгий JSON."
-constraints:
-  - "Запрещено добавлять поля, не упомянутые явно в исходном тексте"
-  - "Запрещены интерпретации смысла — только структурное разделение"
-  - "Лимит одного LLM-вызова без самокоррекции"
-escalation_conditions:
-  - "Исходный текст не парсится как осмысленный запрос (например, бинарный мусор, пустая строка)"
-  - "Исходный текст короче 20 символов — недостаточно для любого парсинга"
+description: "Преобразует произвольный текст в JSON по заданной схеме. Не интерпретирует смысл — только структурирует явно присутствующую информацию."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: schema
+    type: object
+    required: true
+    description: "JSON Schema, задающая структуру выхода."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Если передан — используется для подсказок, какие поля ожидать."
+output_contract:
+  - name: parsed_object
+    type: object
+    schema: "определяется параметром schema"
+execution:
+  kind: LLM
+  constraints:
+    - "Запрещено добавлять поля, не входящие в schema"
+    - "Запрещено интерпретировать смысл — только структурирование"
+    - "Отсутствующие поля заполняются null, не домысливаются"
+escalation_signals:
+  - parsing_failed: "Текст не поддаётся парсингу (бинарные данные, пустой вход)"
+  - schema_violation: "LLM вернул ответ, не соответствующий schema, после 1 попытки самокоррекции"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_102
-name: "Проверка минимальной полноты сырого запроса"
+template_id: check_minimum_completeness
+name: "Проверка минимальной полноты"
 type: Executable
-description: "Бинарное решение: содержит ли запрос хотя бы (а) упоминание желаемого результата ИЛИ (б) описание проблемы. Если нет — возвращаем на доработку заказчику до старта любой обработки."
-parent_task: BIZ_TO_TZ_100
-spawn_conditions: "После завершения 101."
-input_requirements:
-  - artifact: "parsed_request"
-    contract: Hard
-    description: "Результат парсинга из 101."
-outputs:
-  - artifact: "request_completeness_verdict"
-    format: "JSON {is_complete: bool, missing: [enum], reasoning: str}"
-    description: "Вердикт о минимальной полноте + список критичных пробелов."
-execution_type: LLM
-prompt_template_hint: "Проверь чеклист: (1) есть ли явное или подразумеваемое описание желаемого результата? (2) есть ли описание проблемы или контекста? (3) понятно ли, кто заказчик? Если хотя бы (1) или (2) отсутствует — is_complete=false с перечислением отсутствующих пунктов."
-constraints:
-  - "Решение строго бинарное — is_complete=true только при выполнении минимального порога"
-  - "Чеклист жёсткий, не допускает творческой интерпретации"
-escalation_conditions:
-  - "is_complete=false — эскалация к заказчику через Interruption Gateway с просьбой дополнить запрос (не эскалация к разработчику — это нормальный ход событий)"
+description: "Бинарное решение: содержит ли вход набор обязательных элементов по заданному чеклисту. Детерминированная логика."
+input_contract:
+  - name: parsed_input
+    type: object
+    required: true
+  - name: checklist
+    type: MinimumChecklist
+    required: true
+    description: "Список обязательных полей/элементов и правил их присутствия."
+output_contract:
+  - name: completeness_verdict
+    type: object
+    schema: "{is_complete: bool, missing: [str], reasoning: str}"
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — формальная проверка"
+escalation_signals:
+  - incomplete: "is_complete=false (не ошибка задачи, но сигнал для Workflow)"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_103
-name: "Классификация поддомена"
+template_id: classify_against_registry
+name: "Классификация объекта по реестру"
 type: Executable
-description: "Относит запрос к одному из поддерживаемых поддоменов: RAG-система, простая ML-модель, неподдерживаемый. Влияет на выбор чеклистов в последующих задачах."
-parent_task: BIZ_TO_TZ_100
-spawn_conditions: "После завершения 102 с is_complete=true."
-input_requirements:
-  - artifact: "parsed_request"
-    contract: Hard
-    description: "Структурированный запрос."
-  - artifact: "supported_subdomains_registry"
-    contract: Hard
-    description: "Реестр поддоменов с признаками классификации (из Template Registry)."
-outputs:
-  - artifact: "subdomain_classification"
-    format: "JSON {subdomain: enum[RAG, ML, UNSUPPORTED], confidence: float, reasoning: str, alternative_hypotheses: []}"
-    description: "Поддомен с обоснованием и альтернативами на случай низкой уверенности."
-execution_type: LLM
-prompt_template_hint: "Проанализируй запрос по признакам: (RAG) нужен поиск/ответы по корпусу документов, нужна работа с неструктурированным текстом, упоминается knowledge base; (ML) нужно предсказание/классификация/регрессия на структурированных данных, есть целевая переменная. Если ни один признак явно не выражен — UNSUPPORTED. Верни confidence ∈ [0,1]."
-constraints:
-  - "Поддерживаемые значения subdomain — только RAG, ML, UNSUPPORTED"
-  - "При confidence < 0.7 обязательно заполнить alternative_hypotheses"
-  - "Не изобретать новые поддомены"
-escalation_conditions:
-  - "subdomain = UNSUPPORTED — переход в Failed с обоснованием, далее эскалация через Interruption Gateway для принятия решения человеком (переопределить/отклонить проект)"
-  - "confidence < 0.4 даже после самокоррекции — эскалация для ручной классификации"
-```
-
----
-
-### 2.2. Блок 200 — Ранняя оценка выполнимости
-
-```yaml
-task_id: BIZ_TO_TZ_200
-name: "Ранняя оценка выполнимости"
-type: Composite
-description: "Контейнер для early feasibility check. Цель — сдвинуть эскалацию невозможных задач на максимально ранний срок (см. 'Предопределение невозможных задач' в PoV.md)."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После завершения 100."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Результат блока 100."
-outputs:
-  - artifact: "feasibility_verdict"
-    format: "JSON"
-    description: "Вердикт: проект выполним / невыполним / выполним с оговорками."
-possible_children:
-  - task_id: BIZ_TO_TZ_201
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_202
-    condition: "Всегда (параллельно с 201)"
-  - task_id: BIZ_TO_TZ_203
-    condition: "После завершения 201 и 202"
+description: "Относит объект (текст, запрос) к одной из категорий реестра. Используется в том числе для определения активного Domain Pack."
+input_contract:
+  - name: object_to_classify
+    type: any
+    required: true
+  - name: registry
+    type: ClassificationRegistry
+    required: true
+    description: "Реестр с описаниями категорий, сигналами и порогами уверенности."
+output_contract:
+  - name: classification_result
+    type: object
+    schema: "{category_id: str, confidence: float, reasoning: str, alternatives: [{category_id, confidence}]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Категория строго из реестра — не изобретать новые"
+    - "При confidence < порога обязательно заполнять alternatives"
+escalation_signals:
+  - unsupported_category: "Классификация = категория с флагом unsupported=true"
+  - low_confidence: "confidence ниже порога даже после самокоррекции"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_201
-name: "Проверка попадания в поддерживаемые поддомены"
+template_id: check_registry_membership
+name: "Проверка членства в реестре"
 type: Executable
-description: "Формальная проверка: классификация из 103 входит ли в список поддерживаемых MVP-поддоменов? Это детерминированная бизнес-логика, не LLM-вызов."
-parent_task: BIZ_TO_TZ_200
-spawn_conditions: "Первой в блоке 200."
-input_requirements:
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Классификация из 103."
-  - artifact: "supported_subdomains_registry"
-    contract: Hard
-    description: "Реестр поддоменов MVP."
-outputs:
-  - artifact: "subdomain_support_check"
-    format: "JSON {supported: bool, subdomain: str}"
-    description: "Булевый флаг поддержки поддомена."
-execution_type: Tool
-prompt_template_hint: "Детерминированный скрипт: subdomain_classification.subdomain ∈ supported_subdomains_registry.active → supported=true."
-constraints:
-  - "Без LLM-вызова — чистая сверка"
-escalation_conditions:
-  - "Не эскалирует сама; результат используется в 203"
+description: "Формальная проверка: входит ли объект в подмножество реестра, помеченное активным."
+input_contract:
+  - name: item
+    type: any
+    required: true
+  - name: registry
+    type: any
+    required: true
+  - name: filter
+    type: object
+    required: false
+    description: "Дополнительные условия фильтрации (например, {status: active})."
+output_contract:
+  - name: membership_result
+    type: object
+    schema: "{is_member: bool, matched_record: object|null}"
+execution:
+  kind: Tool
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_202
-name: "Поиск паттернов нерешаемости"
+template_id: detect_patterns_from_catalog
+name: "Обнаружение паттернов в тексте по каталогу"
 type: Executable
-description: "LLM-анализ запроса на наличие явных признаков невозможности: этические/правовые проблемы, out-of-scope требования (реалтайм-система при нашем фокусе на PoV, работа с проприетарными данными без доступа), физически несовместимые ограничения."
-parent_task: BIZ_TO_TZ_200
-spawn_conditions: "Параллельно с 201."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос из блока 100."
-  - artifact: "unfeasibility_patterns_catalog"
-    contract: Hard
-    description: "Каталог известных паттернов нерешаемости (из Template Registry). Для MVP содержит: этические нарушения, требования реалтайма с жёстким SLA, требования к датасетам которые невозможно получить легально, self-referencing задачи."
-outputs:
-  - artifact: "unfeasibility_flags"
-    format: "JSON {detected_patterns: [{pattern_id, evidence, severity}], overall_blocker: bool}"
-    description: "Список обнаруженных паттернов с цитатами-доказательствами и оценкой критичности."
-execution_type: LLM
-prompt_template_hint: "Для каждого паттерна из каталога — проверь, есть ли в запросе прямые или косвенные признаки. Обязательно приводи цитату из запроса как evidence. Severity: blocker / warning / info. overall_blocker = true только если есть хотя бы один blocker."
-constraints:
-  - "Запрещено выдумывать паттерны вне каталога"
-  - "Каждый detected_pattern обязан иметь evidence — прямую или парафразированную цитату"
-  - "Лимит 2 попытки самокоррекции"
-escalation_conditions:
-  - "LLM не может однозначно определить наличие паттерна после самокоррекции — эскалация"
-  - "Обнаружен паттерн с severity=blocker, связанный с этикой или легальностью — немедленная эскалация к человеку без продолжения пайплайна"
+description: "Сканирует текст на присутствие паттернов из заданного каталога. Универсально — каталог задаёт, что ищем (нерешаемость, риски, индикаторы категории)."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: pattern_catalog
+    type: PatternCatalog
+    required: true
+    description: "Каталог с ID паттернов, описаниями, примерами, уровнями severity."
+output_contract:
+  - name: detected_patterns
+    type: array
+    schema: "[{pattern_id, evidence_quote, severity}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое обнаружение обязано содержать прямую цитату-доказательство"
+    - "Запрещено обнаруживать паттерны вне каталога"
+escalation_signals:
+  - blocker_detected: "Найден паттерн с severity=blocker"
+  - ambiguous_match: "LLM не может однозначно определить совпадение после самокоррекции"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_203
-name: "Вердикт выполнимости"
+template_id: synthesize_verdict
+name: "Синтез решения из входных сигналов по правилам"
 type: Executable
-description: "Синтез результатов 201 и 202 в итоговый вердикт. Определяет, продолжать ли пайплайн."
-parent_task: BIZ_TO_TZ_200
-spawn_conditions: "После завершения 201 и 202."
-input_requirements:
-  - artifact: "subdomain_support_check"
-    contract: Hard
-    description: "Результат 201."
-  - artifact: "unfeasibility_flags"
-    contract: Hard
-    description: "Результат 202."
-outputs:
-  - artifact: "feasibility_verdict"
-    format: "JSON {feasible: bool, with_caveats: bool, caveats: [str], blockers: [str], recommendation: enum[PROCEED, PROCEED_WITH_CONFIRMATION, ABORT]}"
-    description: "Итоговый вердикт выполнимости с рекомендацией."
-execution_type: LLM
-prompt_template_hint: "Если supported=false ИЛИ overall_blocker=true → feasible=false, recommendation=ABORT. Если warning-паттерны есть, но blocker'ов нет → feasible=true, with_caveats=true, recommendation=PROCEED_WITH_CONFIRMATION. Иначе PROCEED."
-constraints:
-  - "Строгая логика: любой blocker = ABORT"
-  - "Рекомендация PROCEED_WITH_CONFIRMATION означает, что заказчика надо явно предупредить о рисках"
-escalation_conditions:
-  - "recommendation = ABORT — задача завершается Failed, пайплайн останавливается, эскалация к человеку с полным обоснованием (blockers + evidence)"
-  - "recommendation = PROCEED_WITH_CONFIRMATION — мягкая эскалация: заказчику отправляется уведомление с caveats для подтверждения"
+description: "Принимает набор сигналов (булевых или структурированных) и правила их комбинирования, возвращает итоговое решение с обоснованием."
+input_contract:
+  - name: signals
+    type: array
+    required: true
+  - name: decision_rules
+    type: DecisionRules
+    required: true
+    description: "Правила комбинирования сигналов в итоговое решение."
+output_contract:
+  - name: verdict
+    type: object
+    schema: "{decision: str, rationale: str, applied_rules: [rule_id]}"
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — детерминированное применение правил"
+escalation_signals: []
 ```
 
----
-
-### 2.3. Блок 300 — Понимание потребности (Why-анализ)
+### 1.2. Категория: Анализ смысла текста
 
 ```yaml
-task_id: BIZ_TO_TZ_300
-name: "Понимание потребности"
-type: Composite
-description: "Контейнер для Why-анализа. Цель — не просто принять запрос как данность, а понять первопричину, текущий процесс, стейкхолдеров. Это основа для выявления скрытых требований."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 200 с feasible=true."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "need_model"
-    format: "JSON"
-    description: "Консолидированная модель потребности: цель, первопричина, baseline, стейкхолдеры."
-possible_children:
-  - task_id: BIZ_TO_TZ_301
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_302
-    condition: "После 301"
-  - task_id: BIZ_TO_TZ_303
-    condition: "После 301 (параллельно с 302)"
-  - task_id: BIZ_TO_TZ_304
-    condition: "После 301 (параллельно с 302 и 303)"
-  - task_id: BIZ_TO_TZ_305
-    condition: "После 302, 303, 304"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_301
-name: "Извлечение декларируемой цели"
+template_id: extract_declared_goal
+name: "Извлечение декларируемой цели из текста"
 type: Executable
-description: "Формулирует в одном предложении то, что заказчик явно просит сделать. Без интерпретаций и домыслов. Это основа для последующего Why-анализа."
-parent_task: BIZ_TO_TZ_300
-spawn_conditions: "Первой в блоке 300."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "declared_goal"
-    format: "JSON {goal_statement: str, direct_quotes: [str]}"
-    description: "Цель в одном предложении + прямые цитаты из запроса, подтверждающие формулировку."
-execution_type: LLM
-prompt_template_hint: "Сформулируй одним предложением то, что заказчик ЯВНО просит сделать. Не добавляй 'чтобы X' или 'для Y', если этого нет в запросе. Обязательно приведи 1-3 прямые цитаты."
-constraints:
-  - "goal_statement — одно предложение, без сложноподчинённой структуры"
-  - "Запрещено добавлять цели, не подтверждённые direct_quotes"
-  - "Без интерпретации why — только what"
-escalation_conditions:
-  - "В запросе не удаётся найти декларируемую цель даже после самокоррекции (обычно значит, что 102 пропустил неполный запрос) — эскалация с возвратом в 102"
+description: "Формулирует в одном предложении то, что ЯВНО просят сделать. Без интерпретации причин."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Даёт few-shot примеры формулировок целей для поддомена."
+output_contract:
+  - name: declared_goal
+    type: object
+    schema: "{goal_statement: str, direct_quotes: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "goal_statement — одно предложение"
+    - "Запрещены формулировки 'чтобы X' без явного подтверждения в direct_quotes"
+    - "Минимум одна цитата из source_text"
+escalation_signals:
+  - no_goal_found: "В тексте нет явной цели — предположительно вход неполный"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_302
-name: "Гипотезы о первопричине"
+template_id: generate_hypotheses
+name: "Генерация гипотез по теме"
 type: Executable
-description: "Генерирует 2–4 гипотезы о том, ЗАЧЕМ заказчику нужно заявленное. Каждая гипотеза — кандидат на первопричину, подлежащий проверке в блоке 600."
-parent_task: BIZ_TO_TZ_300
-spawn_conditions: "После 301."
-input_requirements:
-  - artifact: "declared_goal"
-    contract: Hard
-    description: "Цель из 301."
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Полный контекст запроса."
-  - artifact: "subdomain_classification"
-    contract: Soft
-    description: "Помогает сузить пространство гипотез под типовые паттерны RAG/ML."
-outputs:
-  - artifact: "root_cause_hypotheses"
-    format: "JSON [{hypothesis: str, supporting_signals: [str], plausibility: float, verification_question: str}]"
-    description: "Список гипотез с сигналами из запроса, оценкой правдоподобия и предлагаемым вопросом для верификации у заказчика."
-execution_type: LLM
-prompt_template_hint: "Сгенерируй 2-4 гипотезы вида 'заказчику это нужно, ЧТОБЫ ...'. Для каждой: (1) какие сигналы в запросе её поддерживают, (2) насколько она правдоподобна [0-1], (3) какой вопрос задать заказчику, чтобы подтвердить или опровергнуть. Не более 4 гипотез — иначе теряется фокус."
-constraints:
-  - "Минимум 2, максимум 4 гипотезы"
-  - "Обязательно поле verification_question для каждой гипотезы — оно используется блоком 600"
-  - "Гипотезы должны быть взаимоисключающими (или явно пересекающимися с пометкой)"
-escalation_conditions:
-  - "Все сгенерированные гипотезы имеют plausibility < 0.3 — признак того, что запрос слишком абстрактен, нужен ранний контакт с заказчиком"
+description: "Универсальный генератор гипотез: о первопричине, о baseline-процессе, о любой другой теме, задаваемой параметром hypothesis_topic."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: context_artifacts
+    type: array
+    required: false
+    description: "Дополнительный контекст (например, declared_goal для генерации гипотез о первопричине)."
+  - name: hypothesis_topic
+    type: string
+    required: true
+    description: "Тема гипотез: 'root_cause', 'baseline_process', ... Определяет промпт-вариацию."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Для baseline-гипотез — типовые baseline для поддомена."
+  - name: max_hypotheses
+    type: integer
+    required: false
+    default: 4
+output_contract:
+  - name: hypotheses
+    type: array
+    schema: "[{hypothesis, supporting_signals: [str], plausibility: float, verification_question: str}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждая гипотеза — поле verification_question обязательно"
+    - "Минимум 2 гипотезы, максимум — max_hypotheses"
+    - "Гипотезы по возможности взаимоисключающие"
+escalation_signals:
+  - all_low_plausibility: "Все гипотезы получили plausibility < 0.3 — входная информация слишком абстрактна"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_303
-name: "Гипотезы о текущем baseline-процессе"
-type: Executable
-description: "Как задача решается СЕЙЧАС без нашего решения? Генерирует гипотезы о существующем процессе/системе/ручной работе. Критично для RAG (замена чего?) и для ML (что было до модели?)."
-parent_task: BIZ_TO_TZ_300
-spawn_conditions: "После 301, параллельно с 302 и 304."
-input_requirements:
-  - artifact: "declared_goal"
-    contract: Hard
-    description: "Цель из 301."
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Полный запрос — в нём часто есть упоминания текущей ситуации."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Для RAG типовой baseline — ручной поиск по документам / Ctrl+F / поиск в Confluence. Для ML — эвристики, ручная оценка, существующие системы."
-outputs:
-  - artifact: "baseline_hypotheses"
-    format: "JSON [{baseline: str, evidence_from_request: str, verification_question: str}]"
-    description: "Гипотезы о текущем процессе + как их проверить."
-execution_type: LLM
-prompt_template_hint: "Для RAG-поддомена типовые baseline: ручной поиск в документах, обращение к экспертам, Ctrl+F. Для ML-поддомена: эвристические правила, ручная классификация, экспертная оценка, отсутствие решения. Предложи 1-3 наиболее вероятных baseline'а с привязкой к фразам из запроса и вопросом для верификации."
-constraints:
-  - "1-3 гипотезы"
-  - "Каждая гипотеза должна упоминать, кто (роль) выполняет baseline-действие"
-  - "Поле verification_question обязательно"
-escalation_conditions:
-  - "Не эскалирует (низкокритичная задача, отсутствие данных восполняется в 600)"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_304
+template_id: identify_stakeholders
 name: "Выявление стейкхолдеров и их интересов"
 type: Executable
-description: "Определяет роли, затронутые решением: прямые пользователи системы, заказчик, владелец данных, потребители результата. Для каждой роли — предполагаемый интерес."
-parent_task: BIZ_TO_TZ_300
-spawn_conditions: "После 301, параллельно с 302 и 303."
-input_requirements:
-  - artifact: "declared_goal"
-    contract: Hard
-    description: "Цель из 301."
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Полный запрос."
-outputs:
-  - artifact: "stakeholders_map"
-    format: "JSON [{role: str, interest: str, explicit_in_request: bool}]"
-    description: "Карта стейкхолдеров с их интересами и пометкой, упомянуты ли они явно."
-execution_type: LLM
-prompt_template_hint: "Выдели роли: (1) явно упомянутые в запросе, (2) неизбежно присутствующие в задаче (например, для RAG-системы — всегда есть 'пользователь, задающий вопрос' и 'владелец корпуса документов'). Для каждой — интерес в задаче. Пометь, упомянута ли роль явно."
-constraints:
-  - "Минимум 2 роли для любой DS-задачи (потребитель результата + источник данных/запроса)"
-  - "Для RAG обязательны: asker, corpus_owner; для ML: data_owner, consumer_of_predictions"
-  - "Если explicit_in_request=false — роль порождает skрытое требование, которое надо выяснять в 600"
-escalation_conditions:
-  - "Не эскалирует самостоятельно; неявные стейкхолдеры попадают в gap-лист через 500"
+description: "Определяет роли, затронутые задачей, и предполагаемые интересы каждой роли."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: context_artifacts
+    type: array
+    required: false
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Задаёт обязательные стейкхолдеры для поддомена (например, для RAG: asker, corpus_owner)."
+output_contract:
+  - name: stakeholders_map
+    type: array
+    schema: "[{role, interest, explicit_in_source: bool}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Минимум 2 роли"
+    - "Если domain_pack задаёт обязательных стейкхолдеров — они должны присутствовать"
+    - "Если роль не упомянута явно — explicit_in_source=false (сигнал для последующего gap-анализа)"
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_305
-name: "Консолидация модели потребности"
+template_id: consolidate_analysis
+name: "Консолидация набора аналитических артефактов"
 type: Executable
-description: "Собирает результаты 301-304 в единую модель потребности. Выявляет противоречия между гипотезами и ранжирует их по приоритету верификации."
-parent_task: BIZ_TO_TZ_300
-spawn_conditions: "После 302, 303, 304."
-input_requirements:
-  - artifact: "declared_goal"
-    contract: Hard
-    description: "Цель."
-  - artifact: "root_cause_hypotheses"
-    contract: Hard
-    description: "Гипотезы о первопричине."
-  - artifact: "baseline_hypotheses"
-    contract: Hard
-    description: "Гипотезы о baseline."
-  - artifact: "stakeholders_map"
-    contract: Hard
-    description: "Стейкхолдеры."
-outputs:
-  - artifact: "need_model"
-    format: "JSON {declared_goal, top_root_cause_hypothesis, top_baseline_hypothesis, stakeholders, open_questions_for_client: [str], internal_contradictions: [str]}"
-    description: "Сводная модель потребности + открытые вопросы + обнаруженные противоречия."
-execution_type: LLM
-prompt_template_hint: "Объедини входы. Выбери top-гипотезу по plausibility. Найди противоречия (например, cтейкхолдер подразумевает массовое использование, а цель сформулирована для точечной задачи). Сформируй список открытых вопросов, которые должен подтвердить заказчик."
-constraints:
-  - "open_questions_for_client — не более 7 пунктов (ограничение когнитивной нагрузки на заказчика)"
-  - "Если есть internal_contradictions — они ОБЯЗАТЕЛЬНО попадают в open_questions_for_client для явного разрешения"
-escalation_conditions:
-  - "Обнаружены противоречия, которые LLM не может сформулировать как вопрос (нечёткость) — эскалация на ревью человеком"
+description: "Сводит результаты нескольких анализов в единую модель, выявляет противоречия и формирует открытые вопросы."
+input_contract:
+  - name: artifacts_to_consolidate
+    type: array
+    required: true
+    description: "Набор связанных артефактов (например, declared_goal + hypotheses + stakeholders_map)."
+  - name: consolidation_schema
+    type: object
+    required: true
+    description: "Схема итоговой модели."
+output_contract:
+  - name: consolidated_model
+    type: object
+    schema: "определяется consolidation_schema + стандартные поля: internal_contradictions, open_questions"
+execution:
+  kind: LLM
+  constraints:
+    - "open_questions содержит все найденные internal_contradictions как явные вопросы"
+    - "Ограничение когнитивной нагрузки на заказчика: не более 7 open_questions"
+escalation_signals:
+  - contradictions_unresolvable: "Противоречия настолько нечёткие, что не формулируются как вопрос"
 ```
 
----
+### 1.3. Категория: Извлечение упоминаний
 
-### 2.4. Блок 400 — Извлечение декларативного знания
-
-Принцип: параллельная микро-декомпозиция — каждая листовая задача вычленяет один тип упоминаний. Это реализует уровень (a) из уточнения пользователя — мелкая декомпозиция там, где смешение решений снижает качество.
+Одна универсальная задача вместо пяти специализированных (из v1 это 401–405).
 
 ```yaml
-task_id: BIZ_TO_TZ_400
-name: "Извлечение декларативного знания из запроса"
-type: Composite
-description: "Контейнер для параллельного извлечения пяти типов упоминаний: данные, метрики, ограничения, критерии приёмки, интеграции. Каждая подзадача работает по узкой инструкции."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 200 с feasible=true, параллельно с 300."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "extracted_declarations"
-    format: "JSON {data_mentions, metric_mentions, constraint_mentions, acceptance_mentions, integration_mentions}"
-    description: "Сводный объект всех извлечённых упоминаний."
-possible_children:
-  - task_id: BIZ_TO_TZ_401
-    condition: "Всегда (все 5 параллельно)"
-  - task_id: BIZ_TO_TZ_402
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_403
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_404
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_405
-    condition: "Всегда"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_401
-name: "Извлечение упоминаний данных"
+template_id: extract_typed_mentions
+name: "Извлечение типизированных упоминаний из текста"
 type: Executable
-description: "Находит в запросе все явные и косвенные упоминания данных: источники, форматы, объёмы, типы, временные рамки. НЕ классифицирует и НЕ оценивает достаточность — только выписывает."
-parent_task: BIZ_TO_TZ_400
-spawn_conditions: "Параллельно с 402-405."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "data_mentions"
-    format: "JSON [{mention: str, quote: str, extracted_attributes: {type, format, volume, timeframe, source}}]"
-    description: "Список упоминаний данных с прямыми цитатами и извлечёнными атрибутами (любые могут быть null)."
-execution_type: LLM
-prompt_template_hint: "Выпиши КАЖДОЕ упоминание, связанное с данными. Для каждого — прямая цитата и попытка извлечь атрибуты. Если какой-то атрибут не упомянут — null. Не додумывай. Примеры упоминаний: 'база клиентов', 'логи за 2024 год', 'документация в Confluence', '10 тысяч записей'."
-constraints:
-  - "Каждое упоминание ОБЯЗАНО иметь прямую цитату (quote)"
-  - "Атрибуты заполняются только если явно упомянуты — не выводить по аналогии"
-  - "Если упоминаний нет вообще — возвращать пустой массив, не эскалировать"
-escalation_conditions:
-  - "Не эскалирует (пустой список — валидный результат, обрабатывается в 500)"
+description: "Находит упоминания заданного типа (данные / метрики / ограничения / критерии приёмки / интеграции / любой другой тип, описанный в Domain Pack). НЕ классифицирует и НЕ оценивает — только вычленяет."
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: mention_type
+    type: string
+    required: true
+    description: "Тип упоминаний: 'data' | 'metrics' | 'constraints' | 'acceptance' | 'integrations' | любой тип из Domain Pack."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Из domain_pack.extraction_hints[mention_type] берутся: typical_types, domain_examples, extraction_guidelines."
+output_contract:
+  - name: typed_mentions
+    type: array
+    schema: "[{mention, quote, extracted_attributes: object}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое упоминание обязано иметь quote (прямую цитату)"
+    - "Атрибуты заполняются только если явно упомянуты"
+    - "Пустой массив — валидный результат"
+escalation_signals: []
 ```
 
+### 1.4. Категория: Gap-анализ
+
 ```yaml
-task_id: BIZ_TO_TZ_402
-name: "Извлечение упоминаний метрик и целевых значений"
+template_id: compare_against_checklist
+name: "Сверка набора элементов с чеклистом"
 type: Executable
-description: "Находит упоминания измеримых величин: точность, recall, время ответа, процент покрытия, бизнес-метрики. Фиксирует целевые значения, если названы."
-parent_task: BIZ_TO_TZ_400
-spawn_conditions: "Параллельно с 401, 403-405."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-  - artifact: "subdomain_classification"
-    contract: Soft
-    description: "Помогает идентифицировать domain-specific метрики (для RAG: retrieval precision, answer faithfulness; для ML: accuracy, F1, MAE)."
-outputs:
-  - artifact: "metric_mentions"
-    format: "JSON [{metric_name: str, target_value: str|null, quote: str, category: enum[technical, business, ux]}]"
-    description: "Упоминания метрик с целевыми значениями и классификацией по типу."
-execution_type: LLM
-prompt_template_hint: "Выпиши все упоминания измеримых величин. Для RAG следи за: 'точность ответов', 'релевантность', 'hallucinations', 'latency'. Для ML: 'точность предсказаний', 'precision/recall', 'время обучения'. Бизнес-метрики: 'сокращение времени', 'снижение нагрузки на поддержку'. UX: 'скорость ответа пользователю'."
-constraints:
-  - "Если метрика упомянута без целевого значения — target_value=null"
-  - "Не придумывать метрики, которых нет в запросе"
-  - "Категория обязательна (technical / business / ux)"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Детерминированная сверка: для каждого элемента чеклиста проверяет наличие соответствия в наборе данных. Универсально — чеклист задаётся параметром."
+input_contract:
+  - name: items
+    type: any
+    required: true
+  - name: checklist
+    type: Checklist
+    required: true
+  - name: additional_inputs
+    type: array
+    required: false
+    description: "Дополнительные источники (например, open_questions из модели потребности)."
+output_contract:
+  - name: gap_report
+    type: array
+    schema: "[{field, category, required: bool, source, hint}]"
+execution:
+  kind: Tool
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_403
-name: "Извлечение упоминаний ограничений"
+template_id: prioritize_items
+name: "Приоритезация набора элементов"
 type: Executable
-description: "Временные рамки, бюджетные ограничения, обязательный/запрещённый стек, требования по развёртыванию (onprem vs cloud), регуляторные ограничения."
-parent_task: BIZ_TO_TZ_400
-spawn_conditions: "Параллельно с остальными 40X."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "constraint_mentions"
-    format: "JSON [{constraint_type: enum[time, budget, stack, deployment, regulatory, other], value: str, quote: str, is_hard: bool|null}]"
-    description: "Упоминания ограничений с типом и прямой цитатой."
-execution_type: LLM
-prompt_template_hint: "Типы: time ('нужно к концу квартала'), budget ('в рамках существующих ресурсов'), stack ('обязательно Python', 'нельзя OpenAI API'), deployment ('работа в закрытом контуре'), regulatory ('152-ФЗ', 'GDPR'). is_hard=true для жёстких ограничений ('обязательно'), false для пожеланий ('желательно'), null если неясно."
-constraints:
-  - "constraint_type строго из перечня"
-  - "Цитата обязательна"
-escalation_conditions:
-  - "Обнаружены ограничения с constraint_type=regulatory и is_hard=true — понижение приоритета до эскалации: результат записывается в unfeasibility_flags retrospectively и может вызвать перепроверку 200"
+description: "Присваивает каждому элементу приоритет по правилам, заданным параметром."
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: priority_rules
+    type: PriorityRules
+    required: true
+    description: "Правила присвоения приоритетов (например, {blocking: ..., important: ..., nice_to_have: ...})."
+  - name: context
+    type: object
+    required: false
+output_contract:
+  - name: prioritized_items
+    type: array
+    schema: "[{item, priority, reasoning}]"
+execution:
+  kind: LLM
+  constraints:
+    - "reasoning обязательно для каждого элемента"
+    - "Правила из priority_rules должны быть соблюдены (элементы с required=true не могут быть ниже important)"
+escalation_signals:
+  - extreme_distribution: "Доля blocking элементов > 70% (сигнал слишком неполного входа)"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_404
-name: "Извлечение упоминаний критериев приёмки"
+template_id: group_and_structure_items
+name: "Группировка и структурирование набора элементов"
 type: Executable
-description: "Формулировки вида 'система будет считаться работающей, если...', 'мы примем результат при...', дедлайны демонстраций, условия подписания акта."
-parent_task: BIZ_TO_TZ_400
-spawn_conditions: "Параллельно с остальными 40X."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "acceptance_mentions"
-    format: "JSON [{criterion: str, quote: str, is_measurable: bool}]"
-    description: "Упоминания критериев приёмки с оценкой измеримости."
-execution_type: LLM
-prompt_template_hint: "Ищи формулировки, задающие условие приёмки. is_measurable=true если критерий числовой или булевый ('точность ≥ 80%'), false если качественный ('решение должно быть удобным'). Не-измеримые критерии — сигнал к уточнению в 600."
-constraints:
-  - "Если критериев не найдено — пустой массив (типичная ситуация, будет заполняться в 800)"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Группирует элементы по темам и добавляет сводную статистику. Универсально — темы и схема сводки задаются параметром."
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: grouping_schema
+    type: object
+    required: true
+    description: "Темы для группировки + схема сводной статистики."
+output_contract:
+  - name: structured_items
+    type: object
+    schema: "определяется grouping_schema"
+execution:
+  kind: LLM
+escalation_signals: []
 ```
 
-```yaml
-task_id: BIZ_TO_TZ_405
-name: "Извлечение упоминаний интеграций и внешних систем"
-type: Executable
-description: "Системы, с которыми должно взаимодействовать решение: API, базы данных, существующие сервисы, системы хранения документов."
-parent_task: BIZ_TO_TZ_400
-spawn_conditions: "Параллельно с остальными 40X."
-input_requirements:
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Нормализованный запрос."
-outputs:
-  - artifact: "integration_mentions"
-    format: "JSON [{system: str, interaction_type: enum[read, write, both, unknown], quote: str}]"
-    description: "Упоминания внешних систем + предполагаемый тип взаимодействия."
-execution_type: LLM
-prompt_template_hint: "Для RAG типовые интеграции: Confluence, SharePoint, GitHub, корпоративная почта (как источник документов); LDAP/SSO (для авторизации). Для ML: БД с историческими данными, CRM, 1С. Определи direction: читаем ли мы из системы, пишем ли в неё."
-constraints:
-  - "Цитата обязательна"
-  - "interaction_type=unknown если из запроса непонятно"
-escalation_conditions:
-  - "Не эскалирует"
-```
-
----
-
-### 2.5. Блок 500 — Формирование gap-листа
+### 1.5. Категория: Взаимодействие с пользователем
 
 ```yaml
-task_id: BIZ_TO_TZ_500
-name: "Формирование gap-листа"
-type: Composite
-description: "Сопоставляет извлечённые декларации с чеклистом обязательных полей для выбранного поддомена и формирует приоритизированный список того, что надо узнать у заказчика."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После завершения 300 и 400."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-    description: "Модель потребности из 300."
-  - artifact: "extracted_declarations"
-    contract: Hard
-    description: "Декларации из 400."
-outputs:
-  - artifact: "gap_list"
-    format: "JSON"
-    description: "Приоритизированный список пробелов."
-possible_children:
-  - task_id: BIZ_TO_TZ_501
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_502
-    condition: "После 501"
-  - task_id: BIZ_TO_TZ_503
-    condition: "После 502"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_501
-name: "Сверка извлечённого с чеклистом поддомена"
-type: Executable
-description: "Детерминированная сверка: для RAG-поддомена проверяется наличие N обязательных полей (корпус документов, тип запросов пользователей, требуемая точность, язык, SLA по latency). Для ML — характер задачи (класс/регрессия), целевая переменная, наличие разметки, baseline-метрика."
-parent_task: BIZ_TO_TZ_500
-spawn_conditions: "Первой в блоке 500."
-input_requirements:
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Определяет, какой чеклист применять."
-  - artifact: "extracted_declarations"
-    contract: Hard
-    description: "Что уже известно."
-  - artifact: "need_model"
-    contract: Hard
-    description: "Открытые вопросы из Why-анализа тоже идут в общий gap."
-  - artifact: "subdomain_checklist_registry"
-    contract: Hard
-    description: "Реестр чеклистов для RAG и ML (из Template Registry). Содержит обязательные и желательные поля для каждого поддомена."
-outputs:
-  - artifact: "raw_gaps"
-    format: "JSON [{field: str, category: str, required_by_checklist: bool, source: enum[checklist, need_model], hint: str}]"
-    description: "Плоский список всех обнаруженных пробелов до приоритезации."
-execution_type: Tool
-prompt_template_hint: "Детерминированный скрипт: для каждого поля чеклиста проверить, есть ли соответствующее упоминание в extracted_declarations. Если нет — добавить в raw_gaps. Дополнительно перенести open_questions_for_client из need_model."
-constraints:
-  - "Без LLM-вызова — формальная сверка"
-  - "hint — подсказка из registry, как переформулировать пробел в вопрос"
-escalation_conditions:
-  - "Не эскалирует"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_502
-name: "Приоритезация пробелов"
-type: Executable
-description: "Классифицирует каждый пробел по критичности: blocking (без ответа нельзя двигаться), important (влияет на ключевые решения), nice-to-have (уточнит детали, но не останавливает работу)."
-parent_task: BIZ_TO_TZ_500
-spawn_conditions: "После 501."
-input_requirements:
-  - artifact: "raw_gaps"
-    contract: Hard
-    description: "Плоский список из 501."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Для контекстной оценки критичности."
-outputs:
-  - artifact: "prioritized_gaps"
-    format: "JSON [{gap, priority: enum[blocking, important, nice_to_have], reasoning: str}]"
-    description: "Пробелы с присвоенным приоритетом."
-execution_type: LLM
-prompt_template_hint: "blocking — без этого нельзя писать архитектуру (например, для RAG: неизвестен корпус документов; для ML: неизвестна целевая переменная). important — влияет на ключевые решения, но можно начать без него. nice_to_have — уточнение деталей."
-constraints:
-  - "Пробел с required_by_checklist=true не может быть ниже important"
-  - "reasoning обязательно"
-escalation_conditions:
-  - "Доля blocking-пробелов > 70% — признак крайне неполного запроса, эскалация для принятия решения: продолжить или вернуть запрос на полную переработку"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_503
-name: "Формирование структурированного gap-листа"
-type: Executable
-description: "Оформляет итоговый gap-лист: группирует пробелы по темам (данные / требования / интеграции / стейкхолдеры), добавляет счётчики по приоритетам. Счётчики используются задачей 600 (Dynamic) для решения — опросник или точечный вопрос."
-parent_task: BIZ_TO_TZ_500
-spawn_conditions: "После 502."
-input_requirements:
-  - artifact: "prioritized_gaps"
-    contract: Hard
-    description: "Приоритезированные пробелы."
-outputs:
-  - artifact: "gap_list"
-    format: "JSON {gaps_by_theme: {data, requirements, integrations, stakeholders, other}, priority_counts: {blocking: int, important: int, nice_to_have: int}, total: int}"
-    description: "Структурированный gap-лист."
-execution_type: LLM
-prompt_template_hint: "Сгруппируй по темам. Посчитай по приоритетам. Это итоговый артефакт блока 500."
-constraints:
-  - "Все пробелы из prioritized_gaps должны быть распределены"
-  - "Если gap не попадает ни в одну тему — группа 'other'"
-escalation_conditions:
-  - "Не эскалирует"
-```
-
----
-
-### 2.6. Блок 600 — Сбор недостающей информации у заказчика
-
-Блок реализует вариант (c) из уточнения пользователя: сочетание пакетных опросников и точечных Human-задач через Interruption Gateway.
-
-```yaml
-task_id: BIZ_TO_TZ_600
-name: "Сбор недостающей информации у заказчика"
-type: Dynamic
-description: "Динамически выбирает стратегию общения с заказчиком на основе gap_list.priority_counts. Если пробелов много или есть blocking — формирует пакетный опросник. Если пробел единичный или нужно переспросить — точечный вопрос."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 500 с непустым gap_list. Может быть запущен повторно, если после ответа заказчика обнаружены новые пробелы (бабл-ап с декларацией новых 400-подзадач при перепланировании)."
-input_requirements:
-  - artifact: "gap_list"
-    contract: Hard
-    description: "Структурированный gap-лист."
-  - artifact: "need_model"
-    contract: Hard
-    description: "Чтобы не дублировать уже озвученные гипотезы."
-  - artifact: "previous_clarifications"
-    contract: Soft
-    description: "Ответы заказчика на предыдущих итерациях, чтобы не переспрашивать."
-outputs:
-  - artifact: "clarifications"
-    format: "JSON {qa_pairs: [{question, answer, validated: bool, timestamp}]}"
-    description: "Набор вопросов-ответов, который обогатит extracted_declarations."
-dynamic_decision_logic: |
-  if gap_list.total == 0:
-    skip (задача завершается сразу, без детей)
-  elif gap_list.priority_counts.blocking + gap_list.priority_counts.important >= 3:
-    spawn: [601 (опросник), 603, 604, 605]
-  else:
-    for each gap:
-      spawn: [602 (точечный вопрос), 603, 604, 605]
-possible_children:
-  - task_id: BIZ_TO_TZ_601
-    condition: "priority_counts: blocking+important >= 3"
-  - task_id: BIZ_TO_TZ_602
-    condition: "priority_counts: blocking+important < 3"
-  - task_id: BIZ_TO_TZ_603
-    condition: "После 601 или 602"
-  - task_id: BIZ_TO_TZ_604
-    condition: "После получения ответа (603 переходит в Completed)"
-  - task_id: BIZ_TO_TZ_605
-    condition: "После 604"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_601
+template_id: generate_batched_questionnaire
 name: "Формирование пакетного опросника"
 type: Executable
-description: "Из gap_list формирует структурированный опросник для заказчика: группировка по темам, чёткие формулировки, закрытые варианты ответов где возможно."
-parent_task: BIZ_TO_TZ_600
-spawn_conditions: "Выбрана стратегия 'опросник'."
-input_requirements:
-  - artifact: "gap_list"
-    contract: Hard
-    description: "Gap-лист."
-  - artifact: "question_templates_library"
-    contract: Hard
-    description: "Библиотека типовых формулировок вопросов для RAG/ML-поддоменов (из Template Registry)."
-outputs:
-  - artifact: "client_questionnaire"
-    format: "Markdown + JSON-схема ответов"
-    description: "Опросник в человекочитаемом виде + машинная схема для парсинга ответа."
-execution_type: LLM
-prompt_template_hint: "Сгруппируй вопросы по темам. Каждый вопрос должен: (1) быть понятен не-специалисту, (2) по возможности предлагать варианты ответа, (3) объяснять, ПОЧЕМУ ответ важен (повышает готовность заказчика отвечать). Не более 10 вопросов всего — остальные отложить до следующей итерации."
-constraints:
-  - "Максимум 10 вопросов в одном опроснике"
-  - "Сначала blocking, потом important, потом nice_to_have"
-  - "Каждый вопрос — обоснование, почему мы спрашиваем"
-  - "Для каждого закрытого вопроса — варианты + 'другое'"
-escalation_conditions:
-  - "Опросник не укладывается в 10 вопросов даже после приоритезации — эскалация: нужно решение, разбивать ли опрос на серию итераций"
+description: "Из набора структурированных вопросов формирует человекочитаемый опросник с группировкой и обоснованиями. Подходит для любого случая массового сбора информации."
+input_contract:
+  - name: question_specs
+    type: array
+    required: true
+    description: "Исходные вопросы с метаданными (тема, приоритет, ожидаемый формат ответа)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Библиотека типовых формулировок для поддомена."
+  - name: max_questions
+    type: integer
+    required: false
+    default: 10
+output_contract:
+  - name: questionnaire
+    type: object
+    schema: "{human_readable: markdown, response_schema: JSONSchema}"
+execution:
+  kind: LLM
+  constraints:
+    - "Не более max_questions вопросов"
+    - "Группировка по темам"
+    - "Каждый вопрос сопровождается кратким обоснованием, ЗАЧЕМ спрашиваем"
+    - "Приоритизация: сначала blocking, потом important"
+escalation_signals:
+  - too_many_questions: "Не удалось уложиться в max_questions даже после приоритезации"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_602
+template_id: generate_point_question
 name: "Формирование точечного вопроса"
 type: Executable
-description: "Один открытый вопрос по конкретному пробелу. Используется для быстрых уточнений или переспросов."
-parent_task: BIZ_TO_TZ_600
-spawn_conditions: "Выбрана стратегия точечных вопросов; порождается по одной на каждый gap."
-input_requirements:
-  - artifact: "gap_list"
-    contract: Hard
-    description: "Gap-лист (из него берётся один пробел на экземпляр задачи)."
-  - artifact: "target_gap_id"
-    contract: Hard
-    description: "ID конкретного пробела из gap_list, передаваемый при порождении."
-outputs:
-  - artifact: "point_question"
-    format: "JSON {question: str, context: str, expected_format: str}"
-    description: "Короткий вопрос с пояснением контекста и ожидаемым форматом ответа."
-execution_type: LLM
-prompt_template_hint: "Сформулируй ОДИН короткий вопрос по указанному пробелу. Добавь 1-2 предложения контекста (почему спрашиваем). Укажи ожидаемый формат ответа."
-constraints:
-  - "Ровно один вопрос"
-  - "Длина вопроса — не более 2 предложений"
-  - "Не копировать слово 'gap' в итоговом тексте — формулировка для человека"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Один открытый вопрос по конкретной теме. Используется для быстрых уточнений."
+input_contract:
+  - name: question_spec
+    type: object
+    required: true
+    description: "Спецификация одного вопроса (тема, контекст, ожидаемый формат)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: point_question
+    type: object
+    schema: "{question, context, expected_format}"
+execution:
+  kind: LLM
+  constraints:
+    - "Ровно один вопрос, не более 2 предложений"
+    - "Язык формулировки — без технического жаргона без необходимости"
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_603
-name: "Отправка запроса заказчику через Interruption Gateway"
+template_id: request_user_input_via_gateway
+name: "Запрос ввода пользователя через Interruption Gateway"
 type: Executable
-description: "Передаёт сформированный опросник или вопрос в систему общения с пользователем через Interruption Gateway. Задача переходит в состояние, аналогичное Waiting_for_Children, но ожидает внешнее событие — ответ заказчика."
-parent_task: BIZ_TO_TZ_600
-spawn_conditions: "После 601 или 602."
-input_requirements:
-  - artifact: "client_questionnaire"
-    contract: Soft
-    description: "Если был опросник."
-  - artifact: "point_question"
-    contract: Soft
-    description: "Если был точечный вопрос."
-outputs:
-  - artifact: "client_response_raw"
-    format: "Текст или структура, определяемая системой общения"
-    description: "Ответ заказчика в исходном виде."
-execution_type: Human
-prompt_template_hint: "Задача не вызывает LLM — триггерит отправку через Interruption Gateway и ждёт внешнего события 'response_received'. Таймаут — конфигурируется на уровне проекта."
-constraints:
-  - "Должен быть передан ровно один артефакт: либо questionnaire, либо point_question"
-  - "Ожидание ответа — не блокирует остальной граф; родственные задачи продолжают выполняться"
-escalation_conditions:
-  - "Превышен таймаут ожидания ответа (по умолчанию 48 часов рабочего времени) — эскалация к менеджеру проекта"
-  - "Получен ответ вида 'не знаю' / 'затрудняюсь' на blocking-вопрос — эскалация: заказчик не может ответить на критичный вопрос, нужно решение о продолжении"
+description: "Передаёт запрос в систему общения с пользователем через Interruption Gateway, ожидает внешнее событие 'response_received'."
+input_contract:
+  - name: request_payload
+    type: any
+    required: true
+    description: "Опросник, точечный вопрос или любой запрос для отправки."
+  - name: timeout_hours
+    type: integer
+    required: false
+    default: 48
+  - name: purpose
+    type: string
+    required: true
+    description: "Семантическая метка цели запроса (для UI, телеметрии, классификации ответа)."
+output_contract:
+  - name: user_response_raw
+    type: any
+execution:
+  kind: Human
+  constraints:
+    - "Задача не вызывает LLM"
+    - "Ожидание не блокирует остальной граф"
+escalation_signals:
+  - timeout_exceeded: "Превышен timeout_hours"
+  - cannot_answer: "Получен ответ вида 'не знаю' / 'затрудняюсь'"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_604
-name: "Парсинг ответа заказчика"
+template_id: parse_user_response
+name: "Парсинг ответа пользователя"
 type: Executable
-description: "Превращает свободный текст ответа в структурированные данные по исходной схеме вопросов."
-parent_task: BIZ_TO_TZ_600
-spawn_conditions: "После 603 (когда client_response_raw получен)."
-input_requirements:
-  - artifact: "client_response_raw"
-    contract: Hard
-    description: "Сырой ответ заказчика."
-  - artifact: "client_questionnaire"
-    contract: Soft
-    description: "Если был опросник — даёт схему для структурирования."
-  - artifact: "point_question"
-    contract: Soft
-    description: "Если был точечный вопрос."
-outputs:
-  - artifact: "parsed_clarifications"
-    format: "JSON [{question_id, answer_text, extracted_fields: {...}}]"
-    description: "Ответ, привязанный к исходным вопросам, с извлечёнными полями."
-execution_type: LLM
-prompt_template_hint: "Для каждого заданного вопроса найди соответствующий фрагмент ответа. Извлеки структурированные поля согласно expected_format. Если на какой-то вопрос не ответили — явно отметь (not_answered=true)."
-constraints:
-  - "Все вопросы из исходного опросника/точечного вопроса должны быть сопоставлены (хотя бы с пометкой not_answered)"
-  - "Запрещено додумывать ответ на неотвеченный вопрос"
-escalation_conditions:
-  - "Не эскалирует (пустые ответы обрабатываются в 605)"
+description: "Превращает свободный ответ пользователя в структурированные данные по схеме исходного запроса."
+input_contract:
+  - name: response_raw
+    type: any
+    required: true
+  - name: response_schema
+    type: JSONSchema
+    required: true
+  - name: original_request
+    type: any
+    required: false
+    description: "Если был опросник — связывает ответы с вопросами."
+output_contract:
+  - name: parsed_response
+    type: object
+    schema: "определяется response_schema + поля not_answered: [str]"
+execution:
+  kind: LLM
+  constraints:
+    - "Запрещено додумывать ответы на неотвеченные вопросы"
+    - "not_answered должен явно содержать все пропущенные вопросы"
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_605
-name: "Валидация ответа заказчика"
+template_id: validate_response
+name: "Валидация содержательности ответа"
 type: Executable
-description: "Проверяет, что полученные ответы осмысленны и отвечают на поставленные вопросы. Выявляет противоречия с ранее полученной информацией."
-parent_task: BIZ_TO_TZ_600
-spawn_conditions: "После 604."
-input_requirements:
-  - artifact: "parsed_clarifications"
-    contract: Hard
-    description: "Разобранный ответ."
-  - artifact: "extracted_declarations"
-    contract: Hard
-    description: "Ранее известная информация для проверки противоречий."
-outputs:
-  - artifact: "clarifications"
-    format: "JSON {qa_pairs, contradictions: [str], unanswered_blocking: [str], new_info_fields: {...}}"
-    description: "Валидированные ответы + список противоречий + список неотвеченных blocking-вопросов."
-execution_type: LLM
-prompt_template_hint: "Для каждого ответа: (1) отвечает ли он на заданный вопрос? (2) не противоречит ли ранее известному? (3) что нового добавляет в картину? Собери противоречия и критичные пробелы, оставшиеся без ответа."
-constraints:
-  - "Противоречия формулируются как пары (ранее_известное, новое_утверждение) — для прозрачности"
-  - "Если unanswered_blocking не пуст — это триггер для повторного 600"
-escalation_conditions:
-  - "Обнаружены противоречия в ответах заказчика, которые нельзя разрешить без уточнения — порождается новый 602 по конкретному противоречию, но не более 2 итераций на один пробел (иначе — эскалация к человеку)"
-  - "Все blocking-вопросы остались без ответа после 2-й итерации — эскалация к менеджеру проекта"
+description: "Проверяет, что ответы осмысленны, отвечают на заданные вопросы и не противоречат ранее известной информации."
+input_contract:
+  - name: parsed_response
+    type: object
+    required: true
+  - name: original_questions
+    type: array
+    required: true
+  - name: prior_knowledge
+    type: object
+    required: false
+    description: "Ранее установленные факты для проверки противоречий."
+output_contract:
+  - name: validation_result
+    type: object
+    schema: "{valid_answers, contradictions, unanswered_critical}"
+execution:
+  kind: LLM
+  constraints:
+    - "Противоречия формулируются как пары (известное, новое)"
+escalation_signals:
+  - contradictions_detected: "Противоречия между ответом и prior_knowledge"
+  - critical_unanswered: "Остались без ответа вопросы с priority=blocking"
 ```
 
----
-
-### 2.7. Блок 700 — Работа с данными
+### 1.6. Категория: Инвентаризация и характеризация объектов
 
 ```yaml
-task_id: BIZ_TO_TZ_700
-name: "Работа с данными"
-type: Composite
-description: "Специализированная обработка всего, что касается данных заказчика: инвентаризация источников, углублённое уточнение их характеристик, оценка достаточности, решение о синтетике."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 600 (когда есть первая волна уточнений) или параллельно с 600, если упоминания данных уже достаточны."
-input_requirements:
-  - artifact: "data_mentions"
-    contract: Hard
-    description: "Из 401."
-  - artifact: "clarifications"
-    contract: Soft
-    description: "Уточнения от заказчика, если были."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Определяет типовые требования к данным."
-outputs:
-  - artifact: "data_specification"
-    format: "JSON"
-    description: "Спецификация данных для ТЗ."
-possible_children:
-  - task_id: BIZ_TO_TZ_701
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_702
-    condition: "После 701, если есть упомянутые источники"
-  - task_id: BIZ_TO_TZ_703
-    condition: "После 702"
-  - task_id: BIZ_TO_TZ_704
-    condition: "После 703"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_701
-name: "Инвентаризация источников данных"
+template_id: inventory_items_from_mentions
+name: "Инвентаризация объектов из набора упоминаний"
 type: Executable
-description: "Из разрозненных упоминаний (data_mentions + ответы заказчика) формирует нормализованный список источников с уникальными ID и первичными характеристиками."
-parent_task: BIZ_TO_TZ_700
-spawn_conditions: "Первой в блоке 700."
-input_requirements:
-  - artifact: "data_mentions"
-    contract: Hard
-    description: "Упоминания данных из 401."
-  - artifact: "clarifications"
-    contract: Soft
-    description: "Что заказчик дополнительно сказал про данные."
-outputs:
-  - artifact: "data_sources_inventory"
-    format: "JSON [{source_id, name, type, known_attributes: {...}, unknown_attributes: [str]}]"
-    description: "Нормализованный список источников. Дубликаты объединены, неизвестные поля явно помечены."
-execution_type: LLM
-prompt_template_hint: "Для RAG типы: document_corpus, wiki, email_archive, codebase. Для ML: tabular_db, log_stream, labeled_dataset, event_stream. Если два упоминания явно про один источник — слить в один. Для каждого источника — список атрибутов, которые НЕ известны (volume, format, quality, access_method, etc)."
-constraints:
-  - "Каждый источник получает уникальный source_id"
-  - "Дедупликация строгая — одно и то же название = один источник"
-  - "unknown_attributes обязательно заполнено — служит входом для 702"
-escalation_conditions:
-  - "Упоминаний данных нет вообще, а задача требует данные (blocking по чеклисту поддомена) — порождается 600 с точечным вопросом 'Какие данные у вас есть?'"
+description: "Из разрозненных упоминаний формирует нормализованный реестр объектов с ID, известными и неизвестными атрибутами. Универсально — применимо к источникам данных, внешним системам, сущностям."
+input_contract:
+  - name: mentions
+    type: array
+    required: true
+  - name: additional_info
+    type: array
+    required: false
+    description: "Ответы пользователя или другой контекст."
+  - name: object_type_schema
+    type: object
+    required: true
+    description: "Схема объекта: какие атрибуты может иметь, как их нормализовать."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: objects_inventory
+    type: array
+    schema: "[{id, name, type, known_attributes, unknown_attributes: [str]}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Дедупликация: одно и то же название = один объект"
+    - "Каждый объект получает уникальный ID"
+    - "unknown_attributes содержит атрибуты, известные схеме, но не заполненные — сигнал для последующего уточнения"
+escalation_signals:
+  - inventory_empty: "Упоминаний нет, хотя объекты требуются (сигнал для порождения уточняющего запроса)"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_702
-name: "Уточнение характеристик источников (Dynamic)"
-type: Dynamic
-description: "Для каждого источника из инвентаря решает: нужно ли уточнять формат/объём, качество/разметку, легальность/доступ. Решение принимается по unknown_attributes."
-parent_task: BIZ_TO_TZ_700
-spawn_conditions: "После 701 для каждого source_id с непустым unknown_attributes."
-input_requirements:
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Список источников."
-  - artifact: "target_source_id"
-    contract: Hard
-    description: "ID источника, по которому идёт уточнение (передаётся при порождении)."
-outputs:
-  - artifact: "source_specific_questions"
-    format: "JSON [{question, category, target_source_id}]"
-    description: "Набор вопросов по конкретному источнику, готовый для отправки в 600."
-dynamic_decision_logic: |
-  for each unknown_attribute in source:
-    if attribute in [format, volume, schema]:
-      spawn: 702_A
-    if attribute in [quality, labeling, completeness]:
-      spawn: 702_B
-    if attribute in [legal, access, consent]:
-      spawn: 702_C
-possible_children:
-  - task_id: BIZ_TO_TZ_702_A
-    condition: "unknown_attributes содержат format/volume/schema"
-  - task_id: BIZ_TO_TZ_702_B
-    condition: "unknown_attributes содержат quality/labeling/completeness"
-  - task_id: BIZ_TO_TZ_702_C
-    condition: "unknown_attributes содержат legal/access/consent"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_702_A
-name: "Формирование вопросов о формате и объёме"
+template_id: generate_clarification_questions
+name: "Генерация уточняющих вопросов по объекту"
 type: Executable
-description: "Генерирует вопросы о технических параметрах: формат файлов, схема, объём в записях/байтах, типовой размер одной записи, частота обновления."
-parent_task: BIZ_TO_TZ_702
-spawn_conditions: "Для каждого источника с пробелами по format/volume/schema."
-input_requirements:
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Источник из инвентаря."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Для RAG важны: формат документов, объём корпуса, язык. Для ML: схема, количество записей, баланс классов."
-outputs:
-  - artifact: "format_volume_questions"
-    format: "JSON [{question, expected_format}]"
-    description: "Вопросы о формате и объёме."
-execution_type: LLM
-prompt_template_hint: "Для RAG: 'В каком формате хранятся документы (PDF, DOCX, HTML, txt)?', 'Сколько документов в корпусе?', 'Средний размер документа?'. Для ML: 'Какова схема таблицы?', 'Сколько строк?', 'Как часто обновляется?'"
-constraints:
-  - "Вопросы формулируются на языке заказчика, без технического жаргона без необходимости"
-escalation_conditions:
-  - "Не эскалирует (вопросы уйдут в 600)"
+description: "Для конкретного объекта формирует вопросы об атрибутах, попадающих в указанную категорию. Вопросы сгруппированы так, чтобы уточнение шло пакетами по смысловым измерениям."
+input_contract:
+  - name: target_object
+    type: object
+    required: true
+  - name: attribute_category
+    type: string
+    required: true
+    description: "Например: 'format_volume' | 'quality_labeling' | 'legal_access' | любая категория из Domain Pack."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Шаблоны вопросов для категории берутся из domain_pack.clarification_templates[attribute_category]."
+output_contract:
+  - name: clarification_questions
+    type: array
+    schema: "[{question, expected_format, target_attribute}]"
+execution:
+  kind: LLM
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_702_B
-name: "Формирование вопросов о качестве и разметке"
+template_id: evaluate_sufficiency_by_heuristics
+name: "Оценка достаточности по эвристикам"
 type: Executable
-description: "Генерирует вопросы о качестве данных: есть ли пропуски, дубликаты, разметка (для ML), аннотации (для RAG), известные проблемы."
-parent_task: BIZ_TO_TZ_702
-spawn_conditions: "Для каждого источника с пробелами по quality/labeling."
-input_requirements:
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Источник."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Определяет специфику."
-outputs:
-  - artifact: "quality_labeling_questions"
-    format: "JSON [{question, expected_format}]"
-    description: "Вопросы о качестве."
-execution_type: LLM
-prompt_template_hint: "Для ML-поддомена обязательно: есть ли разметка? кто размечал? какое качество разметки? распределение классов? Для RAG: есть ли метаданные (дата, автор, тип документа)? сколько документов устарело? есть ли дубликаты?"
-constraints:
-  - "Для ML-задач classification/regression — вопрос о разметке обязателен"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Применяет эвристики из Domain Pack к набору объектов и возвращает вердикт достаточности с оценкой риска."
+input_contract:
+  - name: objects
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Эвристики берутся из domain_pack.sufficiency_heuristics для применимого класса задачи."
+  - name: task_class_id
+    type: string
+    required: true
+    description: "Класс задачи в рамках поддомена (определяет применимые эвристики)."
+output_contract:
+  - name: sufficiency_verdict
+    type: object
+    schema: "{sufficient: bool, gaps: [str], risk_level: enum[low, medium, high]}"
+execution:
+  kind: LLM
+  constraints:
+    - "sufficient=true допустимо только при risk_level ∈ {low, medium}"
+    - "gaps содержит конкретные недостающие параметры со ссылками на эвристики"
+escalation_signals:
+  - insufficient_no_fallback: "sufficient=false и Domain Pack не разрешает синтетику для этого класса задачи"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_702_C
-name: "Формирование вопросов о легальности и доступе"
+template_id: decide_synthetic_fallback
+name: "Решение об использовании синтетических данных"
 type: Executable
-description: "Вопросы о правах использования, технической доступности, персональных данных, необходимости анонимизации."
-parent_task: BIZ_TO_TZ_702
-spawn_conditions: "Для каждого источника с пробелами по legal/access."
-input_requirements:
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Источник."
-  - artifact: "constraint_mentions"
-    contract: Soft
-    description: "Уже извлечённые регуляторные ограничения из 403."
-outputs:
-  - artifact: "legal_access_questions"
-    format: "JSON [{question, expected_format}]"
-    description: "Вопросы о легальности."
-execution_type: LLM
-prompt_template_hint: "Вопросы: 'Содержат ли данные ПД?', 'Нужна ли анонимизация до передачи нам?', 'Как мы получим доступ технически (API/дамп/выгрузка)?', 'Есть ли ограничения по внешнему использованию (облачные LLM-провайдеры)?'"
-constraints:
-  - "Если в constraint_mentions уже зафиксирован regulatory — этот вопрос не дублировать"
-escalation_conditions:
-  - "Не эскалирует (но ответы с подтверждением ПД/конфиденциальности влияют на 900 — выбор архитектуры, возможно onprem)"
+description: "При недостаточности реальных данных — решает, применим ли синтетический fallback согласно политике Domain Pack. Формирует обоснование и явные ограничения."
+input_contract:
+  - name: sufficiency_verdict
+    type: object
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "domain_pack.synthetic_data_policy определяет: для чего разрешено, для чего запрещено."
+  - name: task_class_id
+    type: string
+    required: true
+output_contract:
+  - name: synthetic_decision
+    type: object
+    schema: "{use_synthetic: bool, rationale, synthetic_for: [str], limitations: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Если use_synthetic=true, limitations не может быть пустым"
+    - "synthetic_for — только категории, явно разрешённые политикой"
+escalation_signals:
+  - needs_client_confirmation: "Решение об использовании синтетики требует явного подтверждения пользователя"
 ```
 
+### 1.7. Категория: Формализация требований
+
 ```yaml
-task_id: BIZ_TO_TZ_703
-name: "Оценка достаточности данных"
+template_id: generate_requirements_from_templates
+name: "Генерация требований из доменных шаблонов"
 type: Executable
-description: "Сопоставляет известные характеристики данных с минимальными требованиями для выбранного поддомена. Бинарное решение: достаточно / не достаточно + обоснование."
-parent_task: BIZ_TO_TZ_700
-spawn_conditions: "После 702 (когда уточнения отработали) или сразу после 701, если пробелов по данным не было."
-input_requirements:
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Итоговый инвентарь (с учётом уточнений)."
-  - artifact: "data_sufficiency_heuristics"
-    contract: Hard
-    description: "Эвристики достаточности для RAG/ML из Template Registry. Для RAG: минимальный объём корпуса, покрытие тематики. Для ML: минимальное число записей, баланс классов, качество разметки."
-  - artifact: "need_model"
-    contract: Soft
-    description: "Для понимания, насколько высоки требования к качеству."
-outputs:
-  - artifact: "data_sufficiency_verdict"
-    format: "JSON {sufficient: bool, gaps: [str], risk_level: enum[low, medium, high]}"
-    description: "Вердикт о достаточности + список пробелов + оценка риска."
-execution_type: LLM
-prompt_template_hint: "Применяй эвристики из registry. Для RAG: менее 50 документов — risk=high. Для ML-классификации: менее 500 записей на класс — risk=high. Для ML-регрессии: менее 1000 записей — risk=medium. Всегда объясняй риски."
-constraints:
-  - "Вердикт sufficient=true только при risk_level ∈ {low, medium}"
-  - "gaps содержит конкретные недостающие параметры"
-escalation_conditions:
-  - "sufficient=false и нет опции синтетических данных для поддомена — эскалация: продолжение без достаточных данных даст непригодный PoV"
+description: "Создаёт список формализованных требований (ФТ или НФТ — задаётся параметром) на основе шаблонов из Domain Pack и контекста задачи."
+input_contract:
+  - name: requirement_kind
+    type: string
+    required: true
+    description: "'functional' | 'non_functional'."
+  - name: context_artifacts
+    type: array
+    required: true
+    description: "Артефакты, влияющие на формулировки (need_model, mentions, clarifications)."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Шаблоны требований — из domain_pack.requirements_templates[requirement_kind]."
+  - name: id_prefix
+    type: string
+    required: false
+    default: "FR"
+output_contract:
+  - name: requirements
+    type: array
+    schema: "[{id, statement, priority, category, target_value, source}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое требование имеет уникальный ID с префиксом id_prefix"
+    - "Формулировка в форме 'Система должна ...' (для ФТ) или привязанной к категории (для НФТ)"
+    - "Обязательна трассировка (source) к конкретному входному артефакту"
+    - "Базовый набор требований из шаблонов Domain Pack должен присутствовать (если применим)"
+escalation_signals:
+  - base_set_unachievable: "Не удаётся сформулировать даже базовый набор из шаблонов Domain Pack (признак недоопределённого входа)"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_704
-name: "Решение о синтетических данных"
+template_id: generate_constraints_from_mentions
+name: "Формализация ограничений"
 type: Executable
-description: "Если реальных данных недостаточно или доступ к ним ограничен — предлагает использовать синтетические данные для PoV. Решение фиксируется в ТЗ как явное допущение."
-parent_task: BIZ_TO_TZ_700
-spawn_conditions: "После 703."
-input_requirements:
-  - artifact: "data_sufficiency_verdict"
-    contract: Hard
-    description: "Вердикт 703."
-  - artifact: "data_sources_inventory"
-    contract: Hard
-    description: "Что вообще есть."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Для RAG синтетика осмыслена только для запросов пользователей; документы — нет. Для ML — генерация табличных данных применима."
-outputs:
-  - artifact: "synthetic_data_decision"
-    format: "JSON {use_synthetic: bool, rationale: str, synthetic_for: [str], limitations: [str]}"
-    description: "Решение + обоснование + список того, для чего именно применяется синтетика + её ограничения."
-execution_type: LLM
-prompt_template_hint: "Если sufficient=true — use_synthetic=false. Если false из-за недоступа к данным — use_synthetic=true для демонстрации в PoV. Явно укажи limitations: 'синтетика не отражает распределение реальных данных', 'результаты на синтетике не переносятся напрямую на реальные данные'. Для RAG синтезируем только user_queries, не corpus."
-constraints:
-  - "Если use_synthetic=true, limitations не может быть пустым"
-  - "Решение о синтетике требует подтверждения заказчика — порождается 602 с точечным вопросом"
-escalation_conditions:
-  - "Заказчик в 602 отклонил синтетику, но реальных данных недостаточно — эскалация: тупик, нужно пересогласование scope проекта"
-outputs_aggregate:
-  - artifact: "data_specification"
-    format: "JSON"
-    description: "Композитный выход блока 700: inventory + sufficiency + synthetic_decision. Формируется Composite-задачей 700 при завершении всех детей."
-```
-
----
-
-### 2.8. Блок 800 — Формализация требований
-
-```yaml
-task_id: BIZ_TO_TZ_800
-name: "Формализация требований"
-type: Composite
-description: "Превращает разрозненные упоминания и ответы заказчика в структурированный набор требований: функциональные, нефункциональные, ограничения, критерии приёмки."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После блоков 600 (завершено, все blocking отвечены) и 700."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-    description: "Модель потребности."
-  - artifact: "extracted_declarations"
-    contract: Hard
-    description: "Декларации из 400."
-  - artifact: "clarifications"
-    contract: Soft
-    description: "Ответы заказчика. Soft, т.к. при полном исходном запросе gap_list пуст и блок 600 skip'ается — в этом случае clarifications создаётся пустым объектом Composite-задачей 600."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Спецификация данных из 700."
-outputs:
-  - artifact: "formalized_requirements"
-    format: "JSON"
-    description: "Структурированные требования."
-possible_children:
-  - task_id: BIZ_TO_TZ_801
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_802
-    condition: "Всегда (параллельно с 801)"
-  - task_id: BIZ_TO_TZ_803
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_804
-    condition: "После 801 и 802"
-  - task_id: BIZ_TO_TZ_805
-    condition: "После 801, 802, 803, 804"
+description: "Превращает упоминания ограничений и следствия из других артефактов в формальные Constraint-записи."
+input_contract:
+  - name: constraint_mentions
+    type: array
+    required: true
+  - name: derived_constraints_sources
+    type: array
+    required: false
+    description: "Источники, из которых ограничения выводятся (например, data_specification → constraint по защите ПД)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: constraints
+    type: array
+    schema: "[{id, type, statement, is_hard: bool, source}]"
+execution:
+  kind: LLM
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_801
-name: "Формулирование функциональных требований"
+template_id: generate_acceptance_criteria
+name: "Формирование критериев приёмки"
 type: Executable
-description: "Пишет функциональные требования в формате 'Система должна <действие> при <условии>, результатом <что>'. Каждое требование имеет ID, приоритет (must/should/could) и трассировку к источнику."
-parent_task: BIZ_TO_TZ_800
-spawn_conditions: "Параллельно с 802, 803."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-    description: "Что делает система и зачем."
-  - artifact: "clarifications"
-    contract: Hard
-    description: "Уточнения от заказчика."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Для RAG типовые ФТ: приём запроса пользователя, поиск по корпусу, генерация ответа с указанием источников. Для ML: приём входных признаков, возврат предсказания, логирование."
-  - artifact: "functional_requirements_templates"
-    contract: Hard
-    description: "Шаблонные ФТ для RAG/ML из Template Registry."
-outputs:
-  - artifact: "functional_requirements"
-    format: "JSON [{id: FR-XXX, statement: str, priority: enum[must, should, could], source: str}]"
-    description: "Список ФТ с приоритетами и трассировкой."
-execution_type: LLM
-prompt_template_hint: "Для RAG базовый набор: FR-001 приём запроса, FR-002 поиск релевантных фрагментов, FR-003 формирование ответа, FR-004 указание источников. Для ML: FR-001 приём признаков, FR-002 валидация входа, FR-003 возврат предсказания, FR-004 возврат уверенности. Далее — специфика проекта. source = ссылка на input (quote или QA-пара)."
-constraints:
-  - "Каждое ФТ имеет уникальный ID вида FR-001, FR-002..."
-  - "Формулировка: 'Система должна...' в одном предложении"
-  - "Трассировка обязательна — иначе требование не обосновано"
-  - "Для MVP-поддоменов минимум 4 базовых ФТ"
-escalation_conditions:
-  - "Невозможно сформулировать минимальный набор базовых ФТ (признак недоопределённой задачи) — эскалация с возвратом в 500 для перегенерации gap-листа"
+description: "Для каждого must-требования и ключевых НФТ генерирует измеримый критерий приёмки с методом проверки."
+input_contract:
+  - name: requirements
+    type: array
+    required: true
+    description: "Объединённый список ФТ и НФТ."
+  - name: metric_mentions
+    type: array
+    required: false
+  - name: acceptance_mentions
+    type: array
+    required: false
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Для примеров методов проверки в поддомене."
+output_contract:
+  - name: acceptance_criteria
+    type: array
+    schema: "[{id, statement, measurable: bool, target, verification_method, linked_requirements}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое must-требование покрыто хотя бы одним критерием"
+    - "verification_method конкретный (не 'проверяется вручную' без деталей)"
+    - "measurable=false допустимо только при явном обосновании"
+escalation_signals:
+  - unmeasurable_must_requirement: "Must-требование без возможности сформулировать измеримый критерий"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_802
-name: "Формулирование нефункциональных требований"
+template_id: detect_contradictions
+name: "Поиск противоречий в наборе элементов"
 type: Executable
-description: "Пишет НФТ: производительность, надёжность, безопасность, удобство сопровождения. Для MVP (из PoV.md) безопасность и производительность не в приоритете — фиксируются как соответствующие."
-parent_task: BIZ_TO_TZ_800
-spawn_conditions: "Параллельно с 801, 803."
-input_requirements:
-  - artifact: "metric_mentions"
-    contract: Hard
-    description: "Из 402 — целевые метрики."
-  - artifact: "constraint_mentions"
-    contract: Hard
-    description: "Из 403 — ограничения."
-  - artifact: "clarifications"
-    contract: Hard
-    description: "Уточнения."
-  - artifact: "non_functional_requirements_templates"
-    contract: Hard
-    description: "Шаблоны НФТ для RAG/ML."
-outputs:
-  - artifact: "non_functional_requirements"
-    format: "JSON [{id: NFR-XXX, category: enum[performance, reliability, maintainability, usability, security], statement, target_value, priority, source}]"
-    description: "НФТ с категориями и целевыми значениями."
-execution_type: LLM
-prompt_template_hint: "Для PoV (MVP) performance, security — обычно 'соответствует демонстрационным требованиям'. Основные НФТ: воспроизводимость (зафиксированный сид, pinned зависимости), трассируемость (логи вызовов LLM), наблюдаемость метрик. Для RAG добавить: faithfulness к источникам. Для ML: устойчивость к входам вне распределения."
-constraints:
-  - "Для каждого НФТ — target_value или явное 'not applicable for PoV' с обоснованием"
-  - "Уникальные ID NFR-XXX"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Универсальный поиск противоречий между элементами (требования vs ограничения, ответы заказчика vs ранее известное, архитектурный выбор vs требования)."
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: contradiction_rules
+    type: ContradictionRules
+    required: true
+    description: "Правила попарной или групповой проверки на противоречия."
+output_contract:
+  - name: contradictions_report
+    type: object
+    schema: "{is_consistent: bool, contradictions: [{description, involved_items, severity}]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое противоречие описано с упоминанием конкретных ID элементов"
+escalation_signals:
+  - critical_contradictions: "Есть противоречия с severity=blocker"
 ```
 
+### 1.8. Категория: Архитектурный анализ
+
 ```yaml
-task_id: BIZ_TO_TZ_803
-name: "Фиксация ограничений"
+template_id: classify_within_taxonomy
+name: "Классификация задачи по таксономии"
 type: Executable
-description: "Превращает constraint_mentions и регуляторные требования в формальные Constraint-записи с типом и жёсткостью."
-parent_task: BIZ_TO_TZ_800
-spawn_conditions: "Параллельно с 801, 802."
-input_requirements:
-  - artifact: "constraint_mentions"
-    contract: Hard
-    description: "Ограничения из 403."
-  - artifact: "clarifications"
-    contract: Hard
-    description: "Уточнения."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Ограничения, вытекающие из данных (ПД → onprem, например)."
-outputs:
-  - artifact: "project_constraints"
-    format: "JSON [{id: CON-XXX, type, statement, is_hard: bool, source}]"
-    description: "Формализованные ограничения."
-execution_type: LLM
-prompt_template_hint: "Объедини упоминания ограничений + следствия из data_specification (например, из наличия ПД → constraint по обработке). is_hard=true для жёстких запретов/обязательств."
-constraints:
-  - "Уникальные ID CON-XXX"
-  - "Если constraint противоречит ФТ — отдельно отметить в metadata для блока 805"
-escalation_conditions:
-  - "Не эскалирует"
+description: "Относит задачу к классу из доменной таксономии. Универсально — таксономия приходит из Domain Pack."
+input_contract:
+  - name: context_artifacts
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Таксономия — domain_pack.task_class_taxonomy."
+output_contract:
+  - name: task_class
+    type: object
+    schema: "{class_id, class_name, confidence, reasoning, alternatives: []}"
+execution:
+  kind: LLM
+  constraints:
+    - "class_id строго из таксономии"
+    - "При confidence < 0.7 — обязательны alternatives"
+escalation_signals:
+  - no_matching_class: "Задача не укладывается ни в один класс таксономии (сигнал к пересмотру выбора Domain Pack)"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_804
-name: "Фиксация критериев приёмки"
+template_id: select_pattern_from_catalog
+name: "Выбор паттерна из доменного каталога"
 type: Executable
-description: "Формулирует измеримые критерии, по которым PoV будет считаться принятым. Каждый критерий привязан к ФТ или НФТ и имеет метод проверки."
-parent_task: BIZ_TO_TZ_800
-spawn_conditions: "После 801 и 802."
-input_requirements:
-  - artifact: "functional_requirements"
-    contract: Hard
-    description: "ФТ из 801."
-  - artifact: "non_functional_requirements"
-    contract: Hard
-    description: "НФТ из 802."
-  - artifact: "acceptance_mentions"
-    contract: Hard
-    description: "Упоминания критериев из 404."
-  - artifact: "metric_mentions"
-    contract: Hard
-    description: "Целевые метрики из 402."
-outputs:
-  - artifact: "acceptance_criteria"
-    format: "JSON [{id: AC-XXX, statement, measurable: bool, target, verification_method, linked_requirements: [FR-XXX/NFR-XXX]}]"
-    description: "Критерии приёмки с методами проверки."
-execution_type: LLM
-prompt_template_hint: "Каждый критерий приёмки: что проверяем, как проверяем (скрипт, ручная демонстрация, метрика на тесте), какое значение считается успехом, к каким требованиям относится. measurable=false только если согласовано с заказчиком (редкий случай, требует явного обоснования в statement)."
-constraints:
-  - "Каждое must-требование обязано иметь хотя бы один критерий приёмки"
-  - "verification_method конкретный: 'прогон на отложенной выборке', 'демо-сценарий №3', 'ручная оценка качества 20 ответов'"
-  - "Уникальные ID AC-XXX"
-escalation_conditions:
-  - "Есть must-требования без критериев приёмки и невозможно их сформулировать измеримо — эскалация: нужен диалог с заказчиком для определения, что значит 'работает'"
+description: "Выбирает архитектурный паттерн из каталога Domain Pack на основе класса задачи и характеристик входа."
+input_contract:
+  - name: task_class_id
+    type: string
+    required: true
+  - name: input_characteristics
+    type: object
+    required: true
+    description: "Данные для применения правил выбора (объём данных, требования к качеству, ...)."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Каталог паттернов — domain_pack.architecture_patterns."
+output_contract:
+  - name: pattern_choice
+    type: object
+    schema: "{pattern_id, components, rationale}"
+execution:
+  kind: LLM
+  constraints:
+    - "pattern_id строго из каталога"
+    - "Правила применимости из каталога соблюдены"
+    - "rationale ссылается на конкретные требования"
+escalation_signals:
+  - no_pattern_satisfies_constraints: "Ни один паттерн не удовлетворяет входным характеристикам"
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_805
-name: "Проверка согласованности требований"
+template_id: generate_rationale
+name: "Генерация обоснования выбора"
 type: Executable
-description: "Ищет противоречия: между ФТ и НФТ, между ФТ и ограничениями, между критериями приёмки и ограничениями. Формирует список конфликтов для ручного или автоматического разрешения."
-parent_task: BIZ_TO_TZ_800
-spawn_conditions: "После 801, 802, 803, 804."
-input_requirements:
-  - artifact: "functional_requirements"
-    contract: Hard
-    description: "ФТ."
-  - artifact: "non_functional_requirements"
-    contract: Hard
-    description: "НФТ."
-  - artifact: "project_constraints"
-    contract: Hard
-    description: "Ограничения."
-  - artifact: "acceptance_criteria"
-    contract: Hard
-    description: "Критерии приёмки."
-outputs:
-  - artifact: "formalized_requirements"
-    format: "JSON {functional, non_functional, constraints, acceptance_criteria, conflicts: [{type, items: [...], severity}]}"
-    description: "Композитный выход блока 800 — все требования плюс обнаруженные конфликты."
-execution_type: LLM
-prompt_template_hint: "Проверь типичные конфликты: (1) НФТ требует высокую точность, но констрейнт запрещает использовать необходимые ресурсы; (2) ФТ предполагает работу с ПД, но нет ограничения по защите; (3) критерий приёмки недостижим при заявленных ограничениях. severity: critical (блокирует) / warning / info."
-constraints:
-  - "conflicts может быть пустым — это валидная ситуация"
-  - "Каждый конфликт формулируется как 'X требует Y, Z запрещает Y'"
-escalation_conditions:
-  - "Обнаружены конфликты severity=critical — эскалация к заказчику через 600 с описанием конфликта и предложением вариантов разрешения"
-```
-
----
-
-### 2.9. Блок 900 — Архитектурный анализ
-
-Блок явно заточен под RAG и простой ML. Dynamic-задача 900 выбирает ветку по subdomain_classification и порождает одну из двух профильных подзадач.
-
-```yaml
-task_id: BIZ_TO_TZ_900
-name: "Архитектурный анализ"
-type: Dynamic
-description: "Высокоуровневый выбор подхода к решению. Решение о ветке (RAG или ML) принимается на основе subdomain_classification; подзадачи 902 и 903 взаимоисключающие."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 800."
-input_requirements:
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "Формализованные требования."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Спецификация данных."
-  - artifact: "need_model"
-    contract: Hard
-    description: "Модель потребности."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Определяет ветку."
-outputs:
-  - artifact: "architectural_approach"
-    format: "JSON"
-    description: "Выбранный подход + обоснование + baseline."
-dynamic_decision_logic: |
-  always spawn: 901, 904, 905
-  if subdomain == RAG: spawn 902
-  elif subdomain == ML: spawn 903
-possible_children:
-  - task_id: BIZ_TO_TZ_901
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_902
-    condition: "subdomain == RAG"
-  - task_id: BIZ_TO_TZ_903
-    condition: "subdomain == ML"
-  - task_id: BIZ_TO_TZ_904
-    condition: "После 902 или 903"
-  - task_id: BIZ_TO_TZ_905
-    condition: "После 904"
+description: "Формирует связный текст, обосновывающий выбор, через таблицу сопоставления 'требование → как удовлетворяется'."
+input_contract:
+  - name: chosen_option
+    type: object
+    required: true
+  - name: requirements
+    type: array
+    required: true
+  - name: alternatives_considered
+    type: array
+    required: false
+output_contract:
+  - name: rationale_document
+    type: string
+    format: markdown
+execution:
+  kind: LLM
+  constraints:
+    - "Таблица сопоставления покрывает все must-требования"
+    - "Отдельный блок 'Риски' с мерами митигации (минимум 2 риска)"
+escalation_signals: []
 ```
 
 ```yaml
-task_id: BIZ_TO_TZ_901
-name: "Определение класса задачи внутри поддомена"
-type: Executable
-description: "Для RAG: определяет подтип (Q&A по FAQ, summarization по корпусу, structured extraction, chat-with-docs). Для ML: тип задачи (binary/multiclass classification, regression, anomaly detection)."
-parent_task: BIZ_TO_TZ_900
-spawn_conditions: "Первой в блоке 900."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-    description: "Что делает система."
-  - artifact: "functional_requirements"
-    contract: Hard
-    description: "Детализация функций."
-  - artifact: "subdomain_classification"
-    contract: Hard
-    description: "Верхнеуровневая классификация."
-  - artifact: "task_class_taxonomy"
-    contract: Hard
-    description: "Таксономия классов задач для RAG/ML из Template Registry."
-outputs:
-  - artifact: "task_class"
-    format: "JSON {class_id: str, class_name: str, confidence: float, reasoning: str}"
-    description: "Выбранный класс задачи."
-execution_type: LLM
-prompt_template_hint: "Сопоставь need_model + FR с таксономией. Для RAG: chat_with_docs / faq_qa / structured_extraction / summarization. Для ML: binary_classification / multiclass / regression / anomaly_detection. Обоснуй, почему именно этот класс."
-constraints:
-  - "class_id строго из taxonomy"
-  - "confidence < 0.7 → обязательное указание альтернатив в reasoning"
-escalation_conditions:
-  - "Класс задачи не укладывается ни в одну позицию taxonomy (признак, что поддомен был определён неверно) — эскалация на пересмотр 103"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_902
-name: "Выбор архитектурного шаблона для RAG"
-type: Executable
-description: "Выбирает конкретный архитектурный шаблон RAG: Naive RAG / Advanced RAG (с reranking) / Hierarchical RAG / Agentic RAG. Выбор опирается на класс задачи, объём корпуса и требуемое качество."
-parent_task: BIZ_TO_TZ_900
-spawn_conditions: "subdomain == RAG, после 901."
-input_requirements:
-  - artifact: "task_class"
-    contract: Hard
-    description: "Класс задачи."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Объём корпуса, формат."
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "Требования к качеству."
-  - artifact: "rag_architecture_patterns"
-    contract: Hard
-    description: "Библиотека RAG-шаблонов с их применимостью."
-outputs:
-  - artifact: "rag_architecture_choice"
-    format: "JSON {pattern: enum[naive, advanced, hierarchical, agentic], components: {embedder, vector_store, retriever, reranker|null, generator}, rationale: str}"
-    description: "Выбранный RAG-шаблон с ключевыми компонентами."
-execution_type: LLM
-prompt_template_hint: "Правила выбора: Naive RAG — малый корпус (< 1000 документов), низкие требования к качеству. Advanced RAG (+ reranking) — средний корпус, требования к качеству выше. Hierarchical RAG — большой корпус или разнородный контент. Agentic RAG — многошаговые вопросы. Компоненты: для MVP embedder — типовой (тип указывается, модель — на следующий гейт), vector_store — FAISS/Chroma для PoV."
-constraints:
-  - "Для MVP (PoV) предпочтение простым шаблонам — Naive или Advanced, если это не противоречит требованиям"
-  - "Не указывать конкретные версии моделей — это задача следующего гейта (Архитектура)"
-  - "rationale ссылается на конкретные FR/NFR"
-escalation_conditions:
-  - "Ни один шаблон не удовлетворяет формализованным требованиям (например, требуется < 100ms latency при большом корпусе — типовые RAG не подходят) — эскалация с предложением пересмотреть НФТ"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_903
-name: "Выбор архитектурного шаблона для ML"
-type: Executable
-description: "Выбирает шаблон ML-решения: класс моделей (линейные / ансамблевые / нейросетевые), подход к обучению (supervised / semi-supervised). Для MVP предпочитаются интерпретируемые и быстро обучаемые модели."
-parent_task: BIZ_TO_TZ_900
-spawn_conditions: "subdomain == ML, после 901."
-input_requirements:
-  - artifact: "task_class"
-    contract: Hard
-    description: "Класс задачи."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Объём данных, качество разметки."
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "Требования (интерпретируемость, скорость обучения)."
-  - artifact: "ml_architecture_patterns"
-    contract: Hard
-    description: "Библиотека ML-шаблонов."
-outputs:
-  - artifact: "ml_architecture_choice"
-    format: "JSON {model_family: enum[linear, tree_based, boosting, nn], training_approach: enum[supervised, semi_supervised], features_strategy: str, rationale: str}"
-    description: "Выбранный ML-шаблон."
-execution_type: LLM
-prompt_template_hint: "Правила: малый датасет (< 10k) или требование интерпретируемости → linear или tree_based. Средний датасет, табличные данные → boosting (XGBoost/CatBoost/LightGBM семейство — без указания версии). NN — только если требуется и данных > 100k. features_strategy: 'минимальная обработка, опора на сырые признаки' / 'feature engineering требуется'."
-constraints:
-  - "Для MVP предпочитать простые интерпретируемые модели"
-  - "Без указания конкретных гиперпараметров и версий"
-escalation_conditions:
-  - "task_class требует подхода, которого нет в ml_architecture_patterns — эскалация на расширение registry"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_904
-name: "Обоснование выбранного подхода"
-type: Executable
-description: "Формирует текстовое обоснование выбора — связывает архитектурное решение с конкретными требованиями и ограничениями. Это материал для раздела 'Архитектурный подход' в ТЗ."
-parent_task: BIZ_TO_TZ_900
-spawn_conditions: "После 902 или 903."
-input_requirements:
-  - artifact: "rag_architecture_choice"
-    contract: Soft
-    description: "Если RAG."
-  - artifact: "ml_architecture_choice"
-    contract: Soft
-    description: "Если ML."
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "Привязка обоснования к требованиям."
-outputs:
-  - artifact: "architecture_rationale"
-    format: "Markdown"
-    description: "Обоснование выбора на 1-2 абзаца + таблица 'требование → как удовлетворяется'."
-execution_type: LLM
-prompt_template_hint: "Формат: (1) абзац об общем подходе, (2) таблица 'FR/NFR → компонент архитектуры, удовлетворяющий требование', (3) абзац о ключевых рисках выбранного подхода."
-constraints:
-  - "Каждое must-требование должно появиться в таблице сопоставления"
-  - "Риски — минимум 2, с описанием как их митигировать"
-escalation_conditions:
-  - "Не эскалирует"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_905
+template_id: define_baseline
 name: "Определение baseline-решения"
 type: Executable
-description: "Для PoV критично определить baseline — простое решение, от которого мы отталкиваемся. Оно же служит точкой сравнения для проверки успеха. Для RAG типовой baseline — Naive RAG. Для ML — простая модель (logreg/decision tree) или эвристика."
-parent_task: BIZ_TO_TZ_900
-spawn_conditions: "После 904."
-input_requirements:
-  - artifact: "task_class"
-    contract: Hard
-    description: "Класс задачи."
-  - artifact: "acceptance_criteria"
-    contract: Hard
-    description: "Baseline должен быть сопоставим по тем же метрикам."
-  - artifact: "architecture_rationale"
-    contract: Soft
-    description: "Чтобы baseline был осмыслен относительно выбранной архитектуры."
-outputs:
-  - artifact: "baseline_definition"
-    format: "JSON {description: str, expected_limitations: [str], comparison_metrics: [str]}"
-    description: "Описание baseline + его ожидаемые ограничения + метрики, по которым сравниваем."
-execution_type: LLM
-prompt_template_hint: "Baseline должен быть проще основного решения и реализуем за 10-20% времени от всего PoV. Для RAG: Naive RAG с дефолтным embedder и без reranking. Для ML: logreg или одно решающее дерево. Зафиксируй, чего именно baseline НЕ умеет — это мотивирует ценность основного решения."
-constraints:
-  - "Baseline проще основного решения"
-  - "comparison_metrics — подмножество acceptance_criteria.measurable"
-escalation_conditions:
-  - "Невозможно предложить baseline, который измеряется по тем же критериям — эскалация: возможно, критерии приёмки переусложнены для PoV"
-outputs_aggregate:
-  - artifact: "architectural_approach"
-    format: "JSON"
-    description: "Композитный выход блока 900: task_class + architecture_choice + rationale + baseline."
+description: "Формирует описание baseline — простого решения для сравнения. Берёт типовой baseline для класса задачи из Domain Pack и адаптирует под контекст."
+input_contract:
+  - name: task_class_id
+    type: string
+    required: true
+  - name: acceptance_criteria
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "domain_pack.baseline_definitions."
+output_contract:
+  - name: baseline
+    type: object
+    schema: "{description, expected_limitations: [str], comparison_metrics: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Baseline проще основного решения"
+    - "comparison_metrics ⊆ измеримых acceptance_criteria"
+escalation_signals:
+  - no_shared_metrics: "Нет метрик, общих между baseline и основным решением"
+```
+
+### 1.9. Категория: Сборка и валидация документов
+
+```yaml
+template_id: generate_document_section
+name: "Генерация раздела документа"
+type: Executable
+description: "Пишет один раздел документа по заданной структуре и входным артефактам. Параметризуется типом раздела — одна задача заменяет шесть монолитных из v1."
+input_contract:
+  - name: section_spec
+    type: object
+    required: true
+    description: "Спецификация раздела: тип, обязательная структура, ограничения по длине."
+  - name: input_artifacts
+    type: array
+    required: true
+    description: "Артефакты, из которых собирается раздел."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Может предоставлять шаблоны формулировок для поддомена."
+output_contract:
+  - name: section_content
+    type: string
+    format: markdown
+execution:
+  kind: LLM
+  constraints:
+    - "Опираться только на input_artifacts — не выдумывать факты"
+    - "Заголовок раздела задаётся section_spec"
+    - "Длина в пределах, заданных section_spec"
+    - "Каждое фактическое утверждение — трассировка к конкретному input_artifact"
+escalation_signals:
+  - empty_mandatory_inputs: "Hard-зависимость пуста (предыдущий блок не выполнил свою задачу)"
+```
+
+```yaml
+template_id: assemble_document
+name: "Механическая сборка документа"
+type: Executable
+description: "Соединяет секции в единый документ, генерирует оглавление, проставляет сквозную нумерацию."
+input_contract:
+  - name: sections
+    type: array
+    required: true
+  - name: document_metadata
+    type: object
+    required: true
+    description: "Название, версия, статус, автор."
+output_contract:
+  - name: document
+    type: string
+    format: markdown
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — чисто механическая сборка"
+escalation_signals:
+  - section_missing: "Одна из обязательных секций пуста"
+```
+
+```yaml
+template_id: check_document_completeness
+name: "Проверка полноты документа по чеклисту"
+type: Executable
+description: "Формальная проверка наличия и непустоты обязательных разделов и полей."
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: completeness_checklist
+    type: Checklist
+    required: true
+output_contract:
+  - name: completeness_report
+    type: object
+    schema: "{is_complete: bool, missing_items: [{item, severity}]}"
+execution:
+  kind: Tool
+escalation_signals:
+  - critical_missing: "Отсутствует пункт с severity=critical"
+```
+
+```yaml
+template_id: check_internal_consistency
+name: "Проверка внутренней непротиворечивости документа"
+type: Executable
+description: "Ищет противоречия между разделами документа."
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: consistency_rules
+    type: ConsistencyRules
+    required: true
+    description: "Правила попарной проверки элементов документа."
+output_contract:
+  - name: consistency_report
+    type: object
+    schema: "{is_consistent: bool, contradictions: [{description, involved, severity}]}"
+execution:
+  kind: LLM
+escalation_signals:
+  - blocker_contradictions: "Найдены противоречия с severity=blocker"
+```
+
+```yaml
+template_id: check_traceability
+name: "Проверка трассируемости элементов к источнику"
+type: Executable
+description: "Для каждого ключевого элемента документа проверяет наличие обоснования в указанных источниках (исходный запрос, ответы пользователя)."
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: source_artifacts
+    type: array
+    required: true
+  - name: traceability_spec
+    type: object
+    required: true
+    description: "Какие элементы документа должны трассироваться + минимальный порог покрытия."
+output_contract:
+  - name: traceability_report
+    type: object
+    schema: "{traced: int, untraced: [{element_id, content}], coverage: float}"
+execution:
+  kind: LLM
+escalation_signals:
+  - coverage_below_threshold: "coverage < traceability_spec.min_coverage"
+```
+
+```yaml
+template_id: request_approval_via_gateway
+name: "Запрос согласования документа через Interruption Gateway"
+type: Executable
+description: "Отправляет документ на согласование пользователю, ждёт одного из трёх решений: approved / approved_with_comments / rejected."
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: cover_message
+    type: string
+    required: false
+    description: "Сопроводительное сообщение — рекомендуется подсвечивать ключевые допущения."
+  - name: timeout_hours
+    type: integer
+    required: false
+    default: 120
+output_contract:
+  - name: approval_decision
+    type: object
+    schema: "{decision: enum[approved, approved_with_comments, rejected], comments_raw, timestamp}"
+execution:
+  kind: Human
+escalation_signals:
+  - timeout_exceeded: "Превышен timeout_hours"
+  - deep_rework_requested: "decision=rejected — требуется глубокая переделка"
+```
+
+```yaml
+template_id: classify_comments
+name: "Классификация комментариев к документу"
+type: Executable
+description: "Разбирает комментарии пользователя: привязка к разделу/элементу, тип изменения, критичность, список задач, которые нужно перезапустить."
+input_contract:
+  - name: comments_raw
+    type: string
+    required: true
+  - name: document
+    type: string
+    required: true
+  - name: task_mapping
+    type: object
+    required: true
+    description: "Маппинг 'раздел/элемент документа → задачи Workflow, которые его порождают'."
+output_contract:
+  - name: classified_comments
+    type: array
+    schema: "[{comment_text, target, change_type, criticality, triggered_workflow_nodes: [str]}]"
+execution:
+  kind: LLM
+escalation_signals:
+  - comment_unlocalizable: "Комментарий не удаётся привязать к конкретному элементу"
+  - scope_change_required: "Комментарии требуют выхода за рамки текущего гейта"
+```
+
+```yaml
+template_id: finalize_artifact
+name: "Финальная фиксация артефакта"
+type: Executable
+description: "Помечает артефакт как approved, сохраняет финальную версию, пишет метаданные, отправляет событие завершения."
+input_contract:
+  - name: artifact_content
+    type: any
+    required: true
+  - name: approval_decision
+    type: object
+    required: true
+  - name: finalization_spec
+    type: object
+    required: true
+    description: "Куда сохранить, какие метаданные записать, какое событие отправить."
+output_contract:
+  - name: finalized_artifact
+    type: object
+    schema: "{content, version, approved_at, approved_by, trace_id}"
+execution:
+  kind: Tool
+escalation_signals:
+  - storage_failure: "Техническая ошибка при сохранении"
 ```
 
 ---
 
-### 2.10. Блок A00 — Сборка документа ТЗ
+## Часть 2. Спецификация Domain Pack
+
+### 2.1. Схема Domain Pack
 
 ```yaml
-task_id: BIZ_TO_TZ_A00
-name: "Сборка документа ТЗ"
-type: Composite
-description: "Контейнер для посекционного написания ТЗ и последующей компиляции. Каждая секция пишется отдельным LLM-вызовом, что изолирует ошибки и упрощает ревью."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После 900."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-    description: "Потребность."
-  - artifact: "data_specification"
-    contract: Hard
-    description: "Данные."
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "Требования."
-  - artifact: "architectural_approach"
-    contract: Hard
-    description: "Архитектура."
-outputs:
-  - artifact: "draft_specification_document"
-    format: "Markdown"
-    description: "Черновик ТЗ — единый документ."
-possible_children:
-  - task_id: BIZ_TO_TZ_A01
-    condition: "Всегда (параллельно с A02-A06)"
-  - task_id: BIZ_TO_TZ_A02
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_A03
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_A04
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_A05
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_A06
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_A07
-    condition: "После A01-A06"
+# Метаданные
+domain_pack_id: str          # уникальный идентификатор (например, 'rag_v1')
+name: str                    # человекочитаемое название
+version: str                 # SemVer
+description: str
+status: enum[active, deprecated, experimental]
+parent_pack: str | null      # для наследования от другого пака
+
+# ==================== Классификация поддомена ====================
+classification:
+  # Используется template_id=classify_against_registry при выборе активного Domain Pack
+  positive_signals: [str]    # фразы/признаки, характеризующие поддомен
+  negative_signals: [str]    # признаки, исключающие поддомен
+  typical_goals: [str]       # примеры типовых формулировок целей (для few-shot)
+  confidence_threshold: float
+
+# ==================== Границы применимости ====================
+applicability:
+  # Ранняя feasibility check
+  supported_task_classes: [str]   # классы задач, которые Domain Pack поддерживает
+  out_of_scope_patterns: [str]    # типовые out-of-scope сценарии (дополняют глобальный каталог нерешаемости)
+
+# ==================== Извлечение упоминаний ====================
+extraction_hints:
+  # Потребляется template_id=extract_typed_mentions
+  # Ключ — mention_type, значение — подсказки для LLM
+  data:
+    typical_types: [str]     # для RAG: [document_corpus, wiki, email_archive, codebase]
+    domain_examples: [str]   # конкретные примеры из типовых проектов поддомена
+    attribute_schema: {...}  # какие атрибуты пытаться извлечь (format, volume, ...)
+  metrics:
+    typical_metrics: [str]
+    domain_specific_categories: [str]
+  constraints:
+    typical_constraints: [str]
+  acceptance:
+    typical_criteria: [str]
+  integrations:
+    typical_systems: [str]
+
+# ==================== Обязательные стейкхолдеры ====================
+mandatory_stakeholders: [str]  # потребляется identify_stakeholders
+
+# ==================== Чеклист полноты ====================
+completeness_checklist:
+  # Потребляется compare_against_checklist и prioritize_items
+  - field: str
+    category: enum[data, requirements, integrations, stakeholders, other]
+    priority: enum[blocking, important, nice_to_have]
+    question_hint: str        # как переформулировать пробел в вопрос
+    verification_rule: str    # правило, как проверить присутствие в извлечённых декларациях
+
+# ==================== Шаблоны вопросов ====================
+clarification_templates:
+  # Потребляется generate_clarification_questions
+  # Ключ — категория атрибутов, значение — шаблоны вопросов
+  format_volume: [{question_template, expected_format, applicable_when}]
+  quality_labeling: [...]
+  legal_access: [...]
+  # ... другие категории, специфичные для поддомена
+
+question_library:
+  # Потребляется generate_batched_questionnaire и generate_point_question
+  # Библиотека типовых формулировок для переиспользования
+  - topic: str
+    question_variants: [str]
+    response_schema: JSONSchema
+
+# ==================== Эвристики достаточности данных ====================
+sufficiency_heuristics:
+  # Потребляется evaluate_sufficiency_by_heuristics
+  - for_task_class: str
+    rules: [{metric, threshold, risk_if_below}]
+    min_recommended: object
+
+# ==================== Политика синтетики ====================
+synthetic_data_policy:
+  # Потребляется decide_synthetic_fallback
+  allowed_for: [str]       # например, для RAG: ['user_queries'], не 'corpus'
+  never_for: [str]
+  default_limitations: [str]
+
+# ==================== Таксономия классов задач ====================
+task_class_taxonomy:
+  # Потребляется classify_within_taxonomy
+  - class_id: str
+    class_name: str
+    signals: [str]
+    typical_inputs: [str]
+    typical_outputs: [str]
+
+# ==================== Архитектурные паттерны ====================
+architecture_patterns:
+  # Потребляется select_pattern_from_catalog
+  - pattern_id: str
+    name: str
+    description: str
+    applicable_to: [task_class_id]
+    applicability_rules: [{condition, requirement}]
+    components: {...}
+    complexity_level: enum[low, medium, high]
+    default_for_mvp: bool
+
+# ==================== Шаблоны требований ====================
+requirements_templates:
+  # Потребляется generate_requirements_from_templates
+  functional:
+    - id_suffix: str
+      statement_template: str
+      default_priority: enum[must, should, could]
+      applicable_to_task_classes: [str] | "all"
+      conditional_on: str | null    # условие включения
+  non_functional:
+    - id_suffix: str
+      category: enum[performance, reliability, maintainability, usability, security]
+      statement_template: str
+      default_target: str
+      default_priority: enum[must, should, could]
+
+# ==================== Baseline-решения ====================
+baseline_definitions:
+  # Потребляется define_baseline
+  - for_task_class: str
+    description_template: str
+    typical_limitations: [str]
+    typical_metrics: [str]
 ```
 
-Шаблоны A01-A06 следуют одной схеме: каждая задача — Executable, пишет один раздел ТЗ. Чтобы не дублировать YAML 6 раз, ниже приведён общий паттерн и отличия для каждого раздела.
-
-**Общий паттерн (A01-A06):**
+### 2.2. Domain Pack: RAG (фрагмент для иллюстрации)
 
 ```yaml
-task_id: BIZ_TO_TZ_A0X
-type: Executable
-parent_task: BIZ_TO_TZ_A00
-spawn_conditions: "Параллельно с остальными секциями."
-execution_type: LLM
-constraints:
-  - "Писать ТОЛЬКО указанный раздел — не затрагивать смежные"
-  - "Опираться только на артефакты из input_requirements — не изобретать факты"
-  - "Каждое утверждение, которое можно трассировать к конкретному требованию/ответу — обязательно с явной ссылкой (FR-XXX, QA-XXX)"
-  - "Формат Markdown с заголовком 2 уровня"
-  - "Ограничение длины — 500-1500 слов на раздел"
-escalation_conditions:
-  - "Hard-зависимость отсутствует или пустая (например, раздел 'Данные', а data_specification.data_sources_inventory пуст) — эскалация с диагностикой (как такое допустили предыдущие блоки)"
+domain_pack_id: rag_v1
+name: "RAG-системы"
+version: "1.0.0"
+status: active
+
+classification:
+  positive_signals:
+    - "поиск по документам"
+    - "ответы на вопросы по корпусу"
+    - "извлечение информации из базы знаний"
+    - "чат с документами"
+    - "knowledge base Q&A"
+  negative_signals:
+    - "предсказание числового значения"
+    - "классификация на фиксированное число классов"
+    - "регрессия"
+  typical_goals:
+    - "Давать ответы сотрудникам по внутренней документации"
+    - "Находить релевантные фрагменты в корпусе документов"
+  confidence_threshold: 0.7
+
+applicability:
+  supported_task_classes: [chat_with_docs, faq_qa, structured_extraction, summarization_over_corpus]
+  out_of_scope_patterns:
+    - id: realtime_streaming_rag
+      description: "RAG с требованием latency < 100ms"
+      severity: warning
+
+extraction_hints:
+  data:
+    typical_types: [document_corpus, wiki, confluence, sharepoint, email_archive, codebase]
+    domain_examples:
+      - "документация в Confluence"
+      - "база вопросов-ответов"
+      - "корпус PDF-документов"
+    attribute_schema:
+      format: enum[pdf, docx, html, txt, markdown, mixed]
+      volume: {count, total_size_bytes}
+      language: [str]
+      update_frequency: enum[static, periodic, continuous]
+  metrics:
+    typical_metrics:
+      - retrieval_precision
+      - answer_faithfulness
+      - citation_coverage
+      - response_latency_p95
+  integrations:
+    typical_systems: [confluence, sharepoint, github, jira, ldap_sso]
+
+mandatory_stakeholders: [asker, corpus_owner]
+
+completeness_checklist:
+  - field: corpus_description
+    category: data
+    priority: blocking
+    question_hint: "Какой корпус документов используется? Объём, формат, язык?"
+    verification_rule: "mentions.data содержит хотя бы один объект с type=document_corpus"
+  - field: query_types
+    category: requirements
+    priority: blocking
+    question_hint: "Какие вопросы задают пользователи? 3-5 типовых примеров"
+  - field: response_quality_bar
+    category: requirements
+    priority: important
+    question_hint: "Какое качество ответов считается приемлемым?"
+  - field: answer_format
+    category: requirements
+    priority: important
+    question_hint: "В каком формате ожидается ответ: короткий/развёрнутый, с цитатами/без?"
+  - field: corpus_update_policy
+    category: data
+    priority: nice_to_have
+
+clarification_templates:
+  format_volume:
+    - question_template: "В каком формате хранятся документы? (PDF, DOCX, HTML, txt)"
+      expected_format: "enum"
+    - question_template: "Сколько документов в корпусе и каков средний размер?"
+      expected_format: "numeric + units"
+  quality_labeling:
+    - question_template: "Есть ли у документов метаданные (дата, автор, тип)?"
+    - question_template: "Какая доля документов устарела? Есть ли дубликаты?"
+  legal_access:
+    - question_template: "Содержат ли документы ПД или конфиденциальные сведения?"
+    - question_template: "Как технически получить доступ: API, выгрузка, дамп?"
+
+sufficiency_heuristics:
+  - for_task_class: chat_with_docs
+    rules:
+      - metric: corpus_document_count
+        threshold: 50
+        risk_if_below: high
+      - metric: avg_document_length
+        threshold: 200
+        risk_if_below: medium
+    min_recommended: {count: 200, languages_coverage: "все целевые языки"}
+
+synthetic_data_policy:
+  allowed_for: [user_queries, evaluation_questions]
+  never_for: [corpus_documents]
+  default_limitations:
+    - "Синтетические запросы не отражают распределение реальных вопросов пользователей"
+    - "Метрики на синтетических запросах — ориентир, не финальная оценка"
+
+task_class_taxonomy:
+  - class_id: chat_with_docs
+    class_name: "Диалог по корпусу документов"
+    signals: ["многоходовой диалог", "учёт контекста беседы"]
+    typical_inputs: ["сообщение пользователя", "история диалога"]
+    typical_outputs: ["ответ", "ссылки на источники"]
+  - class_id: faq_qa
+    class_name: "Ответы на вопросы из FAQ"
+    signals: ["одноходовой Q&A", "ограниченный набор тем"]
+  - class_id: structured_extraction
+    class_name: "Извлечение структурированных полей"
+    signals: ["заполнение формы", "извлечение сущностей"]
+  - class_id: summarization_over_corpus
+    class_name: "Суммаризация по корпусу"
+    signals: ["обобщение", "краткое содержание"]
+
+architecture_patterns:
+  - pattern_id: naive_rag
+    name: "Naive RAG"
+    description: "Базовый RAG: embedder → vector store → retriever → generator"
+    applicable_to: [faq_qa, chat_with_docs]
+    applicability_rules:
+      - condition: "corpus_document_count < 1000"
+        requirement: "quality_bar != critical"
+    components: {embedder, vector_store, retriever, generator}
+    complexity_level: low
+    default_for_mvp: true
+  - pattern_id: advanced_rag_with_reranking
+    name: "Advanced RAG + reranking"
+    applicable_to: [chat_with_docs, faq_qa]
+    applicability_rules:
+      - condition: "quality_bar == high OR corpus_document_count >= 1000"
+    components: {embedder, vector_store, retriever, reranker, generator}
+    complexity_level: medium
+  - pattern_id: hierarchical_rag
+    applicable_to: [summarization_over_corpus, chat_with_docs]
+    applicability_rules:
+      - condition: "corpus_document_count >= 10000 OR mixed_document_types"
+  - pattern_id: agentic_rag
+    applicable_to: [chat_with_docs]
+    applicability_rules:
+      - condition: "requires_multi_step_reasoning"
+
+requirements_templates:
+  functional:
+    - id_suffix: "001"
+      statement_template: "Система должна принимать запрос пользователя в текстовом формате"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "002"
+      statement_template: "Система должна выполнять поиск релевантных фрагментов в корпусе"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "003"
+      statement_template: "Система должна формировать ответ на основе найденных фрагментов"
+      default_priority: must
+    - id_suffix: "004"
+      statement_template: "Система должна возвращать ссылки на использованные источники"
+      default_priority: must
+    - id_suffix: "005"
+      statement_template: "Система должна поддерживать контекст диалога"
+      default_priority: must
+      applicable_to_task_classes: [chat_with_docs]
+  non_functional:
+    - id_suffix: "001"
+      category: reliability
+      statement_template: "Ответы должны быть faithful к найденным источникам (без галлюцинаций)"
+      default_priority: must
+    - id_suffix: "002"
+      category: maintainability
+      statement_template: "Все LLM-вызовы логируются для анализа и воспроизведения"
+      default_priority: must
+
+baseline_definitions:
+  - for_task_class: chat_with_docs
+    description_template: "Naive RAG с дефолтным embedder и без reranking"
+    typical_limitations:
+      - "Низкая точность на многоходовых диалогах"
+      - "Отсутствие обработки устаревших документов"
+    typical_metrics: [retrieval_precision, answer_faithfulness]
+  - for_task_class: faq_qa
+    description_template: "Naive RAG + поиск по чанкам фиксированного размера"
 ```
 
-**Специфика по разделам:**
+### 2.3. Domain Pack: Simple ML (сжатый фрагмент)
 
 ```yaml
-# A01 — Контекст и потребность
-name: "Раздел: Контекст и потребность"
-description: "Пишет вводный раздел: кто заказчик, какую проблему решаем, зачем, какой baseline существует сейчас."
-input_requirements:
-  - artifact: "need_model"
-    contract: Hard
-  - artifact: "normalized_request"
-    contract: Hard
-outputs:
-  - artifact: "section_context"
-    format: "Markdown"
-    description: "Раздел '1. Контекст и потребность'."
-prompt_template_hint: "Структура: (1) Контекст заказчика, (2) Проблема, (3) Зачем решать (первопричина), (4) Текущий baseline-процесс, (5) Стейкхолдеры."
-```
+domain_pack_id: simple_ml_v1
+name: "Простые ML-модели"
+version: "1.0.0"
+status: active
 
-```yaml
-# A02 — Данные
-name: "Раздел: Данные"
-description: "Описывает источники данных, их характеристики, достаточность, решение о синтетике."
-input_requirements:
-  - artifact: "data_specification"
-    contract: Hard
-outputs:
-  - artifact: "section_data"
-    format: "Markdown"
-    description: "Раздел '2. Данные'."
-prompt_template_hint: "Для каждого источника — таблица: имя, тип, объём, формат, качество, доступ. Отдельно — блок 'Допущения по данным' (включая synthetic_data_decision, если принят)."
-```
+classification:
+  positive_signals:
+    - "предсказание значения"
+    - "классификация на классы"
+    - "регрессия"
+    - "обнаружение аномалий"
+    - "целевая переменная"
+  negative_signals:
+    - "поиск в документах"
+    - "генерация текста на основе корпуса"
 
-```yaml
-# A03 — Функциональные и нефункциональные требования
-name: "Раздел: Требования"
-description: "ФТ + НФТ + ограничения, сведённые в читабельные таблицы."
-input_requirements:
-  - artifact: "formalized_requirements"
-    contract: Hard
-outputs:
-  - artifact: "section_requirements"
-    format: "Markdown"
-    description: "Раздел '3. Требования' с подразделами ФТ, НФТ, Ограничения."
-prompt_template_hint: "Три таблицы: ФТ (ID, формулировка, приоритет, трассировка), НФТ (ID, категория, формулировка, целевое значение, приоритет), Ограничения (ID, тип, формулировка, жёсткость, источник)."
-```
+applicability:
+  supported_task_classes: [binary_classification, multiclass_classification, regression, anomaly_detection]
 
-```yaml
-# A04 — Архитектурный подход
-name: "Раздел: Архитектурный подход"
-description: "Описание выбранного шаблона + обоснование + baseline."
-input_requirements:
-  - artifact: "architectural_approach"
-    contract: Hard
-outputs:
-  - artifact: "section_architecture"
-    format: "Markdown"
-    description: "Раздел '4. Архитектурный подход'."
-prompt_template_hint: "Структура: (1) Выбранный подход, (2) Ключевые компоненты, (3) Обоснование выбора с таблицей 'требование → компонент', (4) Baseline, (5) Риски."
-```
+extraction_hints:
+  data:
+    typical_types: [tabular_db, labeled_dataset, log_stream, event_stream]
+    attribute_schema:
+      schema: object
+      rows_count: integer
+      target_variable: string | null
+      labeled: bool
+      class_balance: object | null
 
-```yaml
-# A05 — Критерии приёмки
-name: "Раздел: Критерии приёмки"
-description: "Таблица критериев с методами проверки."
-input_requirements:
-  - artifact: "formalized_requirements"
-    contract: Hard
-    description: "acceptance_criteria из formalized_requirements."
-outputs:
-  - artifact: "section_acceptance"
-    format: "Markdown"
-    description: "Раздел '5. Критерии приёмки'."
-prompt_template_hint: "Таблица: ID, критерий, метрика/значение, метод проверки, связанные требования. Плюс краткий абзац о демо-сценарии приёмки."
-```
+mandatory_stakeholders: [data_owner, consumer_of_predictions]
 
-```yaml
-# A06 — Ограничения и допущения
-name: "Раздел: Ограничения и допущения"
-description: "Явные допущения, сделанные при составлении ТЗ, и границы scope."
-input_requirements:
-  - artifact: "formalized_requirements"
-    contract: Hard
-  - artifact: "data_specification"
-    contract: Hard
-  - artifact: "feasibility_verdict"
-    contract: Soft
-    description: "Caveats из feasibility, если были."
-outputs:
-  - artifact: "section_assumptions"
-    format: "Markdown"
-    description: "Раздел '6. Ограничения и допущения'."
-prompt_template_hint: "Раздел фиксирует: (1) что вне scope PoV (для чего оставляем на следующий этап), (2) ключевые допущения, на которых держится решение, (3) caveats из feasibility, (4) риски, не перенесённые в архитектурный раздел."
-```
+completeness_checklist:
+  - field: target_variable
+    priority: blocking
+    question_hint: "Что именно должна предсказывать модель?"
+  - field: labeled_data_availability
+    priority: blocking
+    question_hint: "Есть ли размеченные данные? Сколько? Кто размечал?"
+  - field: prediction_consumption
+    priority: blocking
+    question_hint: "Как результат предсказания будет использоваться?"
 
-```yaml
-task_id: BIZ_TO_TZ_A07
-name: "Сборка финального документа"
-type: Executable
-description: "Соединяет разделы, добавляет титульный блок, оглавление, сквозную нумерацию, ссылки между разделами. Готовит черновик ТЗ к валидации."
-parent_task: BIZ_TO_TZ_A00
-spawn_conditions: "После A01-A06."
-input_requirements:
-  - artifact: "section_context"
-    contract: Hard
-    description: "Раздел 1."
-  - artifact: "section_data"
-    contract: Hard
-    description: "Раздел 2."
-  - artifact: "section_requirements"
-    contract: Hard
-    description: "Раздел 3."
-  - artifact: "section_architecture"
-    contract: Hard
-    description: "Раздел 4."
-  - artifact: "section_acceptance"
-    contract: Hard
-    description: "Раздел 5."
-  - artifact: "section_assumptions"
-    contract: Hard
-    description: "Раздел 6."
-outputs:
-  - artifact: "draft_specification_document"
-    format: "Markdown"
-    description: "Единый черновик ТЗ с оглавлением."
-execution_type: Tool
-prompt_template_hint: "Детерминированный скрипт: объединить Markdown-секции в указанном порядке, сгенерировать оглавление по заголовкам, добавить титульный блок (название проекта, дата, версия, статус: Draft)."
-constraints:
-  - "Без LLM-вызова — чисто механическая сборка"
-  - "Версия — автоматически v0.1 для первого прогона, инкрементируется при повторной сборке после комментариев заказчика"
-escalation_conditions:
-  - "Любая секция отсутствует или пуста — эскалация с диагностикой, какая именно задача A0X провалилась"
+sufficiency_heuristics:
+  - for_task_class: binary_classification
+    rules:
+      - metric: min_rows_per_class
+        threshold: 500
+        risk_if_below: high
+  - for_task_class: multiclass_classification
+    rules:
+      - metric: min_rows_per_class
+        threshold: 200
+        risk_if_below: medium
+  - for_task_class: regression
+    rules:
+      - metric: total_rows
+        threshold: 1000
+        risk_if_below: medium
+
+synthetic_data_policy:
+  allowed_for: [tabular_features]
+  default_limitations:
+    - "Синтетика не отражает реальные распределения признаков"
+
+task_class_taxonomy:
+  - class_id: binary_classification
+  - class_id: multiclass_classification
+  - class_id: regression
+  - class_id: anomaly_detection
+
+architecture_patterns:
+  - pattern_id: linear_baseline
+    name: "Linear/Logistic Regression"
+    applicable_to: [binary_classification, regression]
+    complexity_level: low
+    default_for_mvp: true
+  - pattern_id: tree_based
+    name: "Decision Tree / Random Forest"
+    applicable_to: [binary_classification, multiclass_classification, regression]
+    complexity_level: low
+  - pattern_id: gradient_boosting
+    applicable_to: [binary_classification, multiclass_classification, regression]
+    applicability_rules:
+      - condition: "total_rows >= 5000"
+    complexity_level: medium
+  - pattern_id: neural_network
+    applicability_rules:
+      - condition: "total_rows >= 100000"
+    complexity_level: high
+
+requirements_templates:
+  functional:
+    - id_suffix: "001"
+      statement_template: "Система должна принимать вектор признаков указанной схемы"
+      default_priority: must
+    - id_suffix: "002"
+      statement_template: "Система должна валидировать входные данные на соответствие схеме"
+      default_priority: must
+    - id_suffix: "003"
+      statement_template: "Система должна возвращать предсказание указанного типа"
+      default_priority: must
+    - id_suffix: "004"
+      statement_template: "Система должна возвращать уверенность предсказания"
+      default_priority: should
+
+baseline_definitions:
+  - for_task_class: binary_classification
+    description_template: "Logistic regression на сырых признаках"
+    typical_metrics: [accuracy, f1, roc_auc]
+  - for_task_class: regression
+    description_template: "Linear regression на сырых признаках"
+    typical_metrics: [mae, rmse, r2]
 ```
 
 ---
 
-### 2.11. Блок B00 — Валидация и согласование ТЗ
+## Часть 3. Workflow Template: «Преобразование бизнес-запроса в ТЗ»
+
+### 3.1. Метаданные и конфигурация
 
 ```yaml
-task_id: BIZ_TO_TZ_B00
-name: "Валидация и согласование ТЗ"
-type: Composite
-description: "Финальная проверка черновика (внутренняя + внешнее согласование с заказчиком) и фиксация утверждённой версии."
-parent_task: BIZ_TO_TZ_000
-spawn_conditions: "После A00."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик ТЗ."
+workflow_id: biz_to_tz_v1
+name: "Преобразование бизнес-запроса в ТЗ"
+version: "1.0.0"
+stage_gate: 1
+description: "Вход: сырой бизнес-запрос. Выход: согласованное ТЗ. Работает с любым зарегистрированным Domain Pack."
+
+applicable_domain_packs:
+  # Движок принимает любой активный Domain Pack, но Workflow гарантированно протестирован с:
+  - rag_v1
+  - simple_ml_v1
+
+inputs:
+  - name: raw_business_request
+    type: text
+    required: true
+
 outputs:
-  - artifact: "approved_technical_specification"
-    format: "Markdown + JSON-метаданные"
-    description: "Согласованное ТЗ — выход гейта."
-possible_children:
-  - task_id: BIZ_TO_TZ_B01
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_B02
-    condition: "Всегда (параллельно с B01)"
-  - task_id: BIZ_TO_TZ_B03
-    condition: "Всегда"
-  - task_id: BIZ_TO_TZ_B04
-    condition: "После B01, B02, B03 с успехом"
-  - task_id: BIZ_TO_TZ_B05
-    condition: "После B04, если получены комментарии"
-  - task_id: BIZ_TO_TZ_B06
-    condition: "После B05 (или сразу после B04, если комментариев нет)"
+  - name: approved_technical_specification
+    type: document
+
+context:
+  # Глобальные переменные Workflow, заполняются в процессе
+  - name: active_domain_pack
+    type: DomainPack
+    set_by: $nodes.select_domain_pack
+  - name: active_task_class
+    type: string
+    set_by: $nodes.classify_task
 ```
 
-```yaml
-task_id: BIZ_TO_TZ_B01
-name: "Проверка полноты по чеклисту ТЗ"
-type: Executable
-description: "Формальная проверка: все ли обязательные разделы ТЗ присутствуют и непустые? все ли must-требования имеют критерии приёмки? все ли источники данных описаны?"
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "Первой в блоке B00."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик ТЗ."
-  - artifact: "tz_completeness_checklist"
-    contract: Hard
-    description: "Чеклист обязательных разделов и полей ТЗ из Template Registry."
-outputs:
-  - artifact: "completeness_report"
-    format: "JSON {is_complete: bool, missing_items: [{item, severity}]}"
-    description: "Отчёт о полноте."
-execution_type: Tool
-prompt_template_hint: "Детерминированная проверка: пройтись по чеклисту, для каждого пункта проверить наличие и непустоту в draft_specification_document."
-constraints:
-  - "Без LLM — чисто формальная сверка"
-escalation_conditions:
-  - "is_complete=false с severity=critical — задача завершается Failed, порождается перепланирование соответствующего блока (например, при отсутствии критериев приёмки → re-spawn 804, предыдущие артефакты маркируются Obsolete)"
-```
+### 3.2. Фазы и узлы
+
+Workflow структурирован как последовательность фаз. Внутри фазы узлы могут идти параллельно.
 
 ```yaml
-task_id: BIZ_TO_TZ_B02
-name: "Проверка внутренней непротиворечивости"
-type: Executable
-description: "Ищет противоречия ВНУТРИ документа: ФТ противоречит ограничению, критерий приёмки не соответствует НФТ, выбранный архитектурный подход не поддерживает заявленные требования."
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "Параллельно с B01, B03."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик ТЗ."
-outputs:
-  - artifact: "consistency_report"
-    format: "JSON {is_consistent: bool, contradictions: [{description, involved_items, severity}]}"
-    description: "Отчёт о противоречиях."
-execution_type: LLM
-prompt_template_hint: "Проверь: (1) каждое must-ФТ покрыто критерием приёмки? (2) выбранная архитектура способна удовлетворить НФТ? (3) ограничения не противоречат ФТ? (4) данные достаточны для архитектуры? severity: blocker / warning."
-constraints:
-  - "Каждое противоречие описано с упоминанием конкретных ID (FR-XXX, NFR-XXX, CON-XXX)"
-  - "Если блок 805 уже обнаружил конфликты — перепроверить, что они явно адресованы в документе"
-escalation_conditions:
-  - "Обнаружены противоречия severity=blocker — задача Failed, перепланирование (обычно перезапуск 805 и/или 900 с пометкой предыдущих артефактов Obsolete)"
+phases:
+
+  # ==================== Фаза A: Приём и нормализация ====================
+  - phase_id: intake
+    description: "Приём запроса, проверка полноты, выбор Domain Pack"
+    nodes:
+
+      - node_id: parse_request
+        template: parse_free_text_to_structured
+        inputs:
+          source_text: $inputs.raw_business_request
+          schema: $config.request_schema
+        on_escalation:
+          - signal: parsing_failed
+            action: abort_workflow
+            reason: "Входной запрос не является осмысленным текстом"
+
+      - node_id: check_request_minimum
+        template: check_minimum_completeness
+        inputs:
+          parsed_input: $nodes.parse_request.outputs.parsed_object
+          checklist: $config.minimum_request_checklist
+        on_escalation:
+          - signal: incomplete
+            action: request_completion_from_client
+            params:
+              purpose: "raw_request_incomplete"
+              timeout_hours: 72
+            on_return: restart_phase
+
+      - node_id: select_domain_pack
+        template: classify_against_registry
+        inputs:
+          object_to_classify: $nodes.parse_request.outputs.parsed_object
+          registry: $config.domain_pack_registry
+        outputs_binding:
+          category_id: $context.active_domain_pack
+        on_escalation:
+          - signal: unsupported_category
+            action: abort_with_escalation
+            reason: "Запрос не попадает в поддерживаемые Domain Pack"
+          - signal: low_confidence
+            action: escalate_to_human
+            reason: "Неуверенная классификация поддомена — требуется ручной выбор"
+
+  # ==================== Фаза B: Ранний feasibility check ====================
+  - phase_id: feasibility
+    description: "Проверка выполнимости до погружения в детали"
+    depends_on: [intake]
+    nodes:
+
+      - node_id: check_support
+        template: check_registry_membership
+        inputs:
+          item: $context.active_domain_pack
+          registry: $config.supported_domains_registry
+          filter: {status: active}
+
+      - node_id: detect_unfeasibility
+        template: detect_patterns_from_catalog
+        inputs:
+          source_text: $inputs.raw_business_request
+          pattern_catalog: $config.unfeasibility_patterns_catalog
+        parallel_with: [check_support]
+        on_escalation:
+          - signal: blocker_detected
+            action: abort_with_escalation
+            reason: "Обнаружен блокирующий паттерн нерешаемости"
+
+      - node_id: feasibility_verdict
+        template: synthesize_verdict
+        inputs:
+          signals:
+            - $nodes.check_support.outputs.membership_result
+            - $nodes.detect_unfeasibility.outputs.detected_patterns
+          decision_rules: $config.feasibility_rules
+        on_verdict:
+          - when: $outputs.verdict.decision == "ABORT"
+            action: abort_with_escalation
+          - when: $outputs.verdict.decision == "PROCEED_WITH_CONFIRMATION"
+            action: notify_client_caveats
+            blocking: false
+
+  # ==================== Фаза C: Понимание потребности (Why-анализ) ====================
+  - phase_id: need_analysis
+    description: "Формирование модели потребности"
+    depends_on: [feasibility]
+    parallel_with: [declarative_extraction]
+    nodes:
+
+      - node_id: extract_goal
+        template: extract_declared_goal
+        inputs:
+          source_text: $inputs.raw_business_request
+          domain_pack: $context.active_domain_pack
+        on_escalation:
+          - signal: no_goal_found
+            action: rollback_to_phase
+            target_phase: intake
+            reason: "Проверка полноты пропустила неполный запрос"
+
+      - node_id: root_cause_hypotheses
+        template: generate_hypotheses
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          hypothesis_topic: root_cause
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+
+      - node_id: baseline_hypotheses
+        template: generate_hypotheses
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          hypothesis_topic: baseline_process
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+        parallel_with: [root_cause_hypotheses]
+
+      - node_id: stakeholders
+        template: identify_stakeholders
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+        parallel_with: [root_cause_hypotheses, baseline_hypotheses]
+
+      - node_id: consolidate_need
+        template: consolidate_analysis
+        inputs:
+          artifacts_to_consolidate:
+            - $nodes.extract_goal.outputs
+            - $nodes.root_cause_hypotheses.outputs
+            - $nodes.baseline_hypotheses.outputs
+            - $nodes.stakeholders.outputs
+          consolidation_schema: $config.need_model_schema
+        depends_on: [root_cause_hypotheses, baseline_hypotheses, stakeholders]
+
+  # ==================== Фаза D: Извлечение деклараций ====================
+  - phase_id: declarative_extraction
+    description: "Параллельное извлечение пяти типов упоминаний"
+    depends_on: [feasibility]
+    parallel_with: [need_analysis]
+    nodes:
+      # Одна задача, пять вызовов с разными параметрами
+      - node_id: extract_data
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "data"
+          domain_pack: $context.active_domain_pack
+
+      - node_id: extract_metrics
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "metrics"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_constraints
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "constraints"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_acceptance
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "acceptance"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_integrations
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "integrations"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+  # ==================== Фаза E: Gap-анализ ====================
+  - phase_id: gap_analysis
+    depends_on: [need_analysis, declarative_extraction]
+    nodes:
+
+      - node_id: compare_to_checklist
+        template: compare_against_checklist
+        inputs:
+          items:
+            data: $nodes.extract_data.outputs
+            metrics: $nodes.extract_metrics.outputs
+            constraints: $nodes.extract_constraints.outputs
+            acceptance: $nodes.extract_acceptance.outputs
+            integrations: $nodes.extract_integrations.outputs
+          checklist: $context.active_domain_pack.completeness_checklist
+          additional_inputs: [$nodes.consolidate_need.outputs.open_questions]
+
+      - node_id: prioritize_gaps
+        template: prioritize_items
+        inputs:
+          items: $nodes.compare_to_checklist.outputs.gap_report
+          priority_rules: $config.gap_priority_rules
+          context: {domain_pack: $context.active_domain_pack}
+        depends_on: [compare_to_checklist]
+
+      - node_id: structure_gaps
+        template: group_and_structure_items
+        inputs:
+          items: $nodes.prioritize_gaps.outputs
+          grouping_schema: $config.gap_grouping_schema
+        depends_on: [prioritize_gaps]
+
+  # ==================== Фаза F: Сбор уточнений ====================
+  - phase_id: clarification
+    depends_on: [gap_analysis]
+    skip_when: $nodes.structure_gaps.outputs.total == 0
+    iteration:
+      max_iterations: 2
+      on_max_exceeded: escalate_to_human
+    nodes:
+
+      - node_id: decide_strategy
+        template: synthesize_verdict
+        inputs:
+          signals: [$nodes.structure_gaps.outputs.priority_counts]
+          decision_rules: $config.clarification_strategy_rules
+        # Правило: если blocking + important >= 3 → batch, иначе pointwise
+
+      - node_id: build_questionnaire
+        template: generate_batched_questionnaire
+        inputs:
+          question_specs: $nodes.structure_gaps.outputs.gaps_as_questions
+          domain_pack: $context.active_domain_pack
+        when: $nodes.decide_strategy.outputs.decision == "batch"
+
+      - node_id: build_point_questions
+        template: generate_point_question
+        inputs:
+          question_spec: $item
+          domain_pack: $context.active_domain_pack
+        when: $nodes.decide_strategy.outputs.decision == "pointwise"
+        foreach: $nodes.structure_gaps.outputs.gaps_flat
+
+      - node_id: request_clarifications
+        template: request_user_input_via_gateway
+        inputs:
+          request_payload: >
+            $nodes.build_questionnaire.outputs OR $nodes.build_point_questions.outputs
+          purpose: "clarify_request_gaps"
+        on_escalation:
+          - signal: timeout_exceeded
+            action: escalate_to_project_manager
+          - signal: cannot_answer
+            action: mark_gap_as_unresolvable
+            on_blocking_gap: escalate_to_human
+
+      - node_id: parse_clarifications
+        template: parse_user_response
+        inputs:
+          response_raw: $nodes.request_clarifications.outputs
+          response_schema: $nodes.build_questionnaire.outputs.response_schema
+          original_request: $nodes.build_questionnaire.outputs OR $nodes.build_point_questions.outputs
+        depends_on: [request_clarifications]
+
+      - node_id: validate_clarifications
+        template: validate_response
+        inputs:
+          parsed_response: $nodes.parse_clarifications.outputs
+          original_questions: $nodes.build_questionnaire.outputs.questions
+          prior_knowledge:
+            declarations: [all extract_* outputs]
+            need_model: $nodes.consolidate_need.outputs
+        on_escalation:
+          - signal: contradictions_detected
+            action: iterate_phase
+            iteration_limit: 2
+          - signal: critical_unanswered
+            action: escalate_to_project_manager
+
+  # ==================== Фаза G: Работа с данными ====================
+  - phase_id: data_processing
+    depends_on: [clarification]
+    nodes:
+
+      - node_id: inventory_data_sources
+        template: inventory_items_from_mentions
+        inputs:
+          mentions: $nodes.extract_data.outputs
+          additional_info: $nodes.validate_clarifications.outputs.valid_answers
+          object_type_schema: $config.data_source_schema
+          domain_pack: $context.active_domain_pack
+
+      - node_id: clarify_data_attributes
+        template: generate_clarification_questions
+        foreach:
+          source: $nodes.inventory_data_sources.outputs
+          where: $source.unknown_attributes is not empty
+        foreach_attribute_category: [format_volume, quality_labeling, legal_access]
+        inputs:
+          target_object: $source
+          attribute_category: $attribute_category
+          domain_pack: $context.active_domain_pack
+        on_questions_generated:
+          # Если есть вопросы — запускаем фазу clarification снова, не на весь запрос
+          action: inject_into_clarification_loop
+
+      - node_id: evaluate_data_sufficiency
+        template: evaluate_sufficiency_by_heuristics
+        inputs:
+          objects: $nodes.inventory_data_sources.outputs
+          domain_pack: $context.active_domain_pack
+          task_class_id: $context.active_task_class
+        depends_on: [inventory_data_sources]
+
+      - node_id: synthetic_decision
+        template: decide_synthetic_fallback
+        inputs:
+          sufficiency_verdict: $nodes.evaluate_data_sufficiency.outputs
+          domain_pack: $context.active_domain_pack
+          task_class_id: $context.active_task_class
+        when: $nodes.evaluate_data_sufficiency.outputs.sufficient == false
+        on_escalation:
+          - signal: needs_client_confirmation
+            action: request_confirmation_via_gateway
+
+  # ==================== Фаза H: Формализация требований ====================
+  - phase_id: requirements_formalization
+    depends_on: [clarification, data_processing]
+    nodes:
+
+      - node_id: generate_functional
+        template: generate_requirements_from_templates
+        inputs:
+          requirement_kind: functional
+          context_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.validate_clarifications.outputs.valid_answers
+          domain_pack: $context.active_domain_pack
+          id_prefix: "FR"
+
+      - node_id: generate_non_functional
+        template: generate_requirements_from_templates
+        inputs:
+          requirement_kind: non_functional
+          context_artifacts:
+            - $nodes.extract_metrics.outputs
+            - $nodes.extract_constraints.outputs
+            - $nodes.validate_clarifications.outputs.valid_answers
+          domain_pack: $context.active_domain_pack
+          id_prefix: "NFR"
+        parallel_with: [generate_functional]
+
+      - node_id: formalize_constraints
+        template: generate_constraints_from_mentions
+        inputs:
+          constraint_mentions: $nodes.extract_constraints.outputs
+          derived_constraints_sources:
+            - $nodes.synthetic_decision.outputs
+            - $nodes.inventory_data_sources.outputs
+          domain_pack: $context.active_domain_pack
+        parallel_with: [generate_functional]
+
+      - node_id: generate_acceptance
+        template: generate_acceptance_criteria
+        inputs:
+          requirements:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+          metric_mentions: $nodes.extract_metrics.outputs
+          acceptance_mentions: $nodes.extract_acceptance.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [generate_functional, generate_non_functional]
+
+      - node_id: check_requirements_consistency
+        template: detect_contradictions
+        inputs:
+          items:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+            - $nodes.generate_acceptance.outputs
+          contradiction_rules: $config.requirements_consistency_rules
+        depends_on: [generate_acceptance, formalize_constraints]
+        on_escalation:
+          - signal: critical_contradictions
+            action: escalate_for_conflict_resolution
+            via: clarification_phase
+
+  # ==================== Фаза I: Архитектурный анализ ====================
+  - phase_id: architecture
+    depends_on: [requirements_formalization]
+    nodes:
+
+      - node_id: classify_task
+        template: classify_within_taxonomy
+        inputs:
+          context_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.generate_functional.outputs
+          domain_pack: $context.active_domain_pack
+        outputs_binding:
+          class_id: $context.active_task_class
+
+      - node_id: select_pattern
+        template: select_pattern_from_catalog
+        inputs:
+          task_class_id: $context.active_task_class
+          input_characteristics:
+            data: $nodes.inventory_data_sources.outputs
+            quality_requirements: $nodes.generate_non_functional.outputs
+            constraints: $nodes.formalize_constraints.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [classify_task]
+
+      - node_id: arch_rationale
+        template: generate_rationale
+        inputs:
+          chosen_option: $nodes.select_pattern.outputs
+          requirements:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+        depends_on: [select_pattern]
+
+      - node_id: define_project_baseline
+        template: define_baseline
+        inputs:
+          task_class_id: $context.active_task_class
+          acceptance_criteria: $nodes.generate_acceptance.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [classify_task]
+        parallel_with: [arch_rationale]
+
+  # ==================== Фаза J: Сборка ТЗ ====================
+  - phase_id: document_assembly
+    depends_on: [architecture]
+    nodes:
+      # Одна задача, шесть вызовов (одна универсальная вместо A01-A06 из v1)
+      - node_id: section_context
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.context
+          input_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.parse_request.outputs
+
+      - node_id: section_data
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.data
+          input_artifacts:
+            - $nodes.inventory_data_sources.outputs
+            - $nodes.evaluate_data_sufficiency.outputs
+            - $nodes.synthetic_decision.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_requirements
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.requirements
+          input_artifacts:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_architecture
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.architecture
+          input_artifacts:
+            - $nodes.select_pattern.outputs
+            - $nodes.arch_rationale.outputs
+            - $nodes.define_project_baseline.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_acceptance
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.acceptance
+          input_artifacts: [$nodes.generate_acceptance.outputs]
+        parallel_with: [section_context]
+
+      - node_id: section_assumptions
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.assumptions
+          input_artifacts:
+            - $nodes.formalize_constraints.outputs
+            - $nodes.synthetic_decision.outputs
+            - $nodes.feasibility_verdict.outputs
+        parallel_with: [section_context]
+
+      - node_id: assemble
+        template: assemble_document
+        inputs:
+          sections:
+            - $nodes.section_context.outputs
+            - $nodes.section_data.outputs
+            - $nodes.section_requirements.outputs
+            - $nodes.section_architecture.outputs
+            - $nodes.section_acceptance.outputs
+            - $nodes.section_assumptions.outputs
+          document_metadata: $config.tz_metadata_template
+        depends_on: [section_context, section_data, section_requirements, section_architecture, section_acceptance, section_assumptions]
+
+  # ==================== Фаза K: Валидация и согласование ====================
+  - phase_id: validation_and_approval
+    depends_on: [document_assembly]
+    nodes:
+
+      - node_id: check_completeness
+        template: check_document_completeness
+        inputs:
+          document: $nodes.assemble.outputs
+          completeness_checklist: $config.tz_completeness_checklist
+        on_escalation:
+          - signal: critical_missing
+            action: rollback_to_phase
+            target: $determined_by_missing_item
+
+      - node_id: check_consistency
+        template: check_internal_consistency
+        inputs:
+          document: $nodes.assemble.outputs
+          consistency_rules: $config.tz_consistency_rules
+        parallel_with: [check_completeness]
+        on_escalation:
+          - signal: blocker_contradictions
+            action: rollback_to_phase
+            target: requirements_formalization
+
+      - node_id: check_trace
+        template: check_traceability
+        inputs:
+          document: $nodes.assemble.outputs
+          source_artifacts:
+            - $inputs.raw_business_request
+            - $nodes.validate_clarifications.outputs.valid_answers
+          traceability_spec:
+            elements_to_trace: [FR, NFR, constraints, acceptance_criteria]
+            min_coverage: 0.9
+        parallel_with: [check_completeness]
+        on_escalation:
+          - signal: coverage_below_threshold
+            action: escalate_and_request_confirmations
+            via: clarification_phase
+
+      - node_id: client_approval
+        template: request_approval_via_gateway
+        inputs:
+          document: $nodes.assemble.outputs
+          cover_message: $config.tz_cover_message_template
+          timeout_hours: 120
+        depends_on: [check_completeness, check_consistency, check_trace]
+        on_escalation:
+          - signal: timeout_exceeded
+            action: escalate_to_project_manager
+          - signal: deep_rework_requested
+            action: abort_with_escalation
+
+      - node_id: process_comments
+        template: classify_comments
+        inputs:
+          comments_raw: $nodes.client_approval.outputs.comments_raw
+          document: $nodes.assemble.outputs
+          task_mapping: $config.comment_to_node_mapping
+        when: $nodes.client_approval.outputs.decision == "approved_with_comments"
+        on_outputs:
+          # Использует Bubble Up: помечает triggered_workflow_nodes как Obsolete и перезапускает
+          action: rerun_nodes
+          nodes: $outputs.classified_comments[*].triggered_workflow_nodes
+          then: rerun_phase
+          target: validation_and_approval
+
+      - node_id: finalize
+        template: finalize_artifact
+        inputs:
+          artifact_content: $nodes.assemble.outputs
+          approval_decision: $nodes.client_approval.outputs
+          finalization_spec: $config.tz_finalization_spec
+        when: $nodes.client_approval.outputs.decision == "approved"
+        outputs_binding:
+          finalized_artifact: $outputs.approved_technical_specification
 ```
 
-```yaml
-task_id: BIZ_TO_TZ_B03
-name: "Проверка трассируемости к исходному запросу"
-type: Executable
-description: "Для каждого ключевого элемента ТЗ (ФТ, НФТ, ограничение, критерий) проверяет, что он трассируется либо к исходному запросу, либо к ответу заказчика. Цель — гарантировать, что мы не придумали требований от себя."
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "Параллельно с B01, B02."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик ТЗ."
-  - artifact: "normalized_request"
-    contract: Hard
-    description: "Исходный запрос."
-  - artifact: "clarifications"
-    contract: Hard
-    description: "Все ответы заказчика."
-outputs:
-  - artifact: "traceability_report"
-    format: "JSON {traced: int, untraced: [{item_id, item_text}], coverage: float}"
-    description: "Отчёт о трассируемости."
-execution_type: LLM
-prompt_template_hint: "Для каждого ФТ/НФТ/Ограничения/Критерия из ТЗ найди первоисточник: цитата из normalized_request или QA-пара из clarifications. Если найти нельзя — пункт в untraced."
-constraints:
-  - "Coverage = traced / (traced + untraced)"
-  - "Приемлемый порог — coverage >= 0.9 (допустимы 10% элементов, добавленных как типовые для поддомена)"
-escalation_conditions:
-  - "coverage < 0.9 — эскалация: слишком много 'выдуманных' требований, нужно ревью. Возможна декомпозиция на task 602 для подтверждения заказчиком сомнительных пунктов."
-```
+### 3.3. Политика реакции на escalation signals
 
-```yaml
-task_id: BIZ_TO_TZ_B04
-name: "Отправка ТЗ заказчику на согласование"
-type: Executable
-description: "Передаёт черновик ТЗ заказчику через Interruption Gateway. Ожидает один из трёх ответов: approved / approved_with_comments / rejected_with_revision_request."
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "После B01, B02, B03 с успешными результатами (is_complete=true, is_consistent=true, coverage>=0.9)."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик ТЗ."
-  - artifact: "completeness_report"
-    contract: Hard
-    description: "Подтверждение внутренней проверки."
-  - artifact: "consistency_report"
-    contract: Hard
-    description: "Подтверждение."
-  - artifact: "traceability_report"
-    contract: Hard
-    description: "Подтверждение."
-outputs:
-  - artifact: "client_decision"
-    format: "JSON {decision: enum[approved, approved_with_comments, rejected], comments_raw: str, timestamp}"
-    description: "Решение заказчика + сырые комментарии."
-execution_type: Human
-prompt_template_hint: "Отправить через Interruption Gateway с сопроводительным письмом (кратко: что сделано, где критичные допущения, куда смотреть особенно внимательно). Ждать ответа."
-constraints:
-  - "В сопроводительном письме явно подсветить любые допущения (например, решение о синтетике)"
-  - "Таймаут ожидания — 5 рабочих дней"
-escalation_conditions:
-  - "Таймаут ожидания превышен — эскалация к менеджеру проекта"
-  - "decision=rejected — задача Failed (не завершается ошибкой — это ожидаемый исход, но требует эскалации к менеджеру: слишком глубокая переделка)"
-```
+Workflow централизует обработку сигналов. Это даёт возможность менять политику (строгая / мягкая / с дополнительными проверками) без изменения задач.
 
-```yaml
-task_id: BIZ_TO_TZ_B05
-name: "Парсинг и классификация комментариев заказчика"
-type: Executable
-description: "Если заказчик вернул ТЗ с комментариями, разбирает их: к какому разделу относится каждый комментарий, что конкретно требуется изменить, насколько это критично."
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "После B04 с decision ∈ {approved_with_comments, rejected}."
-input_requirements:
-  - artifact: "client_decision"
-    contract: Hard
-    description: "Решение + комментарии."
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик, к которому привязаны комментарии."
-outputs:
-  - artifact: "classified_comments"
-    format: "JSON [{comment_text, target_section, change_type: enum[addition, modification, removal, clarification], criticality, triggered_task_ids: [str]}]"
-    description: "Классифицированные комментарии + какие задачи нужно перезапустить."
-execution_type: LLM
-prompt_template_hint: "Для каждого комментария: (1) к какому разделу/ID он относится, (2) что надо сделать (изменить/добавить/удалить/уточнить), (3) triggered_task_ids — какие задачи из гейта надо перезапустить (например, комментарий по данным → re-spawn 700; комментарий по критерию приёмки → re-spawn 804)."
-constraints:
-  - "Каждый комментарий привязан к конкретному элементу ТЗ"
-  - "triggered_task_ids опирается на маппинг 'раздел ТЗ → задачи, которые его порождают' (хранится в Template Registry)"
-escalation_conditions:
-  - "Комментарий не удаётся локализовать (непонятно, к чему относится) — порождается 602 с уточняющим вопросом к заказчику"
-  - "Комментарии требуют фундаментального пересмотра scope — эскалация: возможно, нужно вернуться на уровень Stage-Gate Manager"
-```
-
-```yaml
-task_id: BIZ_TO_TZ_B06
-name: "Финальная фиксация согласованного ТЗ"
-type: Executable
-description: "Помечает утверждённую версию ТЗ как approved, фиксирует её в State & Memory Broker с тегом stage_1_output, закрывает задачу BIZ_TO_TZ_000 и сигнализирует Stage-Gate Manager о готовности к переходу."
-parent_task: BIZ_TO_TZ_B00
-spawn_conditions: "После B05, если triggered_task_ids обработаны и получено новое approved, ИЛИ сразу после B04 с decision=approved."
-input_requirements:
-  - artifact: "draft_specification_document"
-    contract: Hard
-    description: "Черновик (возможно, переработанный после комментариев)."
-  - artifact: "client_decision"
-    contract: Hard
-    description: "Финальное approved-решение."
-outputs:
-  - artifact: "approved_technical_specification"
-    format: "Markdown + JSON-метаданные {version, approved_at, approved_by, trace_to_request_id}"
-    description: "Финальный артефакт гейта."
-execution_type: Tool
-prompt_template_hint: "Детерминированный скрипт: пометить версию как v1.0, сохранить в S3 под тегом stage_1_output, записать метаданные в PostgreSQL, отправить событие 'stage_1_completed' в Stage-Gate Manager."
-constraints:
-  - "Без LLM"
-  - "Версия инкрементируется с v0.N до v1.0 при первом approve"
-escalation_conditions:
-  - "Техническая ошибка при сохранении — эскалация к разработчику платформы (не бизнес-проблема)"
-```
+| Действие | Что делает |
+|----------|-----------|
+| `abort_workflow` | Завершает Workflow с ошибкой, сообщает Stage-Gate Manager |
+| `abort_with_escalation` | То же + Interruption Gateway уведомляет человека с контекстом |
+| `escalate_to_human` | Останавливает текущую фазу, ждёт решения человека, после — возобновляет |
+| `escalate_to_project_manager` | То же, но адресат — PM (для бизнес-решений) |
+| `rollback_to_phase` | Помечает артефакты последующих фаз как Obsolete, запускает фазу заново (штатный Bubble Up) |
+| `request_completion_from_client` | Interruption Gateway → заказчик с конкретным запросом |
+| `notify_client_caveats` | Неблокирующее уведомление заказчику |
+| `iterate_phase` | Запускает фазу повторно (с учётом лимита итераций) |
+| `rerun_nodes` | Помечает конкретные узлы Obsolete и перезапускает их с зависимостями (для обработки комментариев) |
+| `mark_gap_as_unresolvable` | Записывает пробел как нерешаемый в gap_list, продолжает работу |
 
 ---
 
-## Часть 3. Таблица артефактов гейта
+## Часть 4. Артефакты и трассируемость
 
-Таблица содержит артефакты, циркулирующие внутри Stage Gate 1. Внешние артефакты Template Registry (чеклисты, каталоги паттернов, библиотеки вопросов) перечислены отдельно в конце таблицы — они не создаются внутри гейта, а предоставляются платформой.
+### 4.1. Модель артефактов
 
-### 3.1. Артефакты, создаваемые и потребляемые внутри гейта
+В модульной архитектуре артефакты делятся на три класса.
 
-| # | Артефакт | Формат | Создаётся задачей | Потребляется задачами |
-|---|----------|--------|-------------------|------------------------|
-| 1 | `raw_business_request` | Текст + вложения | Внешний вход (Система общения с пользователем) | BIZ_TO_TZ_000, BIZ_TO_TZ_101 |
-| 2 | `parsed_request` | JSON | BIZ_TO_TZ_101 | BIZ_TO_TZ_102, BIZ_TO_TZ_103 |
-| 3 | `request_completeness_verdict` | JSON | BIZ_TO_TZ_102 | (внутренний — входит в normalized_request) |
-| 4 | `subdomain_classification` | JSON | BIZ_TO_TZ_103 | BIZ_TO_TZ_201, 302, 303, 402, 405, 501, 502, 701, 702, 702_A, 702_B, 704, 901, 902/903 (через 900) |
-| 5 | `normalized_request` | JSON | BIZ_TO_TZ_100 (агрегирует 101-103) | BIZ_TO_TZ_200, 300, 400, 301, 302, 303, 304, 401-405, B03 |
-| 6 | `subdomain_support_check` | JSON | BIZ_TO_TZ_201 | BIZ_TO_TZ_203 |
-| 7 | `unfeasibility_flags` | JSON | BIZ_TO_TZ_202 | BIZ_TO_TZ_203 |
-| 8 | `feasibility_verdict` | JSON | BIZ_TO_TZ_203 (и блок 200) | BIZ_TO_TZ_000, A06 |
-| 9 | `declared_goal` | JSON | BIZ_TO_TZ_301 | BIZ_TO_TZ_302, 303, 304, 305 |
-| 10 | `root_cause_hypotheses` | JSON | BIZ_TO_TZ_302 | BIZ_TO_TZ_305 |
-| 11 | `baseline_hypotheses` | JSON | BIZ_TO_TZ_303 | BIZ_TO_TZ_305 |
-| 12 | `stakeholders_map` | JSON | BIZ_TO_TZ_304 | BIZ_TO_TZ_305 |
-| 13 | `need_model` | JSON | BIZ_TO_TZ_305 (и блок 300) | BIZ_TO_TZ_500, 600, 801, 900, 901, A01 |
-| 14 | `data_mentions` | JSON | BIZ_TO_TZ_401 | BIZ_TO_TZ_501, 701 |
-| 15 | `metric_mentions` | JSON | BIZ_TO_TZ_402 | BIZ_TO_TZ_501, 802, 804 |
-| 16 | `constraint_mentions` | JSON | BIZ_TO_TZ_403 | BIZ_TO_TZ_501, 702_C, 802, 803 |
-| 17 | `acceptance_mentions` | JSON | BIZ_TO_TZ_404 | BIZ_TO_TZ_501, 804 |
-| 18 | `integration_mentions` | JSON | BIZ_TO_TZ_405 | BIZ_TO_TZ_501, 803 |
-| 19 | `extracted_declarations` | JSON | BIZ_TO_TZ_400 (агрегирует 401-405) | BIZ_TO_TZ_500, 501, 605, 800 |
-| 20 | `raw_gaps` | JSON | BIZ_TO_TZ_501 | BIZ_TO_TZ_502 |
-| 21 | `prioritized_gaps` | JSON | BIZ_TO_TZ_502 | BIZ_TO_TZ_503 |
-| 22 | `gap_list` | JSON | BIZ_TO_TZ_503 (и блок 500) | BIZ_TO_TZ_600, 601, 602 |
-| 23 | `client_questionnaire` | Markdown + JSON-схема | BIZ_TO_TZ_601 | BIZ_TO_TZ_603, 604 |
-| 24 | `point_question` | JSON | BIZ_TO_TZ_602 | BIZ_TO_TZ_603, 604 |
-| 25 | `client_response_raw` | Текст/структура | BIZ_TO_TZ_603 (Human, через Interruption Gateway) | BIZ_TO_TZ_604 |
-| 26 | `parsed_clarifications` | JSON | BIZ_TO_TZ_604 | BIZ_TO_TZ_605 |
-| 27 | `clarifications` | JSON | BIZ_TO_TZ_605 (и блок 600) | BIZ_TO_TZ_700, 701, 801, 802, 803, B03 |
-| 28 | `data_sources_inventory` | JSON | BIZ_TO_TZ_701 | BIZ_TO_TZ_702, 702_A, 702_B, 702_C, 703, 704 |
-| 29 | `source_specific_questions` | JSON | BIZ_TO_TZ_702 (Dynamic, агрегирует 702_A/B/C) | BIZ_TO_TZ_600 (повторный цикл при необходимости) |
-| 30 | `format_volume_questions` | JSON | BIZ_TO_TZ_702_A | BIZ_TO_TZ_702 |
-| 31 | `quality_labeling_questions` | JSON | BIZ_TO_TZ_702_B | BIZ_TO_TZ_702 |
-| 32 | `legal_access_questions` | JSON | BIZ_TO_TZ_702_C | BIZ_TO_TZ_702 |
-| 33 | `data_sufficiency_verdict` | JSON | BIZ_TO_TZ_703 | BIZ_TO_TZ_704 |
-| 34 | `synthetic_data_decision` | JSON | BIZ_TO_TZ_704 | (входит в data_specification) |
-| 35 | `data_specification` | JSON | BIZ_TO_TZ_700 (агрегирует 701-704) | BIZ_TO_TZ_800, 803, 900, 902, 903, A02 |
-| 36 | `functional_requirements` | JSON | BIZ_TO_TZ_801 | BIZ_TO_TZ_804, 805, 901 |
-| 37 | `non_functional_requirements` | JSON | BIZ_TO_TZ_802 | BIZ_TO_TZ_804, 805 |
-| 38 | `project_constraints` | JSON | BIZ_TO_TZ_803 | BIZ_TO_TZ_805 |
-| 39 | `acceptance_criteria` | JSON | BIZ_TO_TZ_804 | BIZ_TO_TZ_805, 905 |
-| 40 | `formalized_requirements` | JSON | BIZ_TO_TZ_805 (и блок 800) | BIZ_TO_TZ_900, 902, 903, 904, A03, A05, A06 |
-| 41 | `task_class` | JSON | BIZ_TO_TZ_901 | BIZ_TO_TZ_902, 903, 905 |
-| 42 | `rag_architecture_choice` | JSON | BIZ_TO_TZ_902 | BIZ_TO_TZ_904 |
-| 43 | `ml_architecture_choice` | JSON | BIZ_TO_TZ_903 | BIZ_TO_TZ_904 |
-| 44 | `architecture_rationale` | Markdown | BIZ_TO_TZ_904 | BIZ_TO_TZ_905, A04 |
-| 45 | `baseline_definition` | JSON | BIZ_TO_TZ_905 | (входит в architectural_approach) |
-| 46 | `architectural_approach` | JSON | BIZ_TO_TZ_900 (агрегирует 901-905) | BIZ_TO_TZ_A00, A04 |
-| 47 | `section_context` | Markdown | BIZ_TO_TZ_A01 | BIZ_TO_TZ_A07 |
-| 48 | `section_data` | Markdown | BIZ_TO_TZ_A02 | BIZ_TO_TZ_A07 |
-| 49 | `section_requirements` | Markdown | BIZ_TO_TZ_A03 | BIZ_TO_TZ_A07 |
-| 50 | `section_architecture` | Markdown | BIZ_TO_TZ_A04 | BIZ_TO_TZ_A07 |
-| 51 | `section_acceptance` | Markdown | BIZ_TO_TZ_A05 | BIZ_TO_TZ_A07 |
-| 52 | `section_assumptions` | Markdown | BIZ_TO_TZ_A06 | BIZ_TO_TZ_A07 |
-| 53 | `draft_specification_document` | Markdown | BIZ_TO_TZ_A07 (и блок A00) | BIZ_TO_TZ_B01, B02, B03, B04, B05, B06 |
-| 54 | `completeness_report` | JSON | BIZ_TO_TZ_B01 | BIZ_TO_TZ_B04 |
-| 55 | `consistency_report` | JSON | BIZ_TO_TZ_B02 | BIZ_TO_TZ_B04 |
-| 56 | `traceability_report` | JSON | BIZ_TO_TZ_B03 | BIZ_TO_TZ_B04 |
-| 57 | `client_decision` | JSON | BIZ_TO_TZ_B04 (Human) | BIZ_TO_TZ_B05, B06 |
-| 58 | `classified_comments` | JSON | BIZ_TO_TZ_B05 | BIZ_TO_TZ_B06 + триггер re-spawn различных задач |
-| 59 | `approved_technical_specification` | Markdown + JSON-метаданные | BIZ_TO_TZ_B06 (и корень 000) | **Выход гейта → вход Stage Gate 2** |
+**Универсальные артефакты** — типы данных, производимые Task Templates. Не имеют жёсткой привязки к Workflow. Пример: `typed_mentions`, `hypotheses`, `requirements`.
 
-### 3.2. Внешние артефакты из Template Registry (предоставляются платформой)
+**Artefact bindings Workflow** — конкретные экземпляры артефактов в рамках этого Workflow, адресуемые через `$nodes.<node_id>.outputs.<field>`. Пример: `$nodes.extract_data.outputs.typed_mentions` и `$nodes.extract_metrics.outputs.typed_mentions` — два экземпляра одного типа.
 
-| Артефакт | Описание | Используется задачами |
-|----------|----------|-----------------------|
-| `supported_subdomains_registry` | Реестр поддерживаемых поддоменов (RAG, ML) с признаками | BIZ_TO_TZ_103, 201 |
-| `unfeasibility_patterns_catalog` | Каталог паттернов нерешаемости | BIZ_TO_TZ_202 |
-| `subdomain_checklist_registry` | Чеклисты обязательных полей для RAG/ML | BIZ_TO_TZ_501 |
-| `question_templates_library` | Библиотека типовых формулировок вопросов | BIZ_TO_TZ_601 |
-| `data_sufficiency_heuristics` | Эвристики достаточности данных | BIZ_TO_TZ_703 |
-| `functional_requirements_templates` | Шаблонные ФТ для RAG/ML | BIZ_TO_TZ_801 |
-| `non_functional_requirements_templates` | Шаблонные НФТ | BIZ_TO_TZ_802 |
-| `task_class_taxonomy` | Таксономия классов задач внутри поддоменов | BIZ_TO_TZ_901 |
-| `rag_architecture_patterns` | Библиотека RAG-шаблонов (Naive/Advanced/Hierarchical/Agentic) | BIZ_TO_TZ_902 |
-| `ml_architecture_patterns` | Библиотека ML-шаблонов | BIZ_TO_TZ_903 |
-| `tz_completeness_checklist` | Чеклист полноты ТЗ | BIZ_TO_TZ_B01 |
+**Внешние артефакты** — Domain Pack'и, конфигурации, реестры, библиотеки промпт-шаблонов. Хранятся в Template Registry.
+
+### 4.2. Маппинг: артефакт v1 → источник в v2
+
+Это справочная таблица для понимания, как сущности из прежней версии выражаются в новой архитектуре.
+
+| Артефакт v1 | Источник в v2 |
+|---|---|
+| `parsed_request` | `$nodes.parse_request.outputs.parsed_object` |
+| `subdomain_classification` | `$nodes.select_domain_pack.outputs` → связан с `$context.active_domain_pack` |
+| `feasibility_verdict` | `$nodes.feasibility_verdict.outputs` |
+| `declared_goal` | `$nodes.extract_goal.outputs` |
+| `root_cause_hypotheses` | `$nodes.root_cause_hypotheses.outputs` |
+| `baseline_hypotheses` | `$nodes.baseline_hypotheses.outputs` |
+| `stakeholders_map` | `$nodes.stakeholders.outputs` |
+| `need_model` | `$nodes.consolidate_need.outputs` |
+| `data_mentions` | `$nodes.extract_data.outputs` |
+| `metric_mentions` | `$nodes.extract_metrics.outputs` |
+| `constraint_mentions` | `$nodes.extract_constraints.outputs` |
+| `acceptance_mentions` | `$nodes.extract_acceptance.outputs` |
+| `integration_mentions` | `$nodes.extract_integrations.outputs` |
+| `gap_list` | `$nodes.structure_gaps.outputs` |
+| `clarifications` | `$nodes.validate_clarifications.outputs` |
+| `data_sources_inventory` | `$nodes.inventory_data_sources.outputs` |
+| `data_sufficiency_verdict` | `$nodes.evaluate_data_sufficiency.outputs` |
+| `synthetic_data_decision` | `$nodes.synthetic_decision.outputs` |
+| `functional_requirements` | `$nodes.generate_functional.outputs` |
+| `non_functional_requirements` | `$nodes.generate_non_functional.outputs` |
+| `project_constraints` | `$nodes.formalize_constraints.outputs` |
+| `acceptance_criteria` | `$nodes.generate_acceptance.outputs` |
+| `architectural_approach` | композиция: `$nodes.classify_task` + `select_pattern` + `arch_rationale` + `define_project_baseline` |
+| `section_*` | `$nodes.section_*.outputs` (шесть вызовов одной задачи) |
+| `draft_specification_document` | `$nodes.assemble.outputs` |
+| `approved_technical_specification` | `$outputs.approved_technical_specification` |
+
+### 4.3. Внешние артефакты (Template Registry)
+
+| Артефакт | Тип | Потребляется |
+|---|---|---|
+| Domain Packs (`rag_v1`, `simple_ml_v1`, ...) | Domain Pack | Все задачи с параметром `domain_pack` |
+| `request_schema` | JSON Schema | parse_request |
+| `minimum_request_checklist` | Checklist | check_request_minimum |
+| `domain_pack_registry` | Registry | select_domain_pack |
+| `supported_domains_registry` | Registry | check_support |
+| `unfeasibility_patterns_catalog` | Pattern Catalog | detect_unfeasibility |
+| `feasibility_rules` | Decision Rules | feasibility_verdict |
+| `need_model_schema` | Schema | consolidate_need |
+| `gap_priority_rules` | Priority Rules | prioritize_gaps |
+| `gap_grouping_schema` | Schema | structure_gaps |
+| `clarification_strategy_rules` | Decision Rules | decide_strategy |
+| `data_source_schema` | Object Schema | inventory_data_sources |
+| `requirements_consistency_rules` | Contradiction Rules | check_requirements_consistency |
+| `tz_sections_config` | Section Specs | все section_* узлы |
+| `tz_metadata_template` | Template | assemble |
+| `tz_completeness_checklist` | Checklist | check_completeness |
+| `tz_consistency_rules` | Rules | check_consistency |
+| `comment_to_node_mapping` | Mapping | process_comments |
+| `tz_finalization_spec` | Spec | finalize |
 
 ---
 
-## Часть 4. Сверка с чеклистом покрытия
+## Часть 5. Сверка с принципами и покрытием
 
-Для каждой зоны покрытия из исходного ТЗ — указаны закрывающие её задачи.
+### 5.1. Покрытие восьми зон из исходного ТЗ
 
-| Зона покрытия | Закрывается задачами |
-|---------------|----------------------|
-| 1. Приём и первичная обработка запроса | BIZ_TO_TZ_100, 101, 102, 103 |
-| 2. Понимание потребности | BIZ_TO_TZ_300, 301, 302, 303, 304, 305 |
-| 3. Сбор недостающей информации | BIZ_TO_TZ_500 (формирование gap), 600, 601, 602, 603, 604, 605 |
-| 4. Работа с данными | BIZ_TO_TZ_401, 700, 701, 702, 702_A/B/C, 703, 704 |
-| 5. Определение требований | BIZ_TO_TZ_402, 403, 404, 405, 800, 801, 802, 803, 804, 805 |
-| 6. Архитектурный анализ | BIZ_TO_TZ_900, 901, 902, 903, 904, 905 |
-| 7. Формирование документа ТЗ | BIZ_TO_TZ_A00, A01-A07 |
-| 8. Валидация ТЗ | BIZ_TO_TZ_B00, B01, B02, B03, B04, B05, B06 |
+| Зона | Задачи (Task Templates) | Узлы Workflow |
+|---|---|---|
+| 1. Приём и первичная обработка | parse_free_text_to_structured, check_minimum_completeness, classify_against_registry | parse_request, check_request_minimum, select_domain_pack |
+| 2. Понимание потребности | extract_declared_goal, generate_hypotheses (×2), identify_stakeholders, consolidate_analysis | фаза need_analysis целиком |
+| 3. Сбор недостающей информации | compare_against_checklist, prioritize_items, group_and_structure_items, generate_batched_questionnaire, generate_point_question, request_user_input_via_gateway, parse_user_response, validate_response | фазы gap_analysis и clarification |
+| 4. Работа с данными | extract_typed_mentions, inventory_items_from_mentions, generate_clarification_questions, evaluate_sufficiency_by_heuristics, decide_synthetic_fallback | фаза data_processing + extract_data из declarative_extraction |
+| 5. Определение требований | extract_typed_mentions, generate_requirements_from_templates, generate_constraints_from_mentions, generate_acceptance_criteria, detect_contradictions | фаза requirements_formalization + остальные extract_* |
+| 6. Архитектурный анализ | classify_within_taxonomy, select_pattern_from_catalog, generate_rationale, define_baseline | фаза architecture |
+| 7. Формирование документа | generate_document_section, assemble_document | фаза document_assembly |
+| 8. Валидация ТЗ | check_document_completeness, check_internal_consistency, check_traceability, request_approval_via_gateway, classify_comments, finalize_artifact | фаза validation_and_approval |
 
-Дополнительно — **ранняя оценка выполнимости** (блок 200) реализует принцип из `PoV.md`: «как определить, что задача невозможна, максимально рано». Это превентивный механизм, не упомянутый в зонах покрытия явно, но вытекающий из раздела «Потенциальные проблемы».
+Дополнительно — ранняя feasibility-проверка реализуется через `detect_patterns_from_catalog` + `check_registry_membership` + `synthesize_verdict` в фазе feasibility.
 
----
+### 5.2. Соответствие комментарию заказчика
 
-## Часть 5. Соответствие принципам PoV.md
+| Критика | Решение в v2 |
+|---|---|
+| «Жёсткий граф на уровне задач, сложно дебажить» | Граф перенесён в отдельный слой (Workflow). Задачи не знают друг о друге и о месте в пайплайне. |
+| «Задачи не переиспользуемы» | Task Templates универсальны. `extract_typed_mentions` используется 5 раз с разными параметрами, `generate_document_section` — 6 раз, `generate_hypotheses` — 2 раза. Любая задача может быть вызвана в другом Workflow. |
+| «Доменные знания вшиты в задачи» | Всё доменное знание вынесено в Domain Pack. Задачи параметризуются паком. Добавление поддомена = новый Domain Pack без правки задач и Workflow. |
+| «Структура слишком жёстко задана» | Вместо жёсткой иерархии 11 блоков — 11 фаз с явными зависимостями и параллелизмом. Внутри фазы узлы можно менять без каскадных правок. |
 
-| Принцип | Как отражён в спецификации |
-|---------|---------------------------|
-| **Фокус на потребностях** | Блок 300 (Why-анализ) обязателен — задачи не переходят к требованиям до формирования need_model. Блок 600 снимает `blocking`-пробелы до архитектуры. |
-| **Прозрачность** | Каждый артефакт имеет трассировку: ФТ/НФТ имеют поле `source`, задача B03 проверяет coverage трассируемости к исходному запросу (≥ 0.9). Каждое извлечение упоминаний (400) требует `quote`. |
-| **Масштабируемость** | Архитектурные решения (902, 903, 901) параметризованы через Template Registry (`rag_architecture_patterns`, `task_class_taxonomy`). Добавление поддомена = добавление записей в registry + новый класс в 103, без изменения шаблонов. |
-| **Воспроизводимость** | НФТ по воспроизводимости — обязательная позиция для PoV (802). State & Memory Broker хранит все артефакты + версии. Микро-декомпозиция (один LLM-вызов = одно микро-решение) снижает вариативность между прогонами. |
-| **Самоконтроль** | Блок B00 полностью автономен в валидации (B01-B03). Механизмы самокоррекции встроены в escalation_conditions — эскалация происходит только после исчерпания лимитов (например, 2 итерации уточнений в 605). Dynamic-задачи (600, 702, 900) принимают решения без человека. |
+### 5.3. Соответствие принципам PoV.md
+
+| Принцип | Как отражён |
+|---------|-------------|
+| Фокус на потребностях | Фаза `need_analysis` обязательна до любых требований. Фаза `clarification` снимает blocking-пробелы до архитектуры. |
+| Прозрачность | Трассировка через `check_traceability` с порогом 0.9. Каждое извлечение упоминаний обязано содержать цитату. |
+| Масштабируемость | Добавление поддомена = Domain Pack (не трогает задачи). Добавление гейта = новый Workflow (переиспользует существующие задачи). Добавление новой операции в одной фазе = новый Task Template + одна строка в Workflow. |
+| Воспроизводимость | Требование воспроизводимости встроено в `requirements_templates.non_functional` каждого Domain Pack. Декомпозиция на атомарные LLM-вызовы снижает вариативность. |
+| Самоконтроль | Фаза `validation_and_approval` автономна (три параллельные проверки). Политика эскалаций централизована в Workflow — задачи только сигнализируют, не решают, что делать. |
+
+### 5.4. Что даёт эта архитектура дополнительно
+
+**Независимое тестирование.** Каждый Task Template можно тестировать в изоляции с моковыми входами. Workflow — отдельно с моковыми задачами.
+
+**Версионирование.** Task Template, Domain Pack и Workflow версионируются независимо. Можно обновить `rag_v1` → `rag_v2` без перевыпуска Workflow — Workflow продолжает работать с новой версией пака, пока совместима схема.
+
+**A/B на уровне паттернов.** Можно выпустить `rag_v1` и `rag_v1_experimental` и направлять запросы в разные паки.
+
+**Переиспользование в других гейтах.** `generate_document_section`, `check_traceability`, `request_approval_via_gateway` явно нужны в Stage Gate 2 (Архитектура) и Stage Gate 3 (Исходный код). Те же задачи, другой Workflow.
+
+**Понятность.** Workflow читается сверху вниз как сценарий: фаза → что делаем → какие задачи → как реагируем на сбой. Логику не нужно восстанавливать из разрозненных YAML-шаблонов задач.
 

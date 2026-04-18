@@ -1,0 +1,231 @@
+# Категория 1.9: Сборка и валидация документов
+# Задачи этой категории генерируют разделы ТЗ, собирают документ,
+# проверяют его полноту, непротиворечивость и трассируемость,
+# управляют согласованием с заказчиком и финализируют артефакт.
+#
+# generate_document_section в Workflow вызывается 6 раз параллельно
+# с разными section_spec: context | data | requirements | architecture | acceptance | assumptions
+
+---
+
+template_id: generate_document_section
+name: "Генерация раздела документа"
+type: Executable
+description: >
+  Пишет один раздел документа по заданной структуре и входным артефактам.
+  Параметризуется типом раздела — одна задача заменяет шесть монолитных из v1.
+input_contract:
+  - name: section_spec
+    type: object
+    required: true
+    description: "Спецификация раздела: тип, обязательная структура, ограничения по длине."
+  - name: input_artifacts
+    type: array
+    required: true
+    description: "Артефакты, из которых собирается раздел."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Может предоставлять шаблоны формулировок для поддомена."
+output_contract:
+  - name: section_content
+    type: string
+    format: markdown
+execution:
+  kind: LLM
+  constraints:
+    - "Опираться только на input_artifacts — не выдумывать факты"
+    - "Заголовок раздела задаётся section_spec"
+    - "Длина в пределах, заданных section_spec"
+    - "Каждое фактическое утверждение — трассировка к конкретному input_artifact"
+escalation_signals:
+  - empty_mandatory_inputs: "Hard-зависимость пуста (предыдущий блок не выполнил свою задачу)"
+
+---
+
+template_id: assemble_document
+name: "Механическая сборка документа"
+type: Executable
+description: >
+  Соединяет секции в единый документ, генерирует оглавление,
+  проставляет сквозную нумерацию.
+input_contract:
+  - name: sections
+    type: array
+    required: true
+  - name: document_metadata
+    type: object
+    required: true
+    description: "Название, версия, статус, автор."
+output_contract:
+  - name: document
+    type: string
+    format: markdown
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — чисто механическая сборка"
+escalation_signals:
+  - section_missing: "Одна из обязательных секций пуста"
+
+---
+
+template_id: check_document_completeness
+name: "Проверка полноты документа по чеклисту"
+type: Executable
+description: >
+  Формальная проверка наличия и непустоты обязательных разделов и полей.
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: completeness_checklist
+    type: Checklist
+    required: true
+output_contract:
+  - name: completeness_report
+    type: object
+    schema: "{is_complete: bool, missing_items: [{item, severity}]}"
+execution:
+  kind: Tool
+escalation_signals:
+  - critical_missing: "Отсутствует пункт с severity=critical"
+
+---
+
+template_id: check_internal_consistency
+name: "Проверка внутренней непротиворечивости документа"
+type: Executable
+description: >
+  Ищет противоречия между разделами документа.
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: consistency_rules
+    type: ConsistencyRules
+    required: true
+    description: "Правила попарной проверки элементов документа."
+output_contract:
+  - name: consistency_report
+    type: object
+    schema: "{is_consistent: bool, contradictions: [{description, involved, severity}]}"
+execution:
+  kind: LLM
+escalation_signals:
+  - blocker_contradictions: "Найдены противоречия с severity=blocker"
+
+---
+
+template_id: check_traceability
+name: "Проверка трассируемости элементов к источнику"
+type: Executable
+description: >
+  Для каждого ключевого элемента документа проверяет наличие обоснования
+  в указанных источниках (исходный запрос, ответы пользователя).
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: source_artifacts
+    type: array
+    required: true
+  - name: traceability_spec
+    type: object
+    required: true
+    description: "Какие элементы документа должны трассироваться + минимальный порог покрытия."
+output_contract:
+  - name: traceability_report
+    type: object
+    schema: "{traced: int, untraced: [{element_id, content}], coverage: float}"
+execution:
+  kind: LLM
+escalation_signals:
+  - coverage_below_threshold: "coverage < traceability_spec.min_coverage"
+
+---
+
+template_id: request_approval_via_gateway
+name: "Запрос согласования документа через Interruption Gateway"
+type: Executable
+description: >
+  Отправляет документ на согласование пользователю, ждёт одного из трёх решений:
+  approved / approved_with_comments / rejected.
+input_contract:
+  - name: document
+    type: string
+    required: true
+  - name: cover_message
+    type: string
+    required: false
+    description: "Сопроводительное сообщение — рекомендуется подсвечивать ключевые допущения."
+  - name: timeout_hours
+    type: integer
+    required: false
+    default: 120
+output_contract:
+  - name: approval_decision
+    type: object
+    schema: "{decision: enum[approved, approved_with_comments, rejected], comments_raw, timestamp}"
+execution:
+  kind: Human
+escalation_signals:
+  - timeout_exceeded: "Превышен timeout_hours"
+  - deep_rework_requested: "decision=rejected — требуется глубокая переделка"
+
+---
+
+template_id: classify_comments
+name: "Классификация комментариев к документу"
+type: Executable
+description: >
+  Разбирает комментарии пользователя: привязка к разделу/элементу,
+  тип изменения, критичность, список задач, которые нужно перезапустить.
+input_contract:
+  - name: comments_raw
+    type: string
+    required: true
+  - name: document
+    type: string
+    required: true
+  - name: task_mapping
+    type: object
+    required: true
+    description: "Маппинг 'раздел/элемент документа → задачи Workflow, которые его порождают'."
+output_contract:
+  - name: classified_comments
+    type: array
+    schema: "[{comment_text, target, change_type, criticality, triggered_workflow_nodes: [str]}]"
+execution:
+  kind: LLM
+escalation_signals:
+  - comment_unlocalizable: "Комментарий не удаётся привязать к конкретному элементу"
+  - scope_change_required: "Комментарии требуют выхода за рамки текущего гейта"
+
+---
+
+template_id: finalize_artifact
+name: "Финальная фиксация артефакта"
+type: Executable
+description: >
+  Помечает артефакт как approved, сохраняет финальную версию,
+  пишет метаданные, отправляет событие завершения.
+input_contract:
+  - name: artifact_content
+    type: any
+    required: true
+  - name: approval_decision
+    type: object
+    required: true
+  - name: finalization_spec
+    type: object
+    required: true
+    description: "Куда сохранить, какие метаданные записать, какое событие отправить."
+output_contract:
+  - name: finalized_artifact
+    type: object
+    schema: "{content, version, approved_at, approved_by, trace_id}"
+execution:
+  kind: Tool
+escalation_signals:
+  - storage_failure: "Техническая ошибка при сохранении"

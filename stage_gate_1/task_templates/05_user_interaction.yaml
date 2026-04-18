@@ -1,0 +1,158 @@
+# Категория 1.5: Взаимодействие с пользователем
+# Задачи этой категории формируют вопросы для заказчика,
+# отправляют запросы через Interruption Gateway и обрабатывают ответы.
+
+---
+
+template_id: generate_batched_questionnaire
+name: "Формирование пакетного опросника"
+type: Executable
+description: >
+  Из набора структурированных вопросов формирует человекочитаемый опросник
+  с группировкой и обоснованиями. Подходит для любого случая массового сбора информации.
+input_contract:
+  - name: question_specs
+    type: array
+    required: true
+    description: "Исходные вопросы с метаданными (тема, приоритет, ожидаемый формат ответа)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Библиотека типовых формулировок для поддомена."
+  - name: max_questions
+    type: integer
+    required: false
+    default: 10
+output_contract:
+  - name: questionnaire
+    type: object
+    schema: "{human_readable: markdown, response_schema: JSONSchema}"
+execution:
+  kind: LLM
+  constraints:
+    - "Не более max_questions вопросов"
+    - "Группировка по темам"
+    - "Каждый вопрос сопровождается кратким обоснованием, ЗАЧЕМ спрашиваем"
+    - "Приоритизация: сначала blocking, потом important"
+escalation_signals:
+  - too_many_questions: "Не удалось уложиться в max_questions даже после приоритезации"
+
+---
+
+template_id: generate_point_question
+name: "Формирование точечного вопроса"
+type: Executable
+description: >
+  Один открытый вопрос по конкретной теме. Используется для быстрых уточнений.
+input_contract:
+  - name: question_spec
+    type: object
+    required: true
+    description: "Спецификация одного вопроса (тема, контекст, ожидаемый формат)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: point_question
+    type: object
+    schema: "{question, context, expected_format}"
+execution:
+  kind: LLM
+  constraints:
+    - "Ровно один вопрос, не более 2 предложений"
+    - "Язык формулировки — без технического жаргона без необходимости"
+escalation_signals: []
+
+---
+
+template_id: request_user_input_via_gateway
+name: "Запрос ввода пользователя через Interruption Gateway"
+type: Executable
+description: >
+  Передаёт запрос в систему общения с пользователем через Interruption Gateway,
+  ожидает внешнее событие 'response_received'.
+input_contract:
+  - name: request_payload
+    type: any
+    required: true
+    description: "Опросник, точечный вопрос или любой запрос для отправки."
+  - name: timeout_hours
+    type: integer
+    required: false
+    default: 48
+  - name: purpose
+    type: string
+    required: true
+    description: "Семантическая метка цели запроса (для UI, телеметрии, классификации ответа)."
+output_contract:
+  - name: user_response_raw
+    type: any
+execution:
+  kind: Human
+  constraints:
+    - "Задача не вызывает LLM"
+    - "Ожидание не блокирует остальной граф"
+escalation_signals:
+  - timeout_exceeded: "Превышен timeout_hours"
+  - cannot_answer: "Получен ответ вида 'не знаю' / 'затрудняюсь'"
+
+---
+
+template_id: parse_user_response
+name: "Парсинг ответа пользователя"
+type: Executable
+description: >
+  Превращает свободный ответ пользователя в структурированные данные
+  по схеме исходного запроса.
+input_contract:
+  - name: response_raw
+    type: any
+    required: true
+  - name: response_schema
+    type: JSONSchema
+    required: true
+  - name: original_request
+    type: any
+    required: false
+    description: "Если был опросник — связывает ответы с вопросами."
+output_contract:
+  - name: parsed_response
+    type: object
+    schema: "определяется response_schema + поля not_answered: [str]"
+execution:
+  kind: LLM
+  constraints:
+    - "Запрещено додумывать ответы на неотвеченные вопросы"
+    - "not_answered должен явно содержать все пропущенные вопросы"
+escalation_signals: []
+
+---
+
+template_id: validate_response
+name: "Валидация содержательности ответа"
+type: Executable
+description: >
+  Проверяет, что ответы осмысленны, отвечают на заданные вопросы
+  и не противоречат ранее известной информации.
+input_contract:
+  - name: parsed_response
+    type: object
+    required: true
+  - name: original_questions
+    type: array
+    required: true
+  - name: prior_knowledge
+    type: object
+    required: false
+    description: "Ранее установленные факты для проверки противоречий."
+output_contract:
+  - name: validation_result
+    type: object
+    schema: "{valid_answers, contradictions, unanswered_critical}"
+execution:
+  kind: LLM
+  constraints:
+    - "Противоречия формулируются как пары (известное, новое)"
+escalation_signals:
+  - contradictions_detected: "Противоречия между ответом и prior_knowledge"
+  - critical_unanswered: "Остались без ответа вопросы с priority=blocking"

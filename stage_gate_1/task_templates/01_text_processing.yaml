@@ -1,0 +1,175 @@
+# Категория 1.1: Обработка входного текста
+# Задачи этой категории работают с сырым текстом: структурируют,
+# классифицируют, ищут паттерны, синтезируют решения.
+
+---
+
+template_id: parse_free_text_to_structured
+name: "Парсинг свободного текста в структуру"
+type: Executable
+description: >
+  Преобразует произвольный текст в JSON по заданной схеме.
+  Не интерпретирует смысл — только структурирует явно присутствующую информацию.
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: schema
+    type: object
+    required: true
+    description: "JSON Schema, задающая структуру выхода."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Если передан — используется для подсказок, какие поля ожидать."
+output_contract:
+  - name: parsed_object
+    type: object
+    schema: "определяется параметром schema"
+execution:
+  kind: LLM
+  constraints:
+    - "Запрещено добавлять поля, не входящие в schema"
+    - "Запрещено интерпретировать смысл — только структурирование"
+    - "Отсутствующие поля заполняются null, не домысливаются"
+escalation_signals:
+  - parsing_failed: "Текст не поддаётся парсингу (бинарные данные, пустой вход)"
+  - schema_violation: "LLM вернул ответ, не соответствующий schema, после 1 попытки самокоррекции"
+
+---
+
+template_id: check_minimum_completeness
+name: "Проверка минимальной полноты"
+type: Executable
+description: >
+  Бинарное решение: содержит ли вход набор обязательных элементов
+  по заданному чеклисту. Детерминированная логика.
+input_contract:
+  - name: parsed_input
+    type: object
+    required: true
+  - name: checklist
+    type: MinimumChecklist
+    required: true
+    description: "Список обязательных полей/элементов и правил их присутствия."
+output_contract:
+  - name: completeness_verdict
+    type: object
+    schema: "{is_complete: bool, missing: [str], reasoning: str}"
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — формальная проверка"
+escalation_signals:
+  - incomplete: "is_complete=false (не ошибка задачи, но сигнал для Workflow)"
+
+---
+
+template_id: classify_against_registry
+name: "Классификация объекта по реестру"
+type: Executable
+description: >
+  Относит объект (текст, запрос) к одной из категорий реестра.
+  Используется в том числе для определения активного Domain Pack.
+input_contract:
+  - name: object_to_classify
+    type: any
+    required: true
+  - name: registry
+    type: ClassificationRegistry
+    required: true
+    description: "Реестр с описаниями категорий, сигналами и порогами уверенности."
+output_contract:
+  - name: classification_result
+    type: object
+    schema: "{category_id: str, confidence: float, reasoning: str, alternatives: [{category_id, confidence}]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Категория строго из реестра — не изобретать новые"
+    - "При confidence < порога обязательно заполнять alternatives"
+escalation_signals:
+  - unsupported_category: "Классификация = категория с флагом unsupported=true"
+  - low_confidence: "confidence ниже порога даже после самокоррекции"
+
+---
+
+template_id: check_registry_membership
+name: "Проверка членства в реестре"
+type: Executable
+description: >
+  Формальная проверка: входит ли объект в подмножество реестра,
+  помеченное активным.
+input_contract:
+  - name: item
+    type: any
+    required: true
+  - name: registry
+    type: any
+    required: true
+  - name: filter
+    type: object
+    required: false
+    description: "Дополнительные условия фильтрации (например, {status: active})."
+output_contract:
+  - name: membership_result
+    type: object
+    schema: "{is_member: bool, matched_record: object|null}"
+execution:
+  kind: Tool
+escalation_signals: []
+
+---
+
+template_id: detect_patterns_from_catalog
+name: "Обнаружение паттернов в тексте по каталогу"
+type: Executable
+description: >
+  Сканирует текст на присутствие паттернов из заданного каталога.
+  Универсально — каталог задаёт, что ищем (нерешаемость, риски, индикаторы категории).
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: pattern_catalog
+    type: PatternCatalog
+    required: true
+    description: "Каталог с ID паттернов, описаниями, примерами, уровнями severity."
+output_contract:
+  - name: detected_patterns
+    type: array
+    schema: "[{pattern_id, evidence_quote, severity}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое обнаружение обязано содержать прямую цитату-доказательство"
+    - "Запрещено обнаруживать паттерны вне каталога"
+escalation_signals:
+  - blocker_detected: "Найден паттерн с severity=blocker"
+  - ambiguous_match: "LLM не может однозначно определить совпадение после самокоррекции"
+
+---
+
+template_id: synthesize_verdict
+name: "Синтез решения из входных сигналов по правилам"
+type: Executable
+description: >
+  Принимает набор сигналов (булевых или структурированных) и правила
+  их комбинирования, возвращает итоговое решение с обоснованием.
+input_contract:
+  - name: signals
+    type: array
+    required: true
+  - name: decision_rules
+    type: DecisionRules
+    required: true
+    description: "Правила комбинирования сигналов в итоговое решение."
+output_contract:
+  - name: verdict
+    type: object
+    schema: "{decision: str, rationale: str, applied_rules: [rule_id]}"
+execution:
+  kind: Tool
+  constraints:
+    - "Без LLM — детерминированное применение правил"
+escalation_signals: []

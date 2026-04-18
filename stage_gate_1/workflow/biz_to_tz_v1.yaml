@@ -1,0 +1,632 @@
+# Workflow: Преобразование бизнес-запроса в ТЗ
+# Вход: raw_business_request (текст)
+# Выход: approved_technical_specification (документ)
+# Фазы: A(intake) → B(feasibility) → C(need_analysis) ∥ D(declarative_extraction)
+#        → E(gap_analysis) → F(clarification) → G(data_processing)
+#        → H(requirements_formalization) → I(architecture) → J(document_assembly)
+#        → K(validation_and_approval)
+#
+# Политика реакции на escalation signals: см. escalation_policy.md
+
+workflow_id: biz_to_tz_v1
+name: "Преобразование бизнес-запроса в ТЗ"
+version: "1.0.0"
+stage_gate: 1
+description: "Вход: сырой бизнес-запрос. Выход: согласованное ТЗ. Работает с любым зарегистрированным Domain Pack."
+
+applicable_domain_packs:
+  - rag_v1
+  - simple_ml_v1
+
+inputs:
+  - name: raw_business_request
+    type: text
+    required: true
+
+outputs:
+  - name: approved_technical_specification
+    type: document
+
+context:
+  - name: active_domain_pack
+    type: DomainPack
+    set_by: $nodes.select_domain_pack
+  - name: active_task_class
+    type: string
+    set_by: $nodes.classify_task
+
+phases:
+
+  # ==================== Фаза A: Приём и нормализация ====================
+  - phase_id: intake
+    description: "Приём запроса, проверка полноты, выбор Domain Pack"
+    nodes:
+
+      - node_id: parse_request
+        template: parse_free_text_to_structured
+        inputs:
+          source_text: $inputs.raw_business_request
+          schema: $config.request_schema
+        on_escalation:
+          - signal: parsing_failed
+            action: abort_workflow
+            reason: "Входной запрос не является осмысленным текстом"
+
+      - node_id: check_request_minimum
+        template: check_minimum_completeness
+        inputs:
+          parsed_input: $nodes.parse_request.outputs.parsed_object
+          checklist: $config.minimum_request_checklist
+        on_escalation:
+          - signal: incomplete
+            action: request_completion_from_client
+            params:
+              purpose: "raw_request_incomplete"
+              timeout_hours: 72
+            on_return: restart_phase
+
+      - node_id: select_domain_pack
+        template: classify_against_registry
+        inputs:
+          object_to_classify: $nodes.parse_request.outputs.parsed_object
+          registry: $config.domain_pack_registry
+        outputs_binding:
+          category_id: $context.active_domain_pack
+        on_escalation:
+          - signal: unsupported_category
+            action: abort_with_escalation
+            reason: "Запрос не попадает в поддерживаемые Domain Pack"
+          - signal: low_confidence
+            action: escalate_to_human
+            reason: "Неуверенная классификация поддомена — требуется ручной выбор"
+
+  # ==================== Фаза B: Ранний feasibility check ====================
+  - phase_id: feasibility
+    description: "Проверка выполнимости до погружения в детали"
+    depends_on: [intake]
+    nodes:
+
+      - node_id: check_support
+        template: check_registry_membership
+        inputs:
+          item: $context.active_domain_pack
+          registry: $config.supported_domains_registry
+          filter: {status: active}
+
+      - node_id: detect_unfeasibility
+        template: detect_patterns_from_catalog
+        inputs:
+          source_text: $inputs.raw_business_request
+          pattern_catalog: $config.unfeasibility_patterns_catalog
+        parallel_with: [check_support]
+        on_escalation:
+          - signal: blocker_detected
+            action: abort_with_escalation
+            reason: "Обнаружен блокирующий паттерн нерешаемости"
+
+      - node_id: feasibility_verdict
+        template: synthesize_verdict
+        inputs:
+          signals:
+            - $nodes.check_support.outputs.membership_result
+            - $nodes.detect_unfeasibility.outputs.detected_patterns
+          decision_rules: $config.feasibility_rules
+        on_verdict:
+          - when: $outputs.verdict.decision == "ABORT"
+            action: abort_with_escalation
+          - when: $outputs.verdict.decision == "PROCEED_WITH_CONFIRMATION"
+            action: notify_client_caveats
+            blocking: false
+
+  # ==================== Фаза C: Понимание потребности (Why-анализ) ====================
+  - phase_id: need_analysis
+    description: "Формирование модели потребности"
+    depends_on: [feasibility]
+    parallel_with: [declarative_extraction]
+    nodes:
+
+      - node_id: extract_goal
+        template: extract_declared_goal
+        inputs:
+          source_text: $inputs.raw_business_request
+          domain_pack: $context.active_domain_pack
+        on_escalation:
+          - signal: no_goal_found
+            action: rollback_to_phase
+            target_phase: intake
+            reason: "Проверка полноты пропустила неполный запрос"
+
+      - node_id: root_cause_hypotheses
+        template: generate_hypotheses
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          hypothesis_topic: root_cause
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+
+      - node_id: baseline_hypotheses
+        template: generate_hypotheses
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          hypothesis_topic: baseline_process
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+        parallel_with: [root_cause_hypotheses]
+
+      - node_id: stakeholders
+        template: identify_stakeholders
+        inputs:
+          source_text: $inputs.raw_business_request
+          context_artifacts: [$nodes.extract_goal.outputs]
+          domain_pack: $context.active_domain_pack
+        depends_on: [extract_goal]
+        parallel_with: [root_cause_hypotheses, baseline_hypotheses]
+
+      - node_id: consolidate_need
+        template: consolidate_analysis
+        inputs:
+          artifacts_to_consolidate:
+            - $nodes.extract_goal.outputs
+            - $nodes.root_cause_hypotheses.outputs
+            - $nodes.baseline_hypotheses.outputs
+            - $nodes.stakeholders.outputs
+          consolidation_schema: $config.need_model_schema
+        depends_on: [root_cause_hypotheses, baseline_hypotheses, stakeholders]
+
+  # ==================== Фаза D: Извлечение деклараций ====================
+  - phase_id: declarative_extraction
+    description: "Параллельное извлечение пяти типов упоминаний"
+    depends_on: [feasibility]
+    parallel_with: [need_analysis]
+    nodes:
+      # Одна задача (extract_typed_mentions), пять параллельных вызовов
+      - node_id: extract_data
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "data"
+          domain_pack: $context.active_domain_pack
+
+      - node_id: extract_metrics
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "metrics"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_constraints
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "constraints"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_acceptance
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "acceptance"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+      - node_id: extract_integrations
+        template: extract_typed_mentions
+        inputs:
+          source_text: $inputs.raw_business_request
+          mention_type: "integrations"
+          domain_pack: $context.active_domain_pack
+        parallel_with: [extract_data]
+
+  # ==================== Фаза E: Gap-анализ ====================
+  - phase_id: gap_analysis
+    depends_on: [need_analysis, declarative_extraction]
+    nodes:
+
+      - node_id: compare_to_checklist
+        template: compare_against_checklist
+        inputs:
+          items:
+            data: $nodes.extract_data.outputs
+            metrics: $nodes.extract_metrics.outputs
+            constraints: $nodes.extract_constraints.outputs
+            acceptance: $nodes.extract_acceptance.outputs
+            integrations: $nodes.extract_integrations.outputs
+          checklist: $context.active_domain_pack.completeness_checklist
+          additional_inputs: [$nodes.consolidate_need.outputs.open_questions]
+
+      - node_id: prioritize_gaps
+        template: prioritize_items
+        inputs:
+          items: $nodes.compare_to_checklist.outputs.gap_report
+          priority_rules: $config.gap_priority_rules
+          context: {domain_pack: $context.active_domain_pack}
+        depends_on: [compare_to_checklist]
+
+      - node_id: structure_gaps
+        template: group_and_structure_items
+        inputs:
+          items: $nodes.prioritize_gaps.outputs
+          grouping_schema: $config.gap_grouping_schema
+        depends_on: [prioritize_gaps]
+
+  # ==================== Фаза F: Сбор уточнений ====================
+  - phase_id: clarification
+    depends_on: [gap_analysis]
+    skip_when: $nodes.structure_gaps.outputs.total == 0
+    iteration:
+      max_iterations: 2
+      on_max_exceeded: escalate_to_human
+    nodes:
+
+      - node_id: decide_strategy
+        template: synthesize_verdict
+        inputs:
+          signals: [$nodes.structure_gaps.outputs.priority_counts]
+          decision_rules: $config.clarification_strategy_rules
+        # Правило: если blocking + important >= 3 → batch, иначе pointwise
+
+      - node_id: build_questionnaire
+        template: generate_batched_questionnaire
+        inputs:
+          question_specs: $nodes.structure_gaps.outputs.gaps_as_questions
+          domain_pack: $context.active_domain_pack
+        when: $nodes.decide_strategy.outputs.decision == "batch"
+
+      - node_id: build_point_questions
+        template: generate_point_question
+        inputs:
+          question_spec: $item
+          domain_pack: $context.active_domain_pack
+        when: $nodes.decide_strategy.outputs.decision == "pointwise"
+        foreach: $nodes.structure_gaps.outputs.gaps_flat
+
+      - node_id: request_clarifications
+        template: request_user_input_via_gateway
+        inputs:
+          request_payload: >
+            $nodes.build_questionnaire.outputs OR $nodes.build_point_questions.outputs
+          purpose: "clarify_request_gaps"
+        on_escalation:
+          - signal: timeout_exceeded
+            action: escalate_to_project_manager
+          - signal: cannot_answer
+            action: mark_gap_as_unresolvable
+            on_blocking_gap: escalate_to_human
+
+      - node_id: parse_clarifications
+        template: parse_user_response
+        inputs:
+          response_raw: $nodes.request_clarifications.outputs
+          response_schema: $nodes.build_questionnaire.outputs.response_schema
+          original_request: $nodes.build_questionnaire.outputs OR $nodes.build_point_questions.outputs
+        depends_on: [request_clarifications]
+
+      - node_id: validate_clarifications
+        template: validate_response
+        inputs:
+          parsed_response: $nodes.parse_clarifications.outputs
+          original_questions: $nodes.build_questionnaire.outputs.questions
+          prior_knowledge:
+            declarations: [all extract_* outputs]
+            need_model: $nodes.consolidate_need.outputs
+        on_escalation:
+          - signal: contradictions_detected
+            action: iterate_phase
+            iteration_limit: 2
+          - signal: critical_unanswered
+            action: escalate_to_project_manager
+
+  # ==================== Фаза G: Работа с данными ====================
+  - phase_id: data_processing
+    depends_on: [clarification]
+    nodes:
+
+      - node_id: inventory_data_sources
+        template: inventory_items_from_mentions
+        inputs:
+          mentions: $nodes.extract_data.outputs
+          additional_info: $nodes.validate_clarifications.outputs.valid_answers
+          object_type_schema: $config.data_source_schema
+          domain_pack: $context.active_domain_pack
+
+      - node_id: clarify_data_attributes
+        template: generate_clarification_questions
+        foreach:
+          source: $nodes.inventory_data_sources.outputs
+          where: $source.unknown_attributes is not empty
+        foreach_attribute_category: [format_volume, quality_labeling, legal_access]
+        inputs:
+          target_object: $source
+          attribute_category: $attribute_category
+          domain_pack: $context.active_domain_pack
+        on_questions_generated:
+          action: inject_into_clarification_loop
+
+      - node_id: evaluate_data_sufficiency
+        template: evaluate_sufficiency_by_heuristics
+        inputs:
+          objects: $nodes.inventory_data_sources.outputs
+          domain_pack: $context.active_domain_pack
+          task_class_id: $context.active_task_class
+        depends_on: [inventory_data_sources]
+
+      - node_id: synthetic_decision
+        template: decide_synthetic_fallback
+        inputs:
+          sufficiency_verdict: $nodes.evaluate_data_sufficiency.outputs
+          domain_pack: $context.active_domain_pack
+          task_class_id: $context.active_task_class
+        when: $nodes.evaluate_data_sufficiency.outputs.sufficient == false
+        on_escalation:
+          - signal: needs_client_confirmation
+            action: request_confirmation_via_gateway
+
+  # ==================== Фаза H: Формализация требований ====================
+  - phase_id: requirements_formalization
+    depends_on: [clarification, data_processing]
+    nodes:
+
+      - node_id: generate_functional
+        template: generate_requirements_from_templates
+        inputs:
+          requirement_kind: functional
+          context_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.validate_clarifications.outputs.valid_answers
+          domain_pack: $context.active_domain_pack
+          id_prefix: "FR"
+
+      - node_id: generate_non_functional
+        template: generate_requirements_from_templates
+        inputs:
+          requirement_kind: non_functional
+          context_artifacts:
+            - $nodes.extract_metrics.outputs
+            - $nodes.extract_constraints.outputs
+            - $nodes.validate_clarifications.outputs.valid_answers
+          domain_pack: $context.active_domain_pack
+          id_prefix: "NFR"
+        parallel_with: [generate_functional]
+
+      - node_id: formalize_constraints
+        template: generate_constraints_from_mentions
+        inputs:
+          constraint_mentions: $nodes.extract_constraints.outputs
+          derived_constraints_sources:
+            - $nodes.synthetic_decision.outputs
+            - $nodes.inventory_data_sources.outputs
+          domain_pack: $context.active_domain_pack
+        parallel_with: [generate_functional]
+
+      - node_id: generate_acceptance
+        template: generate_acceptance_criteria
+        inputs:
+          requirements:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+          metric_mentions: $nodes.extract_metrics.outputs
+          acceptance_mentions: $nodes.extract_acceptance.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [generate_functional, generate_non_functional]
+
+      - node_id: check_requirements_consistency
+        template: detect_contradictions
+        inputs:
+          items:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+            - $nodes.generate_acceptance.outputs
+          contradiction_rules: $config.requirements_consistency_rules
+        depends_on: [generate_acceptance, formalize_constraints]
+        on_escalation:
+          - signal: critical_contradictions
+            action: escalate_for_conflict_resolution
+            via: clarification_phase
+
+  # ==================== Фаза I: Архитектурный анализ ====================
+  - phase_id: architecture
+    depends_on: [requirements_formalization]
+    nodes:
+
+      - node_id: classify_task
+        template: classify_within_taxonomy
+        inputs:
+          context_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.generate_functional.outputs
+          domain_pack: $context.active_domain_pack
+        outputs_binding:
+          class_id: $context.active_task_class
+
+      - node_id: select_pattern
+        template: select_pattern_from_catalog
+        inputs:
+          task_class_id: $context.active_task_class
+          input_characteristics:
+            data: $nodes.inventory_data_sources.outputs
+            quality_requirements: $nodes.generate_non_functional.outputs
+            constraints: $nodes.formalize_constraints.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [classify_task]
+
+      - node_id: arch_rationale
+        template: generate_rationale
+        inputs:
+          chosen_option: $nodes.select_pattern.outputs
+          requirements:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+        depends_on: [select_pattern]
+
+      - node_id: define_project_baseline
+        template: define_baseline
+        inputs:
+          task_class_id: $context.active_task_class
+          acceptance_criteria: $nodes.generate_acceptance.outputs
+          domain_pack: $context.active_domain_pack
+        depends_on: [classify_task]
+        parallel_with: [arch_rationale]
+
+  # ==================== Фаза J: Сборка ТЗ ====================
+  - phase_id: document_assembly
+    depends_on: [architecture]
+    nodes:
+      # Одна задача (generate_document_section), шесть параллельных вызовов
+      - node_id: section_context
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.context
+          input_artifacts:
+            - $nodes.consolidate_need.outputs
+            - $nodes.parse_request.outputs
+
+      - node_id: section_data
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.data
+          input_artifacts:
+            - $nodes.inventory_data_sources.outputs
+            - $nodes.evaluate_data_sufficiency.outputs
+            - $nodes.synthetic_decision.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_requirements
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.requirements
+          input_artifacts:
+            - $nodes.generate_functional.outputs
+            - $nodes.generate_non_functional.outputs
+            - $nodes.formalize_constraints.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_architecture
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.architecture
+          input_artifacts:
+            - $nodes.select_pattern.outputs
+            - $nodes.arch_rationale.outputs
+            - $nodes.define_project_baseline.outputs
+        parallel_with: [section_context]
+
+      - node_id: section_acceptance
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.acceptance
+          input_artifacts: [$nodes.generate_acceptance.outputs]
+        parallel_with: [section_context]
+
+      - node_id: section_assumptions
+        template: generate_document_section
+        inputs:
+          section_spec: $config.sections.assumptions
+          input_artifacts:
+            - $nodes.formalize_constraints.outputs
+            - $nodes.synthetic_decision.outputs
+            - $nodes.feasibility_verdict.outputs
+        parallel_with: [section_context]
+
+      - node_id: assemble
+        template: assemble_document
+        inputs:
+          sections:
+            - $nodes.section_context.outputs
+            - $nodes.section_data.outputs
+            - $nodes.section_requirements.outputs
+            - $nodes.section_architecture.outputs
+            - $nodes.section_acceptance.outputs
+            - $nodes.section_assumptions.outputs
+          document_metadata: $config.tz_metadata_template
+        depends_on:
+          - section_context
+          - section_data
+          - section_requirements
+          - section_architecture
+          - section_acceptance
+          - section_assumptions
+
+  # ==================== Фаза K: Валидация и согласование ====================
+  - phase_id: validation_and_approval
+    depends_on: [document_assembly]
+    nodes:
+
+      - node_id: check_completeness
+        template: check_document_completeness
+        inputs:
+          document: $nodes.assemble.outputs
+          completeness_checklist: $config.tz_completeness_checklist
+        on_escalation:
+          - signal: critical_missing
+            action: rollback_to_phase
+            target: $determined_by_missing_item
+
+      - node_id: check_consistency
+        template: check_internal_consistency
+        inputs:
+          document: $nodes.assemble.outputs
+          consistency_rules: $config.tz_consistency_rules
+        parallel_with: [check_completeness]
+        on_escalation:
+          - signal: blocker_contradictions
+            action: rollback_to_phase
+            target: requirements_formalization
+
+      - node_id: check_trace
+        template: check_traceability
+        inputs:
+          document: $nodes.assemble.outputs
+          source_artifacts:
+            - $inputs.raw_business_request
+            - $nodes.validate_clarifications.outputs.valid_answers
+          traceability_spec:
+            elements_to_trace: [FR, NFR, constraints, acceptance_criteria]
+            min_coverage: 0.9
+        parallel_with: [check_completeness]
+        on_escalation:
+          - signal: coverage_below_threshold
+            action: escalate_and_request_confirmations
+            via: clarification_phase
+
+      - node_id: client_approval
+        template: request_approval_via_gateway
+        inputs:
+          document: $nodes.assemble.outputs
+          cover_message: $config.tz_cover_message_template
+          timeout_hours: 120
+        depends_on: [check_completeness, check_consistency, check_trace]
+        on_escalation:
+          - signal: timeout_exceeded
+            action: escalate_to_project_manager
+          - signal: deep_rework_requested
+            action: abort_with_escalation
+
+      - node_id: process_comments
+        template: classify_comments
+        inputs:
+          comments_raw: $nodes.client_approval.outputs.comments_raw
+          document: $nodes.assemble.outputs
+          task_mapping: $config.comment_to_node_mapping
+        when: $nodes.client_approval.outputs.decision == "approved_with_comments"
+        on_outputs:
+          # Bubble Up: помечает triggered_workflow_nodes как Obsolete и перезапускает
+          action: rerun_nodes
+          nodes: $outputs.classified_comments[*].triggered_workflow_nodes
+          then: rerun_phase
+          target: validation_and_approval
+
+      - node_id: finalize
+        template: finalize_artifact
+        inputs:
+          artifact_content: $nodes.assemble.outputs
+          approval_decision: $nodes.client_approval.outputs
+          finalization_spec: $config.tz_finalization_spec
+        when: $nodes.client_approval.outputs.decision == "approved"
+        outputs_binding:
+          finalized_artifact: $outputs.approved_technical_specification

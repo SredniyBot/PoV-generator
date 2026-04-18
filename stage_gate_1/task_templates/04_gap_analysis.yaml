@@ -1,0 +1,84 @@
+# Категория 1.4: Gap-анализ
+# Задачи этой категории определяют, чего не хватает в запросе,
+# расставляют приоритеты пробелов и структурируют их для уточнения.
+
+---
+
+template_id: compare_against_checklist
+name: "Сверка набора элементов с чеклистом"
+type: Executable
+description: >
+  Детерминированная сверка: для каждого элемента чеклиста проверяет
+  наличие соответствия в наборе данных. Универсально — чеклист задаётся параметром.
+input_contract:
+  - name: items
+    type: any
+    required: true
+  - name: checklist
+    type: Checklist
+    required: true
+  - name: additional_inputs
+    type: array
+    required: false
+    description: "Дополнительные источники (например, open_questions из модели потребности)."
+output_contract:
+  - name: gap_report
+    type: array
+    schema: "[{field, category, required: bool, source, hint}]"
+execution:
+  kind: Tool
+escalation_signals: []
+
+---
+
+template_id: prioritize_items
+name: "Приоритезация набора элементов"
+type: Executable
+description: >
+  Присваивает каждому элементу приоритет по правилам, заданным параметром.
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: priority_rules
+    type: PriorityRules
+    required: true
+    description: "Правила присвоения приоритетов (например, {blocking: ..., important: ..., nice_to_have: ...})."
+  - name: context
+    type: object
+    required: false
+output_contract:
+  - name: prioritized_items
+    type: array
+    schema: "[{item, priority, reasoning}]"
+execution:
+  kind: LLM
+  constraints:
+    - "reasoning обязательно для каждого элемента"
+    - "Правила из priority_rules должны быть соблюдены (элементы с required=true не могут быть ниже important)"
+escalation_signals:
+  - extreme_distribution: "Доля blocking элементов > 70% (сигнал слишком неполного входа)"
+
+---
+
+template_id: group_and_structure_items
+name: "Группировка и структурирование набора элементов"
+type: Executable
+description: >
+  Группирует элементы по темам и добавляет сводную статистику.
+  Универсально — темы и схема сводки задаются параметром.
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: grouping_schema
+    type: object
+    required: true
+    description: "Темы для группировки + схема сводной статистики."
+output_contract:
+  - name: structured_items
+    type: object
+    schema: "определяется grouping_schema"
+execution:
+  kind: LLM
+escalation_signals: []

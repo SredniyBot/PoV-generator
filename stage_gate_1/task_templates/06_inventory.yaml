@@ -1,0 +1,132 @@
+# Категория 1.6: Инвентаризация и характеризация объектов
+# Задачи этой категории нормализуют упоминания в реестры объектов,
+# генерируют уточняющие вопросы и оценивают достаточность данных.
+
+---
+
+template_id: inventory_items_from_mentions
+name: "Инвентаризация объектов из набора упоминаний"
+type: Executable
+description: >
+  Из разрозненных упоминаний формирует нормализованный реестр объектов
+  с ID, известными и неизвестными атрибутами.
+  Универсально — применимо к источникам данных, внешним системам, сущностям.
+input_contract:
+  - name: mentions
+    type: array
+    required: true
+  - name: additional_info
+    type: array
+    required: false
+    description: "Ответы пользователя или другой контекст."
+  - name: object_type_schema
+    type: object
+    required: true
+    description: "Схема объекта: какие атрибуты может иметь, как их нормализовать."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: objects_inventory
+    type: array
+    schema: "[{id, name, type, known_attributes, unknown_attributes: [str]}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Дедупликация: одно и то же название = один объект"
+    - "Каждый объект получает уникальный ID"
+    - "unknown_attributes содержит атрибуты, известные схеме, но не заполненные — сигнал для последующего уточнения"
+escalation_signals:
+  - inventory_empty: "Упоминаний нет, хотя объекты требуются (сигнал для порождения уточняющего запроса)"
+
+---
+
+template_id: generate_clarification_questions
+name: "Генерация уточняющих вопросов по объекту"
+type: Executable
+description: >
+  Для конкретного объекта формирует вопросы об атрибутах, попадающих
+  в указанную категорию. Вопросы сгруппированы так, чтобы уточнение
+  шло пакетами по смысловым измерениям.
+input_contract:
+  - name: target_object
+    type: object
+    required: true
+  - name: attribute_category
+    type: string
+    required: true
+    description: "'format_volume' | 'quality_labeling' | 'legal_access' | любая категория из Domain Pack."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Шаблоны вопросов для категории берутся из domain_pack.clarification_templates[attribute_category]."
+output_contract:
+  - name: clarification_questions
+    type: array
+    schema: "[{question, expected_format, target_attribute}]"
+execution:
+  kind: LLM
+escalation_signals: []
+
+---
+
+template_id: evaluate_sufficiency_by_heuristics
+name: "Оценка достаточности по эвристикам"
+type: Executable
+description: >
+  Применяет эвристики из Domain Pack к набору объектов и возвращает
+  вердикт достаточности с оценкой риска.
+input_contract:
+  - name: objects
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Эвристики берутся из domain_pack.sufficiency_heuristics для применимого класса задачи."
+  - name: task_class_id
+    type: string
+    required: true
+    description: "Класс задачи в рамках поддомена (определяет применимые эвристики)."
+output_contract:
+  - name: sufficiency_verdict
+    type: object
+    schema: "{sufficient: bool, gaps: [str], risk_level: enum[low, medium, high]}"
+execution:
+  kind: LLM
+  constraints:
+    - "sufficient=true допустимо только при risk_level ∈ {low, medium}"
+    - "gaps содержит конкретные недостающие параметры со ссылками на эвристики"
+escalation_signals:
+  - insufficient_no_fallback: "sufficient=false и Domain Pack не разрешает синтетику для этого класса задачи"
+
+---
+
+template_id: decide_synthetic_fallback
+name: "Решение об использовании синтетических данных"
+type: Executable
+description: >
+  При недостаточности реальных данных — решает, применим ли синтетический fallback
+  согласно политике Domain Pack. Формирует обоснование и явные ограничения.
+input_contract:
+  - name: sufficiency_verdict
+    type: object
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "domain_pack.synthetic_data_policy определяет: для чего разрешено, для чего запрещено."
+  - name: task_class_id
+    type: string
+    required: true
+output_contract:
+  - name: synthetic_decision
+    type: object
+    schema: "{use_synthetic: bool, rationale, synthetic_for: [str], limitations: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Если use_synthetic=true, limitations не может быть пустым"
+    - "synthetic_for — только категории, явно разрешённые политикой"
+escalation_signals:
+  - needs_client_confirmation: "Решение об использовании синтетики требует явного подтверждения пользователя"
