@@ -2,7 +2,7 @@
 
 > **Статус:** v1.0 · Draft · 2026-04-15
 > **Зависимости:** [00_overview.md](00_overview.md), [01_template_registry.md](01_template_registry.md)
-> **Область:** часть компонента 2.5 State & Memory Broker из [ТЗ Архитектура.md](../Downloads/ТЗ%20Архитектура.md), отвечающая за задачи (не за артефакты и не за pipeline checkpoints).
+> **Область:** часть компонента State & Memory Broker из [ТЗ Архитектура.md](ТЗ%20Архитектура.md), отвечающая за задачи (не за артефакты и не за pipeline checkpoints).
 
 ---
 
