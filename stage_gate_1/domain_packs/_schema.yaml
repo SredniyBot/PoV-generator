@@ -1,0 +1,131 @@
+# Эталонная схема Domain Pack
+# Используйте этот файл как шаблон при создании нового поддомена.
+# Все поля с пометкой [required] обязательны для регистрации пака.
+# Добавление поддомена = создать новый файл по этой схеме + зарегистрировать в реестре.
+# Код Task Templates и Workflow не меняется.
+
+# ==================== Метаданные [required] ====================
+domain_pack_id: str          # уникальный идентификатор (например, 'rag_v1')
+name: str                    # человекочитаемое название
+version: str                 # SemVer
+description: str
+status: enum[active, deprecated, experimental]
+parent_pack: str | null      # для наследования от другого пака
+
+# ==================== Классификация поддомена [required] ====================
+# Потребляется: classify_against_registry (выбор активного Domain Pack)
+classification:
+  positive_signals: [str]    # фразы/признаки, характеризующие поддомен
+  negative_signals: [str]    # признаки, исключающие поддомен
+  typical_goals: [str]       # примеры типовых формулировок целей (для few-shot)
+  confidence_threshold: float
+
+# ==================== Границы применимости [required] ====================
+# Используется для ранней feasibility check
+applicability:
+  supported_task_classes: [str]   # классы задач, которые Domain Pack поддерживает
+  out_of_scope_patterns: [str]    # типовые out-of-scope сценарии
+
+# ==================== Извлечение упоминаний [required] ====================
+# Потребляется: extract_typed_mentions
+# Ключ — mention_type, значение — подсказки для LLM
+extraction_hints:
+  data:
+    typical_types: [str]
+    domain_examples: [str]
+    attribute_schema: {...}  # какие атрибуты пытаться извлечь
+  metrics:
+    typical_metrics: [str]
+    domain_specific_categories: [str]
+  constraints:
+    typical_constraints: [str]
+  acceptance:
+    typical_criteria: [str]
+  integrations:
+    typical_systems: [str]
+
+# ==================== Обязательные стейкхолдеры ====================
+# Потребляется: identify_stakeholders
+mandatory_stakeholders: [str]
+
+# ==================== Чеклист полноты [required] ====================
+# Потребляется: compare_against_checklist, prioritize_items
+completeness_checklist:
+  - field: str
+    category: enum[data, requirements, integrations, stakeholders, other]
+    priority: enum[blocking, important, nice_to_have]
+    question_hint: str        # как переформулировать пробел в вопрос
+    verification_rule: str    # правило, как проверить присутствие в извлечённых декларациях
+
+# ==================== Шаблоны вопросов ====================
+# Потребляется: generate_clarification_questions
+clarification_templates:
+  format_volume: [{question_template, expected_format, applicable_when}]
+  quality_labeling: [...]
+  legal_access: [...]
+  # ... другие категории, специфичные для поддомена
+
+# Потребляется: generate_batched_questionnaire, generate_point_question
+question_library:
+  - topic: str
+    question_variants: [str]
+    response_schema: JSONSchema
+
+# ==================== Эвристики достаточности данных [required] ====================
+# Потребляется: evaluate_sufficiency_by_heuristics
+sufficiency_heuristics:
+  - for_task_class: str
+    rules: [{metric, threshold, risk_if_below}]
+    min_recommended: object
+
+# ==================== Политика синтетики [required] ====================
+# Потребляется: decide_synthetic_fallback
+synthetic_data_policy:
+  allowed_for: [str]
+  never_for: [str]
+  default_limitations: [str]
+
+# ==================== Таксономия классов задач [required] ====================
+# Потребляется: classify_within_taxonomy
+task_class_taxonomy:
+  - class_id: str
+    class_name: str
+    signals: [str]
+    typical_inputs: [str]
+    typical_outputs: [str]
+
+# ==================== Архитектурные паттерны [required] ====================
+# Потребляется: select_pattern_from_catalog
+architecture_patterns:
+  - pattern_id: str
+    name: str
+    description: str
+    applicable_to: [task_class_id]
+    applicability_rules: [{condition, requirement}]
+    components: {...}
+    complexity_level: enum[low, medium, high]
+    default_for_mvp: bool
+
+# ==================== Шаблоны требований [required] ====================
+# Потребляется: generate_requirements_from_templates
+requirements_templates:
+  functional:
+    - id_suffix: str
+      statement_template: str
+      default_priority: enum[must, should, could]
+      applicable_to_task_classes: [str] | "all"
+      conditional_on: str | null
+  non_functional:
+    - id_suffix: str
+      category: enum[performance, reliability, maintainability, usability, security]
+      statement_template: str
+      default_target: str
+      default_priority: enum[must, should, could]
+
+# ==================== Baseline-решения [required] ====================
+# Потребляется: define_baseline
+baseline_definitions:
+  - for_task_class: str
+    description_template: str
+    typical_limitations: [str]
+    typical_metrics: [str]

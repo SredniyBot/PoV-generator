@@ -1,0 +1,124 @@
+# Категория 1.8: Архитектурный анализ
+# Задачи этой категории классифицируют задачу по доменной таксономии,
+# выбирают архитектурный паттерн, формируют обоснование и определяют baseline.
+
+---
+
+template_id: classify_within_taxonomy
+name: "Классификация задачи по таксономии"
+type: Executable
+description: >
+  Относит задачу к классу из доменной таксономии.
+  Универсально — таксономия приходит из Domain Pack.
+input_contract:
+  - name: context_artifacts
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Таксономия — domain_pack.task_class_taxonomy."
+output_contract:
+  - name: task_class
+    type: object
+    schema: "{class_id, class_name, confidence, reasoning, alternatives: []}"
+execution:
+  kind: LLM
+  constraints:
+    - "class_id строго из таксономии"
+    - "При confidence < 0.7 — обязательны alternatives"
+escalation_signals:
+  - no_matching_class: "Задача не укладывается ни в один класс таксономии (сигнал к пересмотру выбора Domain Pack)"
+
+---
+
+template_id: select_pattern_from_catalog
+name: "Выбор паттерна из доменного каталога"
+type: Executable
+description: >
+  Выбирает архитектурный паттерн из каталога Domain Pack на основе
+  класса задачи и характеристик входа.
+input_contract:
+  - name: task_class_id
+    type: string
+    required: true
+  - name: input_characteristics
+    type: object
+    required: true
+    description: "Данные для применения правил выбора (объём данных, требования к качеству, ...)."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Каталог паттернов — domain_pack.architecture_patterns."
+output_contract:
+  - name: pattern_choice
+    type: object
+    schema: "{pattern_id, components, rationale}"
+execution:
+  kind: LLM
+  constraints:
+    - "pattern_id строго из каталога"
+    - "Правила применимости из каталога соблюдены"
+    - "rationale ссылается на конкретные требования"
+escalation_signals:
+  - no_pattern_satisfies_constraints: "Ни один паттерн не удовлетворяет входным характеристикам"
+
+---
+
+template_id: generate_rationale
+name: "Генерация обоснования выбора"
+type: Executable
+description: >
+  Формирует связный текст, обосновывающий выбор, через таблицу
+  сопоставления 'требование → как удовлетворяется'.
+input_contract:
+  - name: chosen_option
+    type: object
+    required: true
+  - name: requirements
+    type: array
+    required: true
+  - name: alternatives_considered
+    type: array
+    required: false
+output_contract:
+  - name: rationale_document
+    type: string
+    format: markdown
+execution:
+  kind: LLM
+  constraints:
+    - "Таблица сопоставления покрывает все must-требования"
+    - "Отдельный блок 'Риски' с мерами митигации (минимум 2 риска)"
+escalation_signals: []
+
+---
+
+template_id: define_baseline
+name: "Определение baseline-решения"
+type: Executable
+description: >
+  Формирует описание baseline — простого решения для сравнения.
+  Берёт типовой baseline для класса задачи из Domain Pack и адаптирует под контекст.
+input_contract:
+  - name: task_class_id
+    type: string
+    required: true
+  - name: acceptance_criteria
+    type: array
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "domain_pack.baseline_definitions."
+output_contract:
+  - name: baseline
+    type: object
+    schema: "{description, expected_limitations: [str], comparison_metrics: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Baseline проще основного решения"
+    - "comparison_metrics ⊆ измеримых acceptance_criteria"
+escalation_signals:
+  - no_shared_metrics: "Нет метрик, общих между baseline и основным решением"

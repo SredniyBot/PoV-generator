@@ -1,0 +1,133 @@
+# Категория 1.2: Анализ смысла текста
+# Задачи этой категории извлекают намерение, строят гипотезы,
+# выявляют стейкхолдеров и консолидируют модель потребности.
+
+---
+
+template_id: extract_declared_goal
+name: "Извлечение декларируемой цели из текста"
+type: Executable
+description: >
+  Формулирует в одном предложении то, что ЯВНО просят сделать.
+  Без интерпретации причин.
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Даёт few-shot примеры формулировок целей для поддомена."
+output_contract:
+  - name: declared_goal
+    type: object
+    schema: "{goal_statement: str, direct_quotes: [str]}"
+execution:
+  kind: LLM
+  constraints:
+    - "goal_statement — одно предложение"
+    - "Запрещены формулировки 'чтобы X' без явного подтверждения в direct_quotes"
+    - "Минимум одна цитата из source_text"
+escalation_signals:
+  - no_goal_found: "В тексте нет явной цели — предположительно вход неполный"
+
+---
+
+template_id: generate_hypotheses
+name: "Генерация гипотез по теме"
+type: Executable
+description: >
+  Универсальный генератор гипотез: о первопричине, о baseline-процессе,
+  о любой другой теме, задаваемой параметром hypothesis_topic.
+  В Workflow вызывается дважды: hypothesis_topic=root_cause и hypothesis_topic=baseline_process.
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: context_artifacts
+    type: array
+    required: false
+    description: "Дополнительный контекст (например, declared_goal для генерации гипотез о первопричине)."
+  - name: hypothesis_topic
+    type: string
+    required: true
+    description: "Тема гипотез: 'root_cause' | 'baseline_process' | любой другой. Определяет промпт-вариацию."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Для baseline-гипотез — типовые baseline для поддомена."
+  - name: max_hypotheses
+    type: integer
+    required: false
+    default: 4
+output_contract:
+  - name: hypotheses
+    type: array
+    schema: "[{hypothesis, supporting_signals: [str], plausibility: float, verification_question: str}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждая гипотеза — поле verification_question обязательно"
+    - "Минимум 2 гипотезы, максимум — max_hypotheses"
+    - "Гипотезы по возможности взаимоисключающие"
+escalation_signals:
+  - all_low_plausibility: "Все гипотезы получили plausibility < 0.3 — входная информация слишком абстрактна"
+
+---
+
+template_id: identify_stakeholders
+name: "Выявление стейкхолдеров и их интересов"
+type: Executable
+description: >
+  Определяет роли, затронутые задачей, и предполагаемые интересы каждой роли.
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: context_artifacts
+    type: array
+    required: false
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Задаёт обязательные стейкхолдеры для поддомена (например, для RAG: asker, corpus_owner)."
+output_contract:
+  - name: stakeholders_map
+    type: array
+    schema: "[{role, interest, explicit_in_source: bool}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Минимум 2 роли"
+    - "Если domain_pack задаёт обязательных стейкхолдеров — они должны присутствовать"
+    - "Если роль не упомянута явно — explicit_in_source=false (сигнал для последующего gap-анализа)"
+escalation_signals: []
+
+---
+
+template_id: consolidate_analysis
+name: "Консолидация набора аналитических артефактов"
+type: Executable
+description: >
+  Сводит результаты нескольких анализов в единую модель,
+  выявляет противоречия и формирует открытые вопросы.
+input_contract:
+  - name: artifacts_to_consolidate
+    type: array
+    required: true
+    description: "Набор связанных артефактов (например, declared_goal + hypotheses + stakeholders_map)."
+  - name: consolidation_schema
+    type: object
+    required: true
+    description: "Схема итоговой модели."
+output_contract:
+  - name: consolidated_model
+    type: object
+    schema: "определяется consolidation_schema + стандартные поля: internal_contradictions, open_questions"
+execution:
+  kind: LLM
+  constraints:
+    - "open_questions содержит все найденные internal_contradictions как явные вопросы"
+    - "Ограничение когнитивной нагрузки на заказчика: не более 7 open_questions"
+escalation_signals:
+  - contradictions_unresolvable: "Противоречия настолько нечёткие, что не формулируются как вопрос"

@@ -1,0 +1,133 @@
+# Категория 1.7: Формализация требований
+# Задачи этой категории превращают извлечённые упоминания и модель потребности
+# в формальные требования, ограничения, критерии приёмки и проверяют их непротиворечивость.
+
+---
+
+template_id: generate_requirements_from_templates
+name: "Генерация требований из доменных шаблонов"
+type: Executable
+description: >
+  Создаёт список формализованных требований (ФТ или НФТ — задаётся параметром)
+  на основе шаблонов из Domain Pack и контекста задачи.
+input_contract:
+  - name: requirement_kind
+    type: string
+    required: true
+    description: "'functional' | 'non_functional'."
+  - name: context_artifacts
+    type: array
+    required: true
+    description: "Артефакты, влияющие на формулировки (need_model, mentions, clarifications)."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: "Шаблоны требований — из domain_pack.requirements_templates[requirement_kind]."
+  - name: id_prefix
+    type: string
+    required: false
+    default: "FR"
+output_contract:
+  - name: requirements
+    type: array
+    schema: "[{id, statement, priority, category, target_value, source}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое требование имеет уникальный ID с префиксом id_prefix"
+    - "Формулировка в форме 'Система должна ...' (для ФТ) или привязанной к категории (для НФТ)"
+    - "Обязательна трассировка (source) к конкретному входному артефакту"
+    - "Базовый набор требований из шаблонов Domain Pack должен присутствовать (если применим)"
+escalation_signals:
+  - base_set_unachievable: "Не удаётся сформулировать даже базовый набор из шаблонов Domain Pack (признак недоопределённого входа)"
+
+---
+
+template_id: generate_constraints_from_mentions
+name: "Формализация ограничений"
+type: Executable
+description: >
+  Превращает упоминания ограничений и следствия из других артефактов
+  в формальные Constraint-записи.
+input_contract:
+  - name: constraint_mentions
+    type: array
+    required: true
+  - name: derived_constraints_sources
+    type: array
+    required: false
+    description: "Источники, из которых ограничения выводятся (например, data_specification → constraint по защите ПД)."
+  - name: domain_pack
+    type: DomainPack
+    required: false
+output_contract:
+  - name: constraints
+    type: array
+    schema: "[{id, type, statement, is_hard: bool, source}]"
+execution:
+  kind: LLM
+escalation_signals: []
+
+---
+
+template_id: generate_acceptance_criteria
+name: "Формирование критериев приёмки"
+type: Executable
+description: >
+  Для каждого must-требования и ключевых НФТ генерирует измеримый
+  критерий приёмки с методом проверки.
+input_contract:
+  - name: requirements
+    type: array
+    required: true
+    description: "Объединённый список ФТ и НФТ."
+  - name: metric_mentions
+    type: array
+    required: false
+  - name: acceptance_mentions
+    type: array
+    required: false
+  - name: domain_pack
+    type: DomainPack
+    required: false
+    description: "Для примеров методов проверки в поддомене."
+output_contract:
+  - name: acceptance_criteria
+    type: array
+    schema: "[{id, statement, measurable: bool, target, verification_method, linked_requirements}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое must-требование покрыто хотя бы одним критерием"
+    - "verification_method конкретный (не 'проверяется вручную' без деталей)"
+    - "measurable=false допустимо только при явном обосновании"
+escalation_signals:
+  - unmeasurable_must_requirement: "Must-требование без возможности сформулировать измеримый критерий"
+
+---
+
+template_id: detect_contradictions
+name: "Поиск противоречий в наборе элементов"
+type: Executable
+description: >
+  Универсальный поиск противоречий между элементами
+  (требования vs ограничения, ответы заказчика vs ранее известное,
+  архитектурный выбор vs требования).
+input_contract:
+  - name: items
+    type: array
+    required: true
+  - name: contradiction_rules
+    type: ContradictionRules
+    required: true
+    description: "Правила попарной или групповой проверки на противоречия."
+output_contract:
+  - name: contradictions_report
+    type: object
+    schema: "{is_consistent: bool, contradictions: [{description, involved_items, severity}]}"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое противоречие описано с упоминанием конкретных ID элементов"
+escalation_signals:
+  - critical_contradictions: "Есть противоречия с severity=blocker"

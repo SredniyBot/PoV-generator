@@ -1,0 +1,198 @@
+domain_pack_id: rag_v1
+name: "RAG-системы"
+version: "1.0.0"
+status: active
+
+classification:
+  positive_signals:
+    - "поиск по документам"
+    - "ответы на вопросы по корпусу"
+    - "извлечение информации из базы знаний"
+    - "чат с документами"
+    - "knowledge base Q&A"
+  negative_signals:
+    - "предсказание числового значения"
+    - "классификация на фиксированное число классов"
+    - "регрессия"
+  typical_goals:
+    - "Давать ответы сотрудникам по внутренней документации"
+    - "Находить релевантные фрагменты в корпусе документов"
+  confidence_threshold: 0.7
+
+applicability:
+  supported_task_classes: [chat_with_docs, faq_qa, structured_extraction, summarization_over_corpus]
+  out_of_scope_patterns:
+    - id: realtime_streaming_rag
+      description: "RAG с требованием latency < 100ms"
+      severity: warning
+
+extraction_hints:
+  data:
+    typical_types: [document_corpus, wiki, confluence, sharepoint, email_archive, codebase]
+    domain_examples:
+      - "документация в Confluence"
+      - "база вопросов-ответов"
+      - "корпус PDF-документов"
+    attribute_schema:
+      format: enum[pdf, docx, html, txt, markdown, mixed]
+      volume: {count, total_size_bytes}
+      language: [str]
+      update_frequency: enum[static, periodic, continuous]
+  metrics:
+    typical_metrics:
+      - retrieval_precision
+      - answer_faithfulness
+      - citation_coverage
+      - response_latency_p95
+  integrations:
+    typical_systems: [confluence, sharepoint, github, jira, ldap_sso]
+
+mandatory_stakeholders: [asker, corpus_owner]
+
+completeness_checklist:
+  - field: corpus_description
+    category: data
+    priority: blocking
+    question_hint: "Какой корпус документов используется? Объём, формат, язык?"
+    verification_rule: "mentions.data содержит хотя бы один объект с type=document_corpus"
+  - field: query_types
+    category: requirements
+    priority: blocking
+    question_hint: "Какие вопросы задают пользователи? 3-5 типовых примеров"
+  - field: response_quality_bar
+    category: requirements
+    priority: important
+    question_hint: "Какое качество ответов считается приемлемым?"
+  - field: answer_format
+    category: requirements
+    priority: important
+    question_hint: "В каком формате ожидается ответ: короткий/развёрнутый, с цитатами/без?"
+  - field: corpus_update_policy
+    category: data
+    priority: nice_to_have
+
+clarification_templates:
+  format_volume:
+    - question_template: "В каком формате хранятся документы? (PDF, DOCX, HTML, txt)"
+      expected_format: "enum"
+    - question_template: "Сколько документов в корпусе и каков средний размер?"
+      expected_format: "numeric + units"
+  quality_labeling:
+    - question_template: "Есть ли у документов метаданные (дата, автор, тип)?"
+    - question_template: "Какая доля документов устарела? Есть ли дубликаты?"
+  legal_access:
+    - question_template: "Содержат ли документы ПД или конфиденциальные сведения?"
+    - question_template: "Как технически получить доступ: API, выгрузка, дамп?"
+
+sufficiency_heuristics:
+  - for_task_class: chat_with_docs
+    rules:
+      - metric: corpus_document_count
+        threshold: 50
+        risk_if_below: high
+      - metric: avg_document_length
+        threshold: 200
+        risk_if_below: medium
+    min_recommended: {count: 200, languages_coverage: "все целевые языки"}
+
+synthetic_data_policy:
+  allowed_for: [user_queries, evaluation_questions]
+  never_for: [corpus_documents]
+  default_limitations:
+    - "Синтетические запросы не отражают распределение реальных вопросов пользователей"
+    - "Метрики на синтетических запросах — ориентир, не финальная оценка"
+
+task_class_taxonomy:
+  - class_id: chat_with_docs
+    class_name: "Диалог по корпусу документов"
+    signals: ["многоходовой диалог", "учёт контекста беседы"]
+    typical_inputs: ["сообщение пользователя", "история диалога"]
+    typical_outputs: ["ответ", "ссылки на источники"]
+  - class_id: faq_qa
+    class_name: "Ответы на вопросы из FAQ"
+    signals: ["одноходовой Q&A", "ограниченный набор тем"]
+  - class_id: structured_extraction
+    class_name: "Извлечение структурированных полей"
+    signals: ["заполнение формы", "извлечение сущностей"]
+  - class_id: summarization_over_corpus
+    class_name: "Суммаризация по корпусу"
+    signals: ["обобщение", "краткое содержание"]
+
+architecture_patterns:
+  - pattern_id: naive_rag
+    name: "Naive RAG"
+    description: "Базовый RAG: embedder → vector store → retriever → generator"
+    applicable_to: [faq_qa, chat_with_docs]
+    applicability_rules:
+      - condition: "corpus_document_count < 1000"
+        requirement: "quality_bar != critical"
+    components: {embedder, vector_store, retriever, generator}
+    complexity_level: low
+    default_for_mvp: true
+  - pattern_id: advanced_rag_with_reranking
+    name: "Advanced RAG + reranking"
+    applicable_to: [chat_with_docs, faq_qa]
+    applicability_rules:
+      - condition: "quality_bar == high OR corpus_document_count >= 1000"
+    components: {embedder, vector_store, retriever, reranker, generator}
+    complexity_level: medium
+    default_for_mvp: false
+  - pattern_id: hierarchical_rag
+    name: "Hierarchical RAG"
+    applicable_to: [summarization_over_corpus, chat_with_docs]
+    applicability_rules:
+      - condition: "corpus_document_count >= 10000 OR mixed_document_types"
+    complexity_level: high
+    default_for_mvp: false
+  - pattern_id: agentic_rag
+    name: "Agentic RAG"
+    applicable_to: [chat_with_docs]
+    applicability_rules:
+      - condition: "requires_multi_step_reasoning"
+    complexity_level: high
+    default_for_mvp: false
+
+requirements_templates:
+  functional:
+    - id_suffix: "001"
+      statement_template: "Система должна принимать запрос пользователя в текстовом формате"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "002"
+      statement_template: "Система должна выполнять поиск релевантных фрагментов в корпусе"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "003"
+      statement_template: "Система должна формировать ответ на основе найденных фрагментов"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "004"
+      statement_template: "Система должна возвращать ссылки на использованные источники"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "005"
+      statement_template: "Система должна поддерживать контекст диалога"
+      default_priority: must
+      applicable_to_task_classes: [chat_with_docs]
+  non_functional:
+    - id_suffix: "001"
+      category: reliability
+      statement_template: "Ответы должны быть faithful к найденным источникам (без галлюцинаций)"
+      default_priority: must
+    - id_suffix: "002"
+      category: maintainability
+      statement_template: "Все LLM-вызовы логируются для анализа и воспроизведения"
+      default_priority: must
+
+baseline_definitions:
+  - for_task_class: chat_with_docs
+    description_template: "Naive RAG с дефолтным embedder и без reranking"
+    typical_limitations:
+      - "Низкая точность на многоходовых диалогах"
+      - "Отсутствие обработки устаревших документов"
+    typical_metrics: [retrieval_precision, answer_faithfulness]
+  - for_task_class: faq_qa
+    description_template: "Naive RAG + поиск по чанкам фиксированного размера"
+    typical_limitations:
+      - "Нет семантической группировки похожих вопросов"
+    typical_metrics: [retrieval_precision, answer_faithfulness]

@@ -1,0 +1,39 @@
+# Категория 1.3: Извлечение типизированных упоминаний
+# Одна универсальная задача заменяет пять специализированных (v1: задачи 401–405).
+# В Workflow вызывается 5 раз параллельно с разными значениями mention_type:
+#   data | metrics | constraints | acceptance | integrations
+
+---
+
+template_id: extract_typed_mentions
+name: "Извлечение типизированных упоминаний из текста"
+type: Executable
+description: >
+  Находит упоминания заданного типа (данные / метрики / ограничения /
+  критерии приёмки / интеграции / любой другой тип, описанный в Domain Pack).
+  НЕ классифицирует и НЕ оценивает — только вычленяет.
+input_contract:
+  - name: source_text
+    type: string
+    required: true
+  - name: mention_type
+    type: string
+    required: true
+    description: "'data' | 'metrics' | 'constraints' | 'acceptance' | 'integrations' | любой тип из Domain Pack."
+  - name: domain_pack
+    type: DomainPack
+    required: true
+    description: >
+      Из domain_pack.extraction_hints[mention_type] берутся:
+      typical_types, domain_examples, extraction_guidelines.
+output_contract:
+  - name: typed_mentions
+    type: array
+    schema: "[{mention, quote, extracted_attributes: object}]"
+execution:
+  kind: LLM
+  constraints:
+    - "Каждое упоминание обязано иметь quote (прямую цитату)"
+    - "Атрибуты заполняются только если явно упомянуты"
+    - "Пустой массив — валидный результат"
+escalation_signals: []

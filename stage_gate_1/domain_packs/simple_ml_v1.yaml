@@ -1,0 +1,140 @@
+domain_pack_id: simple_ml_v1
+name: "Простые ML-модели"
+version: "1.0.0"
+status: active
+
+classification:
+  positive_signals:
+    - "предсказание значения"
+    - "классификация на классы"
+    - "регрессия"
+    - "обнаружение аномалий"
+    - "целевая переменная"
+  negative_signals:
+    - "поиск в документах"
+    - "генерация текста на основе корпуса"
+  confidence_threshold: 0.7
+
+applicability:
+  supported_task_classes: [binary_classification, multiclass_classification, regression, anomaly_detection]
+
+extraction_hints:
+  data:
+    typical_types: [tabular_db, labeled_dataset, log_stream, event_stream]
+    attribute_schema:
+      schema: object
+      rows_count: integer
+      target_variable: string | null
+      labeled: bool
+      class_balance: object | null
+
+mandatory_stakeholders: [data_owner, consumer_of_predictions]
+
+completeness_checklist:
+  - field: target_variable
+    category: requirements
+    priority: blocking
+    question_hint: "Что именно должна предсказывать модель?"
+  - field: labeled_data_availability
+    category: data
+    priority: blocking
+    question_hint: "Есть ли размеченные данные? Сколько? Кто размечал?"
+  - field: prediction_consumption
+    category: requirements
+    priority: blocking
+    question_hint: "Как результат предсказания будет использоваться?"
+
+sufficiency_heuristics:
+  - for_task_class: binary_classification
+    rules:
+      - metric: min_rows_per_class
+        threshold: 500
+        risk_if_below: high
+  - for_task_class: multiclass_classification
+    rules:
+      - metric: min_rows_per_class
+        threshold: 200
+        risk_if_below: medium
+  - for_task_class: regression
+    rules:
+      - metric: total_rows
+        threshold: 1000
+        risk_if_below: medium
+
+synthetic_data_policy:
+  allowed_for: [tabular_features]
+  never_for: []
+  default_limitations:
+    - "Синтетика не отражает реальные распределения признаков"
+
+task_class_taxonomy:
+  - class_id: binary_classification
+    class_name: "Бинарная классификация"
+    signals: ["два класса", "да/нет", "0/1"]
+  - class_id: multiclass_classification
+    class_name: "Мультиклассовая классификация"
+    signals: ["несколько классов", "категории"]
+  - class_id: regression
+    class_name: "Регрессия"
+    signals: ["числовое значение", "прогноз величины"]
+  - class_id: anomaly_detection
+    class_name: "Обнаружение аномалий"
+    signals: ["выбросы", "нетипичное поведение", "детектирование отклонений"]
+
+architecture_patterns:
+  - pattern_id: linear_baseline
+    name: "Linear/Logistic Regression"
+    applicable_to: [binary_classification, regression]
+    complexity_level: low
+    default_for_mvp: true
+  - pattern_id: tree_based
+    name: "Decision Tree / Random Forest"
+    applicable_to: [binary_classification, multiclass_classification, regression]
+    complexity_level: low
+    default_for_mvp: false
+  - pattern_id: gradient_boosting
+    name: "Gradient Boosting (XGBoost / LightGBM)"
+    applicable_to: [binary_classification, multiclass_classification, regression]
+    applicability_rules:
+      - condition: "total_rows >= 5000"
+    complexity_level: medium
+    default_for_mvp: false
+  - pattern_id: neural_network
+    name: "Neural Network"
+    applicable_to: [binary_classification, multiclass_classification, regression, anomaly_detection]
+    applicability_rules:
+      - condition: "total_rows >= 100000"
+    complexity_level: high
+    default_for_mvp: false
+
+requirements_templates:
+  functional:
+    - id_suffix: "001"
+      statement_template: "Система должна принимать вектор признаков указанной схемы"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "002"
+      statement_template: "Система должна валидировать входные данные на соответствие схеме"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "003"
+      statement_template: "Система должна возвращать предсказание указанного типа"
+      default_priority: must
+      applicable_to_task_classes: "all"
+    - id_suffix: "004"
+      statement_template: "Система должна возвращать уверенность предсказания"
+      default_priority: should
+      applicable_to_task_classes: "all"
+
+baseline_definitions:
+  - for_task_class: binary_classification
+    description_template: "Logistic regression на сырых признаках"
+    typical_limitations:
+      - "Не учитывает нелинейные зависимости"
+      - "Чувствителен к несбалансированным классам"
+    typical_metrics: [accuracy, f1, roc_auc]
+  - for_task_class: regression
+    description_template: "Linear regression на сырых признаках"
+    typical_limitations:
+      - "Предполагает линейную зависимость"
+    typical_metrics: [mae, rmse, r2]
