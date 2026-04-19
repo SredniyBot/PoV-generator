@@ -1,7 +1,7 @@
 kind: template
 id: common.requirements_spec_generation
 version: 1.0.0
-name: Draft Requirements Specification
+name: Подготовка черновика ТЗ
 type: executable
 status: active
 domain: common
@@ -30,7 +30,7 @@ outputs:
   artifact_roles:
     - requirements_spec
 framework:
-  summary: Produce a structured draft specification grounded in clarified goals, user stories, and explored alternatives.
+  summary: Сформируй структурированный черновик ТЗ на основе уточнённой цели, user story и рассмотренных альтернатив.
 context_policy:
   max_tokens: 2600
 tool_policy:

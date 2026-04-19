@@ -3,14 +3,17 @@ id: gap_types
 version: 1.0.0
 entries:
   - id: unclear_goal
-    label: Unclear Goal
-    description: The business objective is not yet clear enough to proceed.
+    label: Непонятная цель
+    description: Бизнес-цель пока сформулирована недостаточно чётко, чтобы двигаться дальше.
   - id: missing_user_stories
-    label: Missing User Stories
-    description: Expected users and usage scenarios are not yet mapped.
+    label: Не собраны user story
+    description: Ещё не описаны основные пользователи, их сценарии и ожидания.
   - id: alternatives_not_explored
-    label: Alternatives Not Explored
-    description: The solution space has not yet been compared at a meaningful level.
+    label: Не разобраны альтернативы
+    description: Варианты решения ещё не рассмотрены и не сравнены на осмысленном уровне.
   - id: draft_not_reviewed
-    label: Draft Not Reviewed
-    description: The current specification draft still needs structured review.
+    label: Черновик не прошёл ревью
+    description: Текущий черновик спецификации ещё не прошёл структурированную проверку.
+  - id: frontend_user_flows_missing
+    label: Не разобраны пользовательские потоки интерфейса
+    description: Для интерфейсной части ещё не выделены основные роли, потоки и ожидания по экранам.

@@ -1,7 +1,7 @@
 kind: template
 id: common.goal_clarification
 version: 1.0.0
-name: Clarify Business Goal
+name: Уточнение бизнес-цели
 type: executable
 status: active
 domain: common
@@ -25,7 +25,7 @@ outputs:
   artifact_roles:
     - clarification_notes
 framework:
-  summary: Extract the business objective, clarify success criteria, and expose missing assumptions.
+  summary: Выдели реальную бизнес-цель, уточни критерии успеха и явно зафиксируй недостающие предположения.
 context_policy:
   max_tokens: 1800
 tool_policy:

@@ -11,7 +11,7 @@
 ### 1.1. Что делает
 - Хранит **структурированное понимание проекта**, а не сырой набор документов.
 - Ведёт append-only историю изменений `ProblemState`.
-- Поддерживает активные gaps, decisions, constraints, assumptions, risks, domain signals и readiness model.
+- Поддерживает активные gaps, decisions, constraints, assumptions, risks, domain signals, enabled domain packs и readiness model.
 - Принимает patches от задач, пользователя, разработчика и validation layer.
 - Даёт Planning Coordinator'у компактное и детерминированное состояние для admission/selection следующего шага.
 
@@ -106,6 +106,20 @@ class DomainSignal(BaseModel):
     value: str
     confidence: float
 
+class EnabledDomainPack(BaseModel):
+    pack_id: NamespacedId
+    version: str
+    activation_reason: str
+    activated_in_version: int
+
+class RecipeCompositionRecord(BaseModel):
+    base_recipe_id: NamespacedId
+    base_recipe_version: str
+    composed_recipe_id: NamespacedId
+    composed_recipe_version: str
+    fragment_refs: list[str] = []
+    updated_in_version: int
+
 class ReadinessDimension(BaseModel):
     readiness_type: NamespacedId
     title: str
@@ -131,6 +145,8 @@ class ProblemStateSnapshot(BaseModel):
     assumptions: list[AssumptionRecord]
     risks: list[RiskRecord]
     domain_signals: list[DomainSignal]
+    enabled_domain_packs: list[EnabledDomainPack]
+    recipe_composition: RecipeCompositionRecord | None
     readiness: list[ReadinessDimension]
     extensions: dict[str, Any] = {}
     created_at: datetime
@@ -140,6 +156,11 @@ class ProblemStateSnapshot(BaseModel):
 ### 2.2. Domain extensions
 
 `extensions` допускает domain-specific JSON, но только по схеме `SchemaRef`. Extension не может дублировать core fields (`goal`, `active_gaps`, `decisions`, `constraints`, `risks`).
+
+Нормативное правило:
+
+- факт подключения домена должен быть отражён не только в `extensions`, а в explicit fields `enabled_domain_packs` и `recipe_composition`;
+- это нужно для explainability: система должна уметь ответить, почему в проекте появились дополнительные обязательные шаги для ТЗ или архитектуры.
 
 ---
 
@@ -215,6 +236,20 @@ class FieldSet(BaseModel):
     field_path: ProblemFieldPath
     value: Any
     mode: Literal["replace", "append", "merge", "set_if_empty"] = "replace"
+
+class DomainPackEnable(BaseModel):
+    op: Literal["domain_pack_enable"] = "domain_pack_enable"
+    pack_id: NamespacedId
+    version: str
+    activation_reason: str
+
+class RecipeCompositionSet(BaseModel):
+    op: Literal["recipe_composition_set"] = "recipe_composition_set"
+    base_recipe_id: NamespacedId
+    base_recipe_version: str
+    composed_recipe_id: NamespacedId
+    composed_recipe_version: str
+    fragment_refs: list[str] = []
 ```
 
 ```python
@@ -228,6 +263,8 @@ ProblemPatchOp = (
     | RiskUpsert
     | ReadinessUpsert
     | FieldSet
+    | DomainPackEnable
+    | RecipeCompositionSet
 )
 
 class ProblemStatePatch(BaseModel):
@@ -250,6 +287,7 @@ class ProblemStatePatch(BaseModel):
 4. `gap_close` закрывает только активный gap matching по `gap_type`.
 5. `decision_supersede` всегда создаёт новую запись решения и помечает старую как `superseded`.
 6. `field_set` не может менять `active_gaps`, `decisions`, `constraints`, `assumptions`, `risks` напрямую; для этого нужны соответствующие операции.
+7. Подключение domain pack и изменение composed recipe допускается только explicit operations `domain_pack_enable` и `recipe_composition_set`.
 
 ---
 
@@ -287,6 +325,8 @@ CREATE TABLE problem_state_snapshots (
     assumptions          JSONB        NOT NULL DEFAULT '[]'::jsonb,
     risks                JSONB        NOT NULL DEFAULT '[]'::jsonb,
     domain_signals       JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    enabled_domain_packs JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    recipe_composition   JSONB,
     readiness            JSONB        NOT NULL DEFAULT '[]'::jsonb,
     extensions           JSONB        NOT NULL DEFAULT '{}'::jsonb,
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -462,6 +502,8 @@ class ProblemStateStore(Protocol):
 | P8 | Patch без `expected_version` запрещён |
 | P9 | У проекта не более одной readiness dimension на `readiness_type` |
 | P10 | `blocking` readiness в статусе `not_ready` или `unknown` должно учитываться planner'ом как admission constraint |
+| P11 | Подключённый domain pack должен существовать в registry и иметь `status=active`, если проект находится в active lifecycle |
+| P12 | `recipe_composition` обязана ссылаться на существующий base recipe и допустимые fragment refs |
 
 ---
 
@@ -480,6 +522,8 @@ Planner использует только `ProblemStateSnapshot` и projections,
 - `problem_readiness`;
 - активные gaps;
 - confirmed/proposed decisions;
+- `enabled_domain_packs`;
+- `recipe_composition`;
 - recipe-related readiness deficits.
 
 ### 8.3. С Validation Layer

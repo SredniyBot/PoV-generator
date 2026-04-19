@@ -1,7 +1,7 @@
 kind: template
 id: common.requirements_spec_review
 version: 1.0.0
-name: Review Requirements Specification
+name: Ревью ТЗ
 type: executable
 status: active
 domain: common
@@ -26,7 +26,7 @@ outputs:
   artifact_roles:
     - review_report
 framework:
-  summary: Review the draft specification for completeness, consistency, and implementation readiness.
+  summary: Проверь черновик ТЗ на полноту, согласованность и пригодность к дальнейшей реализации.
 context_policy:
   max_tokens: 2200
 tool_policy:

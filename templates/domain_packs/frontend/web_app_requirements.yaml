@@ -1,0 +1,17 @@
+kind: domain_pack
+id: frontend.web_app_requirements
+version: 1.0.0
+name: Фронтенд для веб-приложения
+description: Добавляет в подготовку ТЗ обязательный разбор пользовательских потоков, экранных ожиданий и UX-ограничений.
+domain: frontend
+status: active
+templates:
+  - frontend.user_flow_analysis@1.0.0
+recipe_fragments:
+  - frontend.requirements_extension@1.0.0
+entry_signals:
+  - frontend
+  - ui
+  - экран
+  - интерфейс
+  - личный кабинет

@@ -1,7 +1,7 @@
 # Validation и Governance — спецификация
 
 > **Статус:** v1.1 · Draft · 2026-04-19
-> **Зависимости:** [00_overview.md](00_overview.md), [02_task_store.md](02_task_store.md), [04_problem_state.md](04_problem_state.md), [07_execution_runtime.md](07_execution_runtime.md)
+> **Зависимости:** [00_overview.md](00_overview.md), [02_task_store.md](02_task_store.md), [04_problem_state.md](04_problem_state.md), [07_execution_runtime.md](07_execution_runtime.md), [09_domain_packs.md](09_domain_packs.md)
 > **Область:** contract validation, critique loops, stage-gate governance и human escalation.
 
 ---
@@ -12,6 +12,7 @@
 - Проверяет outputs задачи против `output_contract`.
 - Выполняет дополнительные checks, critique loops и integration validation.
 - Проверяет readiness claims и recipe completion conditions перед success.
+- Учитывает expectations активных `Domain Pack` при проверке completeness и quality.
 - Оценивает exit criteria текущего `StageGate`.
 - Создаёт escalation tickets при невозможности надёжно продолжать автоматически.
 
@@ -33,8 +34,9 @@
 3. optional critique / review loop
 4. integration checks
 5. readiness / recipe completion validation
-6. `ProblemStatePatch` validation
-7. commit outputs + patch
+6. domain-pack validation expectations
+7. `ProblemStatePatch` validation
+8. commit outputs + patch
 
 Только после этих шагов задача может перейти в `Completed`.
 
@@ -59,6 +61,29 @@ class ValidationFinding(BaseModel):
     message: str
     related_artifact_ids: list[UUID] = []
 ```
+
+### 2.3. Domain Pack expectations
+
+Каждый активный `Domain Pack` может добавлять:
+
+- обязательные artifact roles;
+- доменные review expectations;
+- доменные completeness checks;
+- readiness expectations;
+- quality findings specific to the domain.
+
+Нормативное правило:
+
+Если `Domain Pack` активирован в `ProblemState`, validator обязан учитывать его expectations даже тогда, когда основной `Recipe` является общим.
+
+Пример:
+
+Если активирован `frontend` pack, то validation черновика ТЗ должна уметь проверить, что в артефакте появились или были подготовлены:
+
+- роли пользователей;
+- пользовательские потоки;
+- ожидания по экранам;
+- ключевые UX/UI ограничения.
 
 ---
 
@@ -110,6 +135,7 @@ Gate может быть закрыт, только если:
 - нет blocking gaps, относящихся к текущей фазе;
 - обязательные readiness dimensions не ниже `ready`/`waived`;
 - есть обязательные artifact roles;
+- выполнены обязательные domain-pack expectations для этой фазы;
 - все required checks passed;
 - нет active critical escalations по фазе.
 
@@ -241,6 +267,7 @@ class GovernanceService(Protocol):
 | G4 | Critique loop не может выполняться скрыто; каждая итерация traceable |
 | G5 | Validation не может silently менять confirmed decisions |
 | G6 | `core_task` не может считаться успешным, если recipe-required meta-passes не подтверждены |
+| G7 | Активный `Domain Pack` обязан влиять на validation expectations соответствующей фазы |
 
 ---
 

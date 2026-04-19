@@ -14,8 +14,9 @@
 - `06_artifact_context.md` — артефакты, summaries, retrieval и сборка task-local context.
 - `07_execution_runtime.md` — LLM/script/tool runtime и execution traces.
 - `08_validation_governance.md` — validation, critique, stage gates и human escalation.
+- `09_domain_packs.md` — доменные пакеты знаний, recipe fragments и композиция расширений.
 
-Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах и recipe-политиках; координатор только применяет эту семантику, но не дублирует её в коде и не заменяет её “мнением LLM” как финальным арбитром**.
+Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах, recipe-политиках и domain packs; координатор только применяет эту семантику, но не дублирует её в коде и не заменяет её “мнением LLM” как финальным арбитром**.
 
 ---
 
@@ -40,11 +41,19 @@
            ▼                               ▼
 ┌──────────────────────┐        ┌─────────────────────────────────────────────┐
 │ Template Registry    │        │ Task Store + Task Progression               │
-│ (specs/01 + 03)      │        │ (specs/02)                                 │
-│ source-of-truth YAML │        │ tasks · deps · events · transitions         │
+│ + Domain Pack Index  │        │ (specs/02)                                 │
+│ (specs/01 + 03 + 09) │        │ tasks · deps · events · transitions         │
+│ source-of-truth YAML │        │                                             │
 └──────────┬───────────┘        └──────────────┬──────────────────────────────┘
-           │ context policy / tools / effects                 │ ready tasks / outputs
+           │ templates / recipes / packs / fragments          │ ready tasks / outputs
            ▼                                                  ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Recipe Composer                                                             │
+│ (specs/05 + specs/09)                                                       │
+│ base recipe · domain fragments · composed obligations                       │
+└──────────┬───────────────────────────────┬───────────────────────────────────┘
+           │ composed recipe / obligations                 │ planning inputs
+           ▼                                               ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Artifact Store + Context Engine + Execution Runtime                         │
 │ (specs/06 + specs/07)                                                       │
@@ -60,7 +69,9 @@
 ```
 
 - **Template Semantics** — первичный носитель problem-solving логики. Шаблон описывает не только runtime-задачу, но и то, с каким типом проблемы он работает, какова его роль в recipe, что закрывает и какой контекст ему нужен.
-- **Planning Coordinator** — детерминированно допускает, композирует и планирует выполнение шаблонов на основе открытых gaps, readiness, recipe-обязательств и activation rules. Координатор не вызывает LLM и не содержит доменную методологию в коде.
+- **Domain Pack** — контейнер доменных знаний: vocabulary, шаблоны, recipe fragments, readiness-модель и правила влияния на артефакты.
+- **Recipe Composer** — собирает итоговый recipe проекта из base recipe и подключённых domain packs.
+- **Planning Coordinator** — детерминированно допускает и планирует выполнение шагов на основе открытых gaps, readiness, composed recipe-обязательств и activation rules. Координатор не вызывает LLM и не содержит доменную методологию в коде.
 - **Task Store** — источник истины о lifecycle задач и их зависимостях.
 - **Artifact / Context Layer** — источник истины о blob-артефактах, их derived-представлениях и context manifests.
 - **Execution Runtime** — единый контракт для LLM, скриптов, инструментов и сред исполнения.
@@ -70,14 +81,35 @@
 
 Платформа не считает шаблоны “плоским списком кандидатов”, из которого система выбирает следующий шаг по ощущению готовности. Вместо этого:
 
+- доменные знания собираются в `domain packs`;
 - шаблоны делятся на предметные и мета-аналитические роли;
-- над шаблонами существуют `recipes` — декларативные схемы выполнения класса задач;
+- над шаблонами существуют `recipes` и `recipe fragments` — декларативные схемы выполнения класса задач;
+- итоговый проектный recipe композируется из base recipe и domain fragments;
 - recipes задают обязательные meta-passes и порядок проверки readiness;
 - координатор допускает шаблон только если выполнены формальные preconditions и recipe-обязательства.
 
 Это защищает систему от типичного сбоя LLM: преждевременного оптимизма относительно полноты данных и качества постановки.
 
-### 1.2. Роль LLM в выборе шагов
+### 1.2. Где живут доменные знания
+
+Нормативное правило:
+
+- доменные знания не должны жить в коде planner'а;
+- доменные знания не должны быть “размазаны” по отдельным шаблонам без общей рамки;
+- доменные знания оформляются через `Domain Pack`.
+
+`Domain Pack` включает:
+
+- controlled vocabularies домена;
+- шаблоны домена;
+- recipe fragments, которые встраиваются в базовые сценарии;
+- domain readiness dimensions;
+- domain validation expectations;
+- правила влияния домена на итоговые артефакты, включая ТЗ.
+
+Пример: если к проекту подключён `frontend` domain pack, это должно влиять не только на этап реализации frontend, но и на более ранний этап подготовки ТЗ. В composed recipe появятся дополнительные обязательные шаги: анализ пользовательских потоков, экранного состава, UX-ограничений и требований к интерфейсу.
+
+### 1.3. Роль LLM в выборе шагов
 
 LLM не исключается из planning loop полностью, но её роль строго ограничена.
 
@@ -99,6 +131,21 @@ LLM не исключается из planning loop полностью, но её
 
 - LLM помогает системе лучше понять проблему;
 - policy coordinator решает, какой шаг допустим и что из допустимого приоритетнее.
+
+### 1.4. Шаблон как единица локальной методологии
+
+Чтобы не смешивать уровни архитектуры, платформа использует следующее разделение:
+
+- `Domain Pack` отвечает за доменную область целиком;
+- `Recipe` отвечает за обязательную последовательность шагов;
+- `Template` отвечает за **один локальный тип шага**.
+
+Шаблон — это не “весь домен” и не “весь pipeline”.
+Шаблон отвечает на вопрос:
+
+> Если система решила выполнить шаг этого типа, как именно этот шаг должен быть выполнен, какие входы ему нужны и что считается его завершением?
+
+То есть шаблон — это атомарный профессиональный приём системы, а не её глобальный мозг.
 
 ---
 
@@ -292,6 +339,13 @@ class TemplateRole(StrEnum):
 ```
 
 ```python
+class RecipeMode(StrEnum):
+    BASE = "base"
+    COMPOSED = "composed"
+    FRAGMENT = "fragment"
+```
+
+```python
 class ReadinessStatus(StrEnum):
     UNKNOWN = "unknown"
     NOT_READY = "not_ready"
@@ -309,6 +363,12 @@ class ReadinessStatus(StrEnum):
 - `escalation` — handoff человеку или фиксация блокировки.
 
 `ReadinessStatus` выражает зрелость входа для следующего класса шагов. Readiness считается формально из `ProblemState`, validation findings и выполненных recipe-passes, а не по “ощущению модели”.
+
+`RecipeMode` описывает тип orchestration-object:
+
+- `base` — базовый recipe, задающий общий skeleton класса задач;
+- `fragment` — доменное расширение recipe;
+- `composed` — итоговый recipe проекта после применения domain packs.
 
 ---
 
@@ -479,6 +539,7 @@ class ExternalDependencyError(PovLabError): ...
 - **[06_artifact_context.md](06_artifact_context.md)** — artifact store, summaries, semantic index, context manifests.
 - **[07_execution_runtime.md](07_execution_runtime.md)** — LLM/script/tool runtime, adapters, traces и execution contracts.
 - **[08_validation_governance.md](08_validation_governance.md)** — validation pipeline, critique, stage-gate governance и escalation.
+- **[09_domain_packs.md](09_domain_packs.md)** — модель доменных пакетов знаний и композиции recipe.
 - **[schemas/template.schema.json](schemas/template.schema.json)** — текущая JSON Schema нижнего слоя шаблонов; для семантических полей из `03_template_semantics.md` требуется schema v2.
 - **[schemas/task.schema.json](schemas/task.schema.json)** — JSON Schema payload'ов Task Store.
 - **[examples/](examples/)** — эталонные примеры: 3 шаблона (по одному на тип) и 2 задачи (в разных статусах).

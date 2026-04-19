@@ -3,17 +3,20 @@ id: readiness_dimensions
 version: 1.0.0
 entries:
   - id: goal_clarity
-    label: Goal Clarity
-    description: The target business objective is explicit and testable.
+    label: Ясность цели
+    description: Цель бизнеса сформулирована явно и проверяемо.
   - id: user_story_coverage
-    label: User Story Coverage
-    description: Primary user journeys and stakeholder needs are captured.
+    label: Покрытие user story
+    description: Основные пользовательские сценарии и ожидания стейкхолдеров зафиксированы.
   - id: alternatives_explored
-    label: Alternatives Explored
-    description: Multiple solution directions have been compared.
+    label: Альтернативы рассмотрены
+    description: Рассмотрено и сравнено несколько направлений решения.
   - id: specification_drafted
-    label: Specification Drafted
-    description: A draft technical specification exists.
+    label: Черновик ТЗ подготовлен
+    description: Существует черновик технического задания.
   - id: specification_reviewed
-    label: Specification Reviewed
-    description: The draft specification has passed structured review.
+    label: ТЗ прошло ревью
+    description: Черновик технического задания прошёл структурированную проверку.
+  - id: frontend_user_flows_covered
+    label: Интерфейсные потоки покрыты
+    description: Для фронтенд-части зафиксированы основные роли, пользовательские потоки и ожидания по экранам.

@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 
-from pov_generator.common.errors import NotFoundError
-from pov_generator.common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
-from pov_generator.domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
-from pov_generator.domain.problem_state import ProblemEvent, ProblemPatch, ProblemState, apply_problem_patch
-from pov_generator.domain.tasks import (
+from ..common.errors import NotFoundError
+from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
+from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
+from ..domain.problem_state import ProblemEvent, ProblemPatch, ProblemState, apply_problem_patch
+from ..domain.tasks import (
     TaskEvent,
     TaskRecipeProgress,
     TaskRecord,
@@ -31,7 +31,13 @@ def _problem_state_to_dict(state: ProblemState) -> dict[str, object]:
 
 
 def _problem_state_from_dict(payload: dict) -> ProblemState:
-    from pov_generator.domain.problem_state import FactRecord, GapRecord, ReadinessRecord
+    from ..domain.problem_state import (
+        EnabledDomainPack,
+        FactRecord,
+        GapRecord,
+        ReadinessRecord,
+        RecipeCompositionRecord,
+    )
 
     return ProblemState(
         project_id=payload["project_id"],
@@ -41,6 +47,12 @@ def _problem_state_from_dict(payload: dict) -> ProblemState:
         known_facts={key: FactRecord(**value) for key, value in payload.get("known_facts", {}).items()},
         active_gaps={key: GapRecord(**value) for key, value in payload.get("active_gaps", {}).items()},
         readiness={key: ReadinessRecord(**value) for key, value in payload.get("readiness", {}).items()},
+        enabled_domain_packs={
+            key: EnabledDomainPack(**value) for key, value in payload.get("enabled_domain_packs", {}).items()
+        },
+        recipe_composition=RecipeCompositionRecord(**payload["recipe_composition"])
+        if payload.get("recipe_composition")
+        else None,
         version=int(payload.get("version", 0)),
         updated_at=payload.get("updated_at", utc_now_iso()),
     )
@@ -346,7 +358,10 @@ class SqliteRuntime:
                 candidates.append(
                     CandidateEvaluation(
                         recipe_step_id=candidate_raw["recipe_step_id"],
+                        step_title=candidate_raw["step_title"],
                         template_ref=candidate_raw["template_ref"],
+                        step_source_kind=candidate_raw["step_source_kind"],
+                        step_source_ref=candidate_raw["step_source_ref"],
                         admissible=candidate_raw["admissible"],
                         score=candidate_raw["score"],
                         duplicate=candidate_raw["duplicate"],
@@ -358,6 +373,8 @@ class SqliteRuntime:
                 PlanningDecision(
                     project_id=payload["project_id"],
                     recipe_ref=payload["recipe_ref"],
+                    domain_pack_refs=tuple(payload.get("domain_pack_refs", [])),
+                    recipe_fragment_refs=tuple(payload.get("recipe_fragment_refs", [])),
                     mode=payload["mode"],
                     outcome=payload["outcome"],
                     selected_step_id=payload.get("selected_step_id"),

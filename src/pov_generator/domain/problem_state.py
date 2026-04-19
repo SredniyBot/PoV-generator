@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pov_generator.common.errors import ConflictError, NotFoundError
-from pov_generator.common.serialization import utc_now_iso
+from ..common.errors import ConflictError, NotFoundError
+from ..common.serialization import utc_now_iso
 
 
 ReadinessStatus = Literal["missing", "partial", "ready", "waived"]
@@ -40,6 +40,23 @@ class ReadinessRecord:
 
 
 @dataclass(frozen=True)
+class EnabledDomainPack:
+    ref: str
+    domain: str
+    source: str
+    enabled_at: str
+
+
+@dataclass(frozen=True)
+class RecipeCompositionRecord:
+    base_recipe_ref: str
+    domain_pack_refs: tuple[str, ...]
+    recipe_fragment_refs: tuple[str, ...]
+    step_ids: tuple[str, ...]
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class ProblemState:
     project_id: str
     recipe_ref: str
@@ -48,6 +65,8 @@ class ProblemState:
     known_facts: dict[str, FactRecord] = field(default_factory=dict)
     active_gaps: dict[str, GapRecord] = field(default_factory=dict)
     readiness: dict[str, ReadinessRecord] = field(default_factory=dict)
+    enabled_domain_packs: dict[str, EnabledDomainPack] = field(default_factory=dict)
+    recipe_composition: RecipeCompositionRecord | None = None
     version: int = 0
     updated_at: str = field(default_factory=utc_now_iso)
 
@@ -97,12 +116,34 @@ class AddFactPatch:
     source: str
 
 
-ProblemPatch = SetGoalPatch | UpsertGapPatch | CloseGapPatch | UpsertReadinessPatch | AddFactPatch
+@dataclass(frozen=True)
+class EnableDomainPackPatch:
+    pack_ref: str
+    domain: str
+    source: str = "manual"
+
+
+@dataclass(frozen=True)
+class SetRecipeCompositionPatch:
+    base_recipe_ref: str
+    domain_pack_refs: tuple[str, ...]
+    recipe_fragment_refs: tuple[str, ...]
+    step_ids: tuple[str, ...]
+
+
+ProblemPatch = (
+    SetGoalPatch
+    | UpsertGapPatch
+    | CloseGapPatch
+    | UpsertReadinessPatch
+    | AddFactPatch
+    | EnableDomainPackPatch
+    | SetRecipeCompositionPatch
+)
 
 
 def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemState:
     now = utc_now_iso()
-    next_version = state.version + 1
     if isinstance(patch, SetGoalPatch):
         return ProblemState(
             project_id=state.project_id,
@@ -112,7 +153,9 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
             known_facts=dict(state.known_facts),
             active_gaps=dict(state.active_gaps),
             readiness=dict(state.readiness),
-            version=next_version,
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
             updated_at=now,
         )
     if isinstance(patch, UpsertGapPatch):
@@ -133,7 +176,9 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
             known_facts=dict(state.known_facts),
             active_gaps=gaps,
             readiness=dict(state.readiness),
-            version=next_version,
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
             updated_at=now,
         )
     if isinstance(patch, CloseGapPatch):
@@ -149,7 +194,9 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
             known_facts=dict(state.known_facts),
             active_gaps=gaps,
             readiness=dict(state.readiness),
-            version=next_version,
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
             updated_at=now,
         )
     if isinstance(patch, UpsertReadinessPatch):
@@ -172,7 +219,9 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
             known_facts=dict(state.known_facts),
             active_gaps=dict(state.active_gaps),
             readiness=readiness,
-            version=next_version,
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
             updated_at=now,
         )
     if isinstance(patch, AddFactPatch):
@@ -186,7 +235,50 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
             known_facts=facts,
             active_gaps=dict(state.active_gaps),
             readiness=dict(state.readiness),
-            version=next_version,
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
+            updated_at=now,
+        )
+    if isinstance(patch, EnableDomainPackPatch):
+        enabled_domain_packs = dict(state.enabled_domain_packs)
+        enabled_domain_packs[patch.pack_ref] = EnabledDomainPack(
+            ref=patch.pack_ref,
+            domain=patch.domain,
+            source=patch.source,
+            enabled_at=now,
+        )
+        return ProblemState(
+            project_id=state.project_id,
+            recipe_ref=state.recipe_ref,
+            business_request=state.business_request,
+            goal=state.goal,
+            known_facts=dict(state.known_facts),
+            active_gaps=dict(state.active_gaps),
+            readiness=dict(state.readiness),
+            enabled_domain_packs=enabled_domain_packs,
+            recipe_composition=state.recipe_composition,
+            version=state.version + 1,
+            updated_at=now,
+        )
+    if isinstance(patch, SetRecipeCompositionPatch):
+        return ProblemState(
+            project_id=state.project_id,
+            recipe_ref=state.recipe_ref,
+            business_request=state.business_request,
+            goal=state.goal,
+            known_facts=dict(state.known_facts),
+            active_gaps=dict(state.active_gaps),
+            readiness=dict(state.readiness),
+            enabled_domain_packs=dict(state.enabled_domain_packs),
+            recipe_composition=RecipeCompositionRecord(
+                base_recipe_ref=patch.base_recipe_ref,
+                domain_pack_refs=tuple(sorted(set(patch.domain_pack_refs))),
+                recipe_fragment_refs=tuple(sorted(set(patch.recipe_fragment_refs))),
+                step_ids=patch.step_ids,
+                updated_at=now,
+            ),
+            version=state.version + 1,
             updated_at=now,
         )
     raise TypeError(f"Unsupported problem patch: {type(patch)!r}")

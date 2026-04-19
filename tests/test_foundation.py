@@ -24,12 +24,16 @@ def build_services(registry_root: Path | None = None):
     return registry_service, project_service, planning_service
 
 
-def init_workspace(tmp_path: Path):
+def init_workspace(tmp_path: Path, domain_packs: tuple[str, ...] = ()):
     registry_service, project_service, planning_service = build_services()
     snapshot, report = registry_service.validate()
     assert report.is_valid
     recipe_ref = ObjectRef.parse("common.build_requirements_spec@1.0.0")
-    bootstrap_recipe = planning_service.build_recipe_bootstrap(snapshot, recipe_ref.as_string())
+    bootstrap_recipe = planning_service.build_recipe_bootstrap(
+        snapshot,
+        recipe_ref.as_string(),
+        enabled_domain_pack_refs=domain_packs,
+    )
     workspace = tmp_path / "case"
     project_service.init_project(
         workspace=workspace,
@@ -41,20 +45,27 @@ def init_workspace(tmp_path: Path):
     return workspace, registry_service, project_service, planning_service
 
 
+def complete_task(workspace: Path, planning_service: PlanningService, task_id: str) -> None:
+    planning_service.transition_task(workspace, task_id, "start")
+    planning_service.transition_task(workspace, task_id, "complete")
+
+
 def test_registry_validation_passes_for_sample_corpus() -> None:
     registry_service, _, _ = build_services()
     snapshot, report = registry_service.validate()
 
     assert report.is_valid
-    assert len(snapshot.templates) == 5
+    assert len(snapshot.templates) == 6
     assert len(snapshot.recipes) == 1
+    assert len(snapshot.recipe_fragments) == 1
+    assert len(snapshot.domain_packs) == 1
     assert len(snapshot.vocabularies) == 5
 
 
 def test_registry_validation_detects_unknown_gap_reference(tmp_path: Path) -> None:
     registry_root = tmp_path / "templates"
     shutil.copytree(REPO_ROOT / "templates", registry_root)
-    template_path = registry_root / "templates" / "common.goal_clarification.yaml"
+    template_path = registry_root / "templates" / "common" / "goal_clarification.yaml"
     raw = yaml.safe_load(template_path.read_text(encoding="utf-8"))
     raw["semantics"]["closes_gaps"] = ["unknown_gap"]
     template_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -90,11 +101,11 @@ def test_planner_materializes_first_meta_step_and_tracks_progress(tmp_path: Path
 
     assert decision.outcome == "materialized"
     assert decision.selected_step_id == "goal_clarification"
+    assert decision.domain_pack_refs == ()
     assert len(tasks) == 1
     assert tasks[0].status == "queued"
 
-    planning_service.transition_task(workspace, tasks[0].task_id, "start")
-    planning_service.transition_task(workspace, tasks[0].task_id, "complete")
+    complete_task(workspace, planning_service, tasks[0].task_id)
     recipe_progress = planning_service.list_recipe_progress(
         workspace, project_service.load_manifest(workspace).recipe_ref
     )
@@ -133,4 +144,44 @@ def test_planner_blocks_duplicate_materialization(tmp_path: Path) -> None:
     assert any(
         candidate.recipe_step_id == "goal_clarification" and candidate.duplicate
         for candidate in second_decision.candidates
+    )
+
+
+def test_frontend_domain_pack_extends_recipe_and_blocks_core_until_frontend_step_done(tmp_path: Path) -> None:
+    workspace, registry_service, project_service, planning_service = init_workspace(
+        tmp_path,
+        domain_packs=("frontend.web_app_requirements@1.0.0",),
+    )
+    snapshot, _ = registry_service.validate()
+    state = project_service.load_problem_state(workspace)
+    composed_recipe = planning_service.current_composed_recipe(workspace, snapshot)
+
+    assert "frontend.web_app_requirements@1.0.0" in state.enabled_domain_packs
+    assert state.recipe_composition is not None
+    assert "frontend_user_flow_analysis" in state.recipe_composition.step_ids
+    assert composed_recipe.domain_pack_refs == ("frontend.web_app_requirements@1.0.0",)
+    assert any(step.identifier == "frontend_user_flow_analysis" for step in composed_recipe.steps)
+
+    for readiness_id, gap_id in (
+        ("goal_clarity", "unclear_goal"),
+        ("user_story_coverage", "missing_user_stories"),
+        ("alternatives_explored", "alternatives_not_explored"),
+    ):
+        decision = planning_service.plan(workspace, snapshot, mode="apply")
+        assert decision.outcome == "materialized"
+        assert decision.created_task_id is not None
+        complete_task(workspace, planning_service, decision.created_task_id)
+        project_service.set_readiness(workspace, readiness_id, "ready", blocking=False, confidence=0.9)
+        project_service.close_gap(workspace, gap_id)
+
+    frontend_decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+
+    assert frontend_decision.selected_step_id == "frontend_user_flow_analysis"
+    assert frontend_decision.domain_pack_refs == ("frontend.web_app_requirements@1.0.0",)
+    assert frontend_decision.recipe_fragment_refs == ("frontend.requirements_extension@1.0.0",)
+    assert any(
+        candidate.recipe_step_id == "frontend_user_flow_analysis"
+        and candidate.step_source_kind == "recipe_fragment"
+        and candidate.step_source_ref == "frontend.requirements_extension@1.0.0"
+        for candidate in frontend_decision.candidates
     )

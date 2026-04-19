@@ -1,7 +1,7 @@
 kind: template
 id: common.alternatives_scan
 version: 1.0.0
-name: Compare Solution Alternatives
+name: Сравнение альтернатив решения
 type: executable
 status: active
 domain: common
@@ -29,7 +29,7 @@ outputs:
   artifact_roles:
     - alternatives_analysis
 framework:
-  summary: Evaluate multiple solution directions against user needs, constraints, and future change.
+  summary: Сравни несколько вариантов решения относительно пользовательских потребностей, ограничений и будущих изменений системы.
 context_policy:
   max_tokens: 2200
 tool_policy:

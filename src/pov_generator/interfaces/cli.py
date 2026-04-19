@@ -4,14 +4,14 @@ import argparse
 from pathlib import Path
 import sys
 
-from pov_generator.application.planning_service import PlanningService
-from pov_generator.application.project_service import ProjectService
-from pov_generator.application.registry_service import RegistryService
-from pov_generator.common.errors import PovGeneratorError
-from pov_generator.common.serialization import json_dumps, to_primitive
-from pov_generator.domain.registry import ObjectRef
-from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
-from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
+from ..application.planning_service import PlanningService
+from ..application.project_service import ProjectService
+from ..application.registry_service import RegistryService
+from ..common.errors import PovGeneratorError
+from ..common.serialization import json_dumps, to_primitive
+from ..domain.registry import ObjectRef
+from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         _dispatch(args, registry_service, project_service, planning_service)
     except PovGeneratorError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ОШИБКА: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
 
@@ -50,15 +50,26 @@ def _dispatch(args, registry_service: RegistryService, project_service: ProjectS
         if args.action == "show-recipe":
             print(json_dumps(snapshot.resolve_recipe(args.recipe)))
             return
+        if args.action == "show-fragment":
+            print(json_dumps(snapshot.resolve_recipe_fragment(args.fragment)))
+            return
+        if args.action == "show-domain-pack":
+            print(json_dumps(snapshot.resolve_domain_pack(args.domain_pack)))
+            return
 
     if args.entity == "project":
         if args.action == "init":
             snapshot, report = registry_service.validate()
             if not report.is_valid:
-                raise PovGeneratorError("Registry is invalid. Run 'povgen registry validate' first.")
+                raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
             request_text = args.request_text or Path(args.request_file).read_text(encoding="utf-8")
             recipe_ref = ObjectRef.parse(args.recipe)
-            bootstrap_recipe = planning_service.build_recipe_bootstrap(snapshot, recipe_ref.as_string())
+            enabled_pack_refs = tuple(args.domain_pack or [])
+            bootstrap_recipe = planning_service.build_recipe_bootstrap(
+                snapshot,
+                recipe_ref.as_string(),
+                enabled_domain_pack_refs=enabled_pack_refs,
+            )
             bootstrap = project_service.init_project(
                 workspace=Path(args.workspace),
                 name=args.name,
@@ -116,12 +127,23 @@ def _dispatch(args, registry_service: RegistryService, project_service: ProjectS
         if args.action == "fact-add":
             print(json_dumps(project_service.add_fact(workspace, args.fact_id, args.statement, args.source)))
             return
+        if args.action == "domain-pack-enable":
+            snapshot, report = registry_service.validate()
+            if not report.is_valid:
+                raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
+            pack = snapshot.resolve_domain_pack(args.domain_pack)
+            print(json_dumps(project_service.enable_domain_pack(workspace, pack)))
+            return
+        if args.action == "composition-show":
+            state = project_service.load_problem_state(workspace)
+            print(json_dumps(state.recipe_composition))
+            return
 
     if args.entity == "plan":
         workspace = Path(args.workspace)
         snapshot, report = registry_service.validate()
         if not report.is_valid:
-            raise PovGeneratorError("Registry is invalid. Run 'povgen registry validate' first.")
+            raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
         if args.action == "dry-run":
             print(json_dumps(planning_service.plan(workspace, snapshot, mode="dry-run")))
             return
@@ -130,6 +152,9 @@ def _dispatch(args, registry_service: RegistryService, project_service: ProjectS
             return
         if args.action == "history":
             print(json_dumps(planning_service.planning_history(workspace)))
+            return
+        if args.action == "show-composed-recipe":
+            print(json_dumps(planning_service.current_composed_recipe(workspace, snapshot)))
             return
 
     if args.entity == "tasks":
@@ -148,7 +173,7 @@ def _dispatch(args, registry_service: RegistryService, project_service: ProjectS
             print(json_dumps(planning_service.list_recipe_progress(workspace, manifest.recipe_ref)))
             return
 
-    raise PovGeneratorError("Unsupported command.")
+    raise PovGeneratorError("Неподдерживаемая команда.")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -162,6 +187,10 @@ def _build_parser() -> argparse.ArgumentParser:
     show_template.add_argument("--template", required=True)
     show_recipe = registry_subparsers.add_parser("show-recipe")
     show_recipe.add_argument("--recipe", required=True)
+    show_fragment = registry_subparsers.add_parser("show-fragment")
+    show_fragment.add_argument("--fragment", required=True)
+    show_domain_pack = registry_subparsers.add_parser("show-domain-pack")
+    show_domain_pack.add_argument("--domain-pack", required=True)
 
     project = subparsers.add_parser("project")
     project_subparsers = project.add_subparsers(dest="action", required=True)
@@ -169,6 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     project_init.add_argument("--workspace", required=True)
     project_init.add_argument("--name", required=True)
     project_init.add_argument("--recipe", required=True)
+    project_init.add_argument("--domain-pack", action="append", default=[])
     request_group = project_init.add_mutually_exclusive_group(required=True)
     request_group.add_argument("--request-text")
     request_group.add_argument("--request-file")
@@ -177,7 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     problem = subparsers.add_parser("problem")
     problem_subparsers = problem.add_subparsers(dest="action", required=True)
-    for action in ("show", "history"):
+    for action in ("show", "history", "composition-show"):
         command = problem_subparsers.add_parser(action)
         command.add_argument("--workspace", required=True)
     goal_set = problem_subparsers.add_parser("goal-set")
@@ -204,10 +234,13 @@ def _build_parser() -> argparse.ArgumentParser:
     fact_add.add_argument("--fact-id", required=True)
     fact_add.add_argument("--statement", required=True)
     fact_add.add_argument("--source", required=True)
+    enable_pack = problem_subparsers.add_parser("domain-pack-enable")
+    enable_pack.add_argument("--workspace", required=True)
+    enable_pack.add_argument("--domain-pack", required=True)
 
     plan = subparsers.add_parser("plan")
     plan_subparsers = plan.add_subparsers(dest="action", required=True)
-    for action in ("dry-run", "apply", "history"):
+    for action in ("dry-run", "apply", "history", "show-composed-recipe"):
         command = plan_subparsers.add_parser(action)
         command.add_argument("--workspace", required=True)
 

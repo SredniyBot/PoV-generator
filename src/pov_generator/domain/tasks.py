@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pov_generator.common.errors import ConflictError
-from pov_generator.common.serialization import utc_now_iso
+from ..common.errors import ConflictError
+from ..common.serialization import utc_now_iso
 
 
 TaskStatus = Literal["queued", "in_progress", "waiting_for_children", "completed", "failed", "obsolete"]

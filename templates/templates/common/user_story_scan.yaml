@@ -1,7 +1,7 @@
 kind: template
 id: common.user_story_scan
 version: 1.0.0
-name: Map User Stories
+name: Анализ user story
 type: executable
 status: active
 domain: common
@@ -27,7 +27,7 @@ outputs:
   artifact_roles:
     - user_story_map
 framework:
-  summary: Identify actors, user journeys, expectations, and edge conditions.
+  summary: Определи ключевых акторов, пользовательские сценарии, ожидания и важные граничные случаи.
 context_policy:
   max_tokens: 1800
 tool_policy:

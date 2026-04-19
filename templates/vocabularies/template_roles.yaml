@@ -3,17 +3,17 @@ id: template_roles
 version: 1.0.0
 entries:
   - id: core_task
-    label: Core Task
-    description: Produces the main business outcome for a recipe step.
+    label: Основная задача
+    description: Производит основной бизнес-результат шага recipe.
   - id: meta_analysis
-    label: Meta Analysis
-    description: Improves understanding, coverage, or solution quality before core work.
+    label: Мета-анализ
+    description: Улучшает понимание задачи, полноту покрытия или качество решения до основного шага.
   - id: review
-    label: Review
-    description: Checks completeness, consistency, or quality of produced results.
+    label: Ревью
+    description: Проверяет полноту, согласованность и качество полученного результата.
   - id: repair
-    label: Repair
-    description: Fixes findings produced by a review or validation step.
+    label: Исправление
+    description: Устраняет замечания, найденные на ревью или валидации.
   - id: escalation
-    label: Escalation
-    description: Explicit hand-off to a human decision or missing input request.
+    label: Эскалация
+    description: Явная передача вопроса человеку или запрос недостающих входных данных.

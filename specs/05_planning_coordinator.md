@@ -1,7 +1,7 @@
 # Planning Coordinator — спецификация
 
 > **Статус:** v1.1 · Draft · 2026-04-19
-> **Зависимости:** [00_overview.md](00_overview.md), [03_template_semantics.md](03_template_semantics.md), [04_problem_state.md](04_problem_state.md), [02_task_store.md](02_task_store.md)
+> **Зависимости:** [00_overview.md](00_overview.md), [03_template_semantics.md](03_template_semantics.md), [04_problem_state.md](04_problem_state.md), [02_task_store.md](02_task_store.md), [09_domain_packs.md](09_domain_packs.md)
 > **Область:** детерминированный policy loop, который допускает, композирует и материализует следующий шаг.
 
 ---
@@ -9,6 +9,7 @@
 ## 1. Назначение и зона ответственности
 
 ### 1.1. Что делает
+- Определяет активные domain packs проекта и композирует итоговый recipe.
 - Собирает planning items из `ProblemState`, validation debt, user intents и системных follow-up'ов.
 - Строит recipe obligations и readiness deficits.
 - Находит кандидатов среди активных шаблонов.
@@ -19,6 +20,7 @@
 ### 1.2. Чего НЕ делает
 - Не использует LLM как финальный механизм admission/selection.
 - Не хранит доменную методологию вне шаблонов.
+- Не содержит hard-coded knowledge о конкретных доменах; всё доменное поведение приходит из domain packs.
 - Не исполняет задачи и не собирает контекст.
 - Не закрывает gaps напрямую.
 
@@ -28,6 +30,12 @@ Planning Coordinator — **тонкий policy engine**, а не второй и
 Он опирается на explicit semantics шаблонов, readiness model и recipes, и никогда не пытается “догадаться” вместо них.
 
 LLM может косвенно влиять на planning через результаты уже выполненных `meta_analysis`/`review` шаблонов, но не через прямой “planner prompt”.
+
+Дополнение:
+
+- Planner работает не только с base recipe, но и с composed recipe проекта;
+- composed recipe собирается из base recipe и активированных domain packs;
+- именно composed recipe определяет, какие доменные шаги обязательны до перехода к core-task.
 
 ---
 
@@ -69,6 +77,33 @@ class PlanningItem(BaseModel):
 - Explicit human/developer requests.
 - System-generated follow-up intents после completion/retry/invalidate.
 - Recipe obligations: обязательные meta-passes/reviews, ещё не выполненные для текущего класса задачи.
+- Domain-pack obligations: обязательные доменные расширения, встроенные в composed recipe.
+
+### 2.2.1. Recipe composition
+
+Перед построением obligations planner обязан определить актуальный composed recipe проекта.
+
+Минимальная canonical view:
+
+```python
+class ComposedRecipe(BaseModel):
+    composed_recipe_id: NamespacedId
+    base_recipe_ref: str
+    fragment_refs: list[str]
+    steps: list[RecipeStep]
+```
+
+Правила:
+
+1. На project bootstrap выбирается base recipe.
+2. По `domain_signals`, `enabled_domain_packs`, human input и confirmed decisions planner определяет, какие domain packs активны.
+3. Recipe Composer встраивает recipe fragments этих packs в base recipe.
+4. Итоговый composed recipe сохраняется в `ProblemState`.
+
+Нормативное правило:
+
+- planner не должен сам “знать”, какие frontend- или rag-шаги нужно добавить к ТЗ;
+- это должно определяться через domain packs и recipe fragments.
 
 ### 2.3. Recipe model
 
@@ -110,6 +145,13 @@ registry.list(
 - `human_request`;
 - artifact roles уже присутствующих outputs;
 - confirmed decisions.
+
+После этого planner обязан получить:
+
+- `base recipe`;
+- `active domain packs`;
+- `recipe fragments`, совместимые с этим recipe;
+- `composed recipe`, который и станет источником obligations.
 
 Одновременно Planner загружает recipe definitions и актуальное состояние readiness.
 
@@ -233,6 +275,13 @@ Planner не мутирует DAG напрямую. Он использует т
 - `retry(task_id, reason=...)`
 - `create_task(spec)`
 
+Отдельно planner может инициировать only-append update в `ProblemState`:
+
+- `domain_pack_enable`
+- `recipe_composition_set`
+
+Но не должен менять произвольные problem fields.
+
 ### 6.3. Ограничения
 
 - Planner не имеет права удалять события или задачи.
@@ -327,16 +376,18 @@ CREATE INDEX idx_planning_runs_project_started
 
 1. Прочитать актуальный `ProblemStateSnapshot`.
 2. Считать active tasks, validation debt, readiness и stage gate status.
-3. Построить recipe obligations для текущего project state.
-4. Собрать `PlanningItem`'ы.
-5. Для каждого item:
+3. Определить активные domain packs.
+4. Собрать или перечитать composed recipe.
+5. Построить recipe obligations для текущего project state.
+6. Собрать `PlanningItem`'ы.
+7. Для каждого item:
    - получить candidate templates;
    - выполнить admission checks;
    - вычислить score;
    - выбрать победителя;
    - materialize task или записать skip reason.
-6. Сохранить `planning_runs` + `planning_decisions`.
-7. Вернуть decisions.
+8. Сохранить `planning_runs` + `planning_decisions`.
+9. Вернуть decisions.
 
 Planner может запускаться:
 
@@ -360,6 +411,7 @@ Planner может запускаться:
 | C6 | Planner не открывает и не закрывает gaps напрямую |
 | C7 | Planner не использует LLM для определения готовности входа |
 | C8 | `core_task` не materialize'ится, пока не выполнены обязательные recipe meta-passes |
+| C9 | Доменные расширения recipe определяются через active domain packs, а не через hard-coded planner branches |
 
 ---
 

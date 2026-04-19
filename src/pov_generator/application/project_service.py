@@ -2,21 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 import uuid
 
-from pov_generator.common.serialization import to_primitive, utc_now_iso
-from pov_generator.domain.problem_state import (
+from ..common.serialization import to_primitive, utc_now_iso
+from ..domain.problem_state import (
     AddFactPatch,
+    EnableDomainPackPatch,
     ProblemEvent,
     ProblemState,
     SetGoalPatch,
+    SetRecipeCompositionPatch,
     UpsertGapPatch,
     UpsertReadinessPatch,
     apply_problem_patch,
 )
-from pov_generator.domain.registry import ObjectRef
-from pov_generator.infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
+from ..domain.registry import DomainPackSpec, ObjectRef
+from ..infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class ProjectService:
         name: str,
         recipe_ref: ObjectRef,
         request_text: str,
-        bootstrap_recipe: Any,
+        bootstrap_recipe,
     ) -> ProjectBootstrap:
         project_id = str(uuid.uuid4())
         manifest = ProjectManifest(
@@ -51,13 +52,43 @@ class ProjectService:
             goal=None,
         )
 
+        for pack_ref in bootstrap_recipe.enabled_domain_pack_refs:
+            pack = next(
+                (
+                    snapshot_pack
+                    for snapshot_pack in bootstrap_recipe.domain_packs
+                    if snapshot_pack.ref.as_string() == pack_ref
+                ),
+                None,
+            )
+            if pack is None:
+                raise ValueError(f"Bootstrap pack not found: {pack_ref}")
+            state = apply_problem_patch(
+                state,
+                EnableDomainPackPatch(
+                    pack_ref=pack.ref.as_string(),
+                    domain=pack.domain,
+                    source="bootstrap",
+                ),
+            )
+
+        state = apply_problem_patch(
+            state,
+            SetRecipeCompositionPatch(
+                base_recipe_ref=bootstrap_recipe.base_recipe.ref.as_string(),
+                domain_pack_refs=bootstrap_recipe.enabled_domain_pack_refs,
+                recipe_fragment_refs=bootstrap_recipe.composed_recipe.recipe_fragment_refs,
+                step_ids=tuple(step.identifier for step in bootstrap_recipe.composed_recipe.steps),
+            ),
+        )
+
         core_orders = [
             step.order
-            for step in bootstrap_recipe.recipe.steps
+            for step in bootstrap_recipe.composed_recipe.steps
             if bootstrap_recipe.template_lookup[step.identifier].semantics.template_role == "core_task"
         ]
         first_core_order = min(core_orders) if core_orders else 10_000
-        for step in bootstrap_recipe.recipe.steps:
+        for step in bootstrap_recipe.composed_recipe.steps:
             template = bootstrap_recipe.template_lookup[step.identifier]
             if step.order < first_core_order and template.semantics.template_role == "meta_analysis":
                 for gap_id in template.semantics.closes_gaps:
@@ -65,8 +96,8 @@ class ProjectService:
                         state,
                         UpsertGapPatch(
                             gap_id=gap_id,
-                            title=gap_id.replace("_", " ").title(),
-                            description=f"Initial gap derived from recipe step '{step.identifier}'.",
+                            title=bootstrap_recipe.gap_labels.get(gap_id, gap_id.replace("_", " ").title()),
+                            description=f"Стартовый gap сформирован из шага '{step.identifier}'.",
                             severity="high",
                             blocking=True,
                         ),
@@ -132,7 +163,7 @@ class ProjectService:
         )
 
     def close_gap(self, workspace: Path, gap_id: str, actor: str = "operator", reason: str = "manual update") -> ProblemState:
-        from pov_generator.domain.problem_state import CloseGapPatch
+        from ..domain.problem_state import CloseGapPatch
 
         return self._runtime.apply_problem_patch(workspace, CloseGapPatch(gap_id=gap_id), actor=actor, reason=reason)
 
@@ -159,4 +190,18 @@ class ProjectService:
             AddFactPatch(fact_id=fact_id, statement=statement, source=source),
             actor="operator",
             reason="manual fact registration",
+        )
+
+    def enable_domain_pack(
+        self,
+        workspace: Path,
+        pack: DomainPackSpec,
+        actor: str = "operator",
+        reason: str = "manual domain activation",
+    ) -> ProblemState:
+        return self._runtime.apply_problem_patch(
+            workspace,
+            EnableDomainPackPatch(pack_ref=pack.ref.as_string(), domain=pack.domain, source=actor),
+            actor=actor,
+            reason=reason,
         )

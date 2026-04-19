@@ -13,7 +13,10 @@ class AdmissionCheck:
 @dataclass(frozen=True)
 class CandidateEvaluation:
     recipe_step_id: str
+    step_title: str
     template_ref: str
+    step_source_kind: str
+    step_source_ref: str
     admissible: bool
     score: int
     duplicate: bool
@@ -25,6 +28,8 @@ class CandidateEvaluation:
 class PlanningDecision:
     project_id: str
     recipe_ref: str
+    domain_pack_refs: tuple[str, ...]
+    recipe_fragment_refs: tuple[str, ...]
     mode: str
     outcome: str
     selected_step_id: str | None
