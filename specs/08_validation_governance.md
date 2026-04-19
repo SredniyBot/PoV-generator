@@ -1,6 +1,6 @@
 # Validation и Governance — спецификация
 
-> **Статус:** v1.0 · Draft · 2026-04-18
+> **Статус:** v1.1 · Draft · 2026-04-19
 > **Зависимости:** [00_overview.md](00_overview.md), [02_task_store.md](02_task_store.md), [04_problem_state.md](04_problem_state.md), [07_execution_runtime.md](07_execution_runtime.md)
 > **Область:** contract validation, critique loops, stage-gate governance и human escalation.
 
@@ -11,6 +11,7 @@
 ### 1.1. Что делает
 - Проверяет outputs задачи против `output_contract`.
 - Выполняет дополнительные checks, critique loops и integration validation.
+- Проверяет readiness claims и recipe completion conditions перед success.
 - Оценивает exit criteria текущего `StageGate`.
 - Создаёт escalation tickets при невозможности надёжно продолжать автоматически.
 
@@ -31,8 +32,9 @@
 2. artifact schema validation
 3. optional critique / review loop
 4. integration checks
-5. `ProblemStatePatch` validation
-6. commit outputs + patch
+5. readiness / recipe completion validation
+6. `ProblemStatePatch` validation
+7. commit outputs + patch
 
 Только после этих шагов задача может перейти в `Completed`.
 
@@ -51,7 +53,7 @@ class ValidationRun(BaseModel):
 ```python
 class ValidationFinding(BaseModel):
     finding_id: UUID
-    finding_type: Literal["contract_error", "schema_error", "quality_risk", "integration_failure"]
+    finding_type: Literal["contract_error", "schema_error", "quality_risk", "integration_failure", "readiness_failure", "recipe_failure"]
     severity: Literal["info", "warning", "error", "critical"]
     blocking: bool
     message: str
@@ -95,6 +97,7 @@ Critique loop запускается только если:
 class GatePolicy(BaseModel):
     stage_gate: StageGate
     required_gap_types_closed: list[NamespacedId] = []
+    required_readiness_types: list[NamespacedId] = []
     required_artifact_roles: list[NamespacedId] = []
     required_check_ids: list[str] = []
     allows_backflow_to: list[StageGate] = []
@@ -105,6 +108,7 @@ class GatePolicy(BaseModel):
 Gate может быть закрыт, только если:
 
 - нет blocking gaps, относящихся к текущей фазе;
+- обязательные readiness dimensions не ниже `ready`/`waived`;
 - есть обязательные artifact roles;
 - все required checks passed;
 - нет active critical escalations по фазе.
@@ -236,6 +240,7 @@ class GovernanceService(Protocol):
 | G3 | Blocking escalation ticket блокирует закрытие gate |
 | G4 | Critique loop не может выполняться скрыто; каждая итерация traceable |
 | G5 | Validation не может silently менять confirmed decisions |
+| G6 | `core_task` не может считаться успешным, если recipe-required meta-passes не подтверждены |
 
 ---
 

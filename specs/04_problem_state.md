@@ -1,6 +1,6 @@
 # Problem State Store — спецификация
 
-> **Статус:** v1.0 · Draft · 2026-04-18
+> **Статус:** v1.1 · Draft · 2026-04-19
 > **Зависимости:** [00_overview.md](00_overview.md), [03_template_semantics.md](03_template_semantics.md), [02_task_store.md](02_task_store.md)
 > **Область:** структурированное состояние проблемы проекта, gaps, decisions, risks и event-sourced semantic memory.
 
@@ -11,9 +11,9 @@
 ### 1.1. Что делает
 - Хранит **структурированное понимание проекта**, а не сырой набор документов.
 - Ведёт append-only историю изменений `ProblemState`.
-- Поддерживает активные gaps, decisions, constraints, assumptions, risks и domain signals.
+- Поддерживает активные gaps, decisions, constraints, assumptions, risks, domain signals и readiness model.
 - Принимает patches от задач, пользователя, разработчика и validation layer.
-- Даёт Planning Coordinator'у компактное и детерминированное состояние для выбора следующего шаблона.
+- Даёт Planning Coordinator'у компактное и детерминированное состояние для admission/selection следующего шага.
 
 ### 1.2. Чего НЕ делает
 - Не хранит blob-содержимое артефактов; для этого есть Artifact Store.
@@ -24,6 +24,8 @@
 ### 1.3. Главный принцип
 
 `ProblemState` — это **не всё знание проекта**, а его каноническая структурированная проекция, пригодная для планирования и explainability.
+
+Дополнение: `ProblemState` хранит не только “что известно”, но и “насколько задача зрелая для следующего класса шагов”. Это выражается через readiness dimensions.
 
 ---
 
@@ -103,6 +105,16 @@ class DomainSignal(BaseModel):
     signal_type: NamespacedId
     value: str
     confidence: float
+
+class ReadinessDimension(BaseModel):
+    readiness_type: NamespacedId
+    title: str
+    description: str
+    status: Literal["unknown", "not_ready", "partial", "ready", "waived"]
+    blocking: bool = True
+    confidence: float = 1.0
+    evidence_artifact_ids: list[UUID] = []
+    updated_in_version: int
 ```
 
 ```python
@@ -119,6 +131,7 @@ class ProblemStateSnapshot(BaseModel):
     assumptions: list[AssumptionRecord]
     risks: list[RiskRecord]
     domain_signals: list[DomainSignal]
+    readiness: list[ReadinessDimension]
     extensions: dict[str, Any] = {}
     created_at: datetime
     created_by: str
@@ -187,6 +200,16 @@ class RiskUpsert(BaseModel):
     severity: Literal["low", "medium", "high", "critical"]
     linked_gap_types: list[NamespacedId] = []
 
+class ReadinessUpsert(BaseModel):
+    op: Literal["readiness_upsert"] = "readiness_upsert"
+    readiness_type: NamespacedId
+    title: str
+    description: str
+    status: Literal["unknown", "not_ready", "partial", "ready", "waived"]
+    blocking: bool = True
+    confidence: float = 1.0
+    evidence_artifact_ids: list[UUID] = []
+
 class FieldSet(BaseModel):
     op: Literal["field_set"] = "field_set"
     field_path: ProblemFieldPath
@@ -203,6 +226,7 @@ ProblemPatchOp = (
     | ConstraintUpsert
     | AssumptionUpsert
     | RiskUpsert
+    | ReadinessUpsert
     | FieldSet
 )
 
@@ -263,6 +287,7 @@ CREATE TABLE problem_state_snapshots (
     assumptions          JSONB        NOT NULL DEFAULT '[]'::jsonb,
     risks                JSONB        NOT NULL DEFAULT '[]'::jsonb,
     domain_signals       JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    readiness            JSONB        NOT NULL DEFAULT '[]'::jsonb,
     extensions           JSONB        NOT NULL DEFAULT '{}'::jsonb,
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
     created_by           TEXT         NOT NULL,
@@ -310,6 +335,28 @@ CREATE TABLE problem_decisions (
 ```
 
 Дополнительные projections `problem_constraints`, `problem_assumptions`, `problem_risks` реализуются отдельными таблицами по тому же принципу; их схема следует Pydantic-моделям из §2.1.
+
+Для readiness вводится отдельная projection:
+
+```sql
+CREATE TABLE problem_readiness (
+    readiness_id         UUID         PRIMARY KEY,
+    project_id           UUID         NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+    readiness_type       TEXT         NOT NULL,
+    title                TEXT         NOT NULL,
+    description          TEXT         NOT NULL,
+    status               TEXT         NOT NULL CHECK (status IN ('unknown','not_ready','partial','ready','waived')),
+    blocking             BOOLEAN      NOT NULL DEFAULT TRUE,
+    confidence           DOUBLE PRECISION NOT NULL,
+    evidence_artifact_ids JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    updated_in_version   INT          NOT NULL,
+    UNIQUE (project_id, readiness_type)
+);
+
+CREATE INDEX idx_problem_readiness_blocking
+    ON problem_readiness (project_id, status)
+    WHERE blocking = TRUE;
+```
 
 ---
 
@@ -376,6 +423,7 @@ class ProblemStateStore(Protocol):
 3. Нормализовать операции:
    - gap fingerprint = SHA-256(`gap_type + title + description`);
    - `decision_type` dedupe по active decision of same type;
+   - `readiness_type` upsert по unique key `(project_id, readiness_type)`;
    - `field_set.merge` только для dict/list.
 4. Построить новый snapshot `version+1`.
 5. Записать event и projections в одной транзакции.
@@ -387,6 +435,7 @@ class ProblemStateStore(Protocol):
 - закрыть отсутствующий gap;
 - заменить confirmed decision без `decision_supersede`;
 - удалить blocking constraint;
+- молча выставить blocking readiness в `ready`, если evidence отсутствует, хотя policy этого требует;
 
 операция отклоняется `ProblemStateConflictError`.
 
@@ -411,6 +460,8 @@ class ProblemStateStore(Protocol):
 | P6 | Любой change имеет `actor` и `correlation_id` либо `NULL` по явному правилу |
 | P7 | `extensions` не содержит ключей core fields |
 | P8 | Patch без `expected_version` запрещён |
+| P9 | У проекта не более одной readiness dimension на `readiness_type` |
+| P10 | `blocking` readiness в статусе `not_ready` или `unknown` должно учитываться planner'ом как admission constraint |
 
 ---
 
@@ -424,6 +475,13 @@ class ProblemStateStore(Protocol):
 
 Planner использует только `ProblemStateSnapshot` и projections, не event log.
 
+Отдельно Planner обязан читать:
+
+- `problem_readiness`;
+- активные gaps;
+- confirmed/proposed decisions;
+- recipe-related readiness deficits.
+
 ### 8.3. С Validation Layer
 
 Validation может:
@@ -432,6 +490,7 @@ Validation может:
 - закрывать gaps после successful checks;
 - создавать risks;
 - подтверждать или отклонять decisions.
+- обновлять readiness dimensions по результатам reviews/checks.
 
 Validation **не может** менять goal и raw user constraints без explicit human action.
 

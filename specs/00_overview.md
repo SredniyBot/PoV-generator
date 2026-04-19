@@ -1,6 +1,6 @@
 # Спецификации платформы PoV Lab: обзор
 
-> **Статус:** v1.1 · Draft · 2026-04-18
+> **Статус:** v1.2 · Draft · 2026-04-19
 > **Авторы спецификации:** команда PoV Lab
 > **Область применения:** полный пакет архитектурных спецификаций платформы PoV Lab.
 
@@ -10,18 +10,18 @@
 - `02_task_store.md` — lifecycle задач, DAG, event sourcing, FSM и очереди.
 - `03_template_semantics.md` — канонический semantic contract шаблона; это интеллектуальное ядро системы.
 - `04_problem_state.md` — структурированное состояние проблемы и semantic memory проекта.
-- `05_planning_coordinator.md` — тонкий детерминированный координатор problem loop.
+- `05_planning_coordinator.md` — детерминированный policy coordinator problem loop.
 - `06_artifact_context.md` — артефакты, summaries, retrieval и сборка task-local context.
 - `07_execution_runtime.md` — LLM/script/tool runtime и execution traces.
 - `08_validation_governance.md` — validation, critique, stage gates и human escalation.
 
-Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах; координатор только применяет эту семантику, но не дублирует её в коде**.
+Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах и recipe-политиках; координатор только применяет эту семантику, но не дублирует её в коде и не заменяет её “мнением LLM” как финальным арбитром**.
 
 ---
 
 ## 1. Место компонентов в архитектуре
 
-Архитектура PoV Lab опирается на [ТЗ Архитектура.md](ТЗ%20Архитектура.md) и [PoV.md](PoV.md). Целевая реализация — **модульный монолит** с жёсткими контрактами между пакетами. Вынесение компонент в отдельные сервисы допускается позже, но **не является** частью базовой архитектуры.
+Архитектура PoV Lab опирается на [ТЗ Архитектура.md](ТЗ%20Архитектура.md) и [PoV.md](PoV.md). Базовая форма реализации — **модульный монолит** с жёсткими контрактами между пакетами. Вынесение компонент в отдельные сервисы допускается позже и не меняет логическую модель системы; сервисная декомпозиция рассматривается как вариант deployment topology, а не как новая архитектурная парадигма.
 
 Логические компоненты и их связи:
 
@@ -34,7 +34,7 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Problem State Store + Planning Coordinator                                  │
 │ (specs/04 + specs/05)                                                       │
-│ active gaps · decisions · risks · candidate templates · planning decisions  │
+│ active gaps · readiness · decisions · recipes · planning decisions          │
 └──────────┬───────────────────────────────┬───────────────────────────────────┘
            │ load semantics                │ create/update tasks
            ▼                               ▼
@@ -59,12 +59,46 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Template Semantics** — первичный носитель problem-solving логики. Шаблон описывает не только runtime-задачу, но и то, с каким типом проблемы он работает, что закрывает и какой контекст ему нужен.
-- **Planning Coordinator** — детерминированно выбирает следующий шаблон на основе открытых gaps, stage gate и activation rules шаблонов. Координатор не вызывает LLM и не содержит доменную методологию в коде.
+- **Template Semantics** — первичный носитель problem-solving логики. Шаблон описывает не только runtime-задачу, но и то, с каким типом проблемы он работает, какова его роль в recipe, что закрывает и какой контекст ему нужен.
+- **Planning Coordinator** — детерминированно допускает, композирует и планирует выполнение шаблонов на основе открытых gaps, readiness, recipe-обязательств и activation rules. Координатор не вызывает LLM и не содержит доменную методологию в коде.
 - **Task Store** — источник истины о lifecycle задач и их зависимостях.
 - **Artifact / Context Layer** — источник истины о blob-артефактах, их derived-представлениях и context manifests.
 - **Execution Runtime** — единый контракт для LLM, скриптов, инструментов и сред исполнения.
 - **Validation & Governance** — замыкает любой execution cycle проверками и human handoff.
+
+### 1.1. Template-centric, но не flat-template
+
+Платформа не считает шаблоны “плоским списком кандидатов”, из которого система выбирает следующий шаг по ощущению готовности. Вместо этого:
+
+- шаблоны делятся на предметные и мета-аналитические роли;
+- над шаблонами существуют `recipes` — декларативные схемы выполнения класса задач;
+- recipes задают обязательные meta-passes и порядок проверки readiness;
+- координатор допускает шаблон только если выполнены формальные preconditions и recipe-обязательства.
+
+Это защищает систему от типичного сбоя LLM: преждевременного оптимизма относительно полноты данных и качества постановки.
+
+### 1.2. Роль LLM в выборе шагов
+
+LLM не исключается из planning loop полностью, но её роль строго ограничена.
+
+- LLM может участвовать внутри шаблонов `meta_analysis` и `review`, которые:
+  - выявляют gaps;
+  - предлагают alternatives;
+  - формируют risks;
+  - обновляют readiness;
+  - создают новые planning-relevant artifacts.
+- LLM может помогать производить **planning inputs**, но не должна быть единственным механизмом **admission** или финального выбора следующего шага.
+- Финальный выбор и приоритизация шага выполняются детерминированно через:
+  - readiness;
+  - recipe obligations;
+  - activation rules;
+  - severity/blocking signals;
+  - dedup/cooldown/policy rules.
+
+Проще говоря:
+
+- LLM помогает системе лучше понять проблему;
+- policy coordinator решает, какой шаг допустим и что из допустимого приоритетнее.
 
 ---
 
@@ -87,6 +121,7 @@
 - Template Registry — **синхронный** API (файлы + кеш + PostgreSQL индекс; latency ≤ 5 ms на чтение, ≤ 200 ms на `reload()`).
 - Task Store — **асинхронный** API (`asyncpg`, async SQLAlchemy). Все операции возвращают awaitable.
 - Planning Coordinator — **асинхронный**, но детерминированный и CPU-light; не делает сетевых вызовов кроме чтения из Registry/Stores.
+- Planning Coordinator никогда не использует LLM для admission/selection. LLM может участвовать только внутри уже выбранного и допущенного шаблона.
 - Artifact Store и Context Engine — **асинхронные** API.
 - Execution Runtime — **асинхронный** API с долгоживущими run/session объектами.
 
@@ -245,6 +280,36 @@ ContextManifestId = UUID
 ExecutionRunId = UUID
 ```
 
+### 3.13. Новые shared concepts
+
+```python
+class TemplateRole(StrEnum):
+    CORE_TASK = "core_task"
+    META_ANALYSIS = "meta_analysis"
+    REVIEW = "review"
+    REPAIR = "repair"
+    ESCALATION = "escalation"
+```
+
+```python
+class ReadinessStatus(StrEnum):
+    UNKNOWN = "unknown"
+    NOT_READY = "not_ready"
+    PARTIAL = "partial"
+    READY = "ready"
+    WAIVED = "waived"
+```
+
+`TemplateRole` описывает место шаблона в execution recipe:
+
+- `core_task` — предметный шаг, производящий основной артефакт;
+- `meta_analysis` — обязательный аналитический проход;
+- `review` — проверка полноты, согласованности и релевантности;
+- `repair` — адресное исправление findings;
+- `escalation` — handoff человеку или фиксация блокировки.
+
+`ReadinessStatus` выражает зрелость входа для следующего класса шагов. Readiness считается формально из `ProblemState`, validation findings и выполненных recipe-passes, а не по “ощущению модели”.
+
 ---
 
 ## 4. Технологический стек
@@ -345,6 +410,40 @@ class ExternalDependencyError(PovLabError): ...
 - **Context Engine**: manifest сборки идемпотентен по `(task_id, template_ref, problem_state_ref, input_fingerprint)`.
 - **Execution Runtime**: каждый run идемпотентен по `execution_run_id`; duplicate completion не может создать второй набор output artifacts.
 
+### 6.6. Admission-before-selection
+
+Сквозное правило платформы:
+
+1. Сначала система проверяет **admission**:
+   - формальные preconditions шаблона;
+   - readiness dimensions;
+   - recipe-обязательства;
+   - отсутствие blocking conflicts.
+2. Только после этого система делает **selection** среди допустимых кандидатов.
+
+Следствие:
+
+- нельзя описывать Planner как слой, который “понимает, какой шаблон лучше”;
+- нельзя допускать запуск `core_task`, если обязательные `meta_analysis`/`review` проходы recipe ещё не выполнены;
+- нельзя закрывать readiness “по уверенности LLM”; readiness должен быть выражен через явные поля и проверки.
+
+### 6.7. Что происходит, если шаг не проходит admission
+
+Если шаг нельзя запускать, это не считается “тихой неудачей” и не оставляется на усмотрение модели.
+
+Система обязана сделать одно из следующих действий:
+
+1. Материализовать prerequisite step:
+   - обязательный `meta_analysis`;
+   - обязательный `review`;
+   - `repair`, если есть findings.
+2. Открыть или обновить blocking gap.
+3. Обновить readiness dimension в `not_ready` / `partial`.
+4. Создать escalation, если дальнейшее движение без человека недопустимо.
+5. Явно записать `PlanningDecision` со статусом `skipped_guard` или `escalated`.
+
+То есть “шаг нельзя запускать” должно конвертироваться в структурированное следствие, а не в молчаливую остановку.
+
 ---
 
 ## 7. Минимальный совместный сценарий
@@ -356,14 +455,15 @@ class ExternalDependencyError(PovLabError): ...
      rag.missing_data_profile
 3. Planning Coordinator делает `plan_once(project_id=P)`:
      registry.list(active_only=True)
-     evaluate_activation_rules(problem_state=v1)
-     choose template "requirements_alignment@1.0.0"
+     evaluate recipe obligations
+     compute readiness deficits
+     admit template "requirements_alignment@1.0.0" как обязательный meta-pass
 4. Task Builder создаёт T0 по шаблону requirements_alignment.
 5. Context Engine собирает `ContextManifest M0` по `context_policy` шаблона.
 6. Task Router dispatch'ит T0; Execution Runtime выполняет run R0 с manifest M0.
 7. Runtime сохраняет outputs + problem_state_patch; Validation слой проверяет output contract.
-8. Problem State Store применяет patch → `ProblemState v2`; gap `common.unclear_success_criteria` закрыт.
-9. Planning Coordinator запускается снова, выбирает следующий шаблон по оставшимся gaps.
+8. Problem State Store применяет patch → `ProblemState v2`; readiness `common.goal_clarity` становится `ready`, gap `common.unclear_success_criteria` закрыт.
+9. Planning Coordinator запускается снова, проверяет recipe и допускает следующий обязательный pass либо `core_task`.
 10. Stage-Gate Evaluator закрывает gate только когда exit criteria фазы выполнены.
 ```
 

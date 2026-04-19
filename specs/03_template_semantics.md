@@ -1,6 +1,6 @@
 # Template Semantics — спецификация
 
-> **Статус:** v1.0 · Draft · 2026-04-18
+> **Статус:** v1.1 · Draft · 2026-04-19
 > **Зависимости:** [00_overview.md](00_overview.md), [01_template_registry.md](01_template_registry.md), [04_problem_state.md](04_problem_state.md)
 > **Область:** канонический semantic contract шаблона задачи. Это главный носитель problem-solving логики платформы.
 
@@ -10,10 +10,11 @@
 
 ### 1.1. Что делает
 - Определяет, **с каким классом проблем** работает шаблон, какие gaps он закрывает и какие новые может породить.
-- Описывает, **когда** шаблон может быть выбран Planning Coordinator'ом.
+- Описывает, **при каких условиях** шаблон может быть допущен Planning Coordinator'ом.
 - Фиксирует, **какой методологией** должен пользоваться исполнитель внутри задачи.
 - Описывает контекст, инструменты, правила decomposition и ожидаемые изменения `ProblemState`.
 - Даёт Planner'у и Context Engine декларативный контракт, не позволяющий им принимать произвольные доменные решения.
+- Фиксирует место шаблона внутри `recipe`: является ли он предметным шагом, обязательным meta-pass, review или repair.
 
 ### 1.2. Чего НЕ делает
 - Не заменяет [01_template_registry.md](01_template_registry.md): registry по-прежнему отвечает за хранение, версионирование и индекс.
@@ -23,11 +24,12 @@
 
 ### 1.3. Архитектурный принцип
 
-Платформа **template-centric**:
+Платформа **template-centric**, но не “однослойная”:
 
 - Доменная методология живёт в шаблонах.
-- Координатор планирования применяет explicit semantic rules шаблонов.
+- Координатор планирования применяет explicit semantic rules шаблонов и recipe-политик.
 - Ни один слой выше шаблонов не имеет права “додумывать” закрываемые gaps, скрытые stop criteria или tool policy.
+- Нельзя полагаться на свободную оценку LLM о том, “достаточно ли данных”; readiness и обязательные meta-passes должны быть выражены декларативно.
 
 ---
 
@@ -38,6 +40,7 @@
 В шаблоне должны быть независимые поля для разных аспектов:
 
 - `type` — lifecycle behavior (`composite` / `executable` / `dynamic`).
+- `semantics.template_role` — роль шаблона в оркестрации (`core_task`, `meta_analysis`, `review`, `repair`, `escalation`).
 - `semantics.cognitive_role` — роль в problem-solving.
 - `domain` — предметная область.
 - `output_contract` — какие артефакты производятся.
@@ -149,6 +152,7 @@ CoreCognitiveRole = Literal[
 
 ```python
 class TemplateSemantics(BaseModel):
+    template_role: Literal["core_task", "meta_analysis", "review", "repair", "escalation"]
     cognitive_role: str
     closes_gaps: list[NamespacedId]
     may_emit_gaps: list[NamespacedId] = []
@@ -160,6 +164,7 @@ class TemplateSemantics(BaseModel):
     priority_hint: int = 0                 # -100..100
     planner_visibility: Literal["public", "internal_only"] = "public"
     supersedes_templates: list[TemplateRef] = []
+    admissibility_tags: list[NamespacedId] = []
 ```
 
 Смысл полей:
@@ -169,6 +174,18 @@ class TemplateSemantics(BaseModel):
 - `detects_gaps` — template умеет обнаруживать gaps, даже если не закрывает их.
 - `artifact_roles_produced` — semantic role outputs. Не заменяет `output_contract`, а дополняет его.
 - `planner_visibility=internal_only` — шаблон может запускаться только системой как follow-up, но не как прямой пользовательский intent.
+- `template_role` определяет, считается ли шаблон основным предметным шагом или обязательным meta-pass. Это влияет на recipe orchestration и completion policy.
+- `admissibility_tags` позволяют policy layer проверять recipe-level требования без чтения prompt'ов.
+
+### 4.3.1. Template roles
+
+Нормативные правила по ролям:
+
+- `core_task` — производит основной полезный артефакт для текущего класса задач; не должен запускаться до выполнения обязательных meta-passes recipe.
+- `meta_analysis` — почти всегда меняет `ProblemState`, readiness или набор active gaps/decisions; может не производить пользовательский финальный артефакт.
+- `review` — проверяет уже сформированное решение, постановку или артефакт на полноту, согласованность и релевантность.
+- `repair` — адресно исправляет findings после `review`/validation.
+- `escalation` — оформляет handoff человеку, формализует блокировку или запрос внешнего решения.
 
 ### 4.4. `ActivationPolicy`
 
@@ -186,6 +203,10 @@ class ActivationPredicate(BaseModel):
         "stage_gate_in",
         "risk_above",
         "domain_signal_present",
+        "readiness_at_least",
+        "readiness_below",
+        "recipe_step_pending",
+        "recipe_step_completed",
     ]
     key: str
     value: str | int | float | bool | None = None
@@ -199,6 +220,7 @@ class ActivationPolicy(BaseModel):
     cooldown_seconds: int = 0
     dedup_scope: Literal["project", "gap", "decision", "task_family"] = "gap"
     dedup_key_template: str
+    requires_recipe: str | None = None
 ```
 
 Правила:
@@ -207,6 +229,20 @@ class ActivationPolicy(BaseModel):
 - `when_any` — хотя бы один предикат обязан быть true; пустой список = no-op.
 - `unless` — если хотя бы один predicate true, шаблон не активируется.
 - `dedup_key_template` — Jinja-like строка над полями project/gap/decision/template; используется Planner'ом для idempotent selection.
+
+### 4.4.1. Admission vs selection
+
+`ActivationPolicy` определяет **допуск**, а не только scoring.
+
+Шаблон считается admissible только если:
+
+- `when_all` выполнены;
+- `when_any` выполнен, если он задан;
+- `unless` не сработал;
+- recipe-level обязательства не запрещают переход;
+- readiness constraints удовлетворены.
+
+Только после этого шаблон может участвовать в selection/scoring.
 
 ### 4.5. `FrameworkSpec`
 
@@ -233,6 +269,51 @@ class FrameworkSpec(BaseModel):
 ```
 
 Нормативное правило: `FrameworkSpec` описывает **локальную методологию**. Глобальную очередность шаблонов он не определяет.
+
+### 4.5.1. FrameworkSpec не заменяет meta-passes
+
+`FrameworkSpec` описывает локальную методологию внутри одного шаблона. Он не должен использоваться как суррогат для глобальных обязательных проходов вроде:
+
+- уточнения цели;
+- анализа user story;
+- анализа альтернатив;
+- consistency/relevance review;
+- downstream impact review.
+
+Если такие проходы обязательны для класса задач, они должны быть выражены отдельными шаблонами и включены в recipe.
+
+### 4.5.2. Recipe semantics
+
+Для неплоской оркестрации вводится отдельная сущность `TemplateRecipe`. Recipe не заменяет шаблон и не хранит предметную методологию. Он описывает:
+
+- какой `core_task` считается центральным;
+- какие `meta_analysis`/`review` проходы обязательны;
+- по каким readiness dimensions нельзя двигаться дальше без прохождения;
+- в каком порядке допускаются роли.
+
+Каноническая модель:
+
+```python
+class RecipeStep(BaseModel):
+    step_id: str
+    template_role: Literal["core_task", "meta_analysis", "review", "repair", "escalation"]
+    required: bool = True
+    completion_artifact_roles: list[NamespacedId] = []
+    completion_gap_closures: list[NamespacedId] = []
+    completion_readiness: list[NamespacedId] = []
+
+class TemplateRecipe(BaseModel):
+    recipe_id: NamespacedId
+    description: str
+    entry_conditions: list[ActivationPredicate] = []
+    core_template_refs: list[TemplateRef]
+    mandatory_steps: list[RecipeStep]
+    allows_parallel_meta_passes: bool = True
+```
+
+Нормативное правило: recipe-driven orchestration должна использоваться для классов задач, где “сразу перейти к core task” опасно из-за систематического оптимизма LLM.
+
+До появления отдельного Recipe Registry definitions recipes считаются registry-managed YAML-объектами того же semantic layer и версионируются рядом с шаблонами.
 
 ### 4.6. `ProblemStateEffects`
 
@@ -280,6 +361,7 @@ class ContextPolicy(BaseModel):
     max_retrieval_chunks: int = 0
     overflow_strategy: Literal["summarize", "decompose", "fail", "escalate"]
     manifest_required: bool = True
+    readiness_evidence_required: list[NamespacedId] = []
 ```
 
 ### 4.8. `ToolPolicy`
@@ -308,6 +390,7 @@ class ValidationPolicy(BaseModel):
     critique_template_refs: list[TemplateRef] = []
     max_correction_loops: int = 0
     allow_partial_success: bool = False
+    required_readiness_before_success: list[NamespacedId] = []
 ```
 
 ---
@@ -335,6 +418,7 @@ class SemanticTemplate(BaseModel):
     context_policy: ContextPolicy
     tool_policy: ToolPolicy
     validation_policy: ValidationPolicy
+    recipe_membership: list[NamespacedId] = []
 
     composite: CompositeSpec | None = None
     executable: ExecutableSpec | None = None
@@ -356,6 +440,8 @@ Planner имеет право использовать только следую
 - `activation.*`
 - `context_policy.max_input_tokens`
 - `validation_policy.max_correction_loops`
+- `validation_policy.required_readiness_before_success`
+- `recipe_membership`
 
 Planner **не имеет права** читать prompt text, hidden instructions или runtime-only transport поля для принятия решения о выборе шаблона.
 
@@ -387,7 +473,7 @@ Runtime не имеет права самостоятельно изменять
 
 | Код | Инвариант |
 |---|---|
-| S1 | `semantics.closes_gaps` не пуст для любого `public` шаблона, кроме `critique` и `validation` ролей |
+| S1 | `semantics.closes_gaps` не пуст для любого `public` шаблона, кроме `review` и `escalation` ролей |
 | S2 | Любой `gap_type` / `artifact_role` / `decision_type` соответствует regex `NamespacedId` |
 | S3 | `activation.dedup_key_template` обязателен для `status=active` |
 | S4 | `context_policy.max_input_tokens >= 512` для `executable` и `dynamic` |
@@ -400,19 +486,22 @@ Runtime не имеет права самостоятельно изменять
 
 ---
 
-## 8. Алгоритм template matching
+## 8. Алгоритм template admission and matching
 
-1. Planner получает `ProblemStateSnapshot` и открытые `PlanningItem`'ы.
+1. Planner получает `ProblemStateSnapshot`, readiness projections, recipe obligations и открытые `PlanningItem`'ы.
 2. Для каждого candidate template из registry:
    - проверяет `status=active`;
    - проверяет stage compatibility;
    - вычисляет predicates из `activation`;
+   - проверяет recipe membership / pending mandatory steps;
+   - проверяет readiness constraints;
    - строит `dedup_key`;
    - исключает template при conflict с уже активной task family.
-3. Из оставшихся шаблонов строится детерминированный score:
+3. Из admissible шаблонов строится детерминированный score:
    - `priority_hint`;
    - blocking severity соответствующего gap;
    - наличие готовых hard inputs;
+   - penalty за незакрытые readiness deficits у `core_task`;
    - stage preference;
    - penalty за cooldown / active duplicates.
 4. Planner materializes task только если может объяснить решение полями из spec и сохранить `planning_reason`.
@@ -455,6 +544,7 @@ metadata:
   labels: {}
   tags: ["core", "intake"]
 semantics:
+  template_role: meta_analysis
   cognitive_role: requirements_discovery
   closes_gaps:
     - common.unclear_business_need
@@ -479,6 +569,9 @@ activation:
       key: common.unclear_business_need
     - kind: gap_open
       key: common.unclear_success_criteria
+  when_all:
+    - kind: recipe_step_pending
+      key: common.build_requirements_spec.goal_alignment
   unless:
     - kind: stage_gate_in
       key: delivery
@@ -526,6 +619,8 @@ context_policy:
   max_retrieval_chunks: 0
   overflow_strategy: summarize
   manifest_required: true
+  readiness_evidence_required:
+    - common.goal_clarity
 tool_policy:
   allow_tools: false
   allowed_tool_ids: []
@@ -540,6 +635,10 @@ validation_policy:
   critique_template_refs: []
   max_correction_loops: 0
   allow_partial_success: false
+  required_readiness_before_success:
+    - common.goal_clarity
+recipe_membership:
+  - common.build_requirements_spec
 executable:
   executor: llm
   llm:
@@ -561,5 +660,5 @@ executable:
 - Хранение YAML, алиасов и индекса версий — `01_template_registry.md`.
 - Lifecycle конкретных задач — `02_task_store.md`.
 - Структура `ProblemState` и patch-apply semantics — `04_problem_state.md`.
-- Алгоритм scoring planner runs — `05_planning_coordinator.md`.
+- Алгоритм admission/scoring planner runs и recipe orchestration — `05_planning_coordinator.md`.
 - Runtime adapter contracts — `07_execution_runtime.md`.

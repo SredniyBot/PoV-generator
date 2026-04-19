@@ -1,8 +1,8 @@
 # Planning Coordinator — спецификация
 
-> **Статус:** v1.0 · Draft · 2026-04-18
+> **Статус:** v1.1 · Draft · 2026-04-19
 > **Зависимости:** [00_overview.md](00_overview.md), [03_template_semantics.md](03_template_semantics.md), [04_problem_state.md](04_problem_state.md), [02_task_store.md](02_task_store.md)
-> **Область:** детерминированный selection loop, который выбирает следующий шаблон и материализует задачи.
+> **Область:** детерминированный policy loop, который допускает, композирует и материализует следующий шаг.
 
 ---
 
@@ -10,21 +10,24 @@
 
 ### 1.1. Что делает
 - Собирает planning items из `ProblemState`, validation debt, user intents и системных follow-up'ов.
+- Строит recipe obligations и readiness deficits.
 - Находит кандидатов среди активных шаблонов.
-- Вычисляет activation predicates и score.
+- Выполняет admission checks и только потом score/selection.
 - Создаёт новые задачи через Task Store.
 - Логирует, **почему** был выбран конкретный шаблон.
 
 ### 1.2. Чего НЕ делает
-- Не вызывает LLM.
+- Не использует LLM как финальный механизм admission/selection.
 - Не хранит доменную методологию вне шаблонов.
 - Не исполняет задачи и не собирает контекст.
 - Не закрывает gaps напрямую.
 
 ### 1.3. Главный принцип
 
-Planning Coordinator — **тонкий диспетчер**, а не второй интеллект системы.  
-Он опирается на explicit semantics шаблонов и никогда не пытается “догадаться” вместо них.
+Planning Coordinator — **тонкий policy engine**, а не второй интеллект системы.  
+Он опирается на explicit semantics шаблонов, readiness model и recipes, и никогда не пытается “догадаться” вместо них.
+
+LLM может косвенно влиять на planning через результаты уже выполненных `meta_analysis`/`review` шаблонов, но не через прямой “planner prompt”.
 
 ---
 
@@ -43,10 +46,15 @@ class PlanningItem(BaseModel):
         "gate_entry",
         "human_request",
         "system_followup",
+        "readiness_deficit",
+        "recipe_obligation",
     ]
     stage_gate: StageGate
     gap_type: NamespacedId | None = None
     decision_type: NamespacedId | None = None
+    readiness_type: NamespacedId | None = None
+    recipe_id: NamespacedId | None = None
+    recipe_step_id: str | None = None
     severity: Literal["low", "medium", "high", "critical"] | None = None
     blocking: bool = False
     payload: dict[str, Any] = {}
@@ -55,14 +63,34 @@ class PlanningItem(BaseModel):
 ### 2.2. Источники planning items
 
 - Активные gaps из `ProblemState`.
+- Активные readiness deficits из `ProblemState`.
 - Pending validation findings.
 - Gate entry actions при открытии нового `StageGate`.
 - Explicit human/developer requests.
 - System-generated follow-up intents после completion/retry/invalidate.
+- Recipe obligations: обязательные meta-passes/reviews, ещё не выполненные для текущего класса задачи.
+
+### 2.3. Recipe model
+
+Planner работает не с “плоским списком шаблонов”, а с recipe-driven orchestration.
+
+```python
+class RecipeObligation(BaseModel):
+    recipe_id: NamespacedId
+    step_id: str
+    template_role: Literal["core_task", "meta_analysis", "review", "repair", "escalation"]
+    required: bool
+    satisfied: bool
+    source_item_id: UUID | None = None
+```
+
+Нормативное правило:
+
+- `core_task` нельзя materialize, если для того же recipe есть невыполненные обязательные `meta_analysis` или `review` steps.
 
 ---
 
-## 3. Candidate selection
+## 3. Candidate admission and selection
 
 ### 3.1. Получение кандидатов
 
@@ -83,16 +111,26 @@ registry.list(
 - artifact roles уже присутствующих outputs;
 - confirmed decisions.
 
-### 3.2. Фильтрация кандидатов
+Одновременно Planner загружает recipe definitions и актуальное состояние readiness.
+
+### 3.2. Admission checks
 
 Шаблон исключается, если:
 
 - `status != active`;
 - `planner_visibility=internal_only` и trigger не системный;
 - activation predicates false;
+- есть blocking readiness deficit, несовместимый с template role;
+- recipe требует сначала другой обязательный step;
 - существует active task той же `dedup_key`;
 - gate закрыт для новых задач этого типа;
 - у задачи нет шанса собрать hard inputs по доступным artifact roles / problem fields.
+
+Отдельное нормативное правило:
+
+- `core_task` не проходит admission, если есть обязательный `meta_analysis`/`review` pass того же recipe в статусе `pending`;
+- `review` не проходит admission, если отсутствует review target;
+- `repair` не проходит admission, если нет активных findings соответствующего scope.
 
 ---
 
@@ -105,6 +143,7 @@ Score должен быть детерминированным и explainable.
 ```python
 score = (
     gap_score
+    + recipe_score
     + stage_score
     + template_priority_score
     + readiness_score
@@ -119,9 +158,10 @@ score = (
 | Компонент | Формула |
 |---|---|
 | `gap_score` | `120` для blocking critical, `90` для blocking high, `50` для medium, `20` для low |
+| `recipe_score` | `+80`, если candidate закрывает обязательный pending recipe step; `0` иначе |
 | `stage_score` | `+20`, если `current_stage_gate` входит в `preferred_stage_gates`; иначе `0` |
 | `template_priority_score` | `semantics.priority_hint` |
-| `readiness_score` | `+30`, если все hard inputs уже доступны; `+10`, если нужны только summaries; `-50`, если missing hard inputs |
+| `readiness_score` | `+30`, если все hard inputs уже доступны; `+10`, если нужны только summaries; `-50`, если missing hard inputs; `-1000`, если blocking readiness deficit делает `core_task` недопустимым |
 | `human_override_score` | `+1000`, если developer явно форсировал template |
 | `duplicate_penalty` | `1000`, если dedup conflict; иначе `0` |
 | `cooldown_penalty` | `20`, если последний task той же family завершился менее `cooldown_seconds` назад |
@@ -131,8 +171,9 @@ score = (
 При равном score:
 
 1. Более узкий `closes_gaps` wins.
-2. Более высокий `max_input_tokens` loses.
-3. Меньший `template_id` wins lexicographically.
+2. `meta_analysis` / `review` win против `core_task`, если они удовлетворяют обязательный pending recipe step.
+3. Более высокий `max_input_tokens` loses.
+4. Меньший `template_id` wins lexicographically.
 
 Это делает выбор полностью детерминированным.
 
@@ -146,6 +187,8 @@ score = (
 class TaskMaterializationSpec(BaseModel):
     project_id: ProjectId
     template_ref: TemplateRef
+    recipe_id: NamespacedId | None = None
+    recipe_step_id: str | None = None
     stage_gate: StageGate
     dedup_key: str
     source_item_id: UUID
@@ -162,8 +205,10 @@ class TaskMaterializationSpec(BaseModel):
    - stage gate допускает создание;
    - Task Store FSM допускает initial status;
    - Context Engine потенциально способен собрать hard inputs.
-3. Если execution path невозможен, Planner не создаёт task; вместо этого он:
+3. Planner обязан сначала удовлетворять recipe obligations текущего task class, а уже затем materialize `core_task`.
+4. Если execution path невозможен, Planner не создаёт task; вместо этого он:
    - открывает новый gap, либо
+   - создаёт readiness deficit, либо
    - создаёт escalation item.
 
 ---
@@ -228,11 +273,14 @@ class PlanningDecision(BaseModel):
     project_id: ProjectId
     source_item_id: UUID
     template_ref: TemplateRef
+    recipe_id: NamespacedId | None = None
+    recipe_step_id: str | None = None
     score: int
     dedup_key: str
     status: Literal["materialized", "skipped_duplicate", "skipped_guard", "escalated"]
     reasons: list[str]
     created_task_id: TaskId | None = None
+    admission_checks: list[str] = []
 ```
 
 ---
@@ -258,6 +306,8 @@ CREATE TABLE planning_decisions (
     source_item_id        UUID         NOT NULL,
     template_id           TEXT         NOT NULL,
     template_version      TEXT         NOT NULL,
+    recipe_id             TEXT,
+    recipe_step_id        TEXT,
     dedup_key             TEXT         NOT NULL,
     score                 INT          NOT NULL,
     decision_status       TEXT         NOT NULL CHECK (decision_status IN
@@ -276,16 +326,17 @@ CREATE INDEX idx_planning_runs_project_started
 ## 9. Алгоритм `plan_once`
 
 1. Прочитать актуальный `ProblemStateSnapshot`.
-2. Считать active tasks, validation debt и stage gate status.
-3. Собрать `PlanningItem`'ы.
-4. Для каждого item:
+2. Считать active tasks, validation debt, readiness и stage gate status.
+3. Построить recipe obligations для текущего project state.
+4. Собрать `PlanningItem`'ы.
+5. Для каждого item:
    - получить candidate templates;
-   - отфильтровать по activation;
+   - выполнить admission checks;
    - вычислить score;
    - выбрать победителя;
    - materialize task или записать skip reason.
-5. Сохранить `planning_runs` + `planning_decisions`.
-6. Вернуть decisions.
+6. Сохранить `planning_runs` + `planning_decisions`.
+7. Вернуть decisions.
 
 Planner может запускаться:
 
@@ -307,11 +358,13 @@ Planner может запускаться:
 | C4 | Planner не создаёт task без `template_version` |
 | C5 | Planner читает только snapshot/projections, а не сырые artifacts напрямую |
 | C6 | Planner не открывает и не закрывает gaps напрямую |
+| C7 | Planner не использует LLM для определения готовности входа |
+| C8 | `core_task` не materialize'ится, пока не выполнены обязательные recipe meta-passes |
 
 ---
 
 ## 11. Что вне области этой спеки
 
-- Семантика самих templates — [03_template_semantics.md](03_template_semantics.md).
+- Семантика самих templates и recipes — [03_template_semantics.md](03_template_semantics.md).
 - Context assembly — [06_artifact_context.md](06_artifact_context.md).
 - Runtime execution — [07_execution_runtime.md](07_execution_runtime.md).
