@@ -1,0 +1,22 @@
+kind: vocabulary
+id: artifact_roles
+version: 1.0.0
+entries:
+  - id: business_request
+    label: Business Request
+    description: Raw problem statement from a user or operator.
+  - id: clarification_notes
+    label: Clarification Notes
+    description: Structured clarification output for a business request.
+  - id: user_story_map
+    label: User Story Map
+    description: Structured coverage of actors and user journeys.
+  - id: alternatives_analysis
+    label: Alternatives Analysis
+    description: Comparison of candidate solution directions.
+  - id: requirements_spec
+    label: Requirements Specification
+    description: Draft or final technical specification.
+  - id: review_report
+    label: Review Report
+    description: Review findings and acceptance conclusion.

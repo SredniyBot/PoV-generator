@@ -1,0 +1,19 @@
+kind: vocabulary
+id: template_roles
+version: 1.0.0
+entries:
+  - id: core_task
+    label: Core Task
+    description: Produces the main business outcome for a recipe step.
+  - id: meta_analysis
+    label: Meta Analysis
+    description: Improves understanding, coverage, or solution quality before core work.
+  - id: review
+    label: Review
+    description: Checks completeness, consistency, or quality of produced results.
+  - id: repair
+    label: Repair
+    description: Fixes findings produced by a review or validation step.
+  - id: escalation
+    label: Escalation
+    description: Explicit hand-off to a human decision or missing input request.

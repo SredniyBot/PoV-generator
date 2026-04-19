@@ -1,0 +1,19 @@
+kind: vocabulary
+id: readiness_dimensions
+version: 1.0.0
+entries:
+  - id: goal_clarity
+    label: Goal Clarity
+    description: The target business objective is explicit and testable.
+  - id: user_story_coverage
+    label: User Story Coverage
+    description: Primary user journeys and stakeholder needs are captured.
+  - id: alternatives_explored
+    label: Alternatives Explored
+    description: Multiple solution directions have been compared.
+  - id: specification_drafted
+    label: Specification Drafted
+    description: A draft technical specification exists.
+  - id: specification_reviewed
+    label: Specification Reviewed
+    description: The draft specification has passed structured review.

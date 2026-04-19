@@ -1,0 +1,16 @@
+kind: vocabulary
+id: gap_types
+version: 1.0.0
+entries:
+  - id: unclear_goal
+    label: Unclear Goal
+    description: The business objective is not yet clear enough to proceed.
+  - id: missing_user_stories
+    label: Missing User Stories
+    description: Expected users and usage scenarios are not yet mapped.
+  - id: alternatives_not_explored
+    label: Alternatives Not Explored
+    description: The solution space has not yet been compared at a meaningful level.
+  - id: draft_not_reviewed
+    label: Draft Not Reviewed
+    description: The current specification draft still needs structured review.

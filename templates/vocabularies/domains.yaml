@@ -1,0 +1,7 @@
+kind: vocabulary
+id: domains
+version: 1.0.0
+entries:
+  - id: common
+    label: Common
+    description: Cross-domain problem framing and specification work.
