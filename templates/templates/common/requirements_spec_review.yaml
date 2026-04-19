@@ -22,6 +22,8 @@ planning:
 inputs:
   required_problem_fields:
     - business_request
+  required_artifact_roles:
+    - requirements_spec
 outputs:
   artifact_roles:
     - review_report

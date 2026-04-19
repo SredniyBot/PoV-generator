@@ -26,6 +26,12 @@ planning:
 inputs:
   required_problem_fields:
     - business_request
+  required_artifact_roles:
+    - clarification_notes
+    - user_story_map
+    - alternatives_analysis
+  optional_artifact_roles:
+    - ui_requirements_outline
 outputs:
   artifact_roles:
     - requirements_spec

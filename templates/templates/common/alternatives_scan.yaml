@@ -25,6 +25,9 @@ planning:
 inputs:
   required_problem_fields:
     - business_request
+  required_artifact_roles:
+    - clarification_notes
+    - user_story_map
 outputs:
   artifact_roles:
     - alternatives_analysis

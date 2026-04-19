@@ -7,6 +7,8 @@ import sqlite3
 
 from ..common.errors import NotFoundError
 from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
+from ..domain.artifacts import ArtifactRecord, ContextBudget, ContextItem, ContextManifest
+from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.problem_state import ProblemEvent, ProblemPatch, ProblemState, apply_problem_patch
 from ..domain.tasks import (
@@ -16,6 +18,7 @@ from ..domain.tasks import (
     apply_task_command,
     recipe_progress_status_for_task,
 )
+from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,36 @@ def _task_from_row(row: sqlite3.Row) -> TaskRecord:
         attempt=row["attempt"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_id=row["artifact_id"],
+        project_id=row["project_id"],
+        artifact_role=row["artifact_role"],
+        title=row["title"],
+        description=row["description"],
+        artifact_format=row["artifact_format"],
+        artifact_kind=row["artifact_kind"],
+        created_by_task_id=row["created_by_task_id"],
+        parent_artifact_id=row["parent_artifact_id"],
+        metadata=json_loads(row["metadata_json"]),
+        storage_path=row["storage_path"],
+        created_at=row["created_at"],
+    )
+
+
+def _context_item_from_row(row: sqlite3.Row) -> ContextItem:
+    return ContextItem(
+        item_id=row["item_id"],
+        item_type=row["item_type"],
+        source_ref=row["source_ref"],
+        title=row["title"],
+        content=row["content"],
+        token_estimate=row["token_estimate"],
+        required=bool(row["required"]),
+        priority=row["priority"],
     )
 
 
@@ -387,6 +420,305 @@ class SqliteRuntime:
             )
         return decisions
 
+    def store_artifact(
+        self,
+        workspace: Path,
+        *,
+        artifact: ArtifactRecord,
+        content: str,
+    ) -> ArtifactRecord:
+        artifact_path = workspace / artifact.storage_path
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(content, encoding="utf-8")
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into artifacts(
+                  artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
+                  created_by_task_id, parent_artifact_id, metadata_json, storage_path, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact.artifact_id,
+                    artifact.project_id,
+                    artifact.artifact_role,
+                    artifact.title,
+                    artifact.description,
+                    artifact.artifact_format,
+                    artifact.artifact_kind,
+                    artifact.created_by_task_id,
+                    artifact.parent_artifact_id,
+                    json_dumps(artifact.metadata),
+                    artifact.storage_path,
+                    artifact.created_at,
+                ),
+            )
+            connection.commit()
+        return artifact
+
+    def load_artifact(self, workspace: Path, artifact_id: str) -> ArtifactRecord:
+        with self._connect(workspace) as connection:
+            row = connection.execute("select * from artifacts where artifact_id = ?", (artifact_id,)).fetchone()
+        if row is None:
+            raise NotFoundError(f"Artifact not found: {artifact_id}")
+        return _artifact_from_row(row)
+
+    def load_artifact_content(self, workspace: Path, artifact_id: str) -> str:
+        artifact = self.load_artifact(workspace, artifact_id)
+        artifact_path = workspace / artifact.storage_path
+        if not artifact_path.exists():
+            raise NotFoundError(f"Artifact content not found: {artifact.storage_path}")
+        return artifact_path.read_text(encoding="utf-8")
+
+    def list_artifacts(self, workspace: Path, artifact_role: str | None = None) -> list[ArtifactRecord]:
+        query = "select * from artifacts"
+        params: tuple[object, ...] = ()
+        if artifact_role is not None:
+            query += " where artifact_role = ?"
+            params = (artifact_role,)
+        query += " order by created_at, artifact_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_artifact_from_row(row) for row in rows]
+
+    def latest_artifact_by_role(self, workspace: Path, artifact_role: str) -> ArtifactRecord | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select * from artifacts
+                where artifact_role = ?
+                order by created_at desc, artifact_id desc
+                limit 1
+                """,
+                (artifact_role,),
+            ).fetchone()
+        return None if row is None else _artifact_from_row(row)
+
+    def record_context_manifest(self, workspace: Path, manifest: ContextManifest) -> ContextManifest:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into context_manifests(
+                  manifest_id, project_id, task_id, template_ref, problem_state_version, budget_json,
+                  excluded_items_json, input_fingerprint, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    manifest.manifest_id,
+                    manifest.project_id,
+                    manifest.task_id,
+                    manifest.template_ref,
+                    manifest.problem_state_version,
+                    json_dumps(manifest.budget),
+                    json_dumps(list(manifest.excluded_items)),
+                    manifest.input_fingerprint,
+                    manifest.created_at,
+                ),
+            )
+            for item in manifest.items:
+                connection.execute(
+                    """
+                    insert into context_manifest_items(
+                      item_id, manifest_id, item_type, source_ref, title, content,
+                      token_estimate, required, priority
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.item_id,
+                        manifest.manifest_id,
+                        item.item_type,
+                        item.source_ref,
+                        item.title,
+                        item.content,
+                        item.token_estimate,
+                        int(item.required),
+                        item.priority,
+                    ),
+                )
+            connection.commit()
+        return manifest
+
+    def load_context_manifest(self, workspace: Path, manifest_id: str) -> ContextManifest:
+        with self._connect(workspace) as connection:
+            manifest_row = connection.execute(
+                "select * from context_manifests where manifest_id = ?",
+                (manifest_id,),
+            ).fetchone()
+            if manifest_row is None:
+                raise NotFoundError(f"Context manifest not found: {manifest_id}")
+            item_rows = connection.execute(
+                """
+                select * from context_manifest_items
+                where manifest_id = ?
+                order by required desc, priority desc, item_id
+                """,
+                (manifest_id,),
+            ).fetchall()
+        return ContextManifest(
+            manifest_id=manifest_row["manifest_id"],
+            project_id=manifest_row["project_id"],
+            task_id=manifest_row["task_id"],
+            template_ref=manifest_row["template_ref"],
+            problem_state_version=manifest_row["problem_state_version"],
+            budget=ContextBudget(**json_loads(manifest_row["budget_json"])),
+            items=tuple(_context_item_from_row(row) for row in item_rows),
+            excluded_items=tuple(json_loads(manifest_row["excluded_items_json"])),
+            input_fingerprint=manifest_row["input_fingerprint"],
+            created_at=manifest_row["created_at"],
+        )
+
+    def record_execution_run(
+        self,
+        workspace: Path,
+        *,
+        request: ExecutionRequest,
+        result: ExecutionResult,
+        traces: tuple[ExecutionTrace, ...],
+    ) -> None:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into execution_runs(
+                  execution_run_id, project_id, task_id, template_ref, provider, model, context_manifest_id,
+                  actor, status, output_artifact_ids_json, trace_ids_json, failure_code, failure_message, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.execution_run_id,
+                    request.project_id,
+                    request.task_id,
+                    request.template_ref,
+                    request.provider,
+                    request.model,
+                    request.context_manifest_id,
+                    request.actor,
+                    result.status,
+                    json_dumps([output.artifact_id for output in result.outputs]),
+                    json_dumps(list(result.trace_ids)),
+                    result.failure_code,
+                    result.failure_message,
+                    utc_now_iso(),
+                ),
+            )
+            for trace in traces:
+                connection.execute(
+                    """
+                    insert into execution_traces(trace_id, execution_run_id, trace_type, title, content, created_at)
+                    values (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trace.trace_id,
+                        request.execution_run_id,
+                        trace.trace_type,
+                        trace.title,
+                        trace.content,
+                        utc_now_iso(),
+                    ),
+                )
+            connection.commit()
+
+    def list_execution_runs(self, workspace: Path) -> list[dict[str, object]]:
+        with self._connect(workspace) as connection:
+            rows = connection.execute("select * from execution_runs order by created_at, execution_run_id").fetchall()
+        return [dict(row) for row in rows]
+
+    def list_execution_traces(self, workspace: Path, execution_run_id: str | None = None) -> list[dict[str, object]]:
+        query = "select * from execution_traces"
+        params: tuple[object, ...] = ()
+        if execution_run_id is not None:
+            query += " where execution_run_id = ?"
+            params = (execution_run_id,)
+        query += " order by created_at, trace_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_validation_run(self, workspace: Path, run: ValidationRun) -> None:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into validation_runs(
+                  validation_run_id, project_id, task_id, execution_run_id, status, findings_json, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.validation_run_id,
+                    run.project_id,
+                    run.task_id,
+                    run.execution_run_id,
+                    run.status,
+                    json_dumps(run.findings),
+                    run.created_at,
+                ),
+            )
+            connection.commit()
+
+    def list_validation_runs(self, workspace: Path) -> list[ValidationRun]:
+        with self._connect(workspace) as connection:
+            rows = connection.execute("select * from validation_runs order by created_at, validation_run_id").fetchall()
+        runs: list[ValidationRun] = []
+        for row in rows:
+            findings = tuple(ValidationFinding(**finding) for finding in json_loads(row["findings_json"]))
+            runs.append(
+                ValidationRun(
+                    validation_run_id=row["validation_run_id"],
+                    project_id=row["project_id"],
+                    task_id=row["task_id"],
+                    execution_run_id=row["execution_run_id"],
+                    status=row["status"],
+                    findings=findings,
+                    created_at=row["created_at"],
+                )
+            )
+        return runs
+
+    def record_escalation_ticket(self, workspace: Path, ticket: EscalationTicket) -> None:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into escalation_tickets(
+                  escalation_ticket_id, project_id, task_id, reason_code, severity, blocking, summary,
+                  details_json, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticket.escalation_ticket_id,
+                    ticket.project_id,
+                    ticket.task_id,
+                    ticket.reason_code,
+                    ticket.severity,
+                    int(ticket.blocking),
+                    ticket.summary,
+                    json_dumps(ticket.details),
+                    ticket.created_at,
+                ),
+            )
+            connection.commit()
+
+    def list_escalations(self, workspace: Path) -> list[EscalationTicket]:
+        with self._connect(workspace) as connection:
+            rows = connection.execute("select * from escalation_tickets order by created_at, escalation_ticket_id").fetchall()
+        return [
+            EscalationTicket(
+                escalation_ticket_id=row["escalation_ticket_id"],
+                project_id=row["project_id"],
+                task_id=row["task_id"],
+                reason_code=row["reason_code"],
+                severity=row["severity"],
+                blocking=bool(row["blocking"]),
+                summary=row["summary"],
+                details=json_loads(row["details_json"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     def _upsert_recipe_progress(self, connection: sqlite3.Connection, task: TaskRecord) -> None:
         connection.execute(
             """
@@ -490,6 +822,93 @@ class SqliteRuntime:
               project_id text not null,
               created_at text not null,
               decision_json text not null
+            );
+
+            create table if not exists artifacts (
+              artifact_id text primary key,
+              project_id text not null,
+              artifact_role text not null,
+              title text not null,
+              description text,
+              artifact_format text not null,
+              artifact_kind text not null,
+              created_by_task_id text,
+              parent_artifact_id text,
+              metadata_json text not null,
+              storage_path text not null,
+              created_at text not null
+            );
+
+            create table if not exists context_manifests (
+              manifest_id text primary key,
+              project_id text not null,
+              task_id text not null,
+              template_ref text not null,
+              problem_state_version integer not null,
+              budget_json text not null,
+              excluded_items_json text not null,
+              input_fingerprint text not null,
+              created_at text not null
+            );
+
+            create table if not exists context_manifest_items (
+              item_id text primary key,
+              manifest_id text not null,
+              item_type text not null,
+              source_ref text not null,
+              title text not null,
+              content text not null,
+              token_estimate integer not null,
+              required integer not null,
+              priority integer not null
+            );
+
+            create table if not exists execution_runs (
+              execution_run_id text primary key,
+              project_id text not null,
+              task_id text not null,
+              template_ref text not null,
+              provider text not null,
+              model text not null,
+              context_manifest_id text not null,
+              actor text not null,
+              status text not null,
+              output_artifact_ids_json text not null,
+              trace_ids_json text not null,
+              failure_code text,
+              failure_message text,
+              created_at text not null
+            );
+
+            create table if not exists execution_traces (
+              trace_id text primary key,
+              execution_run_id text not null,
+              trace_type text not null,
+              title text not null,
+              content text not null,
+              created_at text not null
+            );
+
+            create table if not exists validation_runs (
+              validation_run_id text primary key,
+              project_id text not null,
+              task_id text not null,
+              execution_run_id text not null,
+              status text not null,
+              findings_json text not null,
+              created_at text not null
+            );
+
+            create table if not exists escalation_tickets (
+              escalation_ticket_id text primary key,
+              project_id text not null,
+              task_id text,
+              reason_code text not null,
+              severity text not null,
+              blocking integer not null,
+              summary text not null,
+              details_json text not null,
+              created_at text not null
             );
             """
         )
