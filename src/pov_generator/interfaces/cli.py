@@ -4,9 +4,13 @@ import argparse
 from pathlib import Path
 import sys
 
+from ..application.context_service import ContextService
+from ..application.execution_service import ExecutionService
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
+from ..application.validation_service import ValidationService
+from ..application.workflow_service import WorkflowService
 from ..common.errors import PovGeneratorError
 from ..common.serialization import json_dumps, to_primitive
 from ..domain.registry import ObjectRef
@@ -23,15 +27,40 @@ def main(argv: list[str] | None = None) -> None:
     runtime = SqliteRuntime()
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
+    context_service = ContextService(runtime)
+    execution_service = ExecutionService(runtime, context_service)
+    validation_service = ValidationService(runtime)
+    workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
 
     try:
-        _dispatch(args, registry_service, project_service, planning_service)
+        _dispatch(
+            args,
+            registry_service=registry_service,
+            project_service=project_service,
+            planning_service=planning_service,
+            context_service=context_service,
+            execution_service=execution_service,
+            validation_service=validation_service,
+            workflow_service=workflow_service,
+            runtime=runtime,
+        )
     except PovGeneratorError as exc:
         print(f"ОШИБКА: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
 
-def _dispatch(args, registry_service: RegistryService, project_service: ProjectService, planning_service: PlanningService) -> None:
+def _dispatch(
+    args,
+    *,
+    registry_service: RegistryService,
+    project_service: ProjectService,
+    planning_service: PlanningService,
+    context_service: ContextService,
+    execution_service: ExecutionService,
+    validation_service: ValidationService,
+    workflow_service: WorkflowService,
+    runtime: SqliteRuntime,
+) -> None:
     if args.entity == "registry":
         if args.action == "validate":
             snapshot, report = registry_service.validate()
@@ -173,6 +202,91 @@ def _dispatch(args, registry_service: RegistryService, project_service: ProjectS
             print(json_dumps(planning_service.list_recipe_progress(workspace, manifest.recipe_ref)))
             return
 
+    if args.entity == "artifacts":
+        workspace = Path(args.workspace)
+        if args.action == "list":
+            print(json_dumps(runtime.list_artifacts(workspace, artifact_role=args.role)))
+            return
+        if args.action == "show":
+            artifact = runtime.load_artifact(workspace, args.artifact_id)
+            payload = {"record": artifact, "content": runtime.load_artifact_content(workspace, args.artifact_id)}
+            print(json_dumps(payload))
+            return
+
+    if args.entity == "context":
+        workspace = Path(args.workspace)
+        snapshot, report = registry_service.validate()
+        if not report.is_valid:
+            raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
+        if args.action == "build":
+            print(json_dumps(context_service.build_for_task(workspace, snapshot, args.task_id).manifest))
+            return
+
+    if args.entity == "execute":
+        workspace = Path(args.workspace)
+        snapshot, report = registry_service.validate()
+        if not report.is_valid:
+            raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
+        if args.action == "task":
+            print(
+                json_dumps(
+                    execution_service.execute_task(
+                        workspace,
+                        snapshot,
+                        args.task_id,
+                        provider=args.provider,
+                        model=args.model,
+                    )
+                )
+            )
+            return
+        if args.action == "runs":
+            print(json_dumps(runtime.list_execution_runs(workspace)))
+            return
+        if args.action == "traces":
+            print(json_dumps(runtime.list_execution_traces(workspace, execution_run_id=args.execution_run_id)))
+            return
+
+    if args.entity == "validation":
+        workspace = Path(args.workspace)
+        if args.action == "runs":
+            print(json_dumps(runtime.list_validation_runs(workspace)))
+            return
+        if args.action == "escalations":
+            print(json_dumps(runtime.list_escalations(workspace)))
+            return
+
+    if args.entity == "workflow":
+        workspace = Path(args.workspace)
+        snapshot, report = registry_service.validate()
+        if not report.is_valid:
+            raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
+        if args.action == "run-next":
+            print(
+                json_dumps(
+                    workflow_service.run_next(
+                        workspace,
+                        snapshot,
+                        provider=args.provider,
+                        model=args.model,
+                    )
+                )
+            )
+            return
+        if args.action == "run-until-blocked":
+            print(
+                json_dumps(
+                    workflow_service.run_until_blocked(
+                        workspace,
+                        snapshot,
+                        provider=args.provider,
+                        model=args.model,
+                        max_steps=args.max_steps,
+                    )
+                )
+            )
+            return
+
     raise PovGeneratorError("Неподдерживаемая команда.")
 
 
@@ -257,5 +371,52 @@ def _build_parser() -> argparse.ArgumentParser:
     task_transition.add_argument("--command", required=True)
     recipe_progress = tasks_subparsers.add_parser("recipe-progress")
     recipe_progress.add_argument("--workspace", required=True)
+
+    artifacts = subparsers.add_parser("artifacts")
+    artifacts_subparsers = artifacts.add_subparsers(dest="action", required=True)
+    artifact_list = artifacts_subparsers.add_parser("list")
+    artifact_list.add_argument("--workspace", required=True)
+    artifact_list.add_argument("--role")
+    artifact_show = artifacts_subparsers.add_parser("show")
+    artifact_show.add_argument("--workspace", required=True)
+    artifact_show.add_argument("--artifact-id", required=True)
+
+    context = subparsers.add_parser("context")
+    context_subparsers = context.add_subparsers(dest="action", required=True)
+    context_build = context_subparsers.add_parser("build")
+    context_build.add_argument("--workspace", required=True)
+    context_build.add_argument("--task-id", required=True)
+
+    execute = subparsers.add_parser("execute")
+    execute_subparsers = execute.add_subparsers(dest="action", required=True)
+    execute_task = execute_subparsers.add_parser("task")
+    execute_task.add_argument("--workspace", required=True)
+    execute_task.add_argument("--task-id", required=True)
+    execute_task.add_argument("--provider", default="stub")
+    execute_task.add_argument("--model")
+    execute_runs = execute_subparsers.add_parser("runs")
+    execute_runs.add_argument("--workspace", required=True)
+    execute_traces = execute_subparsers.add_parser("traces")
+    execute_traces.add_argument("--workspace", required=True)
+    execute_traces.add_argument("--execution-run-id")
+
+    validation = subparsers.add_parser("validation")
+    validation_subparsers = validation.add_subparsers(dest="action", required=True)
+    validation_runs = validation_subparsers.add_parser("runs")
+    validation_runs.add_argument("--workspace", required=True)
+    escalations = validation_subparsers.add_parser("escalations")
+    escalations.add_argument("--workspace", required=True)
+
+    workflow = subparsers.add_parser("workflow")
+    workflow_subparsers = workflow.add_subparsers(dest="action", required=True)
+    run_next = workflow_subparsers.add_parser("run-next")
+    run_next.add_argument("--workspace", required=True)
+    run_next.add_argument("--provider", default="stub")
+    run_next.add_argument("--model")
+    run_until_blocked = workflow_subparsers.add_parser("run-until-blocked")
+    run_until_blocked.add_argument("--workspace", required=True)
+    run_until_blocked.add_argument("--provider", default="stub")
+    run_until_blocked.add_argument("--model")
+    run_until_blocked.add_argument("--max-steps", type=int, default=20)
 
     return parser

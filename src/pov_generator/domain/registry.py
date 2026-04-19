@@ -78,11 +78,28 @@ class TemplatePlanning:
 @dataclass(frozen=True)
 class TemplateInputs:
     required_problem_fields: tuple[str, ...]
+    required_artifact_roles: tuple[str, ...] = ()
+    optional_artifact_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class TemplateOutputs:
     artifact_roles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemplateContextPolicy:
+    max_tokens: int
+
+
+@dataclass(frozen=True)
+class TemplateToolPolicy:
+    allowed_tools: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemplateValidationPolicy:
+    requires_review: bool
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,9 @@ class TemplateSpec:
     inputs: TemplateInputs
     outputs: TemplateOutputs
     framework_summary: str
+    context_policy: TemplateContextPolicy
+    tool_policy: TemplateToolPolicy
+    validation_policy: TemplateValidationPolicy
     source_path: Path
 
     @property
@@ -330,6 +350,9 @@ def parse_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
     planning_raw = require_mapping(raw, "planning", owner)
     inputs_raw = require_mapping(raw, "inputs", owner)
     outputs_raw = require_mapping(raw, "outputs", owner)
+    context_policy_raw = require_mapping(raw, "context_policy", owner)
+    tool_policy_raw = require_mapping(raw, "tool_policy", owner)
+    validation_policy_raw = require_mapping(raw, "validation_policy", owner)
     raises = tuple(
         ReadinessRaise(
             dimension=require_str(item, "dimension", owner),
@@ -358,12 +381,21 @@ def parse_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         ),
         planning=TemplatePlanning(priority=int(planning_raw.get("priority", 0))),
         inputs=TemplateInputs(
-            required_problem_fields=tuple(str(item) for item in require_list(inputs_raw, "required_problem_fields", owner))
+            required_problem_fields=tuple(str(item) for item in require_list(inputs_raw, "required_problem_fields", owner)),
+            required_artifact_roles=tuple(str(item) for item in require_list(inputs_raw, "required_artifact_roles", owner)),
+            optional_artifact_roles=tuple(str(item) for item in require_list(inputs_raw, "optional_artifact_roles", owner)),
         ),
         outputs=TemplateOutputs(
             artifact_roles=tuple(str(item) for item in require_list(outputs_raw, "artifact_roles", owner))
         ),
         framework_summary=require_mapping(raw, "framework", owner).get("summary", ""),
+        context_policy=TemplateContextPolicy(max_tokens=int(context_policy_raw.get("max_tokens", 2000))),
+        tool_policy=TemplateToolPolicy(
+            allowed_tools=tuple(str(item) for item in require_list(tool_policy_raw, "allowed_tools", owner))
+        ),
+        validation_policy=TemplateValidationPolicy(
+            requires_review=bool(validation_policy_raw.get("requires_review", False))
+        ),
         source_path=source_path,
     )
 

@@ -23,6 +23,9 @@ inputs:
   required_problem_fields:
     - business_request
     - goal
+  required_artifact_roles:
+    - clarification_notes
+    - user_story_map
 outputs:
   artifact_roles:
     - ui_requirements_outline

@@ -1,26 +1,37 @@
-# PoV Generator: фундамент M0-M4
+# PoV Generator
 
-Сейчас в репозитории реализован не весь продукт, а **первый исполняемый фундамент системы**:
+В репозитории реализован уже не только фундамент `M0–M4`, но и следующий рабочий вертикальный срез `M5–M8`:
 
-- `M0`: исполняемый декларативный слой
-- `M1`: registry для vocabulary, templates, recipes, recipe fragments и domain packs
-- `M2`: versioned `ProblemState` с patch-операциями и историей
-- `M3`: task runtime, FSM, task events и прогресс по recipe
-- `M4`: детерминированный planner с `admission-before-selection`
+- `M5`: хранилище артефактов и `Context Engine`
+- `M6`: исполняющий слой (`stub` и OpenRouter)
+- `M7`: первый end-to-end поток `бизнес-запрос -> уточнения -> ТЗ -> ревью`
+- `M8`: базовая валидация результатов, findings и escalation
 
-Важно: на этом этапе система **ещё не генерирует ТЗ через LLM**.  
-Она уже умеет:
+Важно: это **ещё не вся целевая платформа**, но уже рабочий модуль, который можно гонять руками:
 
-- хранить правила системы в YAML;
-- собирать `recipe` проекта из базового recipe и доменных расширений;
-- хранить состояние проекта как проблемы;
-- показывать, почему следующий шаг допустим или заблокирован;
-- материализовывать задачи и вести их lifecycle.
+- на `stub`-исполнителе без ИИ;
+- на живом OpenRouter через недорогую модель;
+- с базовым `common`-recipe;
+- с доменным `frontend`-расширением.
 
-## Что здесь есть простыми словами
+## Что система умеет сейчас
+
+Сейчас система уже умеет:
+
+- хранить декларативные правила в YAML;
+- собирать `recipe` проекта из базового сценария и `domain pack`;
+- вести `ProblemState`;
+- создавать задачи по детерминированному planner'у;
+- собирать минимальный контекст под конкретный шаг;
+- исполнять шаг через `stub` или OpenRouter;
+- сохранять артефакты, execution traces и validation runs;
+- выпускать черновик ТЗ и отчёт ревью;
+- честно останавливать поток при проблемах валидации.
+
+## Главные сущности простым языком
 
 ### Template
-`Template` — это тип одного локального шага.
+`Template` — это один тип локального шага.
 
 Примеры:
 
@@ -28,61 +39,61 @@
 - разобрать user story;
 - рассмотреть альтернативы;
 - подготовить черновик ТЗ;
-- сделать review.
-
-Файлово шаблоны теперь раскладываются по доменным папкам:
-
-- [templates/templates/common](F:\0work\python\PoV-generator\templates\templates\common)
-- [templates/templates/frontend](F:\0work\python\PoV-generator\templates\templates\frontend)
-
-При этом технические `id` остаются namespaced, например `common.goal_clarification` и `frontend.user_flow_analysis`, чтобы ссылки внутри registry были стабильными.
+- провести ревью ТЗ.
 
 ### Recipe
-`Recipe` — это базовый обязательный путь выполнения.
+`Recipe` — это обязательная цепочка шагов.
 
-Например:
+Для базового сценария подготовки ТЗ она сейчас такая:
 
-1. уточнить цель;
-2. разобрать user story;
-3. рассмотреть альтернативы;
-4. подготовить черновик ТЗ;
-5. провести review.
+1. `goal_clarification`
+2. `user_story_scan`
+3. `alternatives_scan`
+4. `requirements_spec_generation`
+5. `requirements_spec_review`
 
 ### Domain Pack
-`Domain Pack` — это подключаемый доменный пакет, который:
+`Domain Pack` — это доменное расширение процесса.
 
-- добавляет доменные шаблоны;
-- добавляет `recipe fragments`;
-- влияет на итоговый состав шагов;
-- тем самым меняет путь подготовки ТЗ.
-
-Пример в репозитории:
+Пример:
 
 - `frontend.web_app_requirements@1.0.0`
 
-Он добавляет в процесс подготовки ТЗ дополнительный шаг:
+Он добавляет в цепочку подготовки ТЗ дополнительный шаг:
 
-- анализ пользовательских потоков интерфейса до генерации спецификации.
+- `frontend_user_flow_analysis`
+
+И заставляет итоговое ТЗ содержать `frontend_requirements`.
 
 ### ProblemState
-`ProblemState` — это текущее формализованное понимание проекта:
+`ProblemState` — текущее формализованное понимание проекта:
 
-- исходный бизнес-запрос;
+- исходный запрос;
 - цель;
 - gaps;
 - readiness;
-- включённые domain packs;
-- текущая композиция recipe.
+- активные доменные пакеты;
+- состав собранного recipe.
 
-### Planner
-Planner не “угадывает” следующий шаг через LLM.  
-Он:
+### Context Manifest
+`Context Manifest` — объяснимый ответ на вопрос:
 
-- смотрит на `ProblemState`;
-- берёт текущий `composed recipe`;
-- проверяет обязательные предыдущие шаги;
-- проверяет readiness и открытые gaps;
-- объяснимо выбирает следующий допустимый шаг.
+- что именно система отдала в контекст шага;
+- какие поля `ProblemState` использованы;
+- какие артефакты подтянуты;
+- сколько токенов это заняло.
+
+### Artifact
+`Artifact` — артефакт конкретного шага.
+
+Сейчас поддерживаются:
+
+- `clarification_notes`
+- `user_story_map`
+- `alternatives_analysis`
+- `ui_requirements_outline`
+- `requirements_spec`
+- `review_report`
 
 ## Установка
 
@@ -92,16 +103,16 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python -m pip install -e .[dev]
 ```
 
-## Как запускать из PyCharm
+## Запуск из PyCharm
 
-Рекомендуемый вариант:
+Рекомендуемая конфигурация:
 
 - `Module name`: `pov_generator`
 - `Working directory`: `F:\0work\python\PoV-generator`
 - `Parameters`: например `registry validate`
-- `Interpreter`: `.venv`
+- `Interpreter`: `F:\0work\python\PoV-generator\.venv\Scripts\python.exe`
 
-Работают и эти варианты:
+Рабочие варианты из терминала:
 
 ```powershell
 .\.venv\Scripts\povgen registry validate
@@ -109,7 +120,29 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python src\pov_generator\__main__.py registry validate
 ```
 
-## Быстрый сценарий 1: базовый проект без доменного расширения
+## Настройка OpenRouter
+
+Для живого запуска через ИИ система читает настройки из переменных окружения.
+
+Минимальный набор:
+
+```powershell
+$env:POV_EXECUTION_PROVIDER = "openrouter"
+$env:POV_OPENROUTER_API_KEY = "<ваш ключ>"
+$env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
+```
+
+По умолчанию для локальной проверки можно ничего не задавать и использовать `stub`.
+
+## Структура declarative layer
+
+- [templates/templates](F:\0work\python\PoV-generator\templates\templates) — шаблоны по доменным папкам
+- [templates/recipes](F:\0work\python\PoV-generator\templates\recipes) — базовые recipes
+- [templates/recipe_fragments](F:\0work\python\PoV-generator\templates\recipe_fragments) — доменные расширения recipes
+- [templates/domain_packs](F:\0work\python\PoV-generator\templates\domain_packs) — описания доменных пакетов
+- [templates/vocabularies](F:\0work\python\PoV-generator\templates\vocabularies) — общий словарь сущностей
+
+## Быстрый сценарий 1: полный прогон на `stub`
 
 ### 1. Проверить registry
 
@@ -122,62 +155,41 @@ py -3.11 -m venv .venv
 ```powershell
 .\.venv\Scripts\povgen project init `
   --workspace runtime\demo_case `
-  --name "Демо: базовое ТЗ" `
+  --name "Демо: построение ТЗ" `
   --recipe common.build_requirements_spec@1.0.0 `
-  --request-text "Нужно превратить сырой бизнес-запрос в качественное ТЗ."
+  --request-text "Нужно превратить сырой бизнес-запрос в качественное техническое задание."
 ```
 
-### 3. Посмотреть состояние проекта
+### 3. Посмотреть стартовое состояние
 
 ```powershell
 .\.venv\Scripts\povgen problem show --workspace runtime\demo_case
-.\.venv\Scripts\povgen problem history --workspace runtime\demo_case
-```
-
-### 4. Посмотреть, какой шаг planner считает следующим
-
-```powershell
 .\.venv\Scripts\povgen plan dry-run --workspace runtime\demo_case
 ```
 
-В ответе будет видно:
-
-- какие шаги сейчас рассматриваются;
-- какие проверки admission прошли или не прошли;
-- почему выбран именно следующий шаг;
-- почему основной шаг нельзя запускать слишком рано.
-
-### 5. Материализовать шаг
+### 4. Прогнать весь сценарий автоматически
 
 ```powershell
-.\.venv\Scripts\povgen plan apply --workspace runtime\demo_case
-.\.venv\Scripts\povgen tasks list --workspace runtime\demo_case
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo_case --provider stub
 ```
 
-### 6. Руками имитировать прогресс
+### 5. Посмотреть результат
 
 ```powershell
-.\.venv\Scripts\povgen tasks transition --workspace runtime\demo_case --task-id <task-id> --command start
-.\.venv\Scripts\povgen problem goal-set --workspace runtime\demo_case --text "Подготовить согласованное ТЗ."
-.\.venv\Scripts\povgen problem readiness-set --workspace runtime\demo_case --dimension goal_clarity --status ready --blocking false
-.\.venv\Scripts\povgen problem gap-close --workspace runtime\demo_case --gap-id unclear_goal
-.\.venv\Scripts\povgen tasks transition --workspace runtime\demo_case --task-id <task-id> --command complete
-.\.venv\Scripts\povgen plan dry-run --workspace runtime\demo_case
+.\.venv\Scripts\povgen artifacts list --workspace runtime\demo_case
+.\.venv\Scripts\povgen validation runs --workspace runtime\demo_case
+.\.venv\Scripts\povgen execute runs --workspace runtime\demo_case
+.\.venv\Scripts\povgen problem show --workspace runtime\demo_case
 ```
 
-## Быстрый сценарий 2: проект с frontend domain pack
+После этого в `runtime\demo_case\artifacts\` появятся:
 
-Этот сценарий показывает главное отличие новой архитектуры:
-домен влияет не только на будущую реализацию, но уже на **подготовку ТЗ**.
+- JSON-артефакты каждого шага;
+- рядом Markdown-рендеры тех же результатов.
 
-### 1. Посмотреть сам доменный пакет
+## Быстрый сценарий 2: тот же поток с `frontend`-доменом
 
-```powershell
-.\.venv\Scripts\povgen registry show-domain-pack --domain-pack frontend.web_app_requirements@1.0.0
-.\.venv\Scripts\povgen registry show-fragment --fragment frontend.requirements_extension@1.0.0
-```
-
-### 2. Создать проект сразу с frontend-паком
+### 1. Создать проект с доменным пакетом
 
 ```powershell
 .\.venv\Scripts\povgen project init `
@@ -188,33 +200,109 @@ py -3.11 -m venv .venv
   --request-text "Нужен сервис с личным кабинетом, экраном статуса и формой подачи заявки."
 ```
 
-### 3. Посмотреть, как собрался итоговый recipe
+### 2. Посмотреть собранный recipe
 
 ```powershell
 .\.venv\Scripts\povgen problem composition-show --workspace runtime\frontend_case
 .\.venv\Scripts\povgen plan show-composed-recipe --workspace runtime\frontend_case
 ```
 
-Там будет видно:
+### 3. Прогнать весь поток
 
-- базовый recipe;
-- включённый domain pack;
-- подключённый fragment;
-- дополнительный шаг `frontend_user_flow_analysis`.
+```powershell
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\frontend_case --provider stub
+```
 
-### 4. Дойти до места, где доменный шаг начинает блокировать core-задачу
+### 4. Убедиться, что домен реально повлиял на ТЗ
 
-После прохождения:
+```powershell
+.\.venv\Scripts\povgen artifacts list --workspace runtime\frontend_case
+```
 
-- `goal_clarification`
-- `user_story_scan`
-- `alternatives_scan`
+Вы увидите дополнительный артефакт:
 
-planner не пустит систему сразу в `requirements_spec_generation`, а сначала потребует:
+- `ui_requirements_outline`
 
-- `frontend_user_flow_analysis`
+Итоговый `requirements_spec` будет содержать:
 
-То есть domain pack реально влияет на логику подготовки ТЗ.
+- `frontend_requirements.user_roles`
+- `frontend_requirements.user_flows`
+- `frontend_requirements.screens`
+- `frontend_requirements.ux_constraints`
+
+## Быстрый сценарий 3: ручная работа по шагам
+
+Если нужно не автоматическое выполнение, а разбор каждого шага:
+
+### 1. Создать проект
+
+```powershell
+.\.venv\Scripts\povgen project init `
+  --workspace runtime\manual_case `
+  --name "Ручной сценарий" `
+  --recipe common.build_requirements_spec@1.0.0 `
+  --request-text "Нужно подготовить ТЗ по новому сервису."
+```
+
+### 2. Выбрать следующий шаг
+
+```powershell
+.\.venv\Scripts\povgen plan apply --workspace runtime\manual_case
+.\.venv\Scripts\povgen tasks list --workspace runtime\manual_case
+```
+
+### 3. Построить контекст для задачи
+
+```powershell
+.\.venv\Scripts\povgen context build --workspace runtime\manual_case --task-id <task-id>
+```
+
+### 4. Исполнить задачу
+
+```powershell
+.\.venv\Scripts\povgen execute task --workspace runtime\manual_case --task-id <task-id> --provider stub
+```
+
+### 5. Посмотреть traces и валидацию
+
+```powershell
+.\.venv\Scripts\povgen execute traces --workspace runtime\manual_case
+.\.venv\Scripts\povgen validation runs --workspace runtime\manual_case
+```
+
+### 6. Завершить шаг автоматически через workflow
+
+Обычно удобнее использовать `workflow run-next`, потому что он делает полный цикл:
+
+- materialize
+- execute
+- validate
+- apply patches
+- complete task
+
+```powershell
+.\.venv\Scripts\povgen workflow run-next --workspace runtime\manual_case --provider stub
+```
+
+## Запуск через OpenRouter
+
+После настройки переменных окружения можно прогонять те же команды, но с живым исполнителем:
+
+```powershell
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\live_case --provider openrouter
+```
+
+Или пошагово:
+
+```powershell
+.\.venv\Scripts\povgen execute task --workspace runtime\manual_case --task-id <task-id> --provider openrouter
+```
+
+Важно:
+
+- system prompt и user prompt формируются автоматически;
+- все финальные инструкции для LLM сейчас собираются на русском;
+- ответ ожидается строго в JSON по схеме артефакта.
 
 ## Полезные команды
 
@@ -238,66 +326,64 @@ planner не пустит систему сразу в `requirements_spec_genera
 .\.venv\Scripts\povgen problem domain-pack-enable --workspace runtime\demo_case --domain-pack frontend.web_app_requirements@1.0.0
 ```
 
-### Planner
+### Planner / Tasks
 
 ```powershell
 .\.venv\Scripts\povgen plan dry-run --workspace runtime\demo_case
 .\.venv\Scripts\povgen plan apply --workspace runtime\demo_case
 .\.venv\Scripts\povgen plan history --workspace runtime\demo_case
 .\.venv\Scripts\povgen plan show-composed-recipe --workspace runtime\demo_case
-```
-
-### Tasks
-
-```powershell
 .\.venv\Scripts\povgen tasks list --workspace runtime\demo_case
 .\.venv\Scripts\povgen tasks events --workspace runtime\demo_case
-.\.venv\Scripts\povgen tasks transition --workspace runtime\demo_case --task-id <task-id> --command start
 .\.venv\Scripts\povgen tasks recipe-progress --workspace runtime\demo_case
 ```
 
-## Что можно проверить руками уже сейчас
+### Artifacts / Context / Execution / Validation
 
-1. Что registry валиден и все ссылки между vocabulary, templates, recipes, fragments и domain packs корректны.
-2. Что `ProblemState` хранит:
-   - gaps,
-   - readiness,
-   - enabled domain packs,
-   - recipe composition.
-3. Что `plan dry-run` показывает объяснимый admission по каждому шагу.
-4. Что `domain pack` действительно меняет состав `recipe`, а не остаётся просто метаданными.
-5. Что planner не перескакивает к основной задаче раньше обязательных meta-шагов.
+```powershell
+.\.venv\Scripts\povgen artifacts list --workspace runtime\demo_case
+.\.venv\Scripts\povgen artifacts show --workspace runtime\demo_case --artifact-id <artifact-id>
+.\.venv\Scripts\povgen context build --workspace runtime\demo_case --task-id <task-id>
+.\.venv\Scripts\povgen execute task --workspace runtime\demo_case --task-id <task-id> --provider stub
+.\.venv\Scripts\povgen execute runs --workspace runtime\demo_case
+.\.venv\Scripts\povgen execute traces --workspace runtime\demo_case
+.\.venv\Scripts\povgen validation runs --workspace runtime\demo_case
+.\.venv\Scripts\povgen validation escalations --workspace runtime\demo_case
+```
 
-## Автотесты
+### Workflow
+
+```powershell
+.\.venv\Scripts\povgen workflow run-next --workspace runtime\demo_case --provider stub
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo_case --provider stub --max-steps 20
+```
+
+## Что покрыто тестами
 
 ```powershell
 .\.venv\Scripts\python -m pytest -q
 ```
 
-Тесты покрывают:
+Сейчас тестами покрыты:
 
-- валидацию sample registry;
-- сохранение и историю `ProblemState`;
-- lifecycle задач;
-- планирование базового пути;
-- влияние `frontend`-домена на состав recipe и выбор следующего шага.
+- валидация sample registry;
+- `ProblemState` и patch-history;
+- базовое планирование и recipe progress;
+- влияние `frontend`-домена на состав recipe;
+- сборка контекста для `requirements_spec_generation`;
+- end-to-end `stub`-workflow по базовому recipe;
+- end-to-end `stub`-workflow по `frontend`-recipe;
+- создание escalation при провале валидации.
 
 ## Ограничения текущего этапа
 
-Сейчас ещё **не реализованы**:
+Сейчас ещё **не сделано**:
 
-- `Artifact Store` и `Context Engine`;
-- `Execution Runtime` и LLM;
-- реальная генерация ТЗ;
-- validation/governance loops;
-- UI.
+- полноценное semantic retrieval и summarization;
+- repair loop после findings;
+- сложные tool policies;
+- UI;
+- автоматическое определение нужных `domain pack` по тексту запроса;
+- полноценные stage-gate и waiver-механики.
 
-То есть это **проверяемый каркас оркестрации**, а не финальный продукт.
-
-## Структура declarative layer
-
-- [templates/templates](F:\0work\python\PoV-generator\templates\templates) — шаблоны по доменным папкам
-- [templates/recipes](F:\0work\python\PoV-generator\templates\recipes) — базовые recipes
-- [templates/recipe_fragments](F:\0work\python\PoV-generator\templates\recipe_fragments) — доменные расширения recipes
-- [templates/domain_packs](F:\0work\python\PoV-generator\templates\domain_packs) — описания доменных пакетов
-- [templates/vocabularies](F:\0work\python\PoV-generator\templates\vocabularies) — общий словарь сущностей
+Но уже есть первый реальный рабочий модуль, который можно руками и тестами проверять на кейсах.
