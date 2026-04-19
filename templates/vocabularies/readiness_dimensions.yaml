@@ -1,0 +1,22 @@
+kind: vocabulary
+id: readiness_dimensions
+version: 1.0.0
+entries:
+  - id: goal_clarity
+    label: Ясность цели
+    description: Цель бизнеса сформулирована явно и проверяемо.
+  - id: user_story_coverage
+    label: Покрытие user story
+    description: Основные пользовательские сценарии и ожидания стейкхолдеров зафиксированы.
+  - id: alternatives_explored
+    label: Альтернативы рассмотрены
+    description: Рассмотрено и сравнено несколько направлений решения.
+  - id: specification_drafted
+    label: Черновик ТЗ подготовлен
+    description: Существует черновик технического задания.
+  - id: specification_reviewed
+    label: ТЗ прошло ревью
+    description: Черновик технического задания прошёл структурированную проверку.
+  - id: frontend_user_flows_covered
+    label: Интерфейсные потоки покрыты
+    description: Для фронтенд-части зафиксированы основные роли, пользовательские потоки и ожидания по экранам.

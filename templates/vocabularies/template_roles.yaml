@@ -1,0 +1,19 @@
+kind: vocabulary
+id: template_roles
+version: 1.0.0
+entries:
+  - id: core_task
+    label: Основная задача
+    description: Производит основной бизнес-результат шага recipe.
+  - id: meta_analysis
+    label: Мета-анализ
+    description: Улучшает понимание задачи, полноту покрытия или качество решения до основного шага.
+  - id: review
+    label: Ревью
+    description: Проверяет полноту, согласованность и качество полученного результата.
+  - id: repair
+    label: Исправление
+    description: Устраняет замечания, найденные на ревью или валидации.
+  - id: escalation
+    label: Эскалация
+    description: Явная передача вопроса человеку или запрос недостающих входных данных.

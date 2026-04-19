@@ -1,0 +1,25 @@
+kind: vocabulary
+id: artifact_roles
+version: 1.0.0
+entries:
+  - id: business_request
+    label: Бизнес-запрос
+    description: Исходная формулировка задачи от пользователя или оператора.
+  - id: clarification_notes
+    label: Результат уточнения
+    description: Структурированный результат уточнения бизнес-запроса.
+  - id: user_story_map
+    label: Карта user story
+    description: Структурированное описание ролей, сценариев и пользовательских путей.
+  - id: alternatives_analysis
+    label: Анализ альтернатив
+    description: Сравнение возможных направлений решения.
+  - id: requirements_spec
+    label: Техническое задание
+    description: Черновик или финальная версия технического задания.
+  - id: review_report
+    label: Отчёт ревью
+    description: Замечания, выводы и результат проверки.
+  - id: ui_requirements_outline
+    label: Контур UI-требований
+    description: Черновое описание ролей, пользовательских потоков, экранов и UX-ограничений.

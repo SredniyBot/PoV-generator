@@ -1,0 +1,52 @@
+kind: recipe
+id: common.build_requirements_spec
+version: 1.0.0
+name: Построение технического задания
+domain: common
+stage_gate: requirements
+allows_parallel_steps: false
+steps:
+  - id: goal_clarification
+    title: Уточнить бизнес-цель
+    order: 10
+    template: common.goal_clarification@1.0.0
+    required: true
+    completion:
+      readiness:
+        - goal_clarity
+  - id: user_story_scan
+    title: Разобрать user story
+    order: 20
+    template: common.user_story_scan@1.0.0
+    required: true
+    completion:
+      readiness:
+        - user_story_coverage
+  - id: alternatives_scan
+    title: Рассмотреть альтернативы
+    order: 30
+    template: common.alternatives_scan@1.0.0
+    required: true
+    completion:
+      readiness:
+        - alternatives_explored
+  - id: requirements_spec_generation
+    title: Подготовить черновик ТЗ
+    order: 40
+    template: common.requirements_spec_generation@1.0.0
+    required: true
+    completion:
+      readiness:
+        - specification_drafted
+      artifact_roles:
+        - requirements_spec
+  - id: requirements_spec_review
+    title: Провести ревью ТЗ
+    order: 50
+    template: common.requirements_spec_review@1.0.0
+    required: true
+    completion:
+      readiness:
+        - specification_reviewed
+      artifact_roles:
+        - review_report

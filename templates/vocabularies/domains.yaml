@@ -1,0 +1,10 @@
+kind: vocabulary
+id: domains
+version: 1.0.0
+entries:
+  - id: common
+    label: Общий
+    description: Общие шаги постановки задачи и подготовки спецификации, не привязанные к одному домену.
+  - id: frontend
+    label: Фронтенд
+    description: Пользовательские интерфейсы, экраны, потоки взаимодействия и UX-ограничения.

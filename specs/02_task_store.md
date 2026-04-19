@@ -1,8 +1,8 @@
 # Task Store — спецификация
 
-> **Статус:** v1.0 · Draft · 2026-04-15
+> **Статус:** v1.1 · Draft · 2026-04-19
 > **Зависимости:** [00_overview.md](00_overview.md), [01_template_registry.md](01_template_registry.md)
-> **Область:** часть компонента 2.5 State & Memory Broker из [ТЗ Архитектура.md](../Downloads/ТЗ%20Архитектура.md), отвечающая за задачи (не за артефакты и не за pipeline checkpoints).
+> **Область:** часть компонента State & Memory Broker из [ТЗ Архитектура.md](ТЗ%20Архитектура.md), отвечающая за задачи (не за артефакты и не за pipeline checkpoints).
 
 ---
 
@@ -11,7 +11,8 @@
 ### 1.1. Что делает
 - Хранит **конкретные экземпляры задач** в рамках проектов.
 - Управляет **FSM статусов** задачи согласно ТЗ (7 состояний).
-- Хранит **DAG зависимостей** между задачами и входы/выходы-артефакты.
+- Хранит **execution DAG зависимостей** между задачами и входы/выходы-артефакты.
+- Хранит recipe-aware атрибуты задачи и проекции выполнения recipe steps.
 - Ведёт **append-only event log** (source of truth) с материализованными проекциями для быстрых выборок.
 - Предоставляет **конкурентно-безопасные** операции: взятие в работу (SKIP LOCKED), bubble-up, инвалидации.
 
@@ -22,12 +23,14 @@
 - Не резолвит шаблоны (вызывает Template Registry при создании задачи).
 - Не собирает контекст (отдаёт `input_requirements` Context Engine).
 - Не управляет pipeline-графом LangGraph (checkpoints — отдельная подсистема).
+- Не принимает admission-решение “можно ли вообще создавать этот шаг сейчас” — это ответственность Planning Coordinator.
 
 ### 1.3. Отношения с соседями
 
 | Компонент | Направление | Контракт |
 |---|---|---|
 | Template Registry | Task Store → | `load(id, version)` при `create_task` |
+| Planning Coordinator | → Task Store | `create_task/create_subgraph`, recipe-aware materialization, invalidate/retry |
 | Task Router | → Task Store | `get_ready`, `mark_*`, `create_task` |
 | Business Modules | → Task Store | `mark_in_progress/completed/failed/waiting` |
 | Context Engine | → Task Store | `get_task_inputs`, `get_outputs_of_ancestors` |
@@ -70,6 +73,11 @@ CREATE TABLE tasks (
     parent_id           UUID         REFERENCES tasks(task_id) ON DELETE RESTRICT,
     template_id         TEXT         NOT NULL,
     template_version    TEXT         NOT NULL,          -- SemVer, иммутабелен
+    recipe_id           TEXT,
+    recipe_version      TEXT,
+    recipe_step_id      TEXT,
+    template_role       TEXT,
+    task_family_key     TEXT,
     stage_gate          TEXT         NOT NULL,
     status              TEXT         NOT NULL CHECK (status IN
                                          ('blocked','queued','in_progress',
@@ -104,11 +112,13 @@ CREATE INDEX idx_tasks_status_queue          ON tasks (queue_position) WHERE sta
 CREATE INDEX idx_tasks_parent                ON tasks (parent_id) WHERE parent_id IS NOT NULL;
 CREATE INDEX idx_tasks_stage_gate            ON tasks (project_id, stage_gate, status);
 CREATE INDEX idx_tasks_template              ON tasks (template_id, template_version);
+CREATE INDEX idx_tasks_recipe_step           ON tasks (project_id, recipe_id, recipe_version, recipe_step_id);
+CREATE INDEX idx_tasks_family_key            ON tasks (project_id, task_family_key) WHERE task_family_key IS NOT NULL;
 CREATE INDEX idx_tasks_lock_expires          ON tasks (lock_expires_at) WHERE status = 'in_progress';
 CREATE INDEX idx_tasks_payload_gin           ON tasks USING GIN (payload jsonb_path_ops);
 
 -- =====================================================
--- Task Dependencies (DAG edges)
+-- Task Dependencies (execution DAG edges only)
 -- =====================================================
 CREATE TABLE task_dependencies (
     dep_id              UUID         PRIMARY KEY,
@@ -128,6 +138,26 @@ CREATE TABLE task_dependencies (
 CREATE INDEX idx_task_deps_to     ON task_dependencies (to_task_id);
 CREATE INDEX idx_task_deps_from   ON task_dependencies (from_task_id);
 CREATE INDEX idx_task_deps_kind   ON task_dependencies (to_task_id, kind);
+
+-- =====================================================
+-- Recipe Progress (projection, not execution dependency)
+-- =====================================================
+CREATE TABLE task_recipe_progress (
+    progress_id         UUID         PRIMARY KEY,
+    project_id          UUID         NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+    recipe_id           TEXT         NOT NULL,
+    recipe_step_id      TEXT         NOT NULL,
+    template_role       TEXT         NOT NULL,
+    required            BOOLEAN      NOT NULL DEFAULT TRUE,
+    status              TEXT         NOT NULL CHECK (status IN ('pending','in_progress','satisfied','failed','waived')),
+    last_task_id        UUID         REFERENCES tasks(task_id) ON DELETE SET NULL,
+    satisfied_by_task_id UUID        REFERENCES tasks(task_id) ON DELETE SET NULL,
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (project_id, recipe_id, recipe_step_id)
+);
+
+CREATE INDEX idx_task_recipe_progress_status
+    ON task_recipe_progress (project_id, recipe_id, status);
 
 -- =====================================================
 -- Task Inputs / Outputs (artifact refs)
@@ -240,8 +270,34 @@ CREATE TRIGGER trg_tasks_updated_at BEFORE UPDATE ON tasks
 | Отдельная `task_events` + триггер-иммутабельность | Event Sourcing: реплей полностью восстанавливает `tasks` |
 | `locked_by/locked_at/lock_expires_at` | механизм lease: если worker умер, lock автоматически отпускается |
 | `version INT` | optimistic locking для защиты FSM-переходов |
+| `recipe_id/recipe_step_id/template_role` | задача знает своё место в recipe-driven orchestration |
+| `task_recipe_progress` | recipe obligations не путаются с execution dependencies и отслеживаются отдельно |
 | JSONB `payload/metadata/error` | гибкость при сохранении полноценных типов (валидируется на application-level) |
 | GIN `payload` | поиск по полям в payload для отладки и аналитики |
+
+### 2.4. Execution dependency vs orchestration obligation
+
+В системе существуют два разных механизма, и Task Store обязан их не смешивать:
+
+1. **Execution dependency**
+   - producer → consumer;
+   - хранится в `task_dependencies`;
+   - влияет на `blocked/queued`;
+   - используется для реального dataflow/input resolution.
+
+2. **Orchestration obligation**
+   - обязательный `recipe_step`;
+   - обязательный `review`;
+   - readiness prerequisite;
+   - не хранится как `task_dependency`, потому что это не producer-consumer связь.
+
+Task Store хранит `orchestration obligation` только косвенно:
+
+- через `recipe_id`, `recipe_step_id`, `template_role` у задачи;
+- через projection `task_recipe_progress`;
+- через task events.
+
+Решение о том, materialize ли ещё не допущенный шаг, остаётся за Planning Coordinator.
 
 ---
 
@@ -288,13 +344,15 @@ CREATE TRIGGER trg_tasks_updated_at BEFORE UPDATE ON tasks
 
 | From | To | Кто вызывает | Предусловия | События | Ошибки |
 |---|---|---|---|---|---|
-| `(none)` | `blocked` | Task Store (`create_task`) | у задачи есть хотя бы один `hard` dep в статусе ≠ `completed` | `task_created`, `status_changed` | `ValidationError` при невалидной спеке |
-| `(none)` | `queued` | Task Store (`create_task`) | все `hard` deps уже `completed` (или их нет) | `task_created`, `status_changed` | — |
+| `(none)` | `blocked` | Task Store (`create_task`) | у non-composite задачи есть хотя бы один `hard` execution dep в статусе ≠ `completed` | `task_created`, `status_changed` | `ValidationError` при невалидной спеке |
+| `(none)` | `queued` | Task Store (`create_task`) | non-composite задача: все `hard` deps уже `completed` (или их нет) | `task_created`, `status_changed` | — |
+| `(none)` | `waiting_for_children` | Task Store (`create_subgraph`) | template.type = `composite`; child subgraph материализован атомарно | `task_created`, `children_created`, `status_changed` | `ValidationError` |
 | `blocked` | `queued` | Task Store (`on_dependency_completed`, триггерится из `mark_completed` producer'а) | все `hard` deps completed | `dependencies_satisfied`, `status_changed` | — |
 | `queued` | `in_progress` | Task Router (`mark_in_progress`) | `SELECT FOR UPDATE SKIP LOCKED`; worker подписался | `task_taken`, `status_changed` | `ConflictError` если уже заблокирована |
 | `in_progress` | `completed` | Business Module (`mark_completed`) | все `required` `output_contract` заполнены и валидны; не превышены лимиты | `outputs_registered`, `status_changed` | `ValidationError` при невалидных outputs |
-| `in_progress` | `waiting_for_children` | Business Module (`mark_waiting`) | шаблон `dynamic` или `composite` с динамическим child'ом; создан список children | `children_created`, `status_changed` | `ConflictError` если шаблон `executable` без декомпозиции |
-| `waiting_for_children` | `completed` | Task Store (bubble-up, `on_child_completed`) | все children в `completed` И bubble-up выходы валидны | `children_completed`, `outputs_registered`, `status_changed` | `ValidationError` |
+| `in_progress` | `waiting_for_children` | Business Module (`mark_waiting`) | template.type = `dynamic`; создан список children | `children_created`, `status_changed` | `ConflictError` если шаблон не `dynamic` |
+| `waiting_for_children` | `queued` | Task Store (dynamic finalize) | template.type = `dynamic`; все blocking children завершены; parent должен пройти финализацию | `children_completed`, `status_changed` | — |
+| `waiting_for_children` | `completed` | Task Store (bubble-up) | template.type = `composite`; все children в `completed` И bubble-up выходы валидны | `children_completed`, `outputs_registered`, `status_changed` | `ValidationError` |
 | `waiting_for_children` | `failed` | Task Store (bubble-up) | любой `hard`-child в `failed` И нет recovery-политики | `child_failed`, `status_changed` | — |
 | `in_progress` | `failed` | Business Module / Task Store | превышены лимиты, output-контракт не собрать | `task_failed`, `escalation_required`, `status_changed` | — |
 | `blocked` | `failed` | Task Store | любой `hard` dep перешёл в `failed`/`obsolete` и нет recovery | `dependency_failed`, `status_changed` | — |
@@ -302,7 +360,8 @@ CREATE TRIGGER trg_tasks_updated_at BEFORE UPDATE ON tasks
 | `in_progress` | `queued` | Task Store (lease expired) | `lock_expires_at < now()` И `attempt < max_attempts` | `lock_expired`, `status_changed` | — |
 
 ### 3.3. Терминальные статусы
-`completed`, `failed`, `obsolete` — терминальные. Из них **нет** переходов, кроме инвалидации: `completed/failed → obsolete`.
+`completed` и `obsolete` — терминальные.  
+`failed` — терминален для execution epoch, но может быть административно переведён в новый execution epoch через `retry`, если policy это разрешает.
 
 ### 3.4. Инварианты FSM
 | I# | Инвариант |
@@ -315,6 +374,8 @@ CREATE TRIGGER trg_tasks_updated_at BEFORE UPDATE ON tasks
 | I6 | `attempt > 0` ⇒ в event log есть хотя бы одна запись `task_retried` |
 | I7 | `escalation_count > escalation.max_attempts` ⇒ `status IN ('failed','obsolete')` |
 | I8 | DAG `task_dependencies` ацикличен в пределах проекта |
+| I9 | `recipe_id IS NOT NULL` ⇒ `recipe_step_id IS NOT NULL AND template_role IS NOT NULL` |
+| I10 | `task_recipe_progress` не влияет на `blocked/queued` напрямую; execution blocking определяется только `task_dependencies` |
 
 Инвариант I8 проверяется при каждом добавлении ребра: если новое ребро создаёт цикл → `IntegrityError`.
 
@@ -360,6 +421,12 @@ class TaskStore(Protocol):
     async def get_ancestors(self, task_id: TaskId) -> list[Task]: ...
     async def get_dependencies(self, task_id: TaskId) -> list[TaskDependency]: ...
     async def get_dependents(self, task_id: TaskId) -> list[TaskDependency]: ...
+    async def get_recipe_progress(
+        self,
+        *,
+        project_id: ProjectId,
+        recipe_id: str,
+    ) -> list[RecipeProgressRecord]: ...
 
     # ---- FSM-переходы ----
     async def mark_in_progress(
@@ -444,6 +511,11 @@ class NewTaskSpec(BaseModel):
     project_id: ProjectId
     parent_id: TaskId | None = None
     template_ref: TemplateRef              # (id, version|"latest")
+    recipe_id: str | None = None
+    recipe_version: TemplateVersion | None = None
+    recipe_step_id: str | None = None
+    template_role: str | None = None
+    task_family_key: str | None = None
     stage_gate: StageGate
     payload: dict[str, Any] = {}
     summary: str | None = None
@@ -457,6 +529,16 @@ class NewDependencySpec(BaseModel):
     kind: RequirementKind
     input_name: str                        # у consumer
     producer_output: str | None = None     # у producer
+
+class RecipeProgressRecord(BaseModel):
+    project_id: ProjectId
+    recipe_id: str
+    recipe_step_id: str
+    template_role: str
+    required: bool
+    status: Literal["pending", "in_progress", "satisfied", "failed", "waived"]
+    last_task_id: TaskId | None = None
+    satisfied_by_task_id: TaskId | None = None
 
 class TaskOutputSpec(BaseModel):
     output_name: str
@@ -506,18 +588,24 @@ class FailureCode(StrEnum):
 ### 5.1. `create_task`
 ```
 1. registry.load(template_ref) → template                      (если "latest" → резолвится в конкретную версию)
-2. Валидация: stage_gate из спеки = template.metadata.stage_gate (или subset согласно §5.6)
-3. INSERT INTO tasks(..., status='blocked', version=1, ...)
-4. FOR EACH input_requirement:
+2. Если `recipe_id` задан:
+     registry.load_recipe(recipe_id, recipe_version)
+     validate recipe_step_id/template_role against recipe
+3. Валидация: stage_gate из спеки = template.metadata.stage_gate (или subset согласно §5.6)
+4. INSERT INTO tasks(..., status='blocked', version=1, recipe fields ...)
+5. FOR EACH input_requirement:
      IF kind='hard' AND есть известный producer (NewTaskSpec родом из composite parent):
          INSERT INTO task_dependencies(...)                     (может быть несколько)
-5. COMPUTE initial_status:
-     IF нет hard-deps OR все hard-deps completed → 'queued'
+6. COMPUTE initial_status:
+     IF template.type = 'composite' → 'waiting_for_children'
+     ELIF нет hard-deps OR все hard-deps completed → 'queued'
      ELSE → 'blocked'
-6. UPDATE tasks SET status = initial_status, queue_position = default WHERE id = ...
-7. INSERT INTO task_events (task_created, status_changed)      (атомарно в той же TX)
-8. INSERT INTO task_status_transitions
-9. COMMIT
+7. UPDATE tasks SET status = initial_status, queue_position = default WHERE id = ...
+8. IF recipe fields set:
+     UPSERT task_recipe_progress(..., status = map(initial_status))
+9. INSERT INTO task_events (task_created, status_changed)      (атомарно в той же TX)
+10. INSERT INTO task_status_transitions
+11. COMMIT
 ```
 
 ### 5.2. `get_ready` (Task Router вызывает)
@@ -545,6 +633,11 @@ RETURNING t.*;
 ```
 Далее — `INSERT INTO task_events` и `task_status_transitions` для каждой взятой задачи (в той же транзакции).
 
+Если у задачи заполнены `recipe_id/recipe_step_id`, Task Store также:
+
+- обновляет `task_recipe_progress.status = 'in_progress'`;
+- записывает `recipe_progress_updated`.
+
 ### 5.3. `mark_completed`
 ```
 1. SELECT tasks FOR UPDATE WHERE task_id = :id AND version = :expected_version
@@ -557,11 +650,14 @@ RETURNING t.*;
 5. UPDATE tasks SET status = 'completed', completed_at = now(), locked_by = NULL, locked_at = NULL,
                      version = version+1
 6. INSERT INTO task_events (outputs_registered, status_changed)
-7. Bubble-up:
+7. IF recipe fields set:
+     UPDATE task_recipe_progress SET status='satisfied', last_task_id=:id, satisfied_by_task_id=:id
+     INSERT task_events(recipe_progress_updated)
+8. Bubble-up:
      IF parent_id IS NOT NULL → evaluate_parent_completion(parent_id)
      FOR EACH dependent IN task_dependencies WHERE from_task_id = :id:
          evaluate_consumer_readiness(dependent.to_task_id)
-8. COMMIT
+9. COMMIT
 ```
 
 ### 5.4. `evaluate_consumer_readiness(task_id)`
@@ -578,6 +674,7 @@ IF count = 0 AND tasks.status = 'blocked' → UPDATE tasks SET status='queued', 
 ```
 parent = SELECT * FROM tasks WHERE task_id = :parent_id FOR UPDATE
 IF parent.status ≠ 'waiting_for_children' → return
+parent_template = registry.load(parent.template_id, parent.template_version)
 
 children = SELECT * FROM tasks WHERE parent_id = :parent_id
 all_completed = все children в ('completed','obsolete')
@@ -587,6 +684,9 @@ IF any_hard_failed:
     UPDATE parent SET status='failed', error = {...}
     INSERT task_events(child_failed, status_changed)
     propagate_failure(parent.parent_id)
+ELIF all_completed AND parent_template.type = 'dynamic':
+    UPDATE parent SET status='queued', version+=1
+    INSERT task_events(children_completed, status_changed)
 ELIF all_completed:
     Соберём bubble_up_outputs из composite template:
         для каждого output_contract parent'а:
@@ -600,7 +700,7 @@ ELIF all_completed:
 ### 5.6. `mark_waiting`
 ```
 1. SELECT task FOR UPDATE WHERE task_id = :id AND version = :expected_version
-2. Если template.type = 'executable' → ConflictError
+2. Если template.type != 'dynamic' → ConflictError
 3. FOR EACH new_child IN children:
      new_child.parent_id := :id
      create_task(new_child)    (рекурсивно, в той же TX)
@@ -640,7 +740,9 @@ RETURN InvalidationReport(seed, affected=visited)
 4. UPDATE tasks SET status='queued', locked_by=NULL, error=NULL, version+=1,
                      queue_position = DEFAULT
 5. INSERT task_events(task_retried, status_changed)
-6. COMMIT
+6. IF recipe fields set:
+     UPDATE task_recipe_progress SET status='pending', last_task_id=:id
+7. COMMIT
 ```
 
 ### 5.9. Проверка ацикличности при добавлении ребра
@@ -684,7 +786,7 @@ UPDATE tasks t
 
 | `event_type` | Когда | Обязательные поля `payload` |
 |---|---|---|
-| `task_created` | при `create_task` | `template_id`, `template_version`, `parent_id` |
+| `task_created` | при `create_task` | `template_id`, `template_version`, `parent_id`, `recipe_id?`, `recipe_version?`, `recipe_step_id?`, `template_role?` |
 | `status_changed` | при каждом FSM-переходе | `from`, `to`, `reason?` |
 | `dependencies_satisfied` | `blocked → queued` | `resolved_deps: [dep_id]` |
 | `dependency_failed` | при каскаде от failed producer | `producer_task_id`, `dep_id` |
@@ -694,6 +796,7 @@ UPDATE tasks t
 | `outputs_registered` | при `mark_completed` | `outputs: [{name, artifact_id}]` |
 | `children_created` | `mark_waiting` | `children: [task_id]`, `deps: [dep_id]` |
 | `children_completed` | bubble-up, все children готовы | `children: [task_id]` |
+| `recipe_progress_updated` | изменился статус recipe step | `recipe_id`, `recipe_step_id`, `from`, `to`, `task_id?` |
 | `child_failed` | bubble-up при hard fail | `child_task_id`, `code` |
 | `task_retried` | `retry` | `attempt`, `previous_error` |
 | `task_failed` | `* → failed` | `code`, `message`, `details` |
@@ -707,6 +810,7 @@ UPDATE tasks t
 - `correlation_id` — единый id для цепочки связанных операций (trace-id).
 - `sequence_number` — глобальный порядок через BIGSERIAL.
 - Реплей: из `task_events` по `task_id ORDER BY sequence_number` вычисляется итоговое состояние (`tasks` строка). Соответствие проверяется отдельным инструментом `pov-lab-tasks replay-check`.
+- Для recipe-aware задач `task_failed`, `task_retried`, `task_taken`, `task_completed` должны поддерживать согласованность `task_recipe_progress`.
 
 ### 6.3. Потребители событий
 - **Interruption Gateway**: подписан на `escalation_required`, `task_failed` с определёнными кодами.
@@ -742,6 +846,7 @@ UPDATE tasks t
 ### 8.1. Резолвинг шаблона
 - `create_task(NewTaskSpec{template_ref=(id, "latest")})` — Task Store вызывает `registry.resolve(TemplateRef("latest"))`, получает конкретную `version`, сохраняет её в `tasks.template_version`.
 - Дальнейшее использование — всегда по `(template_id, template_version)`, даже если в реестре вышла новая версия. Это обеспечивает воспроизводимость.
+- Если задача привязана к recipe, Task Store хранит `recipe_id`, `recipe_version`, `recipe_step_id`, `template_role`, но не принимает admission-решение за Planner.
 
 ### 8.2. Использование `input_requirements`
 При `create_task`:
@@ -760,6 +865,9 @@ FOR EACH ir IN template.input_requirements:
         case SelectorSemantic:
             оставить без зависимости — Context Engine выполнит поиск
 ```
+
+Нормативное правило: `task_dependencies` описывает только execution/dataflow relations.  
+Recipe obligations, readiness prerequisites и review requirements не должны сериализоваться как `task_dependencies`.
 
 ### 8.3. Использование `output_contract`
 При `mark_completed` Task Store **не** валидирует содержимое артефактов (это задача вызывающего), но:
@@ -811,6 +919,7 @@ Stage-Gate Manager закрывает gate, когда для текущего `
 | Метрика | Тип | Labels |
 |---|---|---|
 | `pov_tasks_created_total` | counter | `project_id`, `template_id`, `template_version` |
+| `pov_tasks_recipe_progress_total` | counter | `recipe_id`, `recipe_step_id`, `status` |
 | `pov_tasks_transitioned_total` | counter | `from`, `to`, `template_id` |
 | `pov_tasks_by_status` | gauge | `project_id`, `status`, `stage_gate` |
 | `pov_tasks_queue_depth` | gauge | `project_id` |
@@ -853,11 +962,13 @@ Stage-Gate Manager закрывает gate, когда для текущего `
 ### 11.1. Unit (без БД)
 - FSM-валидатор: позитив/негатив для каждого перехода.
 - Builders для `NewTaskSpec`/`NewDependencySpec`.
+- Recipe-aware materialization и `task_recipe_progress`.
 - Алгоритм bubble-up на мок-задачах.
 - Parser/validator выражений (если вынесен).
 
 ### 11.2. Integration (Testcontainers Postgres)
 - Полный цикл: `create_project` → `create_task` × N → `get_ready` → `mark_completed` → bubble-up.
+- Проверка, что recipe progress корректно отражает completion/retry/failure задач разных ролей.
 - Конкурентный `get_ready` (N worker'ов): каждая задача взята ровно один раз.
 - Lease expiry: искусственно сдвигаем `clock`, вызываем `reap_expired_leases`.
 - `invalidate_subgraph` на графе 50 узлов — проверка корректности и за < 1 с.
@@ -907,6 +1018,7 @@ class DependencyUnresolvedError(TaskStoreError, IntegrityError): ...
 class LeaseExpiredError(TaskStoreError, ConflictError): ...
 class OutputContractViolationError(TaskStoreError, ValidationError): ...
 class InvalidPayloadError(TaskStoreError, ValidationError): ...
+class RecipeProgressConflictError(TaskStoreError, ConflictError): ...
 ```
 
 ---
@@ -923,14 +1035,15 @@ migrations/tasks/
         003_task_dependencies.py
         004_task_inputs_outputs.py
         005_task_events_and_transitions.py
-        006_event_subscriptions.py
-        007_triggers.py
+        006_task_recipe_progress.py
+        007_event_subscriptions.py
+        008_triggers.py
 ```
 
 Правила:
 - Одна миграция = одна таблица (или одна логическая группа).
-- Downgrade обязателен до версии `007` включительно.
-- После `007` добавление новых миграций без downgrade-ов запрещено (seal-point).
+- Downgrade обязателен до версии `008` включительно.
+- После `008` добавление новых миграций без downgrade-ов запрещено (seal-point).
 
 ---
 
@@ -953,6 +1066,7 @@ max_dag_depth = 32
 max_children_per_task = 50
 max_deps_per_task = 50
 max_payload_bytes = 1048576
+max_recipe_steps_per_project = 1000
 default_escalation_max_attempts = 3
 
 [events]
@@ -986,3 +1100,4 @@ pov-lab-tasks invalidate <task_id> --reason "..."
 - **Пользовательский интерфейс** для задач.
 - **Распределённая доставка событий** поверх `LISTEN/NOTIFY` (Kafka/NATS) — адресуется отдельным RFC.
 - **Retention / архивирование** старых задач и событий.
+- **Admission policy** и решение о materialization недопущенных шагов — зона [05_planning_coordinator.md](05_planning_coordinator.md), не Task Store.
