@@ -117,13 +117,19 @@ Vite сам проксирует:
   - Query API
   - Command API
   - realtime-обновления через WebSocket
+- улучшенный enterprise-контур подготовки ТЗ
+  - recipe `common.build_requirements_spec@2.0.0`
+  - декомпозированные discovery-шаги
+  - доменные расширения `ml`, `security`, `integration`, `frontend`
 
 Важно: это **ещё не вся целевая платформа**, но уже рабочий модуль, который можно гонять руками:
 
 - на `stub`-исполнителе без ИИ;
 - на живом OpenRouter через недорогую модель;
-- с базовым `common`-recipe;
-- с доменным `frontend`-расширением.
+- с базовым recipe `common.build_requirements_spec@1.0.0`;
+- с расширенным enterprise recipe `common.build_requirements_spec@2.0.0`;
+- с доменными пакетами `frontend`, `ml`, `security`, `integration`.
+- с автоматическим выбором доменных пакетов по исходному запросу через selector.
 
 ## Что система умеет сейчас
 
@@ -131,6 +137,7 @@ Vite сам проксирует:
 
 - хранить декларативные правила в YAML;
 - собирать `recipe` проекта из базового сценария и `domain pack`;
+- автоматически определять нужные domain pack по бизнес-запросу, если не задан ручной override;
 - вести `ProblemState`;
 - создавать задачи по детерминированному planner'у;
 - собирать минимальный контекст под конкретный шаг;
@@ -209,12 +216,58 @@ Vite сам проксирует:
 
 Сейчас поддерживаются:
 
+- `normalized_request`
+- `business_outcome_model`
+- `scope_boundary_matrix`
+- `stakeholder_operating_model`
+- `solution_tradeoff_matrix`
+- `delivery_acceptance_plan`
+- `implementation_dependency_plan`
 - `clarification_notes`
 - `user_story_map`
 - `alternatives_analysis`
+- `predictive_problem_definition`
+- `data_landscape_assessment`
+- `security_compliance_constraints`
+- `integration_operating_model`
 - `ui_requirements_outline`
 - `requirements_spec`
 - `review_report`
+
+## Новый enterprise recipe
+
+Для простых сценариев можно использовать:
+
+- `common.build_requirements_spec@1.0.0`
+
+Для сложных корпоративных brief'ов и PoV/PoC теперь есть:
+
+- `common.build_requirements_spec@2.0.0`
+
+Он проходит через шаги:
+
+1. `request_normalization`
+2. `business_outcome_framing`
+3. `scope_boundary_definition`
+4. `stakeholder_operating_model`
+5. `solution_options_analysis`
+6. `delivery_acceptance_definition`
+7. `implementation_plan_definition`
+8. `requirements_spec_generation`
+9. `requirements_spec_review`
+
+И поддерживает доменные расширения:
+
+- `ml.predictive_analytics_pov_requirements@1.0.0`
+- `security.enterprise_compliance_requirements@1.0.0`
+- `integration.enterprise_delivery_requirements@1.0.0`
+- `frontend.web_app_requirements@2.0.0`
+
+Если при создании проекта не передавать `--domain-pack`, система сначала прогоняет selector domain pack:
+
+- по умолчанию через LLM (`openrouter`), если задан `POV_OPENROUTER_API_KEY`;
+- иначе через `stub`-selector по `entry_signals`;
+- ручной список `--domain-pack` остаётся допустимым override.
 
 ## Установка
 
@@ -388,7 +441,7 @@ npm run dev
 - название;
 - исходный бизнес-запрос;
 - recipe;
-- при необходимости domain packs.
+- при необходимости domain packs как ручной override.
 
 ### 2. Overview проекта
 
@@ -490,6 +543,8 @@ npm run dev
   --request-text "Нужно превратить сырой бизнес-запрос в качественное техническое задание."
 ```
 
+Если `--domain-pack` не передан, selector сам решит, какие расширения нужно подключить.
+
 ### 3. Посмотреть стартовое состояние
 
 ```powershell
@@ -582,6 +637,47 @@ Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/review
 - `frontend_requirements.user_flows`
 - `frontend_requirements.screens`
 - `frontend_requirements.ux_constraints`
+
+## Быстрый сценарий 2.5: сложный enterprise brief
+
+```powershell
+.\.venv\Scripts\povgen project init `
+  --workspace runtime\enterprise_case `
+  --name "Enterprise PoV" `
+  --recipe common.build_requirements_spec@2.0.0 `
+  --request-text "Нужно подготовить ТЗ по корпоративному PoV с ML, данными, ИБ, API и web/BI интерфейсом."
+```
+
+Для такого запроса selector обычно сам подключит:
+
+- `ml.predictive_analytics_pov_requirements@1.0.0`
+- `security.enterprise_compliance_requirements@1.0.0`
+- `integration.enterprise_delivery_requirements@1.0.0`
+- `frontend.web_app_requirements@2.0.0`
+
+Далее:
+
+```powershell
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\enterprise_case --provider stub
+.\.venv\Scripts\povgen artifacts list --workspace runtime\enterprise_case
+```
+
+В этом сценарии появятся артефакты:
+
+- `normalized_request`
+- `business_outcome_model`
+- `scope_boundary_matrix`
+- `stakeholder_operating_model`
+- `solution_tradeoff_matrix`
+- `delivery_acceptance_plan`
+- `implementation_dependency_plan`
+- `predictive_problem_definition`
+- `data_landscape_assessment`
+- `security_compliance_constraints`
+- `integration_operating_model`
+- `ui_requirements_outline`
+- `requirements_spec`
+- `review_report`
 
 ## Быстрый сценарий 3: ручная работа по шагам
 
@@ -743,6 +839,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/c
 - сборка контекста для `requirements_spec_generation`;
 - end-to-end `stub`-workflow по базовому recipe;
 - end-to-end `stub`-workflow по `frontend`-recipe;
+- end-to-end `stub`-workflow по enterprise recipe `2.0.0` с доменными пакетами;
+- блокирующая валидация при низкой уверенности и truly blocking questions;
 - создание escalation при провале валидации.
 - Query API и read-models `M9`;
 - WebSocket-уведомления об изменении серверных проекций.
@@ -754,8 +852,6 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/c
 - полноценное semantic retrieval и summarization;
 - repair loop после findings;
 - сложные tool policies;
-- UI;
-- автоматическое определение нужных `domain pack` по тексту запроса;
 - полноценные stage-gate и waiver-механики.
 
 Но уже есть первый реальный рабочий модуль, который можно руками и тестами проверять на кейсах.

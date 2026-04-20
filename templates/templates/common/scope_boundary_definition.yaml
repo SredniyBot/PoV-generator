@@ -1,0 +1,42 @@
+kind: template
+id: common.scope_boundary_definition
+version: 1.0.0
+name: Определение границ этапа
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: scope_definition
+  closes_gaps:
+    - scope_boundaries_missing
+  raises_readiness:
+    - dimension: scope_boundaries_defined
+      status: ready
+activation:
+  required_readiness:
+    - business_outcome_defined
+  forbidden_open_gaps:
+    - business_outcome_unclear
+planning:
+  priority: 110
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - business_outcome_model
+outputs:
+  artifact_roles:
+    - scope_boundary_matrix
+framework:
+  summary: >
+    Явно разведи рамку текущего этапа и будущих фаз: что входит в PoV/PoC/пилот прямо сейчас,
+    что сознательно исключено, какие результаты обязательны в текущем этапе, а какие должны
+    быть отложены. Фиксируй не только то, что входит в этап, но и то, что вынесено за его рамку, чтобы не смешивать пилот
+    с промышленным решением. Если граница этапа остаётся спорной, отмечай блокирующие вопросы.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

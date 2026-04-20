@@ -352,7 +352,7 @@ function WorkspaceRoute({
     () => ({
       runNext: () => void commandRequest(() => api.runNext(projectId, provider, model)),
       runUntilBlocked: () => void commandRequest(() => api.runUntilBlocked(projectId, provider, model)),
-      retryTask: (taskId: string) => void commandRequest(() => api.retryTask(projectId, taskId)),
+      retryTask: (taskId: string) => void commandRequest(() => api.retryTask(projectId, taskId, provider, model)),
       setGoal: (text: string) => void commandRequest(() => api.setGoal(projectId, text)),
       closeGap: (gapId: string) => void commandRequest(() => api.closeGap(projectId, gapId)),
       setReadiness: (payload) => void commandRequest(() => api.setReadiness(projectId, payload)),
@@ -424,6 +424,7 @@ function WorkspaceRoute({
               projectId={projectId}
               flashProjection={flashProjection}
               onAction={(action) => handleAction(action, projectId, navigate, commandMutations)}
+              commands={commandMutations}
             />
           }
         />
@@ -446,10 +447,12 @@ function OverviewPage({
   projectId,
   flashProjection,
   onAction,
+  commands,
 }: {
   projectId: string;
   flashProjection: ProjectionName | null;
   onAction: (action: ActionDescriptor) => void;
+  commands: WorkspaceActionApi;
 }) {
   const [selectedEvent, setSelectedEvent] = useState<TimelineEntryView | null>(null);
   const [selectedStep, setSelectedStep] = useState<JourneyStepView | null>(null);
@@ -516,11 +519,13 @@ function OverviewPage({
             onOpenStep={setSelectedStep}
             flash={flashProjection === "journey"}
           />
-          <SituationPanel
-            situation={situationQuery.data}
-            onAction={onAction}
-            flash={flashProjection === "situation"}
-          />
+            <SituationPanel
+              situation={situationQuery.data}
+              onAction={onAction}
+              onRetryTask={commands.retryTask}
+              retryTaskId={retryTaskIdForSituation(situationQuery.data)}
+              flash={flashProjection === "situation"}
+            />
           <TimelineFeed
             entries={timelineQuery.data.entries}
             onOpenEntry={setSelectedEvent}
@@ -544,26 +549,33 @@ function OverviewPage({
         title={selectedEvent?.title ?? "Событие"}
         onClose={() => setSelectedEvent(null)}
       >
-        {selectedEvent ? (
-          <TimelineEventDetail event={selectedEvent} projectId={projectId} onOpenAction={onAction} />
-        ) : null}
-      </Drawer>
+          {selectedEvent ? (
+            <TimelineEventDetail
+              event={selectedEvent}
+              projectId={projectId}
+              onOpenAction={onAction}
+              onRetryTask={commands.retryTask}
+            />
+          ) : null}
+        </Drawer>
 
-      <Drawer open={Boolean(selectedStep)} title={selectedStep?.title ?? "Шаг"} onClose={() => setSelectedStep(null)}>
-        {selectedStep ? <JourneyStepDetail step={selectedStep} /> : null}
-      </Drawer>
-    </>
-  );
-}
+        <Drawer open={Boolean(selectedStep)} title={selectedStep?.title ?? "Шаг"} onClose={() => setSelectedStep(null)}>
+          {selectedStep ? <JourneyStepDetail step={selectedStep} onRetryTask={commands.retryTask} /> : null}
+        </Drawer>
+      </>
+    );
+  }
 
 function TimelineEventDetail({
   event,
   projectId,
   onOpenAction,
+  onRetryTask,
 }: {
   event: TimelineEntryView;
   projectId: string;
   onOpenAction: (action: ActionDescriptor) => void;
+  onRetryTask: (taskId: string) => void;
 }) {
   const navigate = useNavigate();
   const detailAction: ActionDescriptor = {
@@ -602,6 +614,11 @@ function TimelineEventDetail({
         <Button tone="primary" onClick={() => onOpenAction(detailAction)}>
           Открыть связанный экран
         </Button>
+        {event.kind === "task_failed" && event.entity_id ? (
+          <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(event.entity_id!)}>
+            Повторить шаг
+          </Button>
+        ) : null}
         <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/journey`)}>
           Открыть путь выполнения
         </Button>
@@ -610,16 +627,33 @@ function TimelineEventDetail({
   );
 }
 
-function JourneyStepDetail({ step }: { step: JourneyStepView }) {
+function JourneyStepDetail({
+  step,
+  onRetryTask,
+}: {
+  step: JourneyStepView;
+  onRetryTask: (taskId: string) => void;
+}) {
   return (
     <div className="detail-stack">
       <div className="detail-callout">
-        <StatusPill tone={step.status === "completed" ? "success" : step.is_current ? "active" : "muted"}>
+        <StatusPill
+          tone={
+            step.status === "completed"
+              ? "success"
+              : step.status === "failed" || step.status === "blocked"
+                ? "danger"
+                : step.is_current
+                  ? "active"
+                  : "muted"
+          }
+        >
           {prettyLabel(step.status)}
         </StatusPill>
         <span>{step.required ? "Обязательный шаг" : "Опциональный шаг"}</span>
       </div>
-      <div className="detail-meta-list">
+      {step.status_summary ? <p>{step.status_summary}</p> : null}
+        <div className="detail-meta-list">
         <div>
           <span>Шаблон</span>
           <strong>{step.template_ref}</strong>
@@ -628,14 +662,21 @@ function JourneyStepDetail({ step }: { step: JourneyStepView }) {
           <span>Источник</span>
           <strong>{labelForSourceKind(step.source_kind)}</strong>
         </div>
-        <div>
-          <span>Источник</span>
-          <strong>{step.source_ref}</strong>
+          <div>
+            <span>Источник</span>
+            <strong>{step.source_ref}</strong>
+          </div>
         </div>
+        {step.retryable && step.latest_task_id ? (
+          <div className="inline-actions">
+            <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(step.latest_task_id!)}>
+              Повторить шаг
+            </Button>
+          </div>
+        ) : null}
       </div>
-    </div>
-  );
-}
+    );
+  }
 
 function ArtifactsPage({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
@@ -778,9 +819,26 @@ function ArtifactDetailPanel({ detail }: { detail: ArtifactDetailView }) {
 }
 
 function JourneyPage({ projectId }: { projectId: string }) {
+  const [provider] = useStoredState("povgen.provider", "stub");
+  const [model] = useStoredState("povgen.model", "openai/gpt-4.1-mini");
+  const queryClient = useQueryClient();
   const journeyQuery = useQuery({
     queryKey: projectionKey(projectId, "journey"),
     queryFn: () => api.getJourney(projectId),
+  });
+  const retryMutation = useMutation({
+    mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "journey") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "situation") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "timeline") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "review") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "state") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "debug") }),
+      ]);
+    },
   });
 
   if (journeyQuery.isLoading || !journeyQuery.data) {
@@ -798,18 +856,39 @@ function JourneyPage({ projectId }: { projectId: string }) {
             <div className="journey-row__title">
               <strong>{step.title}</strong>
               <p>{step.template_ref}</p>
+              {step.status_summary ? <p>{step.status_summary}</p> : null}
             </div>
             <div className="journey-row__meta">
-              <StatusPill tone={step.status === "completed" ? "success" : step.is_current ? "active" : "muted"}>
+                <StatusPill
+                tone={
+                  step.status === "completed"
+                    ? "success"
+                    : step.status === "failed" || step.status === "blocked"
+                      ? "danger"
+                      : step.is_current
+                        ? "active"
+                        : "muted"
+                }
+              >
                 {prettyLabel(step.status)}
               </StatusPill>
-              <span>{labelForSourceKind(step.source_kind)}</span>
-              <span>{labelForRequirement(step.required)}</span>
-            </div>
-          </article>
-        ))}
-      </div>
-    </SectionCard>
+                <span>{labelForSourceKind(step.source_kind)}</span>
+                <span>{labelForRequirement(step.required)}</span>
+                {step.retryable && step.latest_task_id ? (
+                  <Button
+                    tone="secondary"
+                    icon={<RefreshCcw size={16} />}
+                    onClick={() => retryMutation.mutate(step.latest_task_id!)}
+                    busy={retryMutation.isPending}
+                  >
+                    Повторить
+                  </Button>
+                ) : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      </SectionCard>
   );
 }
 
@@ -1210,6 +1289,7 @@ function CreateProjectModal({
   const [requestText, setRequestText] = useState("");
   const [recipeRef, setRecipeRef] = useState("");
   const [selectedPacks, setSelectedPacks] = useState<string[]>([]);
+  const [manualPackOverride, setManualPackOverride] = useState(false);
 
   useEffect(() => {
     const firstRecipe = recipesQuery.data?.[0];
@@ -1223,10 +1303,12 @@ function CreateProjectModal({
       setName("");
       setRequestText("");
       setSelectedPacks([]);
+      setManualPackOverride(false);
     }
   }, [open]);
 
   const togglePack = (packRef: string) => {
+    setManualPackOverride(true);
     setSelectedPacks((current) =>
       current.includes(packRef) ? current.filter((item) => item !== packRef) : [...current, packRef],
     );
@@ -1271,26 +1353,51 @@ function CreateProjectModal({
         </label>
 
         <div className="field field--stacked">
-          <span>Доменные пакеты</span>
-          <div className="pack-grid">
-            {(packsQuery.data ?? []).map((pack) => {
-              const active = selectedPacks.includes(pack.pack_ref);
-              return (
-                <button
-                  key={pack.pack_ref}
-                  type="button"
-                  className={cx("pack-card", active && "pack-card--active")}
-                  onClick={() => togglePack(pack.pack_ref)}
-                >
-                  <div className="pack-card__head">
-                    <strong>{pack.name}</strong>
-                    <StatusPill tone={active ? "success" : "muted"}>{pack.domain}</StatusPill>
-                  </div>
-                  <p>{pack.description}</p>
-                </button>
-              );
-            })}
+          <span>Доменные пакеты (необязательно)</span>
+          <small className="field__hint">
+            Если ничего не выбирать, система сама подберёт нужные domain pack по тексту запроса.
+            Ручной выбор здесь работает как override.
+          </small>
+          <div className="inline-actions">
+            <Button
+              tone={manualPackOverride ? "secondary" : "ghost"}
+              onClick={() => {
+                setManualPackOverride((current) => {
+                  const next = !current;
+                  if (!next) {
+                    setSelectedPacks([]);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {manualPackOverride ? "Скрыть ручной override" : "Выбрать пакеты вручную"}
+            </Button>
+            {manualPackOverride && selectedPacks.length > 0 ? (
+              <StatusPill tone="active">Выбрано: {selectedPacks.length}</StatusPill>
+            ) : null}
           </div>
+          {manualPackOverride ? (
+            <div className="pack-grid pack-grid--modal">
+              {(packsQuery.data ?? []).map((pack) => {
+                const active = selectedPacks.includes(pack.pack_ref);
+                return (
+                  <button
+                    key={pack.pack_ref}
+                    type="button"
+                    className={cx("pack-card", active && "pack-card--active")}
+                    onClick={() => togglePack(pack.pack_ref)}
+                  >
+                    <div className="pack-card__head">
+                      <strong>{pack.name}</strong>
+                      <StatusPill tone={active ? "success" : "muted"}>{pack.domain}</StatusPill>
+                    </div>
+                    <p>{pack.description}</p>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
 
         <div className="modal__footer">
@@ -1358,6 +1465,17 @@ function handleAction(
     navigate(`/projects/${projectId}/debug`);
     return;
   }
+}
+
+function retryTaskIdForSituation(situation: ProjectSituationView): string | null {
+  const blocker = situation.blockers[0];
+  if (!blocker || !blocker.related_id) {
+    return null;
+  }
+  if (blocker.kind !== "task_failure" && blocker.kind !== "execution_failure") {
+    return null;
+  }
+  return blocker.related_id;
 }
 
 export default App;

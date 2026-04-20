@@ -61,6 +61,9 @@ export interface JourneyStepView {
   source_kind: string;
   source_ref: string;
   status: string;
+  status_summary: string | null;
+  latest_task_id: string | null;
+  retryable: boolean;
   required: boolean;
   is_current: boolean;
 }

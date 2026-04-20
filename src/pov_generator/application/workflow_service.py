@@ -61,26 +61,100 @@ class WorkflowService:
             )
 
         task_id = decision.created_task_id
-        self._planning_service.transition_task(workspace, task_id, "start")
-        execution_bundle = self._execution_service.execute_task(
-            workspace,
-            snapshot,
-            task_id,
-            provider=provider,
-            model=model,
-        )
-        validation_run = self._validation_service.validate_execution(
+        return self._execute_existing_task(
             workspace,
             snapshot,
             task_id=task_id,
-            execution_bundle=execution_bundle,
+            planning_outcome=decision.outcome,
+            selected_step_id=decision.selected_step_id,
+            provider=provider,
+            model=model,
+            reasons=decision.reasons,
         )
-        if validation_run.status != "passed":
-            self._planning_service.transition_task(workspace, task_id, "fail")
-            return WorkflowStepResult(
-                planning_outcome=decision.outcome,
+
+    def retry_task(
+        self,
+        workspace: Path,
+        snapshot,
+        *,
+        task_id: str,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> WorkflowStepResult:
+        task = self._runtime.get_task(workspace, task_id)
+        self._planning_service.transition_task(workspace, task_id, "retry")
+        return self._execute_existing_task(
+            workspace,
+            snapshot,
+            task_id=task_id,
+            planning_outcome="retried",
+            selected_step_id=task.recipe_step_id,
+            provider=provider,
+            model=model,
+            reasons=("Шаг запущен повторно после ошибки.",),
+        )
+
+    def _execute_existing_task(
+        self,
+        workspace: Path,
+        snapshot,
+        *,
+        task_id: str,
+        planning_outcome: str,
+        selected_step_id: str | None,
+        provider: str | None,
+        model: str | None,
+        reasons: tuple[str, ...],
+    ) -> WorkflowStepResult:
+        self._planning_service.transition_task(workspace, task_id, "start")
+        try:
+            execution_bundle = self._execution_service.execute_task(
+                workspace,
+                snapshot,
+                task_id,
+                provider=provider,
+                model=model,
+            )
+            validation_run = self._validation_service.validate_execution(
+                workspace,
+                snapshot,
                 task_id=task_id,
-                selected_step_id=decision.selected_step_id,
+                execution_bundle=execution_bundle,
+            )
+        except Exception as exc:
+            message = str(exc).strip() or "Во время исполнения шага произошла ошибка."
+            self._planning_service.transition_task(
+                workspace,
+                task_id,
+                "fail",
+                payload={
+                    "error_message": message,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
+            return WorkflowStepResult(
+                planning_outcome=planning_outcome,
+                task_id=task_id,
+                selected_step_id=selected_step_id,
+                execution_run_id=None,
+                validation_status="failed",
+                reasons=(message,),
+            )
+        if validation_run.status != "passed":
+            self._planning_service.transition_task(
+                workspace,
+                task_id,
+                "fail",
+                payload={
+                    "error_message": "; ".join(finding.message for finding in validation_run.findings)
+                    or "Проверка результата завершилась с ошибкой.",
+                    "error_type": "validation_failed",
+                },
+            )
+            return WorkflowStepResult(
+                planning_outcome=planning_outcome,
+                task_id=task_id,
+                selected_step_id=selected_step_id,
                 execution_run_id=execution_bundle.result.execution_run_id,
                 validation_status=validation_run.status,
                 reasons=tuple(finding.message for finding in validation_run.findings),
@@ -89,13 +163,13 @@ class WorkflowService:
         applied_patches = list(self._apply_success_effects(workspace, snapshot, task_id, execution_bundle))
         self._planning_service.transition_task(workspace, task_id, "complete")
         return WorkflowStepResult(
-            planning_outcome=decision.outcome,
+            planning_outcome=planning_outcome,
             task_id=task_id,
-            selected_step_id=decision.selected_step_id,
+            selected_step_id=selected_step_id,
             execution_run_id=execution_bundle.result.execution_run_id,
             validation_status=validation_run.status,
             applied_patches=tuple(applied_patches),
-            reasons=decision.reasons,
+            reasons=reasons,
         )
 
     def run_until_blocked(
@@ -105,7 +179,7 @@ class WorkflowService:
         *,
         provider: str | None = None,
         model: str | None = None,
-        max_steps: int = 20,
+        max_steps: int = 64,
     ) -> WorkflowRunResult:
         steps: list[WorkflowStepResult] = []
         for _ in range(max_steps):
@@ -114,7 +188,10 @@ class WorkflowService:
             if result.planning_outcome != "materialized":
                 return WorkflowRunResult(steps=tuple(steps), stopped_reason="planner_blocked")
             if result.validation_status != "passed":
-                return WorkflowRunResult(steps=tuple(steps), stopped_reason="validation_failed")
+                return WorkflowRunResult(
+                    steps=tuple(steps),
+                    stopped_reason="execution_failed" if result.execution_run_id is None else "validation_failed",
+                )
             manifest = self._runtime.load_manifest(workspace)
             state = self._runtime.load_problem_state(workspace)
             expected_step_ids = set(state.recipe_composition.step_ids) if state.recipe_composition else set()

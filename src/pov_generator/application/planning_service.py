@@ -260,8 +260,15 @@ class PlanningService:
     def planning_history(self, workspace: Path) -> list[PlanningDecision]:
         return self._runtime.list_planning_decisions(workspace)
 
-    def transition_task(self, workspace: Path, task_id: str, command: str):
-        return self._runtime.transition_task(workspace, task_id, command)
+    def transition_task(
+        self,
+        workspace: Path,
+        task_id: str,
+        command: str,
+        *,
+        payload: dict[str, object] | None = None,
+    ):
+        return self._runtime.transition_task(workspace, task_id, command, payload=payload)
 
     def list_tasks(self, workspace: Path):
         return self._runtime.list_tasks(workspace)

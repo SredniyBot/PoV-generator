@@ -7,6 +7,7 @@ import uuid
 from ..common.errors import ConflictError
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
+from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
 from .project_service import ProjectService
 from .registry_service import RegistryService
@@ -22,12 +23,14 @@ class WorkspaceCommandService:
         project_service: ProjectService,
         planning_service: PlanningService,
         workflow_service: WorkflowService,
+        domain_pack_selection_service: DomainPackSelectionService,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
         self._project_service = project_service
         self._planning_service = planning_service
         self._workflow_service = workflow_service
+        self._domain_pack_selection_service = domain_pack_selection_service
 
     def run_next(self, project_id: str, *, provider: str | None = None, model: str | None = None) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
@@ -83,14 +86,34 @@ class WorkspaceCommandService:
             changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
         )
 
-    def retry_task(self, project_id: str, *, task_id: str) -> CommandResultView:
+    def retry_task(
+        self,
+        project_id: str,
+        *,
+        task_id: str,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
-        self._planning_service.transition_task(workspace_ref.workspace, task_id, "retry")
+        snapshot = self._validated_snapshot()
+        result = self._workflow_service.retry_task(
+            workspace_ref.workspace,
+            snapshot,
+            task_id=task_id,
+            provider=provider,
+            model=model,
+        )
+        if result.validation_status == "passed":
+            status = "accepted"
+            summary = f"Шаг '{result.selected_step_id or task_id}' успешно выполнен повторно."
+        else:
+            status = "warning"
+            summary = result.reasons[0] if result.reasons else "Повторный запуск шага завершился с ошибкой."
         return CommandResultView(
-            status="accepted",
+            status=status,
             command_name="retry-task",
-            summary=f"Задача '{task_id}' переведена в retry.",
-            changed_projections=("journey", "situation", "timeline", "debug"),
+            summary=summary,
+            changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
             resource_id=task_id,
         )
 
@@ -161,15 +184,34 @@ class WorkspaceCommandService:
         recipe_ref: str,
         request_text: str,
         domain_pack_refs: tuple[str, ...] = (),
+        selection_provider: str | None = None,
+        selection_model: str | None = None,
     ) -> ProjectCreatedView:
         snapshot = self._validated_snapshot()
         recipe_object_ref = ObjectRef.parse(recipe_ref)
-        for pack_ref in domain_pack_refs:
-            snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
+        if domain_pack_refs:
+            resolved_pack_refs = tuple(sorted(set(domain_pack_refs)))
+            for pack_ref in resolved_pack_refs:
+                snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
+            selection_summary = "Использован явный ручной выбор domain pack."
+        else:
+            selection = self._domain_pack_selection_service.select_for_request(
+                snapshot,
+                recipe_ref=recipe_object_ref.as_string(),
+                request_text=request_text.strip(),
+                provider=selection_provider,
+                model=selection_model,
+            )
+            resolved_pack_refs = selection.selected_pack_refs
+            selection_summary = (
+                f"Автоматический модуль подбора доменных пакетов ({selection.provider}) выбрал: "
+                f"{', '.join(selection.selected_pack_refs) if selection.selected_pack_refs else 'ничего'}. "
+                f"Обоснование: {selection.rationale}"
+            )
         bootstrap_recipe = self._planning_service.build_recipe_bootstrap(
             snapshot,
             recipe_object_ref.as_string(),
-            enabled_domain_pack_refs=tuple(sorted(set(domain_pack_refs))),
+            enabled_domain_pack_refs=resolved_pack_refs,
         )
         workspace = self._allocate_workspace(name)
         bootstrap = self._project_service.init_project(
@@ -179,11 +221,17 @@ class WorkspaceCommandService:
             request_text=request_text.strip(),
             bootstrap_recipe=bootstrap_recipe,
         )
+        self._project_service.add_fact(
+            workspace,
+            fact_id="domain_pack_selection",
+            statement=selection_summary,
+            source="domain_pack_selector",
+        )
         return ProjectCreatedView(
             project_id=bootstrap.manifest.project_id,
             name=bootstrap.manifest.name,
             recipe_ref=bootstrap.manifest.recipe_ref,
-            domain_pack_refs=tuple(sorted(set(domain_pack_refs))),
+            domain_pack_refs=resolved_pack_refs,
             workspace_path=str(workspace),
         )
 

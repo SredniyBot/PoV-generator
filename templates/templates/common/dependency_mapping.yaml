@@ -1,0 +1,43 @@
+kind: template
+id: common.dependency_mapping
+version: 1.0.0
+name: Выделение зависимостей и критических входов
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: dependency_mapping
+  closes_gaps:
+    - dependency_map_missing
+  raises_readiness:
+    - dimension: dependency_map_defined
+      status: ready
+activation:
+  required_readiness:
+    - acceptance_model_defined
+  forbidden_open_gaps:
+    - acceptance_model_missing
+planning:
+  priority: 93
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - delivery_acceptance_plan
+outputs:
+  artifact_roles:
+    - dependency_map
+framework:
+  summary: >
+    Собери список критических зависимостей, обязательных входов, решений внешних команд,
+    согласований, допусков, доступов и иных условий, без которых этап не сможет двигаться
+    по плану. Это ещё не сам план, а карта ограничивающих факторов.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

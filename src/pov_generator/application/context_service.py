@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+import os
 import uuid
 
 from ..common.errors import ConflictError
@@ -92,24 +93,28 @@ class ContextService:
         items.append(instruction)
         source_refs.append(instruction.source_ref)
 
+        max_tokens = self._effective_max_tokens(template.context_policy.max_tokens)
+
         for artifact_role in optional_artifact_roles:
             artifact = self._runtime.latest_artifact_by_role(workspace, artifact_role)
             if artifact is None:
                 continue
             candidate_item = self._make_artifact_item(workspace, artifact, required=False)
-            if sum(item.token_estimate for item in items) + candidate_item.token_estimate > template.context_policy.max_tokens:
+            if max_tokens is not None and (
+                sum(item.token_estimate for item in items) + candidate_item.token_estimate > max_tokens
+            ):
                 continue
             items.append(candidate_item)
             source_refs.append(candidate_item.source_ref)
 
         used_tokens = sum(item.token_estimate for item in items)
-        max_tokens = template.context_policy.max_tokens
-        if used_tokens > max_tokens:
+        if max_tokens is not None and used_tokens > max_tokens:
             raise ConflictError(
                 f"Контекст задачи '{task.task_id}' не помещается в budget: {used_tokens} > {max_tokens}."
             )
 
         fingerprint = sha256("|".join(sorted(source_refs)).encode("utf-8")).hexdigest()
+        manifest_max_tokens = max_tokens if max_tokens is not None else 1_048_576
         context_manifest = ContextManifest(
             manifest_id=str(uuid.uuid4()),
             project_id=manifest.project_id,
@@ -117,8 +122,8 @@ class ContextService:
             template_ref=template.ref.as_string(),
             problem_state_version=state.version,
             budget=ContextBudget(
-                max_input_tokens=max_tokens,
-                reserved_for_output=min(1200, max_tokens // 2),
+                max_input_tokens=manifest_max_tokens,
+                reserved_for_output=min(1200, manifest_max_tokens // 2),
                 used_tokens=used_tokens,
             ),
             items=tuple(items),
@@ -128,6 +133,24 @@ class ContextService:
         )
         self._runtime.record_context_manifest(workspace, context_manifest)
         return ContextBuildResult(manifest=context_manifest)
+
+    def _effective_max_tokens(self, template_max_tokens: int) -> int | None:
+        raw_disable = os.environ.get("POV_DISABLE_TEMPLATE_CONTEXT_BUDGET", "").strip().lower()
+        if raw_disable in {"1", "true", "yes", "on"}:
+            return None
+
+        raw_override = os.environ.get("POV_TEMPLATE_CONTEXT_MAX_TOKENS", "").strip()
+        if raw_override:
+            try:
+                override = int(raw_override)
+            except ValueError:
+                override = template_max_tokens
+            else:
+                if override <= 0:
+                    return None
+                return override
+
+        return template_max_tokens
 
     def _append_artifact_item(
         self,

@@ -52,6 +52,9 @@ class JourneyStepView:
     source_kind: str
     source_ref: str
     status: str
+    status_summary: str | None
+    latest_task_id: str | None
+    retryable: bool
     required: bool
     is_current: bool
 

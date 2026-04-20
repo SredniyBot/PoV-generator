@@ -5,12 +5,14 @@ from pathlib import Path
 import sys
 
 from ..application.context_service import ContextService
+from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
 from ..application.validation_service import ValidationService
 from ..application.workflow_service import WorkflowService
+from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
 from ..common.serialization import json_dumps, to_primitive
 from ..domain.registry import ObjectRef
@@ -23,6 +25,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     repo_root = Path(__file__).resolve().parents[3]
+    load_repo_env(repo_root)
     registry_service = RegistryService(FilesystemRegistryLoader(repo_root / "templates"))
     runtime = SqliteRuntime()
     project_service = ProjectService(runtime)
@@ -31,6 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     execution_service = ExecutionService(runtime, context_service)
     validation_service = ValidationService(runtime)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
+    domain_pack_selection_service = DomainPackSelectionService()
 
     try:
         _dispatch(
@@ -42,6 +46,7 @@ def main(argv: list[str] | None = None) -> None:
             execution_service=execution_service,
             validation_service=validation_service,
             workflow_service=workflow_service,
+            domain_pack_selection_service=domain_pack_selection_service,
             runtime=runtime,
         )
     except PovGeneratorError as exc:
@@ -59,6 +64,7 @@ def _dispatch(
     execution_service: ExecutionService,
     validation_service: ValidationService,
     workflow_service: WorkflowService,
+    domain_pack_selection_service: DomainPackSelectionService,
     runtime: SqliteRuntime,
 ) -> None:
     if args.entity == "registry":
@@ -93,7 +99,33 @@ def _dispatch(
                 raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
             request_text = args.request_text or Path(args.request_file).read_text(encoding="utf-8")
             recipe_ref = ObjectRef.parse(args.recipe)
-            enabled_pack_refs = tuple(args.domain_pack or [])
+            if args.domain_pack:
+                enabled_pack_refs = tuple(sorted(set(args.domain_pack)))
+                selection_payload = {
+                    "mode": "manual",
+                    "provider": None,
+                    "model": None,
+                    "selected_pack_refs": enabled_pack_refs,
+                    "rationale": "Использован явный ручной выбор domain pack.",
+                    "confidence": 1.0,
+                }
+            else:
+                selection = domain_pack_selection_service.select_for_request(
+                    snapshot,
+                    recipe_ref=recipe_ref.as_string(),
+                    request_text=request_text.strip(),
+                    provider=args.selection_provider,
+                    model=args.selection_model,
+                )
+                enabled_pack_refs = selection.selected_pack_refs
+                selection_payload = {
+                    "mode": "auto",
+                    "provider": selection.provider,
+                    "model": selection.model,
+                    "selected_pack_refs": enabled_pack_refs,
+                    "rationale": selection.rationale,
+                    "confidence": selection.confidence,
+                }
             bootstrap_recipe = planning_service.build_recipe_bootstrap(
                 snapshot,
                 recipe_ref.as_string(),
@@ -106,7 +138,27 @@ def _dispatch(
                 request_text=request_text,
                 bootstrap_recipe=bootstrap_recipe,
             )
-            print(json_dumps({"manifest": bootstrap.manifest, "state": bootstrap.state}))
+            project_service.add_fact(
+                Path(args.workspace),
+                fact_id="domain_pack_selection",
+                statement=(
+                    "Автоматический selector domain pack выбрал: "
+                    f"{', '.join(enabled_pack_refs) if enabled_pack_refs else 'ничего'}. "
+                    f"Обоснование: {selection_payload['rationale']}"
+                    if selection_payload["mode"] == "auto"
+                    else "Использован явный ручной выбор domain pack."
+                ),
+                source="domain_pack_selector" if selection_payload["mode"] == "auto" else "manual_override",
+            )
+            print(
+                json_dumps(
+                    {
+                        "manifest": bootstrap.manifest,
+                        "state": project_service.load_problem_state(Path(args.workspace)),
+                        "domain_pack_selection": selection_payload,
+                    }
+                )
+            )
             return
         if args.action == "show":
             print(json_dumps(project_service.load_manifest(Path(args.workspace))))
@@ -313,6 +365,8 @@ def _build_parser() -> argparse.ArgumentParser:
     project_init.add_argument("--name", required=True)
     project_init.add_argument("--recipe", required=True)
     project_init.add_argument("--domain-pack", action="append", default=[])
+    project_init.add_argument("--selection-provider")
+    project_init.add_argument("--selection-model")
     request_group = project_init.add_mutually_exclusive_group(required=True)
     request_group.add_argument("--request-text")
     request_group.add_argument("--request-file")

@@ -1,0 +1,51 @@
+kind: template
+id: common.request_normalization
+version: 1.0.0
+name: Сводная нормализация исходного бизнес-запроса
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: request_normalization
+  closes_gaps:
+    - request_not_normalized
+  raises_readiness:
+    - dimension: request_normalized
+      status: ready
+activation:
+  required_readiness:
+    - request_facts_extracted
+    - project_goal_hypothesized
+    - constraints_inventoried
+    - request_ambiguities_scanned
+  forbidden_open_gaps:
+    - request_facts_not_extracted
+    - project_goal_not_defined
+    - constraints_not_inventoried
+    - request_ambiguities_unscanned
+planning:
+  priority: 121
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - request_fact_sheet
+    - goal_hypothesis
+    - constraint_inventory
+    - ambiguity_gap_report
+outputs:
+  artifact_roles:
+    - normalized_request
+framework:
+  summary: >
+    Собери сводную нормализацию запроса на основе уже выполненных подзадач: выделенных фактов,
+    гипотезы цели, инвентаризации ограничений и анализа неоднозначностей. Не выполняй весь
+    разбор заново и не смешивай несколько аналитических задач в одну. Твоя задача — аккуратно
+    синтезировать рабочую опорную модель запроса для следующих шагов.
+context_policy:
+  max_tokens: 4800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

@@ -198,3 +198,91 @@ def test_api_can_list_registry_entries_and_create_project(tmp_path: Path) -> Non
     shell_payload = shell.json()
     assert shell_payload["name"] == "UI Created Demo"
     assert shell_payload["enabled_domain_packs"] == ["frontend.web_app_requirements@1.0.0"]
+
+
+def test_api_retry_task_reexecutes_failed_step(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    workspace = runtime_root / "case-retry"
+    project_id = init_project(
+        workspace,
+        "Нужно подготовить техническое задание для сервиса, который структурирует бизнес-запросы.",
+    )
+    registry_service, _runtime, _project_service, planning_service, _workflow_service = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+
+    decision = planning_service.plan(workspace, snapshot, mode="apply")
+    assert decision.created_task_id is not None
+    task_id = decision.created_task_id
+    planning_service.transition_task(
+        workspace,
+        task_id,
+        "fail",
+        payload={"error_message": "Искусственно сломанный шаг для теста retry."},
+    )
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
+    client = TestClient(app)
+
+    before = client.get(f"/api/projects/{project_id}/journey")
+    assert before.status_code == 200
+    before_step = before.json()["steps"][0]
+    assert before_step["status"] == "failed"
+    assert before_step["retryable"] is True
+
+    retry = client.post(
+        f"/api/projects/{project_id}/commands/retry-task",
+        json={"task_id": task_id, "provider": "stub"},
+    )
+    assert retry.status_code == 200
+    retry_payload = retry.json()
+    assert retry_payload["status"] == "accepted"
+
+    after = client.get(f"/api/projects/{project_id}/journey")
+    assert after.status_code == 200
+    after_step = after.json()["steps"][0]
+    assert after_step["status"] == "completed"
+    assert after_step["retryable"] is False
+
+    debug = client.get(f"/api/projects/{project_id}/debug")
+    assert debug.status_code == 200
+    task = next(item for item in debug.json()["tasks"] if item["task_id"] == task_id)
+    assert task["status"] == "completed"
+    assert task["attempt"] == 2
+
+
+def test_api_create_project_can_auto_select_domain_packs(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/projects",
+        json={
+            "name": "Enterprise Auto Selection",
+            "recipe_ref": "common.build_requirements_spec@2.0.0",
+            "request_text": (
+                "Нужен PoV по предиктивной аналитике оттока на ML. "
+                "Источники: 1С и корпоративный портал. "
+                "Нужны API-обновления, on-prem, персональные данные, BI и веб-интерфейс."
+            ),
+            "selection_provider": "stub",
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["domain_pack_refs"] == [
+        "frontend.web_app_requirements@2.0.0",
+        "integration.enterprise_delivery_requirements@1.0.0",
+        "ml.predictive_analytics_pov_requirements@1.0.0",
+        "security.enterprise_compliance_requirements@1.0.0",
+    ]
+
+    state = client.get(f"/api/projects/{created['project_id']}/state")
+    assert state.status_code == 200
+    state_payload = state.json()
+    assert any(
+        str(item.get("identifier", "")) == "domain_pack_selection"
+        and "подбора доменных пакетов" in str(item.get("statement", "")).lower()
+        for item in state_payload["known_facts"]
+    )

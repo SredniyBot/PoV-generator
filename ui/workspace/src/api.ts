@@ -69,10 +69,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
     }),
-  retryTask: (projectId: string, taskId: string) =>
+  retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",
-      body: JSON.stringify({ task_id: taskId }),
+      body: JSON.stringify({ task_id: taskId, provider, model: model || undefined }),
     }),
   setGoal: (projectId: string, text: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-goal`, {

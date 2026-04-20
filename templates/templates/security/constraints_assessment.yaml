@@ -1,0 +1,45 @@
+kind: template
+id: security.constraints_assessment
+version: 1.0.0
+name: Оценка ограничений ИБ и комплаенса
+type: executable
+status: active
+domain: security
+semantics:
+  template_role: meta_analysis
+  cognitive_role: security_constraints_definition
+  closes_gaps:
+    - security_constraints_unassessed
+  raises_readiness:
+    - dimension: security_constraints_defined
+      status: ready
+activation:
+  required_readiness:
+    - scope_boundaries_defined
+  forbidden_open_gaps:
+    - scope_boundaries_missing
+planning:
+  priority: 96
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - business_outcome_model
+    - scope_boundary_matrix
+outputs:
+  artifact_roles:
+    - security_compliance_constraints
+framework:
+  summary: >
+    Выдели ограничения по ИБ, ПДн и комплаенсу: допустимый контур, локальное размещение
+    или защищённое облако,
+    требования к шифрованию и обезличиванию, доступу, SSO/2FA, журналированию, допустимости
+    внешних LLM и иным внешним сервисам. Отделяй обязательные средства защиты от желательных.
+    Если без решения со стороны ИБ/архитектуры нельзя продолжать ответственно, фиксируй
+    блокирующие вопросы.
+context_policy:
+  max_tokens: 2400
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

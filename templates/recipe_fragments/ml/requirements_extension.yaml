@@ -1,0 +1,31 @@
+kind: recipe_fragment
+id: ml.requirements_extension
+version: 1.0.0
+name: Расширение recipe требованиями предиктивной аналитики
+domain: ml
+status: active
+target_recipes:
+  - common.build_requirements_spec@2.0.0
+steps:
+  - id: predictive_problem_definition
+    title: Определить предиктивную ML-задачу
+    insert: before
+    anchor_step: solution_options_analysis
+    template: ml.predictive_problem_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - predictive_problem_defined
+      artifact_roles:
+        - predictive_problem_definition
+  - id: data_landscape_assessment
+    title: Оценить данные и реализуемость для ML
+    insert: before
+    anchor_step: solution_options_analysis
+    template: ml.data_landscape_assessment@1.0.0
+    required: true
+    completion:
+      readiness:
+        - data_feasibility_assessed
+      artifact_roles:
+        - data_landscape_assessment

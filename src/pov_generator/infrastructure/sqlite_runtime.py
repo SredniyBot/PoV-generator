@@ -277,7 +277,14 @@ class SqliteRuntime:
             raise NotFoundError(f"Task not found: {task_id}")
         return _task_from_row(row)
 
-    def transition_task(self, workspace: Path, task_id: str, command: str) -> TaskRecord:
+    def transition_task(
+        self,
+        workspace: Path,
+        task_id: str,
+        command: str,
+        *,
+        payload: dict[str, object] | None = None,
+    ) -> TaskRecord:
         task = self.get_task(workspace, task_id)
         next_task = apply_task_command(task, command)
         event = TaskEvent(
@@ -285,7 +292,7 @@ class SqliteRuntime:
             event_type=command,
             from_status=task.status,
             to_status=next_task.status,
-            payload={},
+            payload=payload or {},
             created_at=next_task.updated_at,
         )
         with self._connect(workspace) as connection:

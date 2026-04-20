@@ -1,0 +1,44 @@
+kind: template
+id: common.delivery_scope_definition
+version: 1.0.0
+name: Определение состава поставки этапа
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: delivery_scope_definition
+  closes_gaps:
+    - delivery_scope_not_defined
+  raises_readiness:
+    - dimension: delivery_scope_defined
+      status: ready
+activation:
+  required_readiness:
+    - solution_options_compared
+  forbidden_open_gaps:
+    - solution_options_not_compared
+planning:
+  priority: 96
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - solution_tradeoff_matrix
+outputs:
+  artifact_roles:
+    - delivery_scope_definition
+framework:
+  summary: >
+    Определи, что именно должно быть поставлено в рамках текущего этапа: документы, прототипы,
+    модели, отчёты, демонстрации, интеграционные заготовки, визуализации и иные результаты.
+    Отдельно зафиксируй, чего на этом этапе обещать нельзя.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

@@ -1,0 +1,54 @@
+kind: template
+id: common.stakeholder_operating_model
+version: 1.0.0
+name: Сводная карта стейкхолдеров и операционной модели
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: stakeholder_mapping
+  closes_gaps:
+    - stakeholders_not_mapped
+  raises_readiness:
+    - dimension: stakeholders_mapped
+      status: ready
+activation:
+  required_readiness:
+    - business_outcome_defined
+    - scope_boundaries_defined
+    - stakeholders_identified
+    - decision_owners_defined
+    - operating_model_outlined
+  forbidden_open_gaps:
+    - business_outcome_unclear
+    - scope_boundaries_missing
+    - stakeholders_not_identified
+    - decision_owners_not_defined
+    - operating_model_not_outlined
+planning:
+  priority: 105
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_map
+    - decision_ownership_matrix
+    - operating_model_outline
+outputs:
+  artifact_roles:
+    - stakeholder_operating_model
+framework:
+  summary: >
+    Синтезируй единую картину стейкхолдеров и операционной модели из уже подготовленных
+    промежуточных артефактов. Не пытайся заново делать полный discovery с нуля. Твоя задача —
+    собрать из выделенных групп, владельцев решений и операционного контура одну согласованную
+    сводку, на которую можно опираться в дальнейшем проектировании.
+context_policy:
+  max_tokens: 2400
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

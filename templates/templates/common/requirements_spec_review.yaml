@@ -30,7 +30,7 @@ outputs:
 framework:
   summary: Проверь черновик ТЗ на полноту, согласованность и пригодность к дальнейшей реализации.
 context_policy:
-  max_tokens: 2200
+  max_tokens: 4200
 tool_policy:
   allowed_tools: []
 validation_policy:

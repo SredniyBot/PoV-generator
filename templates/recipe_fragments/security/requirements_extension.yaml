@@ -1,0 +1,20 @@
+kind: recipe_fragment
+id: security.requirements_extension
+version: 1.0.0
+name: Расширение recipe ограничениями ИБ и комплаенса
+domain: security
+status: active
+target_recipes:
+  - common.build_requirements_spec@2.0.0
+steps:
+  - id: security_constraints_assessment
+    title: Разобрать ограничения ИБ, ПДн и контура
+    insert: before
+    anchor_step: requirements_spec_generation
+    template: security.constraints_assessment@1.0.0
+    required: true
+    completion:
+      readiness:
+        - security_constraints_defined
+      artifact_roles:
+        - security_compliance_constraints

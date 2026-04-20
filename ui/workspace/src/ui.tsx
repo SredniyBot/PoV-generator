@@ -14,6 +14,7 @@ import {
   Play,
   Plus,
   RadioTower,
+  RefreshCcw,
   Sparkles,
   Waypoints,
   X,
@@ -55,6 +56,30 @@ export function formatDateTime(value: string | null | undefined): string {
 export function prettyLabel(input: string | null | undefined): string {
   if (!input) {
     return "—";
+  }
+  const normalized = input.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    info: "Информация",
+    success: "Успех",
+    warning: "Предупреждение",
+    error: "Ошибка",
+    failed: "Ошибка",
+    passed: "Пройдено",
+    missing: "Отсутствует",
+    active: "Активно",
+    completed: "Завершено",
+    blocked: "Заблокировано",
+    queued: "В очереди",
+    pending: "Ожидание",
+    in_progress: "Выполняется",
+    waiting_for_children: "Ожидает подзадачи",
+    needs_changes: "Нужны правки",
+    needs_user_input: "Нужен ввод пользователя",
+    base_recipe: "Базовый рецепт",
+    recipe_fragment: "Фрагмент рецепта",
+  };
+  if (labels[normalized]) {
+    return labels[normalized];
   }
   return input
     .replace(/_/g, " ")
@@ -453,25 +478,37 @@ export function JourneyStrip({
 }) {
   return (
     <SectionCard title="Путь проекта" className={cx("journey-card", flash && "live-flash")}>
-      <div className="journey-strip">
-        {steps.map((step, index) => {
+      <div className="journey-strip journey-strip--stacked">
+        {steps.map((step) => {
           const tone =
             step.status === "completed"
               ? "success"
               : step.is_current
                 ? "active"
-                : step.status === "blocked"
+                : step.status === "failed" || step.status === "blocked"
                   ? "danger"
                   : "muted";
           return (
-            <button key={step.step_id} className={cx("journey-step", step.is_current && "journey-step--current")} onClick={() => onOpenStep(step)} type="button">
-              <div className="journey-step__eyebrow">
-                <span>{`Шаг ${index + 1}`}</span>
+            <button
+              key={step.step_id}
+              className={cx(
+                "journey-step",
+                "journey-step--row",
+                step.is_current && "journey-step--current",
+                (step.status === "failed" || step.status === "blocked") && "journey-step--danger",
+              )}
+              onClick={() => onOpenStep(step)}
+              type="button"
+            >
+              <div className={cx("journey-step__marker", `journey-step__marker--${tone}`)} />
+              <div className="journey-step__content">
+                <span className="journey-step__title">{step.title}</span>
+                {step.status_summary ? <p className="journey-step__summary">{step.status_summary}</p> : null}
               </div>
-              <span className="journey-step__title">{step.title}</span>
               <div className="journey-step__meta">
                 <StatusPill tone={tone}>{prettyLabel(step.status)}</StatusPill>
                 <span>{step.source_kind === "recipe_fragment" ? "Фрагмент" : "Базовый рецепт"}</span>
+                <span>{step.required ? "Обязательный шаг" : "Опциональный шаг"}</span>
               </div>
             </button>
           );
@@ -492,10 +529,14 @@ function actionIcon(kind: string): ReactNode {
 export function SituationPanel({
   situation,
   onAction,
+  onRetryTask,
+  retryTaskId,
   flash,
 }: {
   situation: ProjectSituationView;
   onAction: (action: ActionDescriptor) => void;
+  onRetryTask?: (taskId: string) => void;
+  retryTaskId?: string | null;
   flash?: boolean;
 }) {
   return (
@@ -537,8 +578,14 @@ export function SituationPanel({
           ))}
         </div>
       ) : null}
-      {situation.secondary_actions.length > 0 ? (
+      {onRetryTask && retryTaskId || situation.secondary_actions.length > 0 ? (
         <div className="inline-actions">
+          {onRetryTask && retryTaskId ? (
+            <button className="inline-actions__item" onClick={() => onRetryTask(retryTaskId)} type="button">
+              <RefreshCcw size={16} />
+              <span>Повторить шаг</span>
+            </button>
+          ) : null}
           {situation.secondary_actions.map((action) => (
             <button key={action.kind + action.label} className="inline-actions__item" onClick={() => onAction(action)} type="button">
               {actionIcon(action.kind)}
@@ -583,7 +630,7 @@ export function TimelineFeed({
               <div className="timeline-entry__body">
                 <div className="timeline-entry__head">
                   <strong>{entry.title}</strong>
-                  <StatusPill tone={entry.status === "blocked" ? "danger" : entry.status === "completed" ? "success" : "muted"}>
+                  <StatusPill tone={entry.status === "error" || entry.status === "blocked" ? "danger" : entry.status === "warning" ? "warning" : entry.status === "completed" || entry.status === "success" ? "success" : "muted"}>
                     {prettyLabel(entry.status)}
                   </StatusPill>
                 </div>

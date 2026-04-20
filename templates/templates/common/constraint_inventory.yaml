@@ -1,0 +1,42 @@
+kind: template
+id: common.constraint_inventory
+version: 1.0.0
+name: Инвентаризация ограничений и обязательных условий
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: constraint_inventory
+  closes_gaps:
+    - constraints_not_inventoried
+  raises_readiness:
+    - dimension: constraints_inventoried
+      status: ready
+activation:
+  required_readiness:
+    - request_facts_extracted
+  forbidden_open_gaps:
+    - request_facts_not_extracted
+planning:
+  priority: 123
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - request_fact_sheet
+outputs:
+  artifact_roles:
+    - constraint_inventory
+framework:
+  summary: >
+    Собери отдельно все ограничения и обязательные условия: сроки, контур размещения,
+    требования ИБ, ограничения по данным, интеграционные ожидания, формат поставки, роли,
+    ограничения этапа и иные boundary conditions. Разделяй явно названные ограничения и
+    ограничения, которые выглядят как разумные выводы из текста.
+context_policy:
+  max_tokens: 1800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

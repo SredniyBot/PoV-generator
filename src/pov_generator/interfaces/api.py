@@ -12,11 +12,13 @@ from ..application.execution_service import ExecutionService
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
+from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.validation_service import ValidationService
 from ..application.workflow_service import WorkflowService
 from ..application.workspace_catalog import WorkspaceCatalog
 from ..application.workspace_command_service import WorkspaceCommandService
 from ..application.workspace_query_service import WorkspaceQueryService
+from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
 from ..common.serialization import to_primitive, utc_now_iso
 from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
@@ -29,9 +31,10 @@ def create_app(
     runtime_root: Path | None = None,
     websocket_poll_interval: float = 0.75,
 ) -> FastAPI:
+    resolved_repo_root = repo_root or Path(__file__).resolve().parents[3]
+    load_repo_env(resolved_repo_root)
     app = FastAPI(title="PoV Generator Operator API", version="0.1.0")
 
-    resolved_repo_root = repo_root or Path(__file__).resolve().parents[3]
     resolved_runtime_root = runtime_root or (resolved_repo_root / "runtime")
     ui_dist_root = resolved_repo_root / "ui" / "workspace" / "dist"
 
@@ -45,7 +48,15 @@ def create_app(
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
-    command_service = WorkspaceCommandService(catalog, registry_service, project_service, planning_service, workflow_service)
+    domain_pack_selection_service = DomainPackSelectionService()
+    command_service = WorkspaceCommandService(
+        catalog,
+        registry_service,
+        project_service,
+        planning_service,
+        workflow_service,
+        domain_pack_selection_service,
+    )
 
     app.state.query_service = query_service
     app.state.command_service = command_service
@@ -69,7 +80,7 @@ def create_app(
 
     @app.post("/api/projects")
     def create_project(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        domain_pack_refs = payload.get("domain_pack_refs", ())
+        domain_pack_refs = payload.get("domain_pack_refs", [])
         if not isinstance(domain_pack_refs, list):
             raise PovGeneratorError("Поле 'domain_pack_refs' должно быть списком.")
         return to_primitive(
@@ -78,6 +89,8 @@ def create_app(
                 recipe_ref=_required_str(payload, "recipe_ref"),
                 request_text=_required_str(payload, "request_text"),
                 domain_pack_refs=tuple(_required_string_list(domain_pack_refs, "domain_pack_refs")),
+                selection_provider=_optional_str(payload, "selection_provider"),
+                selection_model=_optional_str(payload, "selection_model"),
             )
         )
 
@@ -148,7 +161,14 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/commands/retry-task")
     def retry_task(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        return to_primitive(command_service.retry_task(project_id, task_id=_required_str(payload, "task_id")))
+        return to_primitive(
+            command_service.retry_task(
+                project_id,
+                task_id=_required_str(payload, "task_id"),
+                provider=_optional_str(payload, "provider"),
+                model=_optional_str(payload, "model"),
+            )
+        )
 
     @app.post("/api/projects/{project_id}/commands/set-goal")
     def set_goal(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:

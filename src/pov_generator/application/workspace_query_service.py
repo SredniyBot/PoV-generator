@@ -160,6 +160,10 @@ class WorkspaceQueryService:
         for step in context.composed_recipe.steps:
             progress = recipe_progress.get(step.identifier)
             status = progress.status if progress is not None else "pending"
+            status_summary = self._step_status_summary(context.workspace, step.identifier, status)
+            tasks_for_step = [item for item in self._runtime.list_tasks(context.workspace) if item.recipe_step_id == step.identifier]
+            tasks_for_step.sort(key=lambda item: item.updated_at, reverse=True)
+            latest_task = tasks_for_step[0] if tasks_for_step else None
             if status == "completed":
                 completed_steps += 1
             steps.append(
@@ -170,6 +174,9 @@ class WorkspaceQueryService:
                     source_kind=step.source_kind,
                     source_ref=step.source_ref,
                     status=status,
+                    status_summary=status_summary,
+                    latest_task_id=latest_task.task_id if latest_task is not None else None,
+                    retryable=latest_task.status == "failed" if latest_task is not None else False,
                     required=step.required,
                     is_current=step.identifier == current_step_id,
                 )
@@ -375,8 +382,15 @@ class WorkspaceQueryService:
         state = context.state
         review = self.project_review(context.manifest.project_id)
         escalations = self._runtime.list_escalations(context.workspace)
+        validation_runs = self._runtime.list_validation_runs(context.workspace)
+        execution_runs = self._runtime.list_execution_runs(context.workspace)
         active_tasks = [
-            task for task in self._runtime.list_tasks(context.workspace) if task.status not in {"completed", "obsolete"}
+            task
+            for task in self._runtime.list_tasks(context.workspace)
+            if task.status in {"queued", "in_progress", "waiting_for_children", "blocked"}
+        ]
+        failed_tasks = [
+            task for task in self._runtime.list_tasks(context.workspace) if task.status == "failed"
         ]
         journey = self.project_journey(context.manifest.project_id)
         preview = self._planning_service.plan(
@@ -388,6 +402,56 @@ class WorkspaceQueryService:
         )
 
         blockers: list[SituationBlockerView] = []
+        for task in sorted(failed_tasks, key=lambda item: item.updated_at, reverse=True)[:3]:
+            step_title = next(
+                (step.title for step in context.composed_recipe.steps if step.identifier == task.recipe_step_id),
+                task.recipe_step_id,
+            )
+            blockers.append(
+                SituationBlockerView(
+                    kind="task_failure",
+                    title=f"Ошибка на шаге «{step_title}»",
+                    summary=self._failure_summary_for_task(
+                        context.workspace,
+                        task.task_id,
+                        default=f"Шаг '{step_title}' завершился с ошибкой и требует разбора.",
+                    ),
+                    severity="error",
+                    detail_view="debug",
+                    related_id=task.task_id,
+                )
+            )
+
+        for run in sorted(validation_runs, key=lambda item: item.created_at, reverse=True):
+            if run.status != "failed":
+                continue
+            blockers.append(
+                SituationBlockerView(
+                    kind="validation_failure",
+                    title="Валидация шага не пройдена",
+                    summary=run.findings[0].message if run.findings else "Валидация завершилась ошибкой.",
+                    severity="error",
+                    detail_view="review",
+                    related_id=run.validation_run_id,
+                )
+            )
+            break
+
+        for run in sorted(execution_runs, key=lambda item: str(item.get("created_at", "")), reverse=True):
+            if str(run.get("status")) != "failed":
+                continue
+            blockers.append(
+                SituationBlockerView(
+                    kind="execution_failure",
+                    title="Исполнение шага завершилось ошибкой",
+                    summary=str(run.get("failure_message") or run.get("failure_code") or "Исполнение завершилось ошибкой."),
+                    severity="error",
+                    detail_view="debug",
+                    related_id=str(run.get("task_id") or ""),
+                )
+            )
+            break
+
         for escalation in escalations[-3:]:
             blockers.append(
                 SituationBlockerView(
@@ -415,26 +479,41 @@ class WorkspaceQueryService:
 
         blocking = bool(blockers)
         if blocking:
-            return ProjectSituationView(
-                project_id=context.manifest.project_id,
-                status_label="Требуется внимание",
-                headline="Проект остановлен на замечаниях",
-                summary=blockers[0].summary,
-                blocking=True,
-                primary_action=ActionDescriptor(
+            primary_blocker = blockers[0]
+            primary_action = (
+                ActionDescriptor(
+                    kind="open_debug",
+                    label="Открыть технические детали",
+                    description="Посмотреть ошибку, трассировку и состояние шага.",
+                    target_view="debug",
+                    target_id=primary_blocker.related_id,
+                    blocking=True,
+                )
+                if primary_blocker.detail_view == "debug"
+                else ActionDescriptor(
                     kind="open_review",
                     label="Открыть замечания",
                     description="Посмотреть замечания и решить, что делать дальше.",
-                    target_view="review",
-                    target_id=review.artifact_id,
+                    target_view=primary_blocker.detail_view,
+                    target_id=primary_blocker.related_id,
                     blocking=True,
-                ),
+                )
+            )
+            return ProjectSituationView(
+                project_id=context.manifest.project_id,
+                status_label="Ошибка этапа" if primary_blocker.detail_view == "debug" else "Требуется внимание",
+                headline="Проект остановлен из-за ошибки шага"
+                if primary_blocker.detail_view == "debug"
+                else "Проект остановлен на замечаниях",
+                summary=primary_blocker.summary,
+                blocking=True,
+                primary_action=primary_action,
                 secondary_actions=(
                     ActionDescriptor(
-                        kind="open_debug",
-                        label="Технические детали",
-                        description="Открыть технический разбор кейса.",
-                        target_view="debug",
+                        kind="open_state",
+                        label="Состояние проекта",
+                        description="Посмотреть readiness, gaps и контекст блокировки.",
+                        target_view="state",
                     ),
                 ),
                 blockers=tuple(blockers),
@@ -619,6 +698,75 @@ class WorkspaceQueryService:
                 )
             )
 
+        for task in self._runtime.list_tasks(context.workspace):
+            if task.status != "failed":
+                continue
+            step_title = next(
+                (step.title for step in context.composed_recipe.steps if step.identifier == task.recipe_step_id),
+                task.recipe_step_id,
+            )
+            entries.append(
+                (
+                    (task.updated_at, 15),
+                    TimelineEntryView(
+                        sequence=0,
+                        kind="task_failed",
+                        title=f"Шаг завершился ошибкой: {step_title}",
+                        summary=self._failure_summary_for_task(
+                            context.workspace,
+                            task.task_id,
+                            default=f"Шаг '{step_title}' завершился с ошибкой.",
+                        ),
+                        status="error",
+                        created_at=task.updated_at,
+                        detail_view="debug",
+                        entity_type="task",
+                        entity_id=task.task_id,
+                    ),
+                )
+            )
+
+        for run in self._runtime.list_execution_runs(context.workspace):
+            if str(run.get("status")) != "failed":
+                continue
+            created_at = str(run.get("created_at") or run.get("updated_at") or "")
+            entries.append(
+                (
+                    (created_at, 16),
+                    TimelineEntryView(
+                        sequence=0,
+                        kind="execution_failed",
+                        title="Исполнение шага завершилось ошибкой",
+                        summary=str(run.get("failure_message") or run.get("failure_code") or "Во время исполнения произошла ошибка."),
+                        status="error",
+                        created_at=created_at,
+                        detail_view="debug",
+                        entity_type="execution_run",
+                        entity_id=str(run.get("execution_run_id") or ""),
+                    ),
+                )
+            )
+
+        for run in self._runtime.list_validation_runs(context.workspace):
+            if run.status != "failed":
+                continue
+            entries.append(
+                (
+                    (run.created_at, 17),
+                    TimelineEntryView(
+                        sequence=0,
+                        kind="validation_failed",
+                        title="Валидация не пройдена",
+                        summary=run.findings[0].message if run.findings else "Валидация шага завершилась ошибкой.",
+                        status="warning",
+                        created_at=run.created_at,
+                        detail_view="review",
+                        entity_type="validation_run",
+                        entity_id=run.validation_run_id,
+                    ),
+                )
+            )
+
         for escalation in self._runtime.list_escalations(context.workspace):
             entries.append(
                 (
@@ -658,6 +806,18 @@ class WorkspaceQueryService:
     def _timeline_entry_for_artifact(self, workspace: Path, artifact) -> tuple[str, str, str, str]:
         role_map = {
             "clarification_notes": ("Уточнена бизнес-цель", "Система собрала уточнение цели и критериев успеха.", "success", "artifact"),
+            "request_fact_sheet": ("Выделены факты запроса", "Система извлекла явные факты, сущности и ожидаемые результаты из исходного брифа.", "success", "artifact"),
+            "goal_hypothesis": ("Сформирована гипотеза цели", "Система зафиксировала рабочую гипотезу цели и успеха этапа.", "success", "artifact"),
+            "constraint_inventory": ("Собраны ограничения", "Система выделила явные и подразумеваемые ограничения проекта.", "success", "artifact"),
+            "ambiguity_gap_report": ("Разобраны неоднозначности", "Система нашла пробелы, противоречия и безопасные рабочие допущения.", "success", "artifact"),
+            "normalized_request": ("Запрос нормализован", "Система собрала сводную нормализацию исходного бизнес-запроса.", "success", "artifact"),
+            "stakeholder_map": ("Выделены стейкхолдеры", "Система собрала группы стейкхолдеров и их ожидания.", "success", "artifact"),
+            "decision_ownership_matrix": ("Определены владельцы решений", "Система разложила ownership по ключевым решениям и согласованиям.", "success", "artifact"),
+            "operating_model_outline": ("Собран черновой контур операционной модели", "Система описала поток работы, роли и риски передачи ответственности.", "success", "artifact"),
+            "solution_option_inventory": ("Сформирован набор вариантов решения", "Система выделила жизнеспособные варианты решения для текущего этапа.", "success", "artifact"),
+            "delivery_scope_definition": ("Определён состав поставки этапа", "Система зафиксировала, что именно должно быть поставлено на текущем этапе.", "success", "artifact"),
+            "acceptance_model_definition": ("Определена модель приемки этапа", "Система зафиксировала критерии приемки, доказательства и обязательные согласования.", "success", "artifact"),
+            "dependency_map": ("Собраны критические зависимости", "Система выделила входы, решения и зависимости, без которых этап не сможет двигаться дальше.", "success", "artifact"),
             "user_story_map": ("Собраны user story", "Определены роли, сценарии и граничные случаи.", "success", "artifact"),
             "alternatives_analysis": ("Разобраны альтернативы", "Система сравнила варианты решения и сформировала рекомендацию.", "success", "artifact"),
             "ui_requirements_outline": ("Разобраны пользовательские потоки интерфейса", "Добавлен доменный анализ UI и экранов.", "success", "artifact"),
@@ -703,6 +863,63 @@ class WorkspaceQueryService:
                 )
             )
         return tuple(items)
+
+    def _step_status_summary(self, workspace: Path, recipe_step_id: str, status: str) -> str | None:
+        tasks = [item for item in self._runtime.list_tasks(workspace) if item.recipe_step_id == recipe_step_id]
+        if not tasks:
+            return None
+        tasks.sort(key=lambda item: item.updated_at, reverse=True)
+        latest = tasks[0]
+        if latest.status == "failed" or status == "failed":
+            return self._failure_summary_for_task(
+                workspace,
+                latest.task_id,
+                default=f"Последняя попытка шага завершилась ошибкой.",
+            )
+        if latest.status == "completed":
+            return "Шаг успешно завершён и его результат принят."
+        if latest.status == "in_progress":
+            return "Шаг сейчас выполняется."
+        if latest.status == "queued":
+            return "Шаг поставлен в очередь на выполнение."
+        if latest.status == "waiting_for_children":
+            return "Шаг ожидает завершения вложенных задач."
+        return None
+
+    def _failure_summary_for_task(self, workspace: Path, task_id: str, *, default: str) -> str:
+        validation_runs = [
+            item
+            for item in self._runtime.list_validation_runs(workspace)
+            if item.task_id == task_id and item.status == "failed"
+        ]
+        validation_runs.sort(key=lambda item: item.created_at, reverse=True)
+        if validation_runs and validation_runs[0].findings:
+            return validation_runs[0].findings[0].message
+
+        execution_runs = [
+            item
+            for item in self._runtime.list_execution_runs(workspace)
+            if str(item.get("task_id")) == task_id and str(item.get("status")) == "failed"
+        ]
+        execution_runs.sort(key=lambda item: str(item.get("created_at") or item.get("updated_at") or ""), reverse=True)
+        if execution_runs:
+            run = execution_runs[0]
+            return str(run.get("failure_message") or run.get("failure_code") or default)
+
+        task_events = [
+            item
+            for item in self._runtime.list_task_events(workspace, task_id=task_id)
+            if item.event_type == "fail"
+        ]
+        task_events.sort(key=lambda item: item.created_at, reverse=True)
+        if task_events:
+            payload = task_events[0].payload or {}
+            if isinstance(payload, dict):
+                message = payload.get("error_message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+
+        return default
 
     def _normalize_json_columns(self, payload: dict[str, object]) -> dict[str, object]:
         result = dict(payload)

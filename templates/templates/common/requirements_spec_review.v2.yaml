@@ -1,0 +1,55 @@
+kind: template
+id: common.requirements_spec_review
+version: 2.0.0
+name: Ревью структурированного ТЗ
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: review
+  cognitive_role: critique
+  closes_gaps:
+    - draft_not_reviewed
+  raises_readiness:
+    - dimension: specification_reviewed
+      status: ready
+activation:
+  required_readiness:
+    - specification_drafted
+  forbidden_open_gaps: []
+planning:
+  priority: 70
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - requirements_spec
+  optional_artifact_roles:
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - solution_tradeoff_matrix
+    - delivery_acceptance_plan
+    - implementation_dependency_plan
+    - predictive_problem_definition
+    - data_landscape_assessment
+    - security_compliance_constraints
+    - integration_operating_model
+    - ui_requirements_outline
+outputs:
+  artifact_roles:
+    - review_report
+framework:
+  summary: >
+    Проведи строгое ревью ТЗ по нескольким осям: полнота, непротиворечивость, пригодность для
+    запуска работ, соответствие границам этапа, реалистичность по данным, ИБ/интеграциям и
+    доменным ограничениям. Не ограничивайся общей похвалой. Если документ можно принять —
+    скажи это явно. Если нужны правки — перечисли конкретные проблемы по областям. Если без
+    дополнительных ответов пользователя нельзя двигаться ответственно, отрази блокирующие вопросы
+    и снизь уверенность.
+context_policy:
+  max_tokens: 3200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

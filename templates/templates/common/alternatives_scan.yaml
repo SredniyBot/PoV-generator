@@ -34,7 +34,7 @@ outputs:
 framework:
   summary: Сравни несколько вариантов решения относительно пользовательских потребностей, ограничений и будущих изменений системы.
 context_policy:
-  max_tokens: 2200
+  max_tokens: 4200
 tool_policy:
   allowed_tools: []
 validation_policy:

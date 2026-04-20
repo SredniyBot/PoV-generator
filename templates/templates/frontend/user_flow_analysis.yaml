@@ -32,7 +32,7 @@ outputs:
 framework:
   summary: Выдели роли пользователей, основные пользовательские потоки, ожидания к экранам и важные UX-ограничения для будущего ТЗ.
 context_policy:
-  max_tokens: 2200
+  max_tokens: 4200
 tool_policy:
   allowed_tools: []
 validation_policy:

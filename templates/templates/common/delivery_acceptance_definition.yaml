@@ -1,0 +1,56 @@
+kind: template
+id: common.delivery_acceptance_definition
+version: 1.0.0
+name: Сводная модель поставки и приемки
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: acceptance_planning
+  closes_gaps:
+    - acceptance_model_missing
+  raises_readiness:
+    - dimension: delivery_acceptance_defined
+      status: ready
+activation:
+  required_readiness:
+    - business_outcome_defined
+    - scope_boundaries_defined
+    - stakeholders_mapped
+    - solution_options_compared
+    - delivery_scope_defined
+    - acceptance_model_defined
+  forbidden_open_gaps:
+    - business_outcome_unclear
+    - scope_boundaries_missing
+    - stakeholders_not_mapped
+    - solution_options_not_compared
+    - delivery_scope_not_defined
+planning:
+  priority: 95
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - solution_tradeoff_matrix
+    - delivery_scope_definition
+    - acceptance_model_definition
+outputs:
+  artifact_roles:
+    - delivery_acceptance_plan
+framework:
+  summary: >
+    Собери единую модель поставки и приемки на основе отдельно проработанного состава
+    поставки и отдельно проработанной модели приемки. Не переоткрывай эти части
+    заново: твоя задача — синтезировать итоговый план результатов этапа, подтверждающих материалов,
+    согласований и входов со стороны заказчика.
+context_policy:
+  max_tokens: 2400
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

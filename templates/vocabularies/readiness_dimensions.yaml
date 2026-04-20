@@ -2,6 +2,60 @@ kind: vocabulary
 id: readiness_dimensions
 version: 1.0.0
 entries:
+  - id: request_facts_extracted
+    label: Факты запроса выделены
+    description: Из исходного запроса выделены явные факты, сущности, результаты и сигналы.
+  - id: project_goal_hypothesized
+    label: Гипотеза цели проекта сформирована
+    description: Есть рабочая гипотеза о цели проекта, ожидаемом эффекте и признаках успеха.
+  - id: constraints_inventoried
+    label: Ограничения собраны
+    description: Выделены явные и подразумеваемые ограничения, обязательные условия и зависимые допущения.
+  - id: request_ambiguities_scanned
+    label: Неоднозначности запроса разобраны
+    description: Найдены противоречия, пробелы и безопасные рабочие допущения.
+  - id: request_normalized
+    label: Запрос нормализован
+    description: Исходный запрос структурирован и приведён к рабочему problem statement.
+  - id: business_outcome_defined
+    label: Бизнес-результат определён
+    description: Понятны целевой эффект, KPI, управленческие решения и value hypothesis.
+  - id: scope_boundaries_defined
+    label: Границы этапа определены
+    description: Зафиксированы in-scope, out-of-scope и границы текущего этапа.
+  - id: stakeholders_identified
+    label: Стейкхолдеры выделены
+    description: Определены ключевые группы стейкхолдеров, их роли и ожидания.
+  - id: decision_owners_defined
+    label: Владельцы решений определены
+    description: Понятно, кто принимает ключевые решения и кто участвует в согласованиях.
+  - id: operating_model_outlined
+    label: Черновая операционная модель собрана
+    description: Есть черновое описание процесса, ролей, входов и потребителей результата.
+  - id: stakeholders_mapped
+    label: Стейкхолдеры и операционная модель разобраны
+    description: Понятны пользователи, владельцы решений, ответственные стороны и сценарий использования результата.
+  - id: solution_option_space_defined
+    label: Пространство вариантов решения определено
+    description: Выделен набор жизнеспособных вариантов решения для текущего этапа.
+  - id: solution_options_compared
+    label: Варианты решения сравнены
+    description: Проведён trade-off анализ и выбран рекомендуемый вариант реализации.
+  - id: delivery_scope_defined
+    label: Состав поставки этапа определён
+    description: Зафиксировано, что именно должно быть поставлено на текущем этапе, а что вынесено за его рамку.
+  - id: acceptance_model_defined
+    label: Модель приемки определена
+    description: Зафиксированы критерии приемки, подтверждающие материалы и обязательные согласования.
+  - id: delivery_acceptance_defined
+    label: Сводная модель поставки и приемки собрана
+    description: Синтезированы результаты этапа, критерии приемки, входы от заказчика и подтверждающие материалы.
+  - id: dependency_map_defined
+    label: Карта зависимостей собрана
+    description: Выделены критические входы, внешние решения, условия остановки и зависимости этапа.
+  - id: delivery_plan_defined
+    label: План реализации определён
+    description: Описаны фазы, зависимости, риски и критические входы проекта.
   - id: goal_clarity
     label: Ясность цели
     description: Цель бизнеса сформулирована явно и проверяемо.
@@ -11,6 +65,18 @@ entries:
   - id: alternatives_explored
     label: Альтернативы рассмотрены
     description: Рассмотрено и сравнено несколько направлений решения.
+  - id: predictive_problem_defined
+    label: Предиктивная задача определена
+    description: Зафиксированы label, горизонт прогноза, unit of prediction, output и метрики модели.
+  - id: data_feasibility_assessed
+    label: Реализуемость по данным оценена
+    description: Поняты источники, качество данных, критические пробелы и feasibility для PoV.
+  - id: security_constraints_defined
+    label: Ограничения ИБ определены
+    description: Понятны требования по ПДн, контуру, доступу, шифрованию и допустимому использованию AI.
+  - id: integration_model_defined
+    label: Интеграционная модель определена
+    description: Понятны источники, API, схема обновления и эксплуатационная модель решения.
   - id: specification_drafted
     label: Черновик ТЗ подготовлен
     description: Существует черновик технического задания.

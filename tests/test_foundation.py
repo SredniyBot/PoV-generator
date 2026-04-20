@@ -55,10 +55,10 @@ def test_registry_validation_passes_for_sample_corpus() -> None:
     snapshot, report = registry_service.validate()
 
     assert report.is_valid
-    assert len(snapshot.templates) == 6
-    assert len(snapshot.recipes) == 1
-    assert len(snapshot.recipe_fragments) == 1
-    assert len(snapshot.domain_packs) == 1
+    assert len(snapshot.templates) >= 32
+    assert len(snapshot.recipes) == 2
+    assert len(snapshot.recipe_fragments) == 5
+    assert len(snapshot.domain_packs) == 5
     assert len(snapshot.vocabularies) == 5
 
 

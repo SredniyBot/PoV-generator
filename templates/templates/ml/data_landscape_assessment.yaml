@@ -1,0 +1,46 @@
+kind: template
+id: ml.data_landscape_assessment
+version: 1.0.0
+name: Оценка ландшафта данных и реализуемости
+type: executable
+status: active
+domain: ml
+semantics:
+  template_role: meta_analysis
+  cognitive_role: data_feasibility_assessment
+  closes_gaps:
+    - data_landscape_unassessed
+  raises_readiness:
+    - dimension: data_feasibility_assessed
+      status: ready
+activation:
+  required_readiness:
+    - predictive_problem_defined
+  forbidden_open_gaps:
+    - predictive_problem_undefined
+planning:
+  priority: 97
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - predictive_problem_definition
+    - scope_boundary_matrix
+  optional_artifact_roles:
+    - stakeholder_operating_model
+outputs:
+  artifact_roles:
+    - data_landscape_assessment
+framework:
+  summary: >
+    Оцени реализуемость по данным: источники, сущности, признаки, глубину истории, качество
+    справочников, риски пропусков и разнородности, пригодность текстовых данных, риски
+    утечки целевой метки и общую реализуемость PoV. Не обещай качество модели без оценки данных.
+    Если для разумного PoV явно не хватает критических данных или неясны ключевые сущности,
+    фиксируй блокирующие вопросы.
+context_policy:
+  max_tokens: 2800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

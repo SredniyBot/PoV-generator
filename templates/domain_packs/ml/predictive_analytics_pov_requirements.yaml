@@ -1,0 +1,22 @@
+kind: domain_pack
+id: ml.predictive_analytics_pov_requirements
+version: 1.0.0
+name: Аналитические модели, ML и требования к данным
+description: Добавляет обязательную формализацию аналитической или ML-задачи, а также оценку доступности и пригодности данных перед сборкой ТЗ.
+domain: ml
+status: active
+templates:
+  - ml.predictive_problem_definition@1.0.0
+  - ml.data_landscape_assessment@1.0.0
+recipe_fragments:
+  - ml.requirements_extension@1.0.0
+entry_signals:
+  - ml
+  - машинное обучение
+  - аналитическая модель
+  - предиктивная аналитика
+  - прогнозирование
+  - прогноз
+  - модель
+  - классификация
+  - риск
