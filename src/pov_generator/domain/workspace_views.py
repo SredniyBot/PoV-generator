@@ -14,6 +14,25 @@ class ProjectListItemView:
 
 
 @dataclass(frozen=True)
+class RecipeCatalogItemView:
+    recipe_ref: str
+    name: str
+    domain: str
+    stage_gate: str
+    step_count: int
+
+
+@dataclass(frozen=True)
+class DomainPackCatalogItemView:
+    pack_ref: str
+    name: str
+    domain: str
+    description: str
+    status: str
+    entry_signals: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ProjectShellView:
     project_id: str
     name: str
@@ -196,3 +215,24 @@ class CommandResultView:
     summary: str
     changed_projections: tuple[str, ...] = field(default_factory=tuple)
     resource_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectCreatedView:
+    project_id: str
+    name: str
+    recipe_ref: str
+    domain_pack_refs: tuple[str, ...]
+    workspace_path: str
+    changed_projections: tuple[str, ...] = field(
+        default_factory=lambda: (
+            "shell",
+            "journey",
+            "situation",
+            "timeline",
+            "artifacts",
+            "review",
+            "state",
+            "debug",
+        )
+    )

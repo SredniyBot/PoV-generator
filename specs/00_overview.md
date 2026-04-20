@@ -15,6 +15,10 @@
 - `07_execution_runtime.md` — LLM/script/tool runtime и execution traces.
 - `08_validation_governance.md` — validation, critique, stage gates и human escalation.
 - `09_domain_packs.md` — доменные пакеты знаний, recipe fragments и композиция расширений.
+- `10_ui_workspace_architecture.md` — UX-архитектура workspace, экранов и пользовательских сценариев.
+- `11_ui_design_system.md` — дизайн-система, визуальный язык, motion и accessibility.
+- `12_ui_components_and_patterns.md` — компонентные паттерны, состояния и взаимодействия.
+- `13_ui_realtime_and_m10_requirements.md` — realtime-модель UI, интеграция с `M9` и серверные требования к `M10`.
 
 Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах, recipe-политиках и domain packs; координатор только применяет эту семантику, но не дублирует её в коде и не заменяет её “мнением LLM” как финальным арбитром**.
 

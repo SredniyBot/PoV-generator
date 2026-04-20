@@ -162,3 +162,39 @@ def test_api_websocket_reports_projection_changes_after_command(tmp_path: Path) 
 
     situation = client.get(f"/api/projects/{project_id}/situation").json()
     assert situation["status_label"] in {"Готов к продолжению", "Выполняется"}
+
+
+def test_api_can_list_registry_entries_and_create_project(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
+    client = TestClient(app)
+
+    recipes = client.get("/api/registry/recipes")
+    assert recipes.status_code == 200
+    recipe_payload = recipes.json()
+    assert any(item["recipe_ref"] == "common.build_requirements_spec@1.0.0" for item in recipe_payload)
+
+    packs = client.get("/api/registry/domain-packs")
+    assert packs.status_code == 200
+    pack_payload = packs.json()
+    assert any(item["pack_ref"] == "frontend.web_app_requirements@1.0.0" for item in pack_payload)
+
+    create_response = client.post(
+        "/api/projects",
+        json={
+            "name": "UI Created Demo",
+            "recipe_ref": "common.build_requirements_spec@1.0.0",
+            "request_text": "Нужно подготовить ТЗ для сервиса с пользовательским кабинетом.",
+            "domain_pack_refs": ["frontend.web_app_requirements@1.0.0"],
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["project_id"]
+    assert created["domain_pack_refs"] == ["frontend.web_app_requirements@1.0.0"]
+
+    shell = client.get(f"/api/projects/{created['project_id']}/shell")
+    assert shell.status_code == 200
+    shell_payload = shell.json()
+    assert shell_payload["name"] == "UI Created Demo"
+    assert shell_payload["enabled_domain_packs"] == ["frontend.web_app_requirements@1.0.0"]

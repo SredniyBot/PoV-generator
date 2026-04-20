@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+import re
+import uuid
+
 from ..common.errors import ConflictError
 from ..domain.registry import ObjectRef
-from ..domain.workspace_views import CommandResultView
+from ..domain.workspace_views import CommandResultView, ProjectCreatedView
 from .planning_service import PlanningService
 from .project_service import ProjectService
 from .registry_service import RegistryService
@@ -60,10 +64,22 @@ class WorkspaceCommandService:
             model=model,
             max_steps=max_steps,
         )
+        if result.stopped_reason == "recipe_completed":
+            status = "accepted"
+            summary = f"Workflow завершён успешно: все шаги recipe пройдены за {len(result.steps)} шагов."
+        elif result.stopped_reason == "validation_failed":
+            status = "warning"
+            summary = "Workflow остановлен: ревью или валидация требуют внимания."
+        elif result.stopped_reason == "planner_blocked":
+            status = "blocked"
+            summary = "Workflow остановлен: автоматических следующих шагов сейчас нет."
+        else:
+            status = "warning"
+            summary = f"Workflow остановлен со статусом '{result.stopped_reason}' после {len(result.steps)} шагов."
         return CommandResultView(
-            status="accepted",
+            status=status,
             command_name="run-until-blocked",
-            summary=f"Workflow завершён со статусом '{result.stopped_reason}' после {len(result.steps)} шагов.",
+            summary=summary,
             changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
         )
 
@@ -138,8 +154,49 @@ class WorkspaceCommandService:
             resource_id=pack_ref,
         )
 
+    def create_project(
+        self,
+        *,
+        name: str,
+        recipe_ref: str,
+        request_text: str,
+        domain_pack_refs: tuple[str, ...] = (),
+    ) -> ProjectCreatedView:
+        snapshot = self._validated_snapshot()
+        recipe_object_ref = ObjectRef.parse(recipe_ref)
+        for pack_ref in domain_pack_refs:
+            snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
+        bootstrap_recipe = self._planning_service.build_recipe_bootstrap(
+            snapshot,
+            recipe_object_ref.as_string(),
+            enabled_domain_pack_refs=tuple(sorted(set(domain_pack_refs))),
+        )
+        workspace = self._allocate_workspace(name)
+        bootstrap = self._project_service.init_project(
+            workspace=workspace,
+            name=name.strip(),
+            recipe_ref=recipe_object_ref,
+            request_text=request_text.strip(),
+            bootstrap_recipe=bootstrap_recipe,
+        )
+        return ProjectCreatedView(
+            project_id=bootstrap.manifest.project_id,
+            name=bootstrap.manifest.name,
+            recipe_ref=bootstrap.manifest.recipe_ref,
+            domain_pack_refs=tuple(sorted(set(domain_pack_refs))),
+            workspace_path=str(workspace),
+        )
+
     def _validated_snapshot(self):
         snapshot, report = self._registry_service.validate()
         if not report.is_valid:
             raise ConflictError("Registry невалиден. Команды UI заблокированы.")
         return snapshot
+
+    def _allocate_workspace(self, name: str) -> Path:
+        bucket = self._catalog.runtime_root / "ui_cases"
+        bucket.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
+        slug = slug.strip("-")[:32] or "project"
+        workspace = bucket / f"{slug}-{uuid.uuid4().hex[:8]}"
+        return workspace

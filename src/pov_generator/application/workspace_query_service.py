@@ -14,6 +14,7 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ContextManifestSummaryView,
+    DomainPackCatalogItemView,
     JourneyStepView,
     ProjectDebugView,
     ProjectJourneyView,
@@ -23,6 +24,7 @@ from ..domain.workspace_views import (
     ProjectSituationView,
     ProjectStateView,
     ProjectTimelineView,
+    RecipeCatalogItemView,
     ReviewIssueView,
     SituationBlockerView,
     TimelineEntryView,
@@ -92,6 +94,39 @@ class WorkspaceQueryService:
                 )
             )
         return tuple(sorted(items, key=lambda item: (item.updated_at, item.project_id), reverse=True))
+
+    def list_recipes(self) -> tuple[RecipeCatalogItemView, ...]:
+        snapshot, report = self._registry_service.validate()
+        if not report.is_valid:
+            raise ConflictError("Registry невалиден. Невозможно отобразить список recipes.")
+        items = [
+            RecipeCatalogItemView(
+                recipe_ref=recipe.ref.as_string(),
+                name=recipe.name,
+                domain=recipe.domain,
+                stage_gate=recipe.stage_gate,
+                step_count=len(recipe.steps),
+            )
+            for recipe in snapshot.recipes.values()
+        ]
+        return tuple(sorted(items, key=lambda item: (item.domain, item.name, item.recipe_ref)))
+
+    def list_domain_packs(self) -> tuple[DomainPackCatalogItemView, ...]:
+        snapshot, report = self._registry_service.validate()
+        if not report.is_valid:
+            raise ConflictError("Registry невалиден. Невозможно отобразить список domain packs.")
+        items = [
+            DomainPackCatalogItemView(
+                pack_ref=pack.ref.as_string(),
+                name=pack.name,
+                domain=pack.domain,
+                description=pack.description,
+                status=pack.status,
+                entry_signals=pack.entry_signals,
+            )
+            for pack in snapshot.domain_packs.values()
+        ]
+        return tuple(sorted(items, key=lambda item: (item.domain, item.name, item.pack_ref)))
 
     def project_shell(self, project_id: str) -> ProjectShellView:
         context = self._load_context(project_id)
@@ -299,6 +334,22 @@ class WorkspaceQueryService:
             else:
                 raise ConflictError(f"Неизвестная проекция '{name}'.")
         return {name: self._signature(value) for name, value in values.items()}
+
+    def realtime_token(self, project_id: str) -> str:
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        token_parts: list[str] = []
+        for file_path in (
+            workspace / self._runtime.MANIFEST_FILENAME,
+            workspace / self._runtime.DB_FILENAME,
+        ):
+            if not file_path.exists():
+                continue
+            stat = file_path.stat()
+            token_parts.append(f"{file_path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+        if not token_parts:
+            raise ConflictError(f"Не удалось вычислить realtime token для проекта '{project_id}'.")
+        return sha256("|".join(token_parts).encode("utf-8")).hexdigest()
 
     def _load_context(self, project_id: str) -> ProjectContext:
         workspace_ref = self._catalog.resolve_workspace(project_id)

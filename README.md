@@ -1,5 +1,111 @@
 # PoV Generator
 
+## Быстрый старт
+
+Если вам нужно просто поднять систему и зайти в UI, делайте так.
+
+### 1. Установить зависимости
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -e .[dev]
+```
+
+Важно:
+
+- теперь в зависимости проекта включена библиотека `websockets`;
+- она нужна для realtime-обновлений UI через WebSocket;
+- если вы уже устанавливали проект раньше, просто повторите команду:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e .[dev]
+```
+
+### 2. Собрать UI
+
+```powershell
+cd ui\workspace
+npm install
+npm run build
+cd ..\..
+```
+
+### 3. Запустить программу
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+или одной командой через helper-скрипт:
+
+```powershell
+.\run_workspace.ps1
+```
+
+Если нужно заодно пересобрать UI:
+
+```powershell
+.\run_workspace.ps1 -BuildUi
+```
+
+### 4. Открыть в браузере
+
+- UI: [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+- Swagger / API: [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+- Health: [http://127.0.0.1:8788/api/health](http://127.0.0.1:8788/api/health)
+
+---
+
+## Что именно запускать в обычной работе
+
+Если вы не разрабатываете frontend, а просто хотите пользоваться системой, то обычный сценарий такой:
+
+1. один раз установить Python-зависимости;
+2. один раз собрать UI;
+3. запускать только:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+После этого вся система доступна через один адрес:
+
+- [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+
+Frontend отдельно запускать не нужно.
+
+---
+
+## Режим frontend-разработки
+
+Если вы меняете сам UI, тогда нужны два процесса:
+
+### Терминал 1: backend
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+### Терминал 2: frontend dev server
+
+```powershell
+cd ui\workspace
+npm install
+npm run dev
+```
+
+Открывать тогда лучше:
+
+- [http://127.0.0.1:5173/](http://127.0.0.1:5173/)
+
+Vite сам проксирует:
+
+- `/api`
+- `/ws`
+
+на backend `127.0.0.1:8788`.
+
 В репозитории реализован уже не только фундамент `M0–M4`, но и следующие рабочие вертикальные срезы:
 
 - `M5`: хранилище артефактов и `Context Engine`
@@ -203,6 +309,160 @@ Realtime:
 - `projection_changed`
 
 То есть UI не читает внутренние таблицы напрямую и не ждёт giant payload. Он работает с отдельными read-models и обновляет только нужные блоки экрана.
+
+## Запуск полного UI workspace
+
+Сейчас в репозитории есть полноценный frontend workspace, который работает поверх `M9` API и позволяет:
+
+- создавать проекты из интерфейса;
+- смотреть проект целиком на overview;
+- запускать `run-next` и `run-until-blocked`;
+- читать артефакты;
+- смотреть review;
+- смотреть состояние проекта и вручную править goal / readiness / gaps;
+- смотреть debug-слой;
+- получать realtime-обновления через WebSocket.
+
+### Вариант 1. Быстрый запуск как единое приложение
+
+Соберите UI:
+
+```powershell
+cd ui\workspace
+npm install
+npm run build
+cd ..\..
+```
+
+Потом поднимите API:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+После этого откройте:
+
+- [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+
+Swagger останется доступен по:
+
+- [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+
+### Вариант 2. Режим frontend-разработки
+
+Отдельно поднимите backend:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+Во втором терминале:
+
+```powershell
+cd ui\workspace
+npm install
+npm run dev
+```
+
+Откройте:
+
+- [http://127.0.0.1:5173/](http://127.0.0.1:5173/)
+
+В dev-режиме Vite проксирует:
+
+- `/api`
+- `/ws`
+
+на backend `127.0.0.1:8788`.
+
+## Что именно теперь можно протестировать через UI
+
+### 1. Создание нового проекта
+
+На левой панели нажмите:
+
+- `Новый проект`
+
+Заполните:
+
+- название;
+- исходный бизнес-запрос;
+- recipe;
+- при необходимости domain packs.
+
+### 2. Overview проекта
+
+На overview доступны:
+
+- header проекта;
+- путь выполнения;
+- текущая ситуация;
+- главный action;
+- операционная лента событий;
+- ключевые артефакты;
+- review summary;
+- state summary.
+
+### 3. Команды выполнения
+
+В header есть command bar:
+
+- выбор `provider`
+- выбор `model`
+- `Run next`
+- `Run until blocked`
+
+Для быстрой локальной проверки используйте:
+
+- `provider = stub`
+
+### 4. Артефакты
+
+Во вкладке `Артефакты`:
+
+- список всех артефактов;
+- reader-first view документа;
+- raw JSON;
+- validation summary.
+
+### 5. Замечания
+
+Во вкладке `Замечания`:
+
+- итог ревью;
+- найденные issues;
+- рекомендации.
+
+### 6. Состояние
+
+Во вкладке `Состояние`:
+
+- goal;
+- active gaps;
+- readiness;
+- domain packs;
+- recipe composition.
+
+Именно здесь сейчас доступны ручные правки:
+
+- обновить goal;
+- закрыть gap;
+- изменить readiness;
+- подключить domain pack.
+
+### 7. Технические детали
+
+Во вкладке `Технические детали`:
+
+- tasks;
+- planning history;
+- execution runs;
+- execution traces;
+- context manifests;
+- validation runs;
+- escalations.
+
+Это слой для внутреннего анализа и отладки.
 
 ## Структура declarative layer
 
