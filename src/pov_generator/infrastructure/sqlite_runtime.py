@@ -570,6 +570,43 @@ class SqliteRuntime:
             created_at=manifest_row["created_at"],
         )
 
+    def list_context_manifests(self, workspace: Path) -> list[ContextManifest]:
+        with self._connect(workspace) as connection:
+            manifest_rows = connection.execute(
+                """
+                select manifest_id, project_id, task_id, template_ref, problem_state_version, budget_json,
+                       excluded_items_json, input_fingerprint, created_at
+                from context_manifests
+                order by created_at, manifest_id
+                """
+            ).fetchall()
+            item_rows = connection.execute(
+                """
+                select * from context_manifest_items
+                order by manifest_id, required desc, priority desc, item_id
+                """
+            ).fetchall()
+        items_by_manifest: dict[str, list[ContextItem]] = {}
+        for row in item_rows:
+            items_by_manifest.setdefault(row["manifest_id"], []).append(_context_item_from_row(row))
+        manifests: list[ContextManifest] = []
+        for manifest_row in manifest_rows:
+            manifests.append(
+                ContextManifest(
+                    manifest_id=manifest_row["manifest_id"],
+                    project_id=manifest_row["project_id"],
+                    task_id=manifest_row["task_id"],
+                    template_ref=manifest_row["template_ref"],
+                    problem_state_version=manifest_row["problem_state_version"],
+                    budget=ContextBudget(**json_loads(manifest_row["budget_json"])),
+                    items=tuple(items_by_manifest.get(manifest_row["manifest_id"], [])),
+                    excluded_items=tuple(json_loads(manifest_row["excluded_items_json"])),
+                    input_fingerprint=manifest_row["input_fingerprint"],
+                    created_at=manifest_row["created_at"],
+                )
+            )
+        return manifests
+
     def record_execution_run(
         self,
         workspace: Path,

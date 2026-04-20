@@ -1,11 +1,16 @@
 # PoV Generator
 
-В репозитории реализован уже не только фундамент `M0–M4`, но и следующий рабочий вертикальный срез `M5–M8`:
+В репозитории реализован уже не только фундамент `M0–M4`, но и следующие рабочие вертикальные срезы:
 
 - `M5`: хранилище артефактов и `Context Engine`
 - `M6`: исполняющий слой (`stub` и OpenRouter)
 - `M7`: первый end-to-end поток `бизнес-запрос -> уточнения -> ТЗ -> ревью`
 - `M8`: базовая валидация результатов, findings и escalation
+- `M9`: server-side operator surface
+  - read-models под UI
+  - Query API
+  - Command API
+  - realtime-обновления через WebSocket
 
 Важно: это **ещё не вся целевая платформа**, но уже рабочий модуль, который можно гонять руками:
 
@@ -27,6 +32,16 @@
 - сохранять артефакты, execution traces и validation runs;
 - выпускать черновик ТЗ и отчёт ревью;
 - честно останавливать поток при проблемах валидации.
+- отдавать серверные проекции проекта для UI:
+  - `shell`
+  - `journey`
+  - `situation`
+  - `timeline`
+  - `artifacts`
+  - `review`
+  - `state`
+  - `debug`
+- уведомлять UI об изменении этих проекций через WebSocket.
 
 ## Главные сущности простым языком
 
@@ -134,6 +149,61 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 
 По умолчанию для локальной проверки можно ничего не задавать и использовать `stub`.
 
+## Запуск server-side API (`M9`)
+
+### 1. Поднять API
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+По умолчанию сервер стартует на:
+
+- `http://127.0.0.1:8788`
+
+### 2. Проверить, что API жив
+
+Откройте:
+
+- [http://127.0.0.1:8788/api/health](http://127.0.0.1:8788/api/health)
+- [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+
+### 3. Что именно даёт API сейчас
+
+API уже умеет отдавать раздельные серверные проекции проекта:
+
+- `/api/projects`
+- `/api/projects/{project_id}/shell`
+- `/api/projects/{project_id}/journey`
+- `/api/projects/{project_id}/situation`
+- `/api/projects/{project_id}/timeline`
+- `/api/projects/{project_id}/artifacts`
+- `/api/projects/{project_id}/artifacts/{artifact_id}`
+- `/api/projects/{project_id}/review`
+- `/api/projects/{project_id}/state`
+- `/api/projects/{project_id}/debug`
+
+Команды:
+
+- `/api/projects/{project_id}/commands/run-next`
+- `/api/projects/{project_id}/commands/run-until-blocked`
+- `/api/projects/{project_id}/commands/retry-task`
+- `/api/projects/{project_id}/commands/set-goal`
+- `/api/projects/{project_id}/commands/close-gap`
+- `/api/projects/{project_id}/commands/set-readiness`
+- `/api/projects/{project_id}/commands/enable-domain-pack`
+
+Realtime:
+
+- `ws://127.0.0.1:8788/ws/projects/{project_id}`
+
+Клиент может подписаться на изменения проекций и получать сообщения вида:
+
+- `snapshot`
+- `projection_changed`
+
+То есть UI не читает внутренние таблицы напрямую и не ждёт giant payload. Он работает с отдельными read-models и обновляет только нужные блоки экрана.
+
 ## Структура declarative layer
 
 - [templates/templates](F:\0work\python\PoV-generator\templates\templates) — шаблоны по доменным папкам
@@ -186,6 +256,29 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 
 - JSON-артефакты каждого шага;
 - рядом Markdown-рендеры тех же результатов.
+
+### 6. Посмотреть тот же кейс через API
+
+Когда кейс уже создан, можно открыть его через server-side projections.
+
+Сначала получите список проектов:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects
+```
+
+Потом, зная `project_id`, смотрите нужные части:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/shell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/situation
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/journey
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/timeline
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/artifacts
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/review
+```
+
+Это уже те read-models, на которых можно строить UI.
 
 ## Быстрый сценарий 2: тот же поток с `frontend`-доменом
 
@@ -358,6 +451,23 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 .\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo_case --provider stub --max-steps 20
 ```
 
+### Operator API (`M9`)
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/shell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/journey
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/situation
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/timeline
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/artifacts
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/review
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/state
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/debug
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/commands/run-next -ContentType "application/json" -Body '{"provider":"stub"}'
+Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/commands/run-until-blocked -ContentType "application/json" -Body '{"provider":"stub","max_steps":20}'
+```
+
 ## Что покрыто тестами
 
 ```powershell
@@ -374,6 +484,8 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 - end-to-end `stub`-workflow по базовому recipe;
 - end-to-end `stub`-workflow по `frontend`-recipe;
 - создание escalation при провале валидации.
+- Query API и read-models `M9`;
+- WebSocket-уведомления об изменении серверных проекций.
 
 ## Ограничения текущего этапа
 

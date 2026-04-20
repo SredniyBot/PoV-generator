@@ -92,11 +92,23 @@ class PlanningService:
     def current_composed_recipe(self, workspace: Path, snapshot: RegistrySnapshot) -> ComposedRecipe:
         return self._refresh_recipe_composition(workspace, snapshot)
 
-    def plan(self, workspace: Path, snapshot: RegistrySnapshot, mode: str = "dry-run") -> PlanningDecision:
+    def plan(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        mode: str = "dry-run",
+        *,
+        record: bool = True,
+        refresh_composition: bool = True,
+    ) -> PlanningDecision:
         manifest = self._runtime.load_manifest(workspace)
         recipe = snapshot.resolve_recipe(manifest.recipe_ref)
-        composed_recipe = self._refresh_recipe_composition(workspace, snapshot)
         state = self._runtime.load_problem_state(workspace)
+        composed_recipe = (
+            self._refresh_recipe_composition(workspace, snapshot)
+            if refresh_composition
+            else compose_recipe(snapshot, manifest.recipe_ref, tuple(sorted(state.enabled_domain_packs.keys())))
+        )
         tasks = self._runtime.list_tasks(workspace)
         recipe_progress = {
             item.recipe_step_id: item for item in self._runtime.list_recipe_progress(workspace, manifest.recipe_ref)
@@ -200,7 +212,8 @@ class PlanningService:
                 reasons=("Нет допустимых шагов. Проверьте readiness, gaps и обязательные предыдущие шаги.",),
                 created_at=utc_now_iso(),
             )
-            self._runtime.record_planning_decision(workspace, decision)
+            if record:
+                self._runtime.record_planning_decision(workspace, decision)
             return decision
 
         created_task_id = None
@@ -240,7 +253,8 @@ class PlanningService:
             reasons=(f"Выбран допустимый шаг '{selected_step.identifier}'.",),
             created_at=utc_now_iso(),
         )
-        self._runtime.record_planning_decision(workspace, decision)
+        if record:
+            self._runtime.record_planning_decision(workspace, decision)
         return decision
 
     def planning_history(self, workspace: Path) -> list[PlanningDecision]:
