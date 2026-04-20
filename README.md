@@ -1,11 +1,122 @@
 # PoV Generator
 
-В репозитории реализован уже не только фундамент `M0–M4`, но и следующий рабочий вертикальный срез `M5–M8`:
+## Быстрый старт
+
+Если вам нужно просто поднять систему и зайти в UI, делайте так.
+
+### 1. Установить зависимости
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -e .[dev]
+```
+
+Важно:
+
+- теперь в зависимости проекта включена библиотека `websockets`;
+- она нужна для realtime-обновлений UI через WebSocket;
+- если вы уже устанавливали проект раньше, просто повторите команду:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e .[dev]
+```
+
+### 2. Собрать UI
+
+```powershell
+cd ui\workspace
+npm install
+npm run build
+cd ..\..
+```
+
+### 3. Запустить программу
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+или одной командой через helper-скрипт:
+
+```powershell
+.\run_workspace.ps1
+```
+
+Если нужно заодно пересобрать UI:
+
+```powershell
+.\run_workspace.ps1 -BuildUi
+```
+
+### 4. Открыть в браузере
+
+- UI: [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+- Swagger / API: [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+- Health: [http://127.0.0.1:8788/api/health](http://127.0.0.1:8788/api/health)
+
+---
+
+## Что именно запускать в обычной работе
+
+Если вы не разрабатываете frontend, а просто хотите пользоваться системой, то обычный сценарий такой:
+
+1. один раз установить Python-зависимости;
+2. один раз собрать UI;
+3. запускать только:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+После этого вся система доступна через один адрес:
+
+- [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+
+Frontend отдельно запускать не нужно.
+
+---
+
+## Режим frontend-разработки
+
+Если вы меняете сам UI, тогда нужны два процесса:
+
+### Терминал 1: backend
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+### Терминал 2: frontend dev server
+
+```powershell
+cd ui\workspace
+npm install
+npm run dev
+```
+
+Открывать тогда лучше:
+
+- [http://127.0.0.1:5173/](http://127.0.0.1:5173/)
+
+Vite сам проксирует:
+
+- `/api`
+- `/ws`
+
+на backend `127.0.0.1:8788`.
+
+В репозитории реализован уже не только фундамент `M0–M4`, но и следующие рабочие вертикальные срезы:
 
 - `M5`: хранилище артефактов и `Context Engine`
 - `M6`: исполняющий слой (`stub` и OpenRouter)
 - `M7`: первый end-to-end поток `бизнес-запрос -> уточнения -> ТЗ -> ревью`
 - `M8`: базовая валидация результатов, findings и escalation
+- `M9`: server-side operator surface
+  - read-models под UI
+  - Query API
+  - Command API
+  - realtime-обновления через WebSocket
 
 Важно: это **ещё не вся целевая платформа**, но уже рабочий модуль, который можно гонять руками:
 
@@ -27,6 +138,16 @@
 - сохранять артефакты, execution traces и validation runs;
 - выпускать черновик ТЗ и отчёт ревью;
 - честно останавливать поток при проблемах валидации.
+- отдавать серверные проекции проекта для UI:
+  - `shell`
+  - `journey`
+  - `situation`
+  - `timeline`
+  - `artifacts`
+  - `review`
+  - `state`
+  - `debug`
+- уведомлять UI об изменении этих проекций через WebSocket.
 
 ## Главные сущности простым языком
 
@@ -134,6 +255,215 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 
 По умолчанию для локальной проверки можно ничего не задавать и использовать `stub`.
 
+## Запуск server-side API (`M9`)
+
+### 1. Поднять API
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+По умолчанию сервер стартует на:
+
+- `http://127.0.0.1:8788`
+
+### 2. Проверить, что API жив
+
+Откройте:
+
+- [http://127.0.0.1:8788/api/health](http://127.0.0.1:8788/api/health)
+- [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+
+### 3. Что именно даёт API сейчас
+
+API уже умеет отдавать раздельные серверные проекции проекта:
+
+- `/api/projects`
+- `/api/projects/{project_id}/shell`
+- `/api/projects/{project_id}/journey`
+- `/api/projects/{project_id}/situation`
+- `/api/projects/{project_id}/timeline`
+- `/api/projects/{project_id}/artifacts`
+- `/api/projects/{project_id}/artifacts/{artifact_id}`
+- `/api/projects/{project_id}/review`
+- `/api/projects/{project_id}/state`
+- `/api/projects/{project_id}/debug`
+
+Команды:
+
+- `/api/projects/{project_id}/commands/run-next`
+- `/api/projects/{project_id}/commands/run-until-blocked`
+- `/api/projects/{project_id}/commands/retry-task`
+- `/api/projects/{project_id}/commands/set-goal`
+- `/api/projects/{project_id}/commands/close-gap`
+- `/api/projects/{project_id}/commands/set-readiness`
+- `/api/projects/{project_id}/commands/enable-domain-pack`
+
+Realtime:
+
+- `ws://127.0.0.1:8788/ws/projects/{project_id}`
+
+Клиент может подписаться на изменения проекций и получать сообщения вида:
+
+- `snapshot`
+- `projection_changed`
+
+То есть UI не читает внутренние таблицы напрямую и не ждёт giant payload. Он работает с отдельными read-models и обновляет только нужные блоки экрана.
+
+## Запуск полного UI workspace
+
+Сейчас в репозитории есть полноценный frontend workspace, который работает поверх `M9` API и позволяет:
+
+- создавать проекты из интерфейса;
+- смотреть проект целиком на overview;
+- запускать `run-next` и `run-until-blocked`;
+- читать артефакты;
+- смотреть review;
+- смотреть состояние проекта и вручную править goal / readiness / gaps;
+- смотреть debug-слой;
+- получать realtime-обновления через WebSocket.
+
+### Вариант 1. Быстрый запуск как единое приложение
+
+Соберите UI:
+
+```powershell
+cd ui\workspace
+npm install
+npm run build
+cd ..\..
+```
+
+Потом поднимите API:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+После этого откройте:
+
+- [http://127.0.0.1:8788/](http://127.0.0.1:8788/)
+
+Swagger останется доступен по:
+
+- [http://127.0.0.1:8788/docs](http://127.0.0.1:8788/docs)
+
+### Вариант 2. Режим frontend-разработки
+
+Отдельно поднимите backend:
+
+```powershell
+.\.venv\Scripts\povgen-api
+```
+
+Во втором терминале:
+
+```powershell
+cd ui\workspace
+npm install
+npm run dev
+```
+
+Откройте:
+
+- [http://127.0.0.1:5173/](http://127.0.0.1:5173/)
+
+В dev-режиме Vite проксирует:
+
+- `/api`
+- `/ws`
+
+на backend `127.0.0.1:8788`.
+
+## Что именно теперь можно протестировать через UI
+
+### 1. Создание нового проекта
+
+На левой панели нажмите:
+
+- `Новый проект`
+
+Заполните:
+
+- название;
+- исходный бизнес-запрос;
+- recipe;
+- при необходимости domain packs.
+
+### 2. Overview проекта
+
+На overview доступны:
+
+- header проекта;
+- путь выполнения;
+- текущая ситуация;
+- главный action;
+- операционная лента событий;
+- ключевые артефакты;
+- review summary;
+- state summary.
+
+### 3. Команды выполнения
+
+В header есть command bar:
+
+- выбор `provider`
+- выбор `model`
+- `Run next`
+- `Run until blocked`
+
+Для быстрой локальной проверки используйте:
+
+- `provider = stub`
+
+### 4. Артефакты
+
+Во вкладке `Артефакты`:
+
+- список всех артефактов;
+- reader-first view документа;
+- raw JSON;
+- validation summary.
+
+### 5. Замечания
+
+Во вкладке `Замечания`:
+
+- итог ревью;
+- найденные issues;
+- рекомендации.
+
+### 6. Состояние
+
+Во вкладке `Состояние`:
+
+- goal;
+- active gaps;
+- readiness;
+- domain packs;
+- recipe composition.
+
+Именно здесь сейчас доступны ручные правки:
+
+- обновить goal;
+- закрыть gap;
+- изменить readiness;
+- подключить domain pack.
+
+### 7. Технические детали
+
+Во вкладке `Технические детали`:
+
+- tasks;
+- planning history;
+- execution runs;
+- execution traces;
+- context manifests;
+- validation runs;
+- escalations.
+
+Это слой для внутреннего анализа и отладки.
+
 ## Структура declarative layer
 
 - [templates/templates](F:\0work\python\PoV-generator\templates\templates) — шаблоны по доменным папкам
@@ -186,6 +516,29 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 
 - JSON-артефакты каждого шага;
 - рядом Markdown-рендеры тех же результатов.
+
+### 6. Посмотреть тот же кейс через API
+
+Когда кейс уже создан, можно открыть его через server-side projections.
+
+Сначала получите список проектов:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects
+```
+
+Потом, зная `project_id`, смотрите нужные части:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/shell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/situation
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/journey
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/timeline
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/artifacts
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/review
+```
+
+Это уже те read-models, на которых можно строить UI.
 
 ## Быстрый сценарий 2: тот же поток с `frontend`-доменом
 
@@ -358,6 +711,23 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 .\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo_case --provider stub --max-steps 20
 ```
 
+### Operator API (`M9`)
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/shell
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/journey
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/situation
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/timeline
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/artifacts
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/review
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/state
+Invoke-RestMethod http://127.0.0.1:8788/api/projects/<project_id>/debug
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/commands/run-next -ContentType "application/json" -Body '{"provider":"stub"}'
+Invoke-RestMethod -Method Post http://127.0.0.1:8788/api/projects/<project_id>/commands/run-until-blocked -ContentType "application/json" -Body '{"provider":"stub","max_steps":20}'
+```
+
 ## Что покрыто тестами
 
 ```powershell
@@ -374,6 +744,8 @@ $env:POV_OPENROUTER_MODEL = "openai/gpt-4.1-mini"
 - end-to-end `stub`-workflow по базовому recipe;
 - end-to-end `stub`-workflow по `frontend`-recipe;
 - создание escalation при провале валидации.
+- Query API и read-models `M9`;
+- WebSocket-уведомления об изменении серверных проекций.
 
 ## Ограничения текущего этапа
 

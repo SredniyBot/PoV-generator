@@ -10,3 +10,8 @@ runtime/
 dist/
 build/
 *.egg-info/
+ui/workspace/node_modules/
+ui/workspace/dist/
+ui/workspace/*.tsbuildinfo
+ui/workspace/vite.config.js
+ui/workspace/vite.config.d.ts
