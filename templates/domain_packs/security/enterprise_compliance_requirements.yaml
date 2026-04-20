@@ -1,0 +1,22 @@
+kind: domain_pack
+id: security.enterprise_compliance_requirements
+version: 1.0.0
+name: Безопасность, приватность и комплаенс
+description: Добавляет обязательный разбор ограничений по безопасности, защите данных, контуру размещения, доступу и допустимому использованию внешних сервисов.
+domain: security
+status: active
+templates:
+  - security.constraints_assessment@1.0.0
+recipe_fragments:
+  - security.requirements_extension@1.0.0
+entry_signals:
+  - on-prem
+  - безопасность
+  - персональные данные
+  - пдн
+  - приватность
+  - комплаенс
+  - шифрование
+  - 2fa
+  - adfs
+  - иб

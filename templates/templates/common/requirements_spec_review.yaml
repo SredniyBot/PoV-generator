@@ -1,0 +1,37 @@
+kind: template
+id: common.requirements_spec_review
+version: 1.0.0
+name: Ревью ТЗ
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: review
+  cognitive_role: critique
+  closes_gaps:
+    - draft_not_reviewed
+  raises_readiness:
+    - dimension: specification_reviewed
+      status: ready
+activation:
+  required_readiness:
+    - specification_drafted
+  forbidden_open_gaps: []
+planning:
+  priority: 60
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - requirements_spec
+outputs:
+  artifact_roles:
+    - review_report
+framework:
+  summary: Проверь черновик ТЗ на полноту, согласованность и пригодность к дальнейшей реализации.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

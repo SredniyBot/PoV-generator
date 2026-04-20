@@ -1,0 +1,45 @@
+kind: template
+id: common.requirements_spec_generation
+version: 1.0.0
+name: Подготовка черновика ТЗ
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: core_task
+  cognitive_role: specification_authoring
+  closes_gaps: []
+  raises_readiness:
+    - dimension: specification_drafted
+      status: ready
+activation:
+  required_readiness:
+    - goal_clarity
+    - user_story_coverage
+    - alternatives_explored
+  forbidden_open_gaps:
+    - unclear_goal
+    - missing_user_stories
+    - alternatives_not_explored
+planning:
+  priority: 70
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - clarification_notes
+    - user_story_map
+    - alternatives_analysis
+  optional_artifact_roles:
+    - ui_requirements_outline
+outputs:
+  artifact_roles:
+    - requirements_spec
+framework:
+  summary: Сформируй структурированный черновик ТЗ на основе уточнённой цели, user story и рассмотренных альтернатив.
+context_policy:
+  max_tokens: 2600
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: true

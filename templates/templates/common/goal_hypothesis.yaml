@@ -1,0 +1,42 @@
+kind: template
+id: common.goal_hypothesis
+version: 1.0.0
+name: Формирование гипотезы цели проекта
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: goal_hypothesis
+  closes_gaps:
+    - project_goal_not_defined
+  raises_readiness:
+    - dimension: project_goal_hypothesized
+      status: ready
+activation:
+  required_readiness:
+    - request_facts_extracted
+  forbidden_open_gaps:
+    - request_facts_not_extracted
+planning:
+  priority: 124
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - request_fact_sheet
+outputs:
+  artifact_roles:
+    - goal_hypothesis
+framework:
+  summary: >
+    На основе исходного запроса и выделенных фактов сформулируй рабочую гипотезу цели проекта:
+    какую проблему пытаются решить, какого эффекта ждут, как может выглядеть успех этапа и
+    какие управленческие решения должен поддержать результат. Если цель выражена неявно,
+    сформулируй рабочую гипотезу по имеющимся данным и отрази степень уверенности.
+context_policy:
+  max_tokens: 1800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

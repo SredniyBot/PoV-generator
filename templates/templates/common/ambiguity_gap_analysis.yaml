@@ -1,0 +1,44 @@
+kind: template
+id: common.ambiguity_gap_analysis
+version: 1.0.0
+name: Анализ неоднозначностей и пробелов запроса
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: ambiguity_analysis
+  closes_gaps:
+    - request_ambiguities_unscanned
+  raises_readiness:
+    - dimension: request_ambiguities_scanned
+      status: ready
+activation:
+  required_readiness:
+    - request_facts_extracted
+  forbidden_open_gaps:
+    - request_facts_not_extracted
+planning:
+  priority: 122
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - request_fact_sheet
+    - goal_hypothesis
+    - constraint_inventory
+outputs:
+  artifact_roles:
+    - ambiguity_gap_report
+framework:
+  summary: >
+    Найди неоднозначности, скрытые противоречия, недостающие сущности, неразведённые этапы,
+    опасные смешения бизнеса и решения, а также то, что может потребовать уточнений позже.
+    Не эскалируй автоматически: сначала зафиксируй рабочую трактовку, а блокирующие вопросы
+    оставляй только там, где без ответа нельзя продолжать добросовестно.
+context_policy:
+  max_tokens: 1900
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

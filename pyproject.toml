@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pov-generator"
+version = "0.1.0"
+description = "Template-centric PoV planning foundation (M0-M4)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0.2,<7.0",
+  "fastapi>=0.115.0,<1.0",
+  "uvicorn>=0.35.0,<1.0",
+  "websockets>=13.1,<16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.5,<9.0",
+  "httpx>=0.28.0,<1.0",
+]
+
+[project.scripts]
+povgen = "pov_generator.interfaces.cli:main"
+povgen-api = "pov_generator.interfaces.api:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

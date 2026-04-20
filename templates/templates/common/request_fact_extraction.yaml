@@ -1,0 +1,38 @@
+kind: template
+id: common.request_fact_extraction
+version: 1.0.0
+name: Выделение фактов из исходного запроса
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: fact_extraction
+  closes_gaps:
+    - request_facts_not_extracted
+  raises_readiness:
+    - dimension: request_facts_extracted
+      status: ready
+activation:
+  required_readiness: []
+  forbidden_open_gaps: []
+planning:
+  priority: 126
+inputs:
+  required_problem_fields:
+    - business_request
+outputs:
+  artifact_roles:
+    - request_fact_sheet
+framework:
+  summary: >
+    Выдели из исходного business request только явно названные факты: цели, сроки, цифры,
+    источники данных, системы, ограничения, роли, форматы результата, допущения и указанные
+    ожидания. Не интерпретируй их как решение и не склеивай в narrative. Если факт назван
+    неявно, не выдавай его за подтвержденный.
+context_policy:
+  max_tokens: 1800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

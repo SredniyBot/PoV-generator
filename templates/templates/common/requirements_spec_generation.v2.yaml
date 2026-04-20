@@ -1,0 +1,66 @@
+kind: template
+id: common.requirements_spec_generation
+version: 2.0.0
+name: Подготовка структурированного ТЗ
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: core_task
+  cognitive_role: specification_authoring
+  closes_gaps: []
+  raises_readiness:
+    - dimension: specification_drafted
+      status: ready
+activation:
+  required_readiness:
+    - request_normalized
+    - business_outcome_defined
+    - scope_boundaries_defined
+    - stakeholders_mapped
+    - solution_options_compared
+    - delivery_acceptance_defined
+    - delivery_plan_defined
+  forbidden_open_gaps:
+    - request_not_normalized
+    - business_outcome_unclear
+    - scope_boundaries_missing
+    - stakeholders_not_mapped
+    - solution_options_not_compared
+    - delivery_plan_missing
+planning:
+  priority: 80
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - normalized_request
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - solution_tradeoff_matrix
+    - delivery_acceptance_plan
+    - implementation_dependency_plan
+  optional_artifact_roles:
+    - ui_requirements_outline
+    - predictive_problem_definition
+    - data_landscape_assessment
+    - security_compliance_constraints
+    - integration_operating_model
+outputs:
+  artifact_roles:
+    - requirements_spec
+framework:
+  summary: >
+    Собери полноценное ТЗ, пригодное для запуска работ по сложному корпоративному PoV/PoC.
+    Не ограничивайся общими требованиями: отрази бизнес-контекст, границы этапа, stakeholders,
+    операционную модель, результаты этапа, критерии приемки, зависимости, риски и все релевантные
+    доменные ограничения. Если активны доменные пакеты, обязательно встрои их в ТЗ как отдельные
+    осмысленные разделы, а не как случайные замечания. Если данных всё ещё недостаточно для
+    ответственного ТЗ, не замалчивай это — отражай открытые вопросы и снижай уверенность.
+context_policy:
+  max_tokens: 5200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: true

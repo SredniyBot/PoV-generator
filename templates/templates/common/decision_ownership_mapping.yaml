@@ -1,0 +1,43 @@
+kind: template
+id: common.decision_ownership_mapping
+version: 1.0.0
+name: Карта владельцев решений и согласований
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: decision_ownership_mapping
+  closes_gaps:
+    - decision_owners_not_defined
+  raises_readiness:
+    - dimension: decision_owners_defined
+      status: ready
+activation:
+  required_readiness:
+    - stakeholders_identified
+  forbidden_open_gaps:
+    - stakeholders_not_identified
+planning:
+  priority: 106
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - stakeholder_map
+    - business_outcome_model
+    - scope_boundary_matrix
+outputs:
+  artifact_roles:
+    - decision_ownership_matrix
+framework:
+  summary: >
+    Определи, кто принимает какие решения: утверждение цели, согласование границ этапа,
+    подтверждение данных, ИБ-ограничений, приёмка результатов этапа и запуск следующей фазы.
+    Зафиксируй владельцев, участников согласования и риски, если ответственность размыта.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

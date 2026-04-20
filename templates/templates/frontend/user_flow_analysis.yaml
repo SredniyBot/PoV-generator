@@ -1,0 +1,39 @@
+kind: template
+id: frontend.user_flow_analysis
+version: 1.0.0
+name: Анализ пользовательских потоков интерфейса
+type: executable
+status: active
+domain: frontend
+semantics:
+  template_role: meta_analysis
+  cognitive_role: user_flow_analysis
+  closes_gaps:
+    - frontend_user_flows_missing
+  raises_readiness:
+    - dimension: frontend_user_flows_covered
+      status: ready
+activation:
+  required_readiness:
+    - user_story_coverage
+  forbidden_open_gaps: []
+planning:
+  priority: 85
+inputs:
+  required_problem_fields:
+    - business_request
+    - goal
+  required_artifact_roles:
+    - clarification_notes
+    - user_story_map
+outputs:
+  artifact_roles:
+    - ui_requirements_outline
+framework:
+  summary: Выдели роли пользователей, основные пользовательские потоки, ожидания к экранам и важные UX-ограничения для будущего ТЗ.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

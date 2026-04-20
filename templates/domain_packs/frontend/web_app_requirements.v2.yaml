@@ -1,0 +1,21 @@
+kind: domain_pack
+id: frontend.web_app_requirements
+version: 2.0.0
+name: Интерфейс, визуализация и пользовательские потоки
+description: Добавляет в подготовку ТЗ обязательный разбор ролей пользователей, пользовательских потоков, экранов, представления результатов и UX-ограничений.
+domain: frontend
+status: active
+templates:
+  - frontend.user_flow_analysis@2.0.0
+recipe_fragments:
+  - frontend.requirements_extension@2.0.0
+entry_signals:
+  - frontend
+  - ui
+  - экран
+  - интерфейс
+  - dashboard
+  - bi
+  - веб
+  - визуализация
+  - отчет

@@ -1,0 +1,43 @@
+kind: template
+id: common.business_outcome_framing
+version: 1.0.0
+name: Формализация бизнес-результата
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: business_outcome_framing
+  closes_gaps:
+    - business_outcome_unclear
+  raises_readiness:
+    - dimension: business_outcome_defined
+      status: ready
+activation:
+  required_readiness:
+    - request_normalized
+  forbidden_open_gaps:
+    - request_not_normalized
+planning:
+  priority: 115
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - normalized_request
+outputs:
+  artifact_roles:
+    - business_outcome_model
+framework:
+  summary: >
+    Определи, какой именно бизнес-эффект должен дать проект: какие KPI меняются, какие
+    решения или действия должен поддержать результат, кто получает ценность, как будет
+    измеряться успех и какая ценностная гипотеза лежит под проектом. Отделяй бизнес-результат
+    от предполагаемого технического решения. Если KPI, ценностная гипотеза или ожидаемые
+    действия неясны, фиксируй блокирующие вопросы.
+context_policy:
+  max_tokens: 2400
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

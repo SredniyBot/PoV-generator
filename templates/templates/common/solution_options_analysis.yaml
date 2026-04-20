@@ -1,0 +1,58 @@
+kind: template
+id: common.solution_options_analysis
+version: 1.0.0
+name: Сводное сравнение вариантов решения
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: tradeoff_analysis
+  closes_gaps:
+    - solution_options_not_compared
+  raises_readiness:
+    - dimension: solution_options_compared
+      status: ready
+activation:
+  required_readiness:
+    - business_outcome_defined
+    - scope_boundaries_defined
+    - stakeholders_mapped
+    - solution_option_space_defined
+  forbidden_open_gaps:
+    - business_outcome_unclear
+    - scope_boundaries_missing
+    - stakeholders_not_mapped
+    - solution_option_space_not_defined
+planning:
+  priority: 100
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - normalized_request
+    - business_outcome_model
+    - scope_boundary_matrix
+    - stakeholder_operating_model
+    - solution_option_inventory
+  optional_artifact_roles:
+    - predictive_problem_definition
+    - data_landscape_assessment
+    - security_compliance_constraints
+    - integration_operating_model
+    - ui_requirements_outline
+outputs:
+  artifact_roles:
+    - solution_tradeoff_matrix
+framework:
+  summary: >
+    Возьми уже сформированный набор вариантов и проведи сводное сравнение: сложность,
+    соответствие рамке этапа, требования к данным, интерпретируемость, скорость запуска,
+    стоимость, риски ИБ, интеграции и эксплуатация. Не расширяй заново пространство решений,
+    а именно сравни и выбери рекомендуемый путь.
+context_policy:
+  max_tokens: 2800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

@@ -1,0 +1,208 @@
+kind: recipe
+id: common.build_requirements_spec
+version: 2.0.0
+name: Построение ТЗ для сложного корпоративного PoV/PoC
+domain: common
+stage_gate: requirements
+allows_parallel_steps: false
+steps:
+  - id: request_fact_extraction
+    title: Выделить факты из исходного запроса
+    order: 10
+    template: common.request_fact_extraction@1.0.0
+    required: true
+    completion:
+      readiness:
+        - request_facts_extracted
+      artifact_roles:
+        - request_fact_sheet
+  - id: goal_hypothesis
+    title: Сформировать гипотезу цели проекта
+    order: 20
+    template: common.goal_hypothesis@1.0.0
+    required: true
+    completion:
+      readiness:
+        - project_goal_hypothesized
+      artifact_roles:
+        - goal_hypothesis
+  - id: constraint_inventory
+    title: Собрать ограничения и обязательные условия
+    order: 30
+    template: common.constraint_inventory@1.0.0
+    required: true
+    completion:
+      readiness:
+        - constraints_inventoried
+      artifact_roles:
+        - constraint_inventory
+  - id: ambiguity_gap_analysis
+    title: Разобрать неоднозначности и пробелы запроса
+    order: 40
+    template: common.ambiguity_gap_analysis@1.0.0
+    required: true
+    completion:
+      readiness:
+        - request_ambiguities_scanned
+      artifact_roles:
+        - ambiguity_gap_report
+  - id: request_normalization
+    title: Собрать сводную нормализацию запроса
+    order: 50
+    template: common.request_normalization@1.0.0
+    required: true
+    completion:
+      readiness:
+        - request_normalized
+      artifact_roles:
+        - normalized_request
+  - id: business_outcome_framing
+    title: Определить бизнес-результат и ценность
+    order: 60
+    template: common.business_outcome_framing@1.0.0
+    required: true
+    completion:
+      readiness:
+        - business_outcome_defined
+      artifact_roles:
+        - business_outcome_model
+  - id: scope_boundary_definition
+    title: Зафиксировать границы этапа и рамку PoV
+    order: 70
+    template: common.scope_boundary_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - scope_boundaries_defined
+      artifact_roles:
+        - scope_boundary_matrix
+  - id: stakeholder_mapping
+    title: Выделить стейкхолдеров проекта
+    order: 80
+    template: common.stakeholder_mapping@1.0.0
+    required: true
+    completion:
+      readiness:
+        - stakeholders_identified
+      artifact_roles:
+        - stakeholder_map
+  - id: decision_ownership_mapping
+    title: Зафиксировать владельцев решений и согласований
+    order: 90
+    template: common.decision_ownership_mapping@1.0.0
+    required: true
+    completion:
+      readiness:
+        - decision_owners_defined
+      artifact_roles:
+        - decision_ownership_matrix
+  - id: operating_model_definition
+    title: Собрать черновой контур операционной модели
+    order: 100
+    template: common.operating_model_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - operating_model_outlined
+      artifact_roles:
+        - operating_model_outline
+  - id: stakeholder_operating_model
+    title: Собрать сводную карту стейкхолдеров и операционной модели
+    order: 110
+    template: common.stakeholder_operating_model@1.0.0
+    required: true
+    completion:
+      readiness:
+        - stakeholders_mapped
+      artifact_roles:
+        - stakeholder_operating_model
+  - id: solution_option_inventory
+    title: Сформировать набор вариантов решения
+    order: 120
+    template: common.solution_option_inventory@1.0.0
+    required: true
+    completion:
+      readiness:
+        - solution_option_space_defined
+      artifact_roles:
+        - solution_option_inventory
+  - id: solution_options_analysis
+    title: Сравнить варианты решения и выбрать рекомендуемый путь
+    order: 130
+    template: common.solution_options_analysis@1.0.0
+    required: true
+    completion:
+      readiness:
+        - solution_options_compared
+      artifact_roles:
+        - solution_tradeoff_matrix
+  - id: delivery_scope_definition
+    title: Определить состав поставки этапа
+    order: 140
+    template: common.delivery_scope_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - delivery_scope_defined
+      artifact_roles:
+        - delivery_scope_definition
+  - id: acceptance_model_definition
+    title: Определить модель приемки этапа
+    order: 150
+    template: common.acceptance_model_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - acceptance_model_defined
+      artifact_roles:
+        - acceptance_model_definition
+  - id: delivery_acceptance_definition
+    title: Собрать сводную модель поставки и приемки
+    order: 160
+    template: common.delivery_acceptance_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - delivery_acceptance_defined
+      artifact_roles:
+        - delivery_acceptance_plan
+  - id: dependency_mapping
+    title: Выделить критические зависимости и входы
+    order: 170
+    template: common.dependency_mapping@1.0.0
+    required: true
+    completion:
+      readiness:
+        - dependency_map_defined
+      artifact_roles:
+        - dependency_map
+  - id: implementation_plan_definition
+    title: Собрать фазовый план реализации
+    order: 180
+    template: common.implementation_plan_definition@1.0.0
+    required: true
+    completion:
+      readiness:
+        - delivery_plan_defined
+      artifact_roles:
+        - implementation_dependency_plan
+  - id: requirements_spec_generation
+    title: Подготовить структурированное ТЗ
+    order: 190
+    template: common.requirements_spec_generation@2.0.0
+    required: true
+    completion:
+      readiness:
+        - specification_drafted
+      artifact_roles:
+        - requirements_spec
+  - id: requirements_spec_review
+    title: Провести ревью ТЗ
+    order: 200
+    template: common.requirements_spec_review@2.0.0
+    required: true
+    completion:
+      readiness:
+        - specification_reviewed
+      artifact_roles:
+        - review_report

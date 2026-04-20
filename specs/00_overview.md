@@ -1,50 +1,155 @@
-# Спецификации Template Registry и Task Store: обзор
+# Спецификации платформы PoV Lab: обзор
 
-> **Статус:** v1.0 · Draft · 2026-04-15
+> **Статус:** v1.2 · Draft · 2026-04-19
 > **Авторы спецификации:** команда PoV Lab
-> **Область применения:** два независимо реализуемых компонента платформы PoV Lab.
+> **Область применения:** полный пакет архитектурных спецификаций платформы PoV Lab.
 
-Документ связывает две спецификации (`01_template_registry.md`, `02_task_store.md`) и фиксирует общие для них контракты, терминологию, технологический стек и сквозные правила. Всё, что относится к зоне ответственности конкретного компонента, описывается в его документе; здесь — только пересечения.
+Документ задаёт общий словарь, shared-типы, технологический стек и интеграционные правила для всех компонент платформы PoV Lab. Детали поведения каждого слоя вынесены в отдельные спеки:
+
+- `01_template_registry.md` — хранение, индекс, валидация и read-only API шаблонов.
+- `02_task_store.md` — lifecycle задач, DAG, event sourcing, FSM и очереди.
+- `03_template_semantics.md` — канонический semantic contract шаблона; это интеллектуальное ядро системы.
+- `04_problem_state.md` — структурированное состояние проблемы и semantic memory проекта.
+- `05_planning_coordinator.md` — детерминированный policy coordinator problem loop.
+- `06_artifact_context.md` — артефакты, summaries, retrieval и сборка task-local context.
+- `07_execution_runtime.md` — LLM/script/tool runtime и execution traces.
+- `08_validation_governance.md` — validation, critique, stage gates и human escalation.
+- `09_domain_packs.md` — доменные пакеты знаний, recipe fragments и композиция расширений.
+- `10_ui_workspace_architecture.md` — UX-архитектура workspace, экранов и пользовательских сценариев.
+- `11_ui_design_system.md` — дизайн-система, визуальный язык, motion и accessibility.
+- `12_ui_components_and_patterns.md` — компонентные паттерны, состояния и взаимодействия.
+- `13_ui_realtime_and_m10_requirements.md` — realtime-модель UI, интеграция с `M9` и серверные требования к `M10`.
+
+Нормативное правило пакета: **семантика работы с проблемой живёт в шаблонах, recipe-политиках и domain packs; координатор только применяет эту семантику, но не дублирует её в коде и не заменяет её “мнением LLM” как финальным арбитром**.
 
 ---
 
 ## 1. Место компонентов в архитектуре
 
-Архитектура PoV Lab описана в [ТЗ Архитектура.md](../Downloads/ТЗ%20Архитектура.md). Компоненты, с которыми взаимодействуют Template Registry и Task Store:
+Архитектура PoV Lab опирается на [ТЗ Архитектура.md](ТЗ%20Архитектура.md) и [PoV.md](PoV.md). Базовая форма реализации — **модульный монолит** с жёсткими контрактами между пакетами. Вынесение компонент в отдельные сервисы допускается позже и не меняет логическую модель системы; сервисная декомпозиция рассматривается как вариант deployment topology, а не как новая архитектурная парадигма.
+
+Логические компоненты и их связи:
 
 ```
-                      ┌──────────────────────┐
-                      │  Stage-Gate Manager  │  (макро-фазы)
-                      └──────────┬───────────┘
-                                 │ opens/closes gate
-                                 ▼
-┌────────────────┐     ┌────────────────────┐     ┌──────────────────┐
-│ Template       │ ◄── │    Task Router     │ ──► │  Business        │
-│ Registry       │     │  (Event Loop,      │     │  Modules         │
-│ (specs/01)     │     │   FIFO dispatcher) │     │  (agents)        │
-└───────┬────────┘     └────────┬───────────┘     └────────┬─────────┘
-        │ resolve()             │ get_ready() /            │ results
-        │                       │ mark_*()                 │
-        ▼                       ▼                          ▼
-┌────────────────────────────────────────────────────────────────────┐
-│                        Task Store (specs/02)                       │
-│  tasks · task_dependencies · task_inputs · task_outputs ·          │
-│  task_events (append-only) · task_status_transitions               │
-└───────┬──────────────────────────────────────────────────┬─────────┘
-        │ read input_requirements                          │ subscribe
-        ▼                                                  ▼
-┌────────────────┐                              ┌──────────────────┐
-│ Context Engine │                              │ Interruption     │
-│ (RAG, Mem0)    │                              │ Gateway          │
-└────────────────┘                              └──────────────────┘
+┌─────────────────────┐
+│ User / Developer UI │
+└──────────┬──────────┘
+           │ intake / approvals / overrides
+           ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Problem State Store + Planning Coordinator                                  │
+│ (specs/04 + specs/05)                                                       │
+│ active gaps · readiness · decisions · recipes · planning decisions          │
+└──────────┬───────────────────────────────┬───────────────────────────────────┘
+           │ load semantics                │ create/update tasks
+           ▼                               ▼
+┌──────────────────────┐        ┌─────────────────────────────────────────────┐
+│ Template Registry    │        │ Task Store + Task Progression               │
+│ + Domain Pack Index  │        │ (specs/02)                                 │
+│ (specs/01 + 03 + 09) │        │ tasks · deps · events · transitions         │
+│ source-of-truth YAML │        │                                             │
+└──────────┬───────────┘        └──────────────┬──────────────────────────────┘
+           │ templates / recipes / packs / fragments          │ ready tasks / outputs
+           ▼                                                  ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Recipe Composer                                                             │
+│ (specs/05 + specs/09)                                                       │
+│ base recipe · domain fragments · composed obligations                       │
+└──────────┬───────────────────────────────┬───────────────────────────────────┘
+           │ composed recipe / obligations                 │ planning inputs
+           ▼                                               ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Artifact Store + Context Engine + Execution Runtime                         │
+│ (specs/06 + specs/07)                                                       │
+│ artifacts · summaries · chunks · manifests · runs · traces · tools          │
+└──────────┬───────────────────────────────┬───────────────────────────────────┘
+           │ validation inputs             │ task results / traces / patches
+           ▼                               ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Validation & Governance                                                     │
+│ (specs/08)                                                                  │
+│ contract validation · critique · stage gates · escalation                   │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Template Registry** — каталог типов задач. Источник истины о том, *что* задача должна делать (вход, выход, исполнитель, правила декомпозиции).
-- **Task Store** — реестр конкретных задач в рамках проектов. Источник истины о том, *в каком состоянии* находится каждая задача.
-- **Task Router** — потребитель обоих: создаёт задачи по шаблонам, диспетчеризует готовые, получает результаты.
-- **Context Engine** — потребитель Template Registry (читает `input_requirements`) и Task Store (читает артефакты зависимостей).
-- **Stage-Gate Manager** — потребитель Task Store (агрегат статусов по `stage_gate`).
-- **Interruption Gateway** — слушает события `escalation_required` из Task Store.
+- **Template Semantics** — первичный носитель problem-solving логики. Шаблон описывает не только runtime-задачу, но и то, с каким типом проблемы он работает, какова его роль в recipe, что закрывает и какой контекст ему нужен.
+- **Domain Pack** — контейнер доменных знаний: vocabulary, шаблоны, recipe fragments, readiness-модель и правила влияния на артефакты.
+- **Recipe Composer** — собирает итоговый recipe проекта из base recipe и подключённых domain packs.
+- **Planning Coordinator** — детерминированно допускает и планирует выполнение шагов на основе открытых gaps, readiness, composed recipe-обязательств и activation rules. Координатор не вызывает LLM и не содержит доменную методологию в коде.
+- **Task Store** — источник истины о lifecycle задач и их зависимостях.
+- **Artifact / Context Layer** — источник истины о blob-артефактах, их derived-представлениях и context manifests.
+- **Execution Runtime** — единый контракт для LLM, скриптов, инструментов и сред исполнения.
+- **Validation & Governance** — замыкает любой execution cycle проверками и human handoff.
+
+### 1.1. Template-centric, но не flat-template
+
+Платформа не считает шаблоны “плоским списком кандидатов”, из которого система выбирает следующий шаг по ощущению готовности. Вместо этого:
+
+- доменные знания собираются в `domain packs`;
+- шаблоны делятся на предметные и мета-аналитические роли;
+- над шаблонами существуют `recipes` и `recipe fragments` — декларативные схемы выполнения класса задач;
+- итоговый проектный recipe композируется из base recipe и domain fragments;
+- recipes задают обязательные meta-passes и порядок проверки readiness;
+- координатор допускает шаблон только если выполнены формальные preconditions и recipe-обязательства.
+
+Это защищает систему от типичного сбоя LLM: преждевременного оптимизма относительно полноты данных и качества постановки.
+
+### 1.2. Где живут доменные знания
+
+Нормативное правило:
+
+- доменные знания не должны жить в коде planner'а;
+- доменные знания не должны быть “размазаны” по отдельным шаблонам без общей рамки;
+- доменные знания оформляются через `Domain Pack`.
+
+`Domain Pack` включает:
+
+- controlled vocabularies домена;
+- шаблоны домена;
+- recipe fragments, которые встраиваются в базовые сценарии;
+- domain readiness dimensions;
+- domain validation expectations;
+- правила влияния домена на итоговые артефакты, включая ТЗ.
+
+Пример: если к проекту подключён `frontend` domain pack, это должно влиять не только на этап реализации frontend, но и на более ранний этап подготовки ТЗ. В composed recipe появятся дополнительные обязательные шаги: анализ пользовательских потоков, экранного состава, UX-ограничений и требований к интерфейсу.
+
+### 1.3. Роль LLM в выборе шагов
+
+LLM не исключается из planning loop полностью, но её роль строго ограничена.
+
+- LLM может участвовать внутри шаблонов `meta_analysis` и `review`, которые:
+  - выявляют gaps;
+  - предлагают alternatives;
+  - формируют risks;
+  - обновляют readiness;
+  - создают новые planning-relevant artifacts.
+- LLM может помогать производить **planning inputs**, но не должна быть единственным механизмом **admission** или финального выбора следующего шага.
+- Финальный выбор и приоритизация шага выполняются детерминированно через:
+  - readiness;
+  - recipe obligations;
+  - activation rules;
+  - severity/blocking signals;
+  - dedup/cooldown/policy rules.
+
+Проще говоря:
+
+- LLM помогает системе лучше понять проблему;
+- policy coordinator решает, какой шаг допустим и что из допустимого приоритетнее.
+
+### 1.4. Шаблон как единица локальной методологии
+
+Чтобы не смешивать уровни архитектуры, платформа использует следующее разделение:
+
+- `Domain Pack` отвечает за доменную область целиком;
+- `Recipe` отвечает за обязательную последовательность шагов;
+- `Template` отвечает за **один локальный тип шага**.
+
+Шаблон — это не “весь домен” и не “весь pipeline”.
+Шаблон отвечает на вопрос:
+
+> Если система решила выполнить шаг этого типа, как именно этот шаг должен быть выполнен, какие входы ему нужны и что считается его завершением?
+
+То есть шаблон — это атомарный профессиональный приём системы, а не её глобальный мозг.
 
 ---
 
@@ -53,14 +158,23 @@
 ### 2.1. Source-of-truth и проекции
 - Для **Template Registry** source of truth — YAML-файлы в Git-репозитории проекта. Таблицы в PostgreSQL — индекс для быстрых выборок, **не** авторитетный источник.
 - Для **Task Store** source of truth — таблица `task_events` (append-only Event Sourcing). `tasks`, `task_status_transitions`, `task_dependencies` — материализованные проекции, которые должны быть полностью восстановимы реплеем `task_events`.
+- Для **Problem State Store** source of truth — таблица `problem_state_events` (append-only). `problem_state_snapshots`, `problem_gaps`, `problem_decisions` и related projections полностью восстанавливаются реплеем.
+- Для **Artifact Store** source of truth — blob в S3/MinIO + неизменяемая metadata-запись в PostgreSQL. Любой summary, chunk-set или extraction — новый derived artifact, а не overwrite.
+- Для **Execution Runtime** source of truth — `execution_runs`, `tool_invocations` и trace artifacts. Runtime-трасса не заменяет бизнес-артефакт и не может подменять task output.
 
 ### 2.2. Иммутабельность и версионирование
 - Опубликованная версия шаблона иммутабельна. Правки создают новую версию. Откат возможен через выбор версии.
 - Задача иммутабельна в терминах своего `id`: изменения статуса, атрибутов и результатов логируются как события, но сама строка `tasks` представляет текущую материализованную проекцию.
+- Snapshot `ProblemState` иммутабелен по `(project_id, version)`. Новое понимание проблемы всегда фиксируется новой версией состояния.
+- Артефакт иммутабелен по `artifact_id`; summary, извлечение и normalization — самостоятельные артефакты с provenance.
 
 ### 2.3. Async/Sync
 - Template Registry — **синхронный** API (файлы + кеш + PostgreSQL индекс; latency ≤ 5 ms на чтение, ≤ 200 ms на `reload()`).
 - Task Store — **асинхронный** API (`asyncpg`, async SQLAlchemy). Все операции возвращают awaitable.
+- Planning Coordinator — **асинхронный**, но детерминированный и CPU-light; не делает сетевых вызовов кроме чтения из Registry/Stores.
+- Planning Coordinator никогда не использует LLM для admission/selection. LLM может участвовать только внутри уже выбранного и допущенного шаблона.
+- Artifact Store и Context Engine — **асинхронные** API.
+- Execution Runtime — **асинхронный** API с долгоживущими run/session объектами.
 
 ### 2.4. Timezone и сериализация
 - Все timestamp'ы — UTC, тип `TIMESTAMPTZ` в PostgreSQL, `datetime` с `tzinfo=UTC` в Python.
@@ -75,6 +189,10 @@
 | `TaskId` | UUIDv7 | `uuid_utils.uuid7()` на стороне сервиса | `018f3b5a-...-...` |
 | `ProjectId` | UUIDv7 | на стороне сервиса | `018f3b5a-...-...` |
 | `WorkerId` | `module_name:instance_id` | бизнес-модуль | `codegen_agent:a1b2` |
+| `PlanningRunId` | UUIDv7 | Planning Coordinator | `018f3b5a-...-...` |
+| `ProblemStateVersion` | `int >= 1` | Problem State Store | `7` |
+| `ContextManifestId` | UUIDv7 | Context Engine | `018f3b5a-...-...` |
+| `ExecutionRunId` | UUIDv7 | Execution Runtime | `018f3b5a-...-...` |
 | `ArtifactRef` | см. §3.4 | Task Store | — |
 
 ---
@@ -149,7 +267,7 @@ class Provenance(BaseModel):
 
 ### 3.7. `StageGate`
 
-Макро-фазы пайплайна. Реализация Stage-Gate Manager вне области данных спецификаций; Task Store хранит только строковое значение.
+Макро-фазы пайплайна. `StageGate` — governance-модель, а не механизм problem-solving.
 
 ```python
 StageGate = Literal[
@@ -161,6 +279,100 @@ StageGate = Literal[
     "delivery",
 ]
 ```
+
+### 3.8. `TemplateRef`
+
+Ссылка на конкретную опубликованную версию шаблона.
+
+```python
+class TemplateRef(BaseModel):
+    template_id: str
+    template_version: str
+```
+
+### 3.9. `ProblemStateRef`
+
+Ссылка на конкретную версию problem state.
+
+```python
+class ProblemStateRef(BaseModel):
+    project_id: UUID
+    version: int
+```
+
+### 3.10. `ContextManifestRef`
+
+Ссылка на конкретный context bundle, использованный для execution.
+
+```python
+class ContextManifestRef(BaseModel):
+    manifest_id: UUID
+    project_id: UUID
+    task_id: UUID
+    created_at: datetime
+```
+
+### 3.11. `ExecutionTraceRef`
+
+Ссылка на trace/runtime artifact конкретного execution run.
+
+```python
+class ExecutionTraceRef(BaseModel):
+    execution_run_id: UUID
+    artifact_id: UUID
+    trace_kind: Literal["request", "response", "tool_log", "session_transcript", "summary"]
+```
+
+### 3.12. ID aliases
+
+```python
+PlanningRunId = UUID
+ContextManifestId = UUID
+ExecutionRunId = UUID
+```
+
+### 3.13. Новые shared concepts
+
+```python
+class TemplateRole(StrEnum):
+    CORE_TASK = "core_task"
+    META_ANALYSIS = "meta_analysis"
+    REVIEW = "review"
+    REPAIR = "repair"
+    ESCALATION = "escalation"
+```
+
+```python
+class RecipeMode(StrEnum):
+    BASE = "base"
+    COMPOSED = "composed"
+    FRAGMENT = "fragment"
+```
+
+```python
+class ReadinessStatus(StrEnum):
+    UNKNOWN = "unknown"
+    NOT_READY = "not_ready"
+    PARTIAL = "partial"
+    READY = "ready"
+    WAIVED = "waived"
+```
+
+`TemplateRole` описывает место шаблона в execution recipe:
+
+- `core_task` — предметный шаг, производящий основной артефакт;
+- `meta_analysis` — обязательный аналитический проход;
+- `review` — проверка полноты, согласованности и релевантности;
+- `repair` — адресное исправление findings;
+- `escalation` — handoff человеку или фиксация блокировки.
+
+`ReadinessStatus` выражает зрелость входа для следующего класса шагов. Readiness считается формально из `ProblemState`, validation findings и выполненных recipe-passes, а не по “ощущению модели”.
+
+`RecipeMode` описывает тип orchestration-object:
+
+- `base` — базовый recipe, задающий общий skeleton класса задач;
+- `fragment` — доменное расширение recipe;
+- `composed` — итоговый recipe проекта после применения domain packs.
 
 ---
 
@@ -183,8 +395,10 @@ StageGate = Literal[
 | Трейсинг | `opentelemetry-sdk`, `opentelemetry-instrumentation-sqlalchemy` | `~=1.24` / `~=0.45b0` | Стандарт для distributed tracing |
 | БД | PostgreSQL | `>=15` | JSONB, partial indexes, SKIP LOCKED, generated columns |
 | Объектное хранилище | S3 (MinIO совместимо) | — | Артефакты |
+| Векторный индекс | `pgvector` | `>=0.6` | semantic retrieval по chunks и summaries |
+| Контейнеры | Docker Engine / compatible runtime | `>=24` | изоляция tool/script execution |
 
-Привязка к LangGraph/Mem0/Graphiti находится на уровне бизнес-модулей и Context Engine, а не внутри Template Registry/Task Store. Эти два компонента остаются автономными.
+Привязка к конкретным framework-оркестраторам допускается только на уровне business modules / execution adapters. Core platform не зависит от LangGraph, Mem0, Graphiti, LangChain и аналогов.
 
 ---
 
@@ -196,6 +410,12 @@ pov_lab/
 │   ├── 00_overview.md
 │   ├── 01_template_registry.md
 │   ├── 02_task_store.md
+│   ├── 03_template_semantics.md
+│   ├── 04_problem_state.md
+│   ├── 05_planning_coordinator.md
+│   ├── 06_artifact_context.md
+│   ├── 07_execution_runtime.md
+│   ├── 08_validation_governance.md
 │   ├── schemas/
 │   │   ├── template.schema.json
 │   │   └── task.schema.json
@@ -208,6 +428,10 @@ pov_lab/
 │   ├── pov_lab_common/                 # общие типы из §3
 │   ├── pov_lab_templates/              # Template Registry
 │   └── pov_lab_tasks/                  # Task Store
+│   ├── pov_lab_problem/                # Problem State + Planning
+│   ├── pov_lab_context/                # Artifact Store + Context Engine
+│   ├── pov_lab_execution/              # LLM / script / tool runtime
+│   └── pov_lab_validation/             # Validation + Governance
 ├── migrations/                         # Alembic
 └── tests/
 ```
@@ -221,10 +445,12 @@ pov_lab/
 
 ### 6.2. Валидация
 - Шаблон перед публикацией проходит валидацию: JSON Schema + структурные правила (см. §4 в `01_template_registry.md`).
+- Семантические поля шаблона проходят валидацию по `03_template_semantics.md`; Planner не имеет права использовать шаблон, если semantic contract невалиден.
 - Артефакт перед сохранением в `task_outputs` валидируется по `output_contract` соответствующего шаблона. При невалидности задача → `Failed`.
+- Любой execution run обязан иметь `ContextManifest`; run без manifest считается невалидным и не может приводить к `Completed`.
 
 ### 6.3. Observability
-Обязательный минимум для обоих компонентов:
+Обязательный минимум для всех компонентов:
 - **Structured logs**: `structlog` с полями `component`, `action`, `project_id`, `task_id`, `template_id`, `template_version`, `correlation_id`.
 - **Metrics (Prometheus)**: см. конкретные списки в каждой спеке.
 - **Tracing (OpenTelemetry)**: каждый публичный метод API — отдельный span с аттрибутами `project_id`, `task_id`.
@@ -244,25 +470,65 @@ class ExternalDependencyError(PovLabError): ...
 ### 6.5. Конкурентность
 - **Template Registry**: `reload()` атомарен; параллельные `load()` могут видеть либо старый, либо новый снимок, но никогда — частичное состояние.
 - **Task Store**: FSM-переходы атомарны (одна транзакция: UPDATE + INSERT event + INSERT transition); `get_ready()` использует `SELECT ... FOR UPDATE SKIP LOCKED` для эксклюзивного взятия.
+- **Problem State Store**: `apply_patch()` атомарен; duplicate `patch_id` идемпотентен; optimistic lock по `(project_id, version)`.
+- **Context Engine**: manifest сборки идемпотентен по `(task_id, template_ref, problem_state_ref, input_fingerprint)`.
+- **Execution Runtime**: каждый run идемпотентен по `execution_run_id`; duplicate completion не может создать второй набор output artifacts.
+
+### 6.6. Admission-before-selection
+
+Сквозное правило платформы:
+
+1. Сначала система проверяет **admission**:
+   - формальные preconditions шаблона;
+   - readiness dimensions;
+   - recipe-обязательства;
+   - отсутствие blocking conflicts.
+2. Только после этого система делает **selection** среди допустимых кандидатов.
+
+Следствие:
+
+- нельзя описывать Planner как слой, который “понимает, какой шаблон лучше”;
+- нельзя допускать запуск `core_task`, если обязательные `meta_analysis`/`review` проходы recipe ещё не выполнены;
+- нельзя закрывать readiness “по уверенности LLM”; readiness должен быть выражен через явные поля и проверки.
+
+### 6.7. Что происходит, если шаг не проходит admission
+
+Если шаг нельзя запускать, это не считается “тихой неудачей” и не оставляется на усмотрение модели.
+
+Система обязана сделать одно из следующих действий:
+
+1. Материализовать prerequisite step:
+   - обязательный `meta_analysis`;
+   - обязательный `review`;
+   - `repair`, если есть findings.
+2. Открыть или обновить blocking gap.
+3. Обновить readiness dimension в `not_ready` / `partial`.
+4. Создать escalation, если дальнейшее движение без человека недопустимо.
+5. Явно записать `PlanningDecision` со статусом `skipped_guard` или `escalated`.
+
+То есть “шаг нельзя запускать” должно конвертироваться в структурированное следствие, а не в молчаливую остановку.
 
 ---
 
 ## 7. Минимальный совместный сценарий
 
 ```
-1. Stage-Gate Manager открывает фазу "requirements" для project P.
-2. Task Router создаёт корневую задачу T0 из template "requirements_intake@1.0.0":
-     registry.load("requirements_intake", "1.0.0")  # Template Registry
-     store.create_task(spec)                         # Task Store → status=Queued
-3. Task Router вызывает store.get_ready(project_id=P, limit=1).
-4. Task Store помечает T0 как In_Progress (SELECT FOR UPDATE SKIP LOCKED) и возвращает.
-5. Бизнес-модуль выполняет задачу, регистрирует артефакты:
-     store.mark_completed(T0, outputs=[questionnaire_ref])
-6. При динамической декомпозиции:
-     store.mark_waiting(parent=T0, children=[T1, T2])   # T0 → Waiting_for_Children
-7. После завершения всех children:
-     bubble-up: T0 автоматически переходит в Completed, проверка output_contract.
-8. Stage-Gate Manager агрегирует по stage_gate колонке, при готовности — закрывает gate.
+1. User создаёт project P и прикладывает исходные данные.
+2. Intake adapter формирует `ProblemState v1` и открывает gaps:
+     common.unclear_success_criteria
+     rag.missing_data_profile
+3. Planning Coordinator делает `plan_once(project_id=P)`:
+     registry.list(active_only=True)
+     evaluate recipe obligations
+     compute readiness deficits
+     admit template "requirements_alignment@1.0.0" как обязательный meta-pass
+4. Task Builder создаёт T0 по шаблону requirements_alignment.
+5. Context Engine собирает `ContextManifest M0` по `context_policy` шаблона.
+6. Task Router dispatch'ит T0; Execution Runtime выполняет run R0 с manifest M0.
+7. Runtime сохраняет outputs + problem_state_patch; Validation слой проверяет output contract.
+8. Problem State Store применяет patch → `ProblemState v2`; readiness `common.goal_clarity` становится `ready`, gap `common.unclear_success_criteria` закрыт.
+9. Planning Coordinator запускается снова, проверяет recipe и допускает следующий обязательный pass либо `core_task`.
+10. Stage-Gate Evaluator закрывает gate только когда exit criteria фазы выполнены.
 ```
 
 ---
@@ -271,8 +537,13 @@ class ExternalDependencyError(PovLabError): ...
 
 - **[01_template_registry.md](01_template_registry.md)** — модель шаблона, хранение, API, валидация, версионирование.
 - **[02_task_store.md](02_task_store.md)** — модель задачи, DDL, FSM, API, Event Sourcing, алгоритмы bubble-up и invalidate_subgraph.
-- **[schemas/template.schema.json](schemas/template.schema.json)** — исполняемая JSON Schema валидации шаблонов.
+- **[03_template_semantics.md](03_template_semantics.md)** — semantic contract шаблона; обязательна к чтению перед реализацией planner и domain templates.
+- **[04_problem_state.md](04_problem_state.md)** — структура problem state, patches, gaps, decisions и store API.
+- **[05_planning_coordinator.md](05_planning_coordinator.md)** — deterministic planning loop и materialization rules.
+- **[06_artifact_context.md](06_artifact_context.md)** — artifact store, summaries, semantic index, context manifests.
+- **[07_execution_runtime.md](07_execution_runtime.md)** — LLM/script/tool runtime, adapters, traces и execution contracts.
+- **[08_validation_governance.md](08_validation_governance.md)** — validation pipeline, critique, stage-gate governance и escalation.
+- **[09_domain_packs.md](09_domain_packs.md)** — модель доменных пакетов знаний и композиции recipe.
+- **[schemas/template.schema.json](schemas/template.schema.json)** — текущая JSON Schema нижнего слоя шаблонов; для семантических полей из `03_template_semantics.md` требуется schema v2.
 - **[schemas/task.schema.json](schemas/task.schema.json)** — JSON Schema payload'ов Task Store.
 - **[examples/](examples/)** — эталонные примеры: 3 шаблона (по одному на тип) и 2 задачи (в разных статусах).
-
-Критерии готовности спецификации см. в [плане](../../.claude/plans/snug-wandering-sketch.md), раздел "Проверка готовности".

@@ -1,0 +1,20 @@
+kind: domain_pack
+id: integration.enterprise_delivery_requirements
+version: 1.0.0
+name: Интеграции, поставка данных и эксплуатация
+description: Добавляет обязательный разбор внешних систем, способов обмена данными, обновления, зависимостей и операционной модели решения.
+domain: integration
+status: active
+templates:
+  - integration.operating_model@1.0.0
+recipe_fragments:
+  - integration.requirements_extension@1.0.0
+entry_signals:
+  - api
+  - интеграция
+  - обмен данными
+  - синхронизация
+  - обновление
+  - внешняя система
+  - источник данных
+  - batch

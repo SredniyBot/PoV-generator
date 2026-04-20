@@ -1,0 +1,46 @@
+kind: template
+id: common.operating_model_definition
+version: 1.0.0
+name: Черновой контур операционной модели
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: operating_model_definition
+  closes_gaps:
+    - operating_model_not_outlined
+  raises_readiness:
+    - dimension: operating_model_outlined
+      status: ready
+activation:
+  required_readiness:
+    - stakeholders_identified
+    - decision_owners_defined
+  forbidden_open_gaps:
+    - stakeholders_not_identified
+    - decision_owners_not_defined
+planning:
+  priority: 105
+inputs:
+  required_problem_fields:
+    - business_request
+  required_artifact_roles:
+    - stakeholder_map
+    - decision_ownership_matrix
+    - business_outcome_model
+outputs:
+  artifact_roles:
+    - operating_model_outline
+framework:
+  summary: >
+    Опиши в черновом виде, как проект или решение должно жить организационно: кто инициирует
+    процесс, кто поставляет входы, кто потребляет результат, кто поддерживает решение, где
+    ожидаются ручные действия и где проходят границы ответственности. Это ещё не итоговая
+    сводка, а заготовка для финального синтеза операционной модели.
+context_policy:
+  max_tokens: 4200
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false

@@ -1,0 +1,20 @@
+kind: recipe_fragment
+id: frontend.requirements_extension
+version: 1.0.0
+name: Расширение recipe подготовки ТЗ требованиями фронтенда
+domain: frontend
+status: active
+target_recipes:
+  - common.build_requirements_spec@1.0.0
+steps:
+  - id: frontend_user_flow_analysis
+    title: Разобрать пользовательские потоки и ожидания по экранам
+    insert: before
+    anchor_step: requirements_spec_generation
+    template: frontend.user_flow_analysis@1.0.0
+    required: true
+    completion:
+      readiness:
+        - frontend_user_flows_covered
+      artifact_roles:
+        - ui_requirements_outline

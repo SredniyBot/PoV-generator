@@ -1,0 +1,34 @@
+kind: template
+id: common.goal_clarification
+version: 1.0.0
+name: Уточнение бизнес-цели
+type: executable
+status: active
+domain: common
+semantics:
+  template_role: meta_analysis
+  cognitive_role: problem_framing
+  closes_gaps:
+    - unclear_goal
+  raises_readiness:
+    - dimension: goal_clarity
+      status: ready
+activation:
+  required_readiness: []
+  forbidden_open_gaps: []
+planning:
+  priority: 100
+inputs:
+  required_problem_fields:
+    - business_request
+outputs:
+  artifact_roles:
+    - clarification_notes
+framework:
+  summary: Выдели реальную бизнес-цель, уточни критерии успеха и явно зафиксируй недостающие предположения.
+context_policy:
+  max_tokens: 1800
+tool_policy:
+  allowed_tools: []
+validation_policy:
+  requires_review: false
