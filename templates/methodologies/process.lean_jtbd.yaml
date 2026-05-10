@@ -74,14 +74,14 @@ stages:
         description: Идентификатор кандидата уточнения, если выбор эскалирован.
     rules:
       - id: ambiguous_choice
-        if: max(options.confidence) - second(options.confidence) < 0.15
+        if: max(option_generation.options[*].confidence) - second(option_generation.options[*].confidence) < 0.15
         emit_candidate:
           severity: high
           need: Варианты сопоставимы по уверенности — нужно решение.
           options_from: stage.option_generation.options
           blocking_scope: task
       - id: low_overall_confidence
-        if: max(options.confidence) < 0.5
+        if: max(option_generation.options[*].confidence) < 0.5
         emit_candidate:
           severity: medium
           need: Уверенность во всех вариантах ниже порога.

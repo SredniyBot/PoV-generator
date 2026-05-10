@@ -20,6 +20,7 @@ from typing import Any
 
 from ..domain.clarifications import ClarificationCandidate
 from ..domain.registry import MethodologyPackSpec
+from .methodology_rule_eval import evaluate_rule
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,11 @@ def evaluate_methodology_rules(
     for stage in active_stages:
         outputs = stage_outputs.get(stage.identifier, {})
         for rule in stage.rules:
-            fired, need_text = _eval_rule(rule.identifier, outputs, stage_outputs)
+            fired = evaluate_rule(
+                rule.if_expression,
+                current_stage_outputs=outputs,
+                all_stage_outputs=stage_outputs,
+            )
             if not fired:
                 outcomes.append(
                     RuleOutcome(stage_id=stage.identifier, rule_id=rule.identifier, fired=False)
@@ -80,6 +85,7 @@ def evaluate_methodology_rules(
             blocking_scope = str(emit.get("blocking_scope", "task"))
             if blocking_scope not in {"none", "task", "subtree", "objective"}:
                 blocking_scope = "task"
+            need_text = str(emit.get("need") or f"Сработало правило {rule.identifier}.")
             default_assumption = _safe_assumption_for_rule(rule.identifier, outputs, stage_outputs)
 
             candidate = ClarificationCandidate(
@@ -183,43 +189,3 @@ def _safe_assumption_for_rule(
     return None
 
 
-def _eval_rule(
-    rule_id: str,
-    outputs: dict[str, Any],
-    all_outputs: dict[str, dict[str, Any]],
-) -> tuple[bool, str]:
-    """Hardcoded распознаватель трёх известных правил.
-
-    Расширяется в Задаче #7 (полноценный AST-эвалюатор `if`-выражений).
-    Неизвестные правила возвращают `(False, "")` — no-op.
-    """
-    if rule_id == "empty_goal":
-        value = outputs.get("declared_goal")
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return True, "Цель задачи не сформулирована."
-        return False, ""
-
-    if rule_id in {"ambiguous_choice", "low_overall_confidence"}:
-        options = outputs.get("options")
-        if not isinstance(options, list):
-            fallback = all_outputs.get("option_generation", {})
-            options = fallback.get("options") if isinstance(fallback, dict) else None
-        if not isinstance(options, list):
-            return False, ""
-        confidences = [
-            float(item.get("confidence", 0.0))
-            for item in options
-            if isinstance(item, dict) and isinstance(item.get("confidence"), (int, float))
-        ]
-        if rule_id == "ambiguous_choice":
-            if len(confidences) >= 2:
-                sorted_conf = sorted(confidences, reverse=True)
-                if sorted_conf[0] - sorted_conf[1] < 0.15:
-                    return True, "Варианты сопоставимы по уверенности — нужно решение."
-            return False, ""
-        if rule_id == "low_overall_confidence":
-            if confidences and max(confidences) < 0.5:
-                return True, "Уверенность во всех вариантах ниже порога."
-            return False, ""
-
-    return False, ""
