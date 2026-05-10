@@ -317,3 +317,122 @@ def test_claude_subscription_client_extracts_json_from_text_response(
         )
 
     assert result == expected
+
+
+# --- CE11 draft preparation across providers --------------------------------
+
+
+def _valid_draft_payload() -> dict[str, Any]:
+    """Минимально валидный ответ LLM по схеме `_draft_schema()`."""
+    return {
+        "description": "Бизнес-контекст требует уточнения KPI пилота.",
+        "answer_mode": "single",
+        "options": [
+            {
+                "option_id": "monthly",
+                "label": "Раз в месяц",
+                "description": "Достаточная частота для PoV.",
+                "effect_preview": "Проект продолжается с периодом обновления = месяц.",
+                "confidence": 0.7,
+            },
+            {
+                "option_id": "weekly",
+                "label": "Раз в неделю",
+                "description": "Если бизнес хочет более точечный мониторинг.",
+                "effect_preview": "Проект продолжается с периодом обновления = неделя.",
+                "confidence": 0.4,
+            },
+        ],
+        "recommended_option_id": "monthly",
+        "min_participation_mode": "balanced",
+    }
+
+
+def _build_clarification_service_with_runtime():
+    from pov_generator.application.clarification_service import ClarificationService
+    runtime = SqliteRuntime()
+    return runtime, ClarificationService
+
+
+@pytest.mark.parametrize(
+    "provider_name, client_attr",
+    [
+        ("claude_subscription", "ClaudeSubscriptionClient"),
+        ("claude_sdk", "ClaudeSdkClient"),
+    ],
+)
+def test_clarification_draft_uses_selected_claude_provider(
+    provider_name: str, client_attr: str
+) -> None:
+    """CE11 (LLM-подготовка уточнения) должна работать через claude-провайдеры,
+    а не только через openrouter. Проверяем, что при `provider=<claude...>`
+    сервис вызывает соответствующий client.from_env(...).chat_json(...) с
+    переданными prompt'ами и нашей JSON-схемой."""
+    from pov_generator.application import clarification_service as cs_module
+
+    runtime, ServiceCls = _build_clarification_service_with_runtime()
+    service = ServiceCls(runtime, provider=provider_name)
+    candidate = service.candidate_from_question(
+        project_id="proj-1",
+        source_type="methodology_pack",
+        source_id="process.lean_jtbd@1.0.0#decision.ambiguous_choice",
+        question="Какой период обновления выбрать для пилота?",
+        affected_task_ids=("task-1",),
+        related_artifact_ids=(),
+    )
+    fallback = cs_module.ClarificationDraft(
+        description="fallback description",
+        answer_mode="single",
+        options=(),
+        recommended_option_id=None,
+        min_participation_mode="balanced",
+    )
+
+    fake_instance = MagicMock()
+    fake_instance.chat_json.return_value = _valid_draft_payload()
+
+    with patch.object(cs_module, client_attr) as fake_client_class:
+        fake_client_class.from_env.return_value = fake_instance
+        draft = service._build_draft(candidate=candidate, context={}, fallback=fallback)
+
+    fake_client_class.from_env.assert_called_once()
+    fake_instance.chat_json.assert_called_once()
+    kwargs = fake_instance.chat_json.call_args.kwargs
+    assert kwargs["system_prompt"]
+    assert kwargs["user_prompt"]
+    assert kwargs["schema"]["type"] == "object"
+    # Описание и options должны прийти из ответа LLM, а не из fallback.
+    assert draft.description == _valid_draft_payload()["description"]
+    assert {opt.option_id for opt in draft.options} == {"monthly", "weekly"}
+    assert draft.recommended_option_id == "monthly"
+
+
+def test_clarification_default_provider_follows_execution_provider(monkeypatch) -> None:
+    """Если `POV_CLARIFICATION_PROVIDER` явно не задан, CE11 должен идти за
+    `POV_EXECUTION_PROVIDER`. Это держит подготовку уточнений и исполнение
+    задач на одной модельной семье (Q4 — claude_subscription основной)."""
+    runtime, ServiceCls = _build_clarification_service_with_runtime()
+    service = ServiceCls(runtime)
+
+    monkeypatch.delenv("POV_CLARIFICATION_PROVIDER", raising=False)
+    monkeypatch.delenv("POV_OPENROUTER_API_KEY", raising=False)
+
+    monkeypatch.setenv("POV_EXECUTION_PROVIDER", "claude_subscription")
+    assert service._active_provider() == "claude_subscription"
+
+    monkeypatch.setenv("POV_EXECUTION_PROVIDER", "claude_sdk")
+    assert service._active_provider() == "claude_sdk"
+
+    monkeypatch.setenv("POV_EXECUTION_PROVIDER", "stub")
+    assert service._active_provider() == "stub"
+
+
+def test_clarification_explicit_provider_overrides_execution_default(monkeypatch) -> None:
+    """Явный `provider=` в конструкторе ClarificationService должен побеждать
+    автоматический выбор по `POV_EXECUTION_PROVIDER`."""
+    runtime, ServiceCls = _build_clarification_service_with_runtime()
+    monkeypatch.setenv("POV_EXECUTION_PROVIDER", "stub")
+    monkeypatch.delenv("POV_CLARIFICATION_PROVIDER", raising=False)
+
+    service = ServiceCls(runtime, provider="claude_subscription")
+    assert service._active_provider() == "claude_subscription"
