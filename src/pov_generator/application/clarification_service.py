@@ -14,6 +14,7 @@ from ..domain.clarifications import (
     ClarificationMode,
     ClarificationOption,
     ClarificationRequest,
+    DecisionOwnerRole,
 )
 from ..domain.problem_state import ProblemState, SetClarificationModePatch, UpsertAssumptionPatch, UpsertDecisionPatch
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient
@@ -41,6 +42,7 @@ class ClarificationDraft:
     options: tuple[ClarificationOption, ...]
     recommended_option_id: str | None
     min_participation_mode: ClarificationMode
+    decision_owner_role: DecisionOwnerRole = "business"
 
 
 class ClarificationDraftProvider(Protocol):
@@ -60,6 +62,34 @@ _MODE_RANK: dict[ClarificationMode, int] = {
     "control": 2,
     "expert": 3,
 }
+
+
+# Минимальный режим участия пользователя, начиная с которого вопрос данной роли
+# имеет право показаться. Менеджер — бизнес-роль; всё, что не `business/client`,
+# по умолчанию ниже его «уровня вовлечённости» и должно быть погашено
+# допущением, пока он явно не повысит engagement.
+#
+# Значение поднимает effective `min_participation_mode` кандидата до пола
+# роли (max по `_MODE_RANK`). Существующая логика `_decide_action` дальше
+# работает без изменений.
+_ROLE_FLOOR: dict[DecisionOwnerRole, ClarificationMode] = {
+    "business": "autopilot",
+    "client": "autopilot",
+    "security": "balanced",
+    "methodologist": "control",
+    "data_owner": "control",
+    "architect": "expert",
+}
+
+
+def _effective_min_mode(
+    candidate_min_mode: ClarificationMode,
+    role: DecisionOwnerRole,
+) -> ClarificationMode:
+    floor = _ROLE_FLOOR.get(role, "balanced")
+    if _MODE_RANK[floor] > _MODE_RANK[candidate_min_mode]:
+        return floor
+    return candidate_min_mode
 
 
 class ClarificationService:
@@ -214,6 +244,7 @@ class ClarificationService:
         answer_mode: str = "single",
         options: tuple[ClarificationOption, ...] | None = None,
         min_participation_mode: ClarificationMode | None = None,
+        decision_owner_role: DecisionOwnerRole = "business",
     ) -> ClarificationCandidate:
         normalized_options = options or ()
         normalized_mode = "single" if answer_mode == "free_text" and normalized_options else answer_mode
@@ -242,6 +273,7 @@ class ClarificationService:
             affected_task_ids=affected_task_ids,
             related_artifact_ids=related_artifact_ids,
             blocking_scope="task",
+            decision_owner_role=decision_owner_role,
             created_at=utc_now_iso(),
         )
 
@@ -266,6 +298,7 @@ class ClarificationService:
             options=candidate.options or self._default_options_for_candidate(default_assumption=candidate.default_assumption),
             recommended_option_id=self._recommended_option_id(candidate.options, candidate.recommended_answer),
             min_participation_mode=candidate.min_participation_mode,
+            decision_owner_role=candidate.decision_owner_role,
         )
         context = self._clarification_context(workspace, candidate, state)
         draft = self._build_draft(candidate=candidate, context=context, fallback=fallback)
@@ -277,6 +310,7 @@ class ClarificationService:
                 "options": draft.options,
                 "recommended_answer": draft.recommended_option_id,
                 "min_participation_mode": draft.min_participation_mode,
+                "decision_owner_role": draft.decision_owner_role,
             }
         )
 
@@ -434,6 +468,14 @@ class ClarificationService:
             "min_participation_mode выбирай как минимальный режим участия пользователя, начиная с которого вопрос нужно показывать: "
             "autopilot — только критично и небезопасно продолжать без ответа; balanced — блокирует или сильно влияет; "
             "control — важное, но есть безопасное допущение; expert — спорное или низковлияющее. "
+            "decision_owner_role описывает, в чьей зоне ответственности находится решение: "
+            "business — вопрос про бизнес-цели/KPI/границы проекта (бизнес-менеджер); "
+            "client — вопрос требует согласования внешнего заказчика (sign-off, приёмка); "
+            "methodologist — методология рассуждения (как мы выбираем варианты, какие гипотезы фиксируем); "
+            "architect — архитектурные/технологические развилки реализации; "
+            "data_owner — модель данных, источники, качество, владельцы данных; "
+            "security — ИБ, приватность, регуляторные ограничения, контур размещения. "
+            "Эта классификация управляет показом вопроса бизнес-менеджеру в зависимости от его уровня вовлечённости. "
             "Верни только валидный JSON."
         )
 
@@ -471,7 +513,14 @@ class ClarificationService:
     def _draft_schema(self) -> dict[str, object]:
         return {
             "type": "object",
-            "required": ["description", "answer_mode", "options", "recommended_option_id", "min_participation_mode"],
+            "required": [
+                "description",
+                "answer_mode",
+                "options",
+                "recommended_option_id",
+                "min_participation_mode",
+                "decision_owner_role",
+            ],
             "additionalProperties": False,
             "properties": {
                 "description": {"type": "string"},
@@ -495,6 +544,10 @@ class ClarificationService:
                 },
                 "recommended_option_id": {"type": "string"},
                 "min_participation_mode": {"type": "string", "enum": ["autopilot", "balanced", "control", "expert"]},
+                "decision_owner_role": {
+                    "type": "string",
+                    "enum": ["business", "client", "methodologist", "architect", "data_owner", "security"],
+                },
             },
         }
 
@@ -555,12 +608,17 @@ class ClarificationService:
         if min_mode not in _MODE_RANK:
             min_mode = fallback.min_participation_mode
 
+        decision_owner_role = str(payload.get("decision_owner_role") or fallback.decision_owner_role)
+        if decision_owner_role not in _ROLE_FLOOR:
+            decision_owner_role = fallback.decision_owner_role
+
         return ClarificationDraft(
             description=description,
             answer_mode=answer_mode,
             options=tuple(options),
             recommended_option_id=recommended_option_id,
             min_participation_mode=min_mode,  # type: ignore[arg-type]
+            decision_owner_role=decision_owner_role,  # type: ignore[arg-type]
         )
 
     def _safe_option_id(self, raw: str, used_ids: set[str], index: int) -> str:
@@ -585,13 +643,31 @@ class ClarificationService:
         )
 
     def _decide_action(self, candidate: ClarificationCandidate, mode: ClarificationMode) -> str:
-        if self._mode_allows(mode, candidate.min_participation_mode):
-            return "ask"
-        if candidate.blocking_scope != "none" and not candidate.default_assumption:
-            return "ask"
+        # Роль-владелец решения поднимает effective min mode: бизнес-менеджеру
+        # на autopilot/balanced нечего делать с архитектурной развилкой, даже
+        # если по уверенности она формально подходит.
+        effective_min_mode = _effective_min_mode(
+            candidate.min_participation_mode, candidate.decision_owner_role
+        )
+        surface_allowed = self._mode_allows(mode, effective_min_mode)
+
+        # 1. Высокая уверенность системы + есть допущение → тихо принять,
+        # не показывать пользователю даже на expert (это «и так очевидно»).
         if candidate.default_assumption and candidate.confidence_without_user >= 0.72:
             return "assume"
-        return "assume" if mode == "autopilot" and candidate.default_assumption else "ask"
+
+        # 2. Mode + role позволяют показать — показываем.
+        if surface_allowed:
+            return "ask"
+
+        # 3. Mode/role не позволяют. Если безопасного допущения нет — выбора
+        # нет, всё равно бьём тревогу (нельзя молча проигнорировать развилку).
+        if not candidate.default_assumption:
+            return "ask"
+
+        # 4. Есть допущение и engagement пользователя ниже floor роли →
+        # принять допущение, не беспокоя.
+        return "assume"
 
     def _request_from_candidate(self, candidate: ClarificationCandidate, *, status: str) -> ClarificationRequest:
         options = candidate.options or self._default_options_for_candidate(default_assumption=candidate.default_assumption)
@@ -615,6 +691,7 @@ class ClarificationService:
             affected_task_ids=candidate.affected_task_ids,
             related_artifact_ids=candidate.related_artifact_ids,
             blocking_scope=candidate.blocking_scope,
+            decision_owner_role=candidate.decision_owner_role,
             source_type=candidate.source_type,
             source_id=candidate.source_id,
             created_from_candidate_ids=(candidate.candidate_id,),

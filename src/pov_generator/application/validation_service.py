@@ -19,6 +19,33 @@ if TYPE_CHECKING:
     from .execution_service import ExecutionBundle
 
 
+_KNOWN_DECISION_OWNER_ROLES: frozenset[str] = frozenset(
+    {"business", "client", "methodologist", "architect", "data_owner", "security"}
+)
+
+
+def _normalize_decision_owner_role(approver_role: str | None) -> str:
+    """Маппинг `quality_gate.approver_role` (свободный формат, расширяемый
+    словарь spec/02) на канонический `DecisionOwnerRole`. Имена осознанно
+    совпадают, но gate может объявить, например, `dpo` — нормализуем
+    к ближайшей роли (`security`). Неизвестные роли уходят в `client` для
+    human_approval gate'ов (внешнее согласование) и `business` иначе."""
+    if not approver_role:
+        return "client"
+    role = approver_role.strip().lower()
+    if role in _KNOWN_DECISION_OWNER_ROLES:
+        return role
+    aliases = {
+        "dpo": "security",
+        "ciso": "security",
+        "owner": "client",
+        "stakeholder": "business",
+        "bo": "business",
+        "po": "business",
+    }
+    return aliases.get(role, "client")
+
+
 class ValidationService:
     def __init__(self, runtime: SqliteRuntime, clarification_service: ClarificationService | None = None) -> None:
         self._runtime = runtime
@@ -453,6 +480,7 @@ class ValidationService:
                     affected_task_ids=(task_id,),
                     related_artifact_ids=(artifact_id,),
                     blocking_scope="objective",
+                    decision_owner_role=_normalize_decision_owner_role(gate.approver_role),
                     created_at="",
                 )
             )

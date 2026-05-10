@@ -10,6 +10,20 @@ ClarificationSourceType = Literal["task", "validation", "planning", "domain_pack
 ClarificationAnswerMode = Literal["single", "multiple", "free_text", "confirmation"]
 ClarificationBlockingScope = Literal["none", "task", "subtree", "objective"]
 ClarificationMode = Literal["autopilot", "balanced", "control", "expert"]
+# Декомпозиция вопросов по «домену решения». Ось ортогональна
+# `ClarificationMode` (частоте показа) и нужна, чтобы фильтровать вопросы по
+# роли менеджера: бизнес-менеджер не должен получать архитектурные/технические
+# развилки на autopilot/balanced; CE11 LLM-driver классифицирует кандидата
+# при подготовке вопроса. Имена сознательно совпадают с
+# `quality_gate.approver_role` из spec/02 для общей терминологии.
+DecisionOwnerRole = Literal[
+    "business",
+    "client",
+    "methodologist",
+    "architect",
+    "data_owner",
+    "security",
+]
 
 
 @dataclass(frozen=True)
@@ -42,6 +56,7 @@ class ClarificationCandidate:
     affected_task_ids: tuple[str, ...] = field(default_factory=tuple)
     related_artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     blocking_scope: ClarificationBlockingScope = "task"
+    decision_owner_role: DecisionOwnerRole = "business"
     created_at: str = ""
 
 
@@ -64,6 +79,7 @@ class ClarificationRequest:
     affected_task_ids: tuple[str, ...] = field(default_factory=tuple)
     related_artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     blocking_scope: ClarificationBlockingScope = "task"
+    decision_owner_role: DecisionOwnerRole = "business"
     source_type: ClarificationSourceType = "validation"
     source_id: str = ""
     created_from_candidate_ids: tuple[str, ...] = field(default_factory=tuple)

@@ -165,11 +165,20 @@ def _candidate_from_row(row: sqlite3.Row) -> ClarificationCandidate:
         affected_task_ids=tuple(payload.get("affected_task_ids", [])),
         related_artifact_ids=tuple(payload.get("related_artifact_ids", [])),
         blocking_scope=payload.get("blocking_scope", "task"),
+        decision_owner_role=payload.get("decision_owner_role", "business"),
         created_at=row["created_at"],
     )
 
 
 def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
+    # decision_owner_role — поле, добавленное в W1.2 миграцией; sqlite3.Row
+    # не поддерживает .get(), поэтому идём через keys() с дефолтом "business"
+    # для существующих записей.
+    decision_owner_role = (
+        row["decision_owner_role"]
+        if "decision_owner_role" in row.keys()
+        else "business"
+    )
     return ClarificationRequest(
         request_id=row["request_id"],
         project_id=row["project_id"],
@@ -190,6 +199,7 @@ def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
         affected_task_ids=tuple(json_loads(row["affected_task_ids_json"])),
         related_artifact_ids=tuple(json_loads(row["related_artifact_ids_json"])),
         blocking_scope=row["blocking_scope"],
+        decision_owner_role=decision_owner_role or "business",
         source_type=row["source_type"],
         source_id=row["source_id"],
         created_from_candidate_ids=tuple(json_loads(row["created_from_candidate_ids_json"])),
@@ -837,11 +847,11 @@ class SqliteRuntime:
                 insert into clarification_requests(
                   request_id, project_id, status, priority, title, question, description, reason, impact,
                   answer_mode, options_json, recommended_option_id, min_participation_mode, default_assumption,
-                  affected_task_ids_json, related_artifact_ids_json, blocking_scope,
+                  affected_task_ids_json, related_artifact_ids_json, blocking_scope, decision_owner_role,
                   source_type, source_id, created_from_candidate_ids_json,
                   selected_option_ids_json, free_text, resolution_summary, created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.request_id,
@@ -861,6 +871,7 @@ class SqliteRuntime:
                     json_dumps(request.affected_task_ids),
                     json_dumps(request.related_artifact_ids),
                     request.blocking_scope,
+                    request.decision_owner_role,
                     request.source_type,
                     request.source_id,
                     json_dumps(request.created_from_candidate_ids),
@@ -1173,6 +1184,12 @@ class SqliteRuntime:
             "clarification_requests",
             "min_participation_mode",
             "text not null default 'balanced'",
+        )
+        self._ensure_column(
+            connection,
+            "clarification_requests",
+            "decision_owner_role",
+            "text not null default 'business'",
         )
 
     def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, ddl: str) -> None:

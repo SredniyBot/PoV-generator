@@ -80,6 +80,7 @@ def evaluate_methodology_rules(
             blocking_scope = str(emit.get("blocking_scope", "task"))
             if blocking_scope not in {"none", "task", "subtree", "objective"}:
                 blocking_scope = "task"
+            default_assumption = _safe_assumption_for_rule(rule.identifier, outputs, stage_outputs)
 
             candidate = ClarificationCandidate(
                 candidate_id=str(uuid.uuid4()),
@@ -94,13 +95,20 @@ def evaluate_methodology_rules(
                 severity=severity,  # type: ignore[arg-type]
                 confidence_without_user=0.4,
                 min_participation_mode="balanced",
-                default_assumption=None,
+                # Безопасное допущение per-rule даёт ClarificationService
+                # возможность тихо «принять» решение для менеджера на
+                # autopilot/balanced, когда роль = methodologist.
+                default_assumption=default_assumption,
                 recommended_answer=None,
                 answer_mode="free_text",
                 options=(),
                 affected_task_ids=(task_id,),
                 related_artifact_ids=(),
                 blocking_scope=blocking_scope,  # type: ignore[arg-type]
+                # Правила методологии — это «как мы думаем», не бизнес-вопрос.
+                # На autopilot/balanced менеджер их не должен видеть; роль
+                # `methodologist` поднимает effective floor до `control`.
+                decision_owner_role="methodologist",
                 created_at="",
             )
             candidates.append(candidate)
@@ -137,6 +145,42 @@ def _stage_outputs_from_reasoning(reasoning: dict[str, Any]) -> dict[str, dict[s
         if isinstance(fields, dict):
             stage_outputs[sid] = fields
     return stage_outputs
+
+
+def _safe_assumption_for_rule(
+    rule_id: str,
+    outputs: dict[str, Any],
+    all_outputs: dict[str, dict[str, Any]],
+) -> str | None:
+    """Подбирает безопасное допущение для каждого известного правила.
+
+    Используется ClarificationService на низких уровнях вовлечённости
+    менеджера (autopilot/balanced + role=methodologist): вместо того чтобы
+    бить тревогу, координатор тихо принимает это допущение. Гарантия:
+    допущение должно быть детерминированным и ассоциированным с
+    содержимым reasoning, а не пустой формулировкой.
+    """
+    if rule_id == "empty_goal":
+        return "Считать целью задачи её рабочее название (declared_goal не зафиксирована)."
+    if rule_id == "ambiguous_choice":
+        options = outputs.get("options")
+        if not isinstance(options, list):
+            fallback = all_outputs.get("option_generation", {})
+            options = fallback.get("options") if isinstance(fallback, dict) else None
+        if isinstance(options, list):
+            best = None
+            best_conf = -1.0
+            for item in options:
+                if isinstance(item, dict) and isinstance(item.get("confidence"), (int, float)):
+                    if float(item["confidence"]) > best_conf:
+                        best_conf = float(item["confidence"])
+                        best = item.get("label")
+            if best:
+                return f"Выбрать вариант с наивысшей уверенностью: {best}."
+        return "Выбрать вариант с наивысшей уверенностью."
+    if rule_id == "low_overall_confidence":
+        return "Продолжить с текущим выбором, зафиксировав низкую общую уверенность как риск."
+    return None
 
 
 def _eval_rule(
