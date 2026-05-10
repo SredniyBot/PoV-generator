@@ -20,6 +20,7 @@ from ..infrastructure.openrouter_client import OpenRouterClient
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
 from .context_service import ContextService
+from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
 
 @dataclass(frozen=True)
@@ -189,8 +190,9 @@ class ExecutionService:
             methodology_pack_ref=active_methodology.ref.as_string() if active_methodology else None,
         )
         outputs: list[ExecutionOutput] = [ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role)]
+        methodology_candidates: tuple = ()
         if active_methodology is not None:
-            reasoning_id = self._attach_reasoning_artifact(
+            reasoning_id, reasoning_payload = self._attach_reasoning_artifact(
                 workspace=workspace,
                 manifest_project_id=manifest.project_id,
                 task=task,
@@ -199,22 +201,31 @@ class ExecutionService:
                 primary_payload=payload,
                 live_reasoning=live_reasoning,
             )
+            evaluation = evaluate_methodology_rules(
+                methodology=active_methodology,
+                complexity=complexity_value,
+                reasoning=reasoning_payload,
+                project_id=manifest.project_id,
+                task_id=task.task_id,
+            )
             trace_id = self._attach_methodology_trace(
                 workspace=workspace,
                 manifest_project_id=manifest.project_id,
                 task=task,
                 methodology=active_methodology,
                 complexity=complexity_value,
-                stage_outputs={},
+                evaluation=evaluation,
             )
             outputs.append(ExecutionOutput(artifact_id=reasoning_id, artifact_role="reasoning_artifact", kind="reasoning"))
             outputs.append(ExecutionOutput(artifact_id=trace_id, artifact_role="methodology_trace", kind="trace"))
+            methodology_candidates = evaluation.candidates
         result = ExecutionResult(
             execution_run_id=request.execution_run_id,
             status="succeeded",
             outputs=tuple(outputs),
             trace_ids=tuple(trace.trace_id for trace in traces),
             proposed_goal=proposed_goal,
+            methodology_candidates=methodology_candidates,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
@@ -1228,7 +1239,7 @@ class ExecutionService:
         complexity: str | None,
         primary_payload: dict,
         live_reasoning: dict | None = None,
-    ) -> str:
+    ) -> tuple[str, dict]:
         active_stages = methodology.stages_for_complexity(complexity)
         if isinstance(live_reasoning, dict) and live_reasoning:
             stages_payload = []
@@ -1300,7 +1311,7 @@ class ExecutionService:
             created_at=utc_now_iso(),
         )
         self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(reasoning_payload))
-        return artifact_id
+        return artifact_id, reasoning_payload
 
     def _attach_methodology_trace(
         self,
@@ -1310,20 +1321,38 @@ class ExecutionService:
         task,
         methodology: MethodologyPackSpec,
         complexity: str | None,
-        stage_outputs: dict,
+        evaluation: MethodologyEvaluation,
     ) -> str:
         active_stages = methodology.stages_for_complexity(complexity)
+        # Список правил по стадиям из методологии — нужен, чтобы не потерять
+        # записи о правилах для стадий, которые не попали в evaluation
+        # (на случай рассинхрона). evaluation.rule_outcomes — основной источник.
+        rules_evaluated = [
+            {
+                "stage_id": outcome.stage_id,
+                "rule_id": outcome.rule_id,
+                "fired": outcome.fired,
+                **({"candidate_id": outcome.candidate_id} if outcome.candidate_id else {}),
+            }
+            for outcome in evaluation.rule_outcomes
+        ]
+        candidates_emitted = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "source_id": candidate.source_id,
+                "severity": candidate.severity,
+                "blocking_scope": candidate.blocking_scope,
+            }
+            for candidate in evaluation.candidates
+        ]
         trace_payload = {
             "methodology_pack_ref": methodology.ref.as_string(),
             "stage_execution_mode": methodology.stage_execution_mode,
             "complexity": complexity,
             "stages_executed": [stage.identifier for stage in active_stages],
-            "rules_evaluated": [
-                {"stage_id": stage.identifier, "rule_id": rule.identifier, "fired": False}
-                for stage in active_stages
-                for rule in stage.rules
-            ],
-            "candidates_emitted": [],
+            "stage_outputs": evaluation.stage_outputs,
+            "rules_evaluated": rules_evaluated,
+            "candidates_emitted": candidates_emitted,
         }
         artifact_id = str(uuid.uuid4())
         record = ArtifactRecord(

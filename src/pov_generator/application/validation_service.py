@@ -13,6 +13,7 @@ from ..domain.validation import EscalationTicket, ValidationFinding, ValidationR
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, validate_json_schema
 from .clarification_service import ClarificationService
+from .methodology_rules import evaluate_methodology_rules
 
 if TYPE_CHECKING:
     from .execution_service import ExecutionBundle
@@ -129,36 +130,20 @@ class ValidationService:
                     )
 
         status = "passed" if not any(item.blocking for item in findings) else "failed"
-        # Эвалюация правил активной методологии по reasoning_artifact выходу.
-        if execution_bundle.result.status == "succeeded":
-            reasoning_payload: dict[str, Any] | None = None
-            for output in execution_bundle.result.outputs:
-                if getattr(output, "kind", "primary") == "reasoning":
-                    try:
-                        reasoning_payload = json.loads(
-                            self._runtime.load_artifact_content(workspace, output.artifact_id)
-                        )
-                    except (json.JSONDecodeError, ValidationError):
-                        reasoning_payload = None
-                    break
-            methodology_pack_ref = execution_bundle.request.methodology_pack_ref
-            if reasoning_payload and methodology_pack_ref:
-                try:
-                    methodology = snapshot.resolve_methodology_pack(methodology_pack_ref)
-                    method_candidates = self._evaluate_methodology_rules(
-                        methodology=methodology,
-                        complexity=execution_bundle.request.complexity,
-                        reasoning=reasoning_payload,
-                        project_id=manifest.project_id,
-                        task_id=task_id,
-                    )
-                    if method_candidates:
-                        decisions = self._clarification_service.register_candidates(
-                            workspace, tuple(method_candidates)
-                        )
-                        clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
-                except Exception:
-                    pass
+        # Кандидаты от правил методологии теперь поступают из execution_service:
+        # rules eval делается там же, где формируется reasoning, и попадает
+        # в methodology_trace с реальными `fired`/`candidates_emitted`.
+        # Здесь только регистрируем их через ClarificationService.
+        if execution_bundle.result.status == "succeeded" and execution_bundle.result.methodology_candidates:
+            try:
+                decisions = self._clarification_service.register_candidates(
+                    workspace, execution_bundle.result.methodology_candidates
+                )
+                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+            except Exception:
+                # Fail-safe: ошибка регистрации кандидата не должна валить
+                # валидацию основного артефакта. Аналогично прежнему поведению.
+                pass
 
         validation_run = ValidationRun(
             validation_run_id=str(uuid.uuid4()),
@@ -398,91 +383,17 @@ class ValidationService:
         project_id: str,
         task_id: str,
     ) -> list[ClarificationCandidate]:
-        active_stages = methodology.stages_for_complexity(complexity)
-        candidates: list[ClarificationCandidate] = []
-        # reasoning может быть либо raw {stage_id: {fields}}, либо нашим payload {stages: [...]}
-        stage_outputs: dict[str, dict] = {}
-        if isinstance(reasoning.get("stages"), list):
-            for stage_block in reasoning["stages"]:
-                if isinstance(stage_block, dict):
-                    sid = stage_block.get("stage_id")
-                    outputs = stage_block.get("outputs") if isinstance(stage_block.get("outputs"), dict) else {}
-                    if sid:
-                        stage_outputs[sid] = outputs or {}
-        else:
-            for sid, fields in reasoning.items():
-                if isinstance(fields, dict):
-                    stage_outputs[sid] = fields
-        for stage in active_stages:
-            outputs = stage_outputs.get(stage.identifier, {})
-            for rule in stage.rules:
-                fired, need_text = self._eval_rule(rule.identifier, stage.identifier, outputs, stage_outputs)
-                if not fired:
-                    continue
-                emit = rule.emit_candidate or {}
-                severity = str(emit.get("severity", "medium"))
-                if severity not in {"low", "medium", "high", "critical"}:
-                    severity = "medium"
-                blocking_scope = str(emit.get("blocking_scope", "task"))
-                if blocking_scope not in {"none", "task", "subtree", "objective"}:
-                    blocking_scope = "task"
-                question = need_text
-                candidate = ClarificationCandidate(
-                    candidate_id=str(uuid.uuid4()),
-                    project_id=project_id,
-                    source_type="methodology_pack",
-                    source_id=f"{methodology.ref.as_string()}#{stage.identifier}.{rule.identifier}",
-                    need=str(emit.get("need", need_text)),
-                    question=question,
-                    description="",
-                    rationale=f"Сработало правило {rule.identifier} стадии {stage.identifier}.",
-                    impact="Без решения этой развилки методология рекомендует не продолжать.",
-                    severity=severity,  # type: ignore[arg-type]
-                    confidence_without_user=0.4,
-                    min_participation_mode="balanced",
-                    default_assumption=None,
-                    recommended_answer=None,
-                    answer_mode="free_text",
-                    options=(),
-                    affected_task_ids=(task_id,),
-                    related_artifact_ids=(),
-                    blocking_scope=blocking_scope,  # type: ignore[arg-type]
-                    created_at="",
-                )
-                candidates.append(candidate)
-        return candidates
-
-    def _eval_rule(self, rule_id: str, stage_id: str, outputs: dict, all_outputs: dict[str, dict]) -> tuple[bool, str]:
-        # Известные правила обрабатываем явно. Неизвестные не срабатывают (no-op).
-        if rule_id == "empty_goal":
-            value = outputs.get("declared_goal")
-            if value is None or (isinstance(value, str) and not value.strip()):
-                return True, "Цель задачи не сформулирована."
-            return False, ""
-        if rule_id in {"ambiguous_choice", "low_overall_confidence"}:
-            options = outputs.get("options")
-            if not isinstance(options, list):
-                # decision ссылается на опции из option_generation
-                fallback = all_outputs.get("option_generation", {})
-                options = fallback.get("options") if isinstance(fallback, dict) else None
-            if not isinstance(options, list):
-                return False, ""
-            confidences = [
-                float(item.get("confidence", 0.0))
-                for item in options
-                if isinstance(item, dict) and isinstance(item.get("confidence"), (int, float))
-            ]
-            if rule_id == "ambiguous_choice":
-                if len(confidences) >= 2:
-                    sorted_conf = sorted(confidences, reverse=True)
-                    if sorted_conf[0] - sorted_conf[1] < 0.15:
-                        return True, "Варианты сопоставимы по уверенности — нужно решение."
-                return False, ""
-            if rule_id == "low_overall_confidence":
-                if confidences and max(confidences) < 0.5:
-                    return True, "Уверенность во всех вариантах ниже порога."
-                return False, ""
-        return False, ""
+        # Тонкий делегат к pure-функции в `methodology_rules`. Сохранён для
+        # обратной совместимости с тестами, которые исторически вызывают этот
+        # метод напрямую. В рантайме теперь правила прогоняет execution_service.
+        evaluation = evaluate_methodology_rules(
+            methodology=methodology,
+            complexity=complexity,
+            reasoning=reasoning,
+            project_id=project_id,
+            task_id=task_id,
+        )
+        return list(evaluation.candidates)
 
     def _maybe_emit_gate_candidates(
         self,

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pov_generator.application.clarification_service import ClarificationService
+from pov_generator.application.methodology_rules import evaluate_methodology_rules
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
@@ -63,6 +65,122 @@ def test_methodology_rule_emits_clarification_candidate() -> None:
     assert empty_goal.severity == "high"
     assert empty_goal.blocking_scope == "task"
     assert empty_goal.affected_task_ids == ("task-1",)
+
+
+def test_evaluate_methodology_rules_returns_outcomes_for_every_rule() -> None:
+    """Pure-функция должна возвращать запись `RuleOutcome` для каждого правила
+    каждой активной стадии — независимо от того, сработало правило или нет.
+    Это гарантирует, что methodology_trace может показать «что проверялось»."""
+    _, snapshot = _build_service()
+    methodology = snapshot.resolve_methodology_pack(METHODOLOGY_REF)
+    reasoning = {
+        "stages": [
+            {"stage_id": "goal_framing", "outputs": {"declared_goal": "Цель есть."}},
+            {
+                "stage_id": "option_generation",
+                "outputs": {
+                    "options": [
+                        {"label": "A", "confidence": 0.9},
+                        {"label": "B", "confidence": 0.3},
+                    ]
+                },
+            },
+            {"stage_id": "decision", "outputs": {"chosen_option_id": "A"}},
+        ]
+    }
+
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-1",
+    )
+
+    rule_keys = {(o.stage_id, o.rule_id) for o in evaluation.rule_outcomes}
+    assert ("goal_framing", "empty_goal") in rule_keys
+    assert ("decision", "ambiguous_choice") in rule_keys
+    assert ("decision", "low_overall_confidence") in rule_keys
+    # Никаких правил не должно сработать на этом reasoning'е.
+    assert all(not o.fired for o in evaluation.rule_outcomes)
+    assert evaluation.candidates == ()
+    # stage_outputs должен быть нормализован к dict[stage_id, dict].
+    assert evaluation.stage_outputs["goal_framing"]["declared_goal"] == "Цель есть."
+
+
+def test_evaluate_methodology_rules_links_candidate_to_outcome() -> None:
+    """Когда правило сработало — `RuleOutcome.candidate_id` должен ссылаться
+    на тот же `ClarificationCandidate`, что лежит в `evaluation.candidates`.
+    Это связка для UI L4 («какое правило породило этот вопрос»)."""
+    _, snapshot = _build_service()
+    methodology = snapshot.resolve_methodology_pack(METHODOLOGY_REF)
+    reasoning = {
+        "stages": [
+            {"stage_id": "goal_framing", "outputs": {"declared_goal": None}},
+        ]
+    }
+
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-1",
+    )
+
+    fired = [o for o in evaluation.rule_outcomes if o.fired]
+    assert len(fired) == 1
+    assert fired[0].rule_id == "empty_goal"
+    assert fired[0].candidate_id is not None
+    assert fired[0].candidate_id in {c.candidate_id for c in evaluation.candidates}
+
+
+def test_methodology_trace_artifact_records_real_rule_outcomes(tmp_path: Path) -> None:
+    """e2e: после стаб-исполнения leaf-задачи `methodology_trace` artifact должен
+    содержать `rules_evaluated` для всех правил активных стадий и непустой
+    `stage_outputs`. Это закрывает багу, когда trace писался с `fired: False`
+    placeholder'ами и пустыми candidates_emitted."""
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+    from pov_generator.domain.registry import ObjectRef
+    from tests.test_foundation import REPO_ROOT, build_services, OBJECTIVE_REF
+
+    registry_service, runtime, project_service, planning_service = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+    workspace = tmp_path / "case"
+    project_service.init_project(
+        workspace=workspace,
+        name="Trace test",
+        objective_ref=ObjectRef.parse(OBJECTIVE_REF),
+        request_text="Тест трасы методологии.",
+        domain_packs=(),
+    )
+    planning_service.expand_graph(workspace, snapshot)
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+    assert decision.selected_task_id is not None
+
+    bundle = ExecutionService(runtime, ContextService(runtime)).execute_task(
+        workspace, snapshot, decision.selected_task_id, provider="stub"
+    )
+
+    trace_output = next(o for o in bundle.result.outputs if o.kind == "trace")
+    raw = runtime.load_artifact_content(workspace, trace_output.artifact_id)
+    payload = json.loads(raw)
+
+    methodology = snapshot.resolve_methodology_pack(bundle.request.methodology_pack_ref)
+    expected_rules = {
+        (stage.identifier, rule.identifier)
+        for stage in methodology.stages_for_complexity(bundle.request.complexity)
+        for rule in stage.rules
+    }
+    actual_rules = {(item["stage_id"], item["rule_id"]) for item in payload["rules_evaluated"]}
+    assert actual_rules == expected_rules, "trace должен содержать запись по каждому правилу методологии"
+    # На stub reasoning'е (declared_goal заполнен, options пустые) ни одно правило
+    # сработать не должно — но запись о проверке должна присутствовать.
+    assert all("fired" in item for item in payload["rules_evaluated"])
+    assert payload["candidates_emitted"] == []
+    assert payload["stage_outputs"], "stage_outputs не должен быть пустым словарём"
 
 
 def test_methodology_rule_ambiguous_choice_with_cross_stage_options() -> None:
