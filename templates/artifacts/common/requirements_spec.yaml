@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.requirements_spec
+version: 1.0.0
+title: Техническое задание
+schema:
+  type: object
+  additionalProperties: true
+

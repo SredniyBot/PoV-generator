@@ -1,0 +1,26 @@
+kind: task_template
+id: integration.operating_model
+version: 1.0.0
+title: Описать интеграционную и операционную модель
+type: leaf
+status: active
+domain: integration
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required: [common.normalized_request@1.0.0]
+produces:
+  artifact: integration.integration_operating_model@1.0.0
+context:
+  include: [artifact.common.normalized_request]
+  max_tokens: 24000
+planning:
+  priority: 710
+effects:
+  readiness:
+    set:
+      - dimension: integration_model_defined
+        status: ready
+framework:
+  summary: Опиши системы-источники, целевые интеграции, обновление данных, API, роли эксплуатации и риски зависимостей.

@@ -10,7 +10,12 @@ from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactRecord
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
-from ..domain.registry import RegistrySnapshot, compose_recipe
+from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
+from ..infrastructure.claude_sdk_client import ClaudeSdkClient, model_for_complexity
+from ..infrastructure.claude_subscription_client import (
+    ClaudeSubscriptionClient,
+    model_for_complexity as model_for_complexity_subscription,
+)
 from ..infrastructure.openrouter_client import OpenRouterClient
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
@@ -41,27 +46,36 @@ class ExecutionService:
         manifest = self._runtime.load_manifest(workspace)
         state = self._runtime.load_problem_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
-        template = snapshot.resolve_template(f"{task.template_id}@{task.template_version}")
+        template = snapshot.resolve_template(task.template_ref)
         context_result = self._context_service.build_for_task(workspace, snapshot, task_id)
         context_manifest = context_result.manifest
-        composed_recipe = compose_recipe(snapshot, manifest.recipe_ref, tuple(sorted(state.enabled_domain_packs.keys())))
-        current_step = next((step for step in composed_recipe.steps if step.identifier == task.recipe_step_id), None)
-        if current_step is None:
-            raise ConflictError(f"Шаг '{task.recipe_step_id}' отсутствует в composed recipe.")
 
         artifact_roles = template.outputs.artifact_roles
         if len(artifact_roles) != 1:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
         active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER", "stub")
-        active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+        complexity_value = template.complexity
+        if active_provider == "claude_sdk":
+            active_model = model or model_for_complexity(complexity_value)
+        elif active_provider == "claude_subscription":
+            active_model = model or model_for_complexity_subscription(complexity_value)
+        else:
+            active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+        active_methodology: MethodologyPackSpec | None = None
+        for ref in state.active_methodology_pack_records.keys():
+            try:
+                active_methodology = snapshot.resolve_methodology_pack(ref)
+                break
+            except Exception:
+                continue
 
         system_prompt, user_prompt = self._build_prompt(
             template_name=template.name,
             framework_summary=template.framework_summary,
             artifact_role=artifact_role,
-            domain_pack_refs=tuple(sorted(state.enabled_domain_packs.keys())),
-            current_step_title=current_step.title,
+            domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
+            current_step_title=task.title,
             context_manifest=context_manifest,
         )
 
@@ -71,16 +85,53 @@ class ExecutionService:
                 context_manifest=context_manifest,
                 business_request=state.business_request,
                 goal=state.goal,
-                domain_pack_refs=tuple(sorted(state.enabled_domain_packs.keys())),
+                domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
             )
-        elif active_provider == "openrouter":
-            payload = OpenRouterClient.from_env().chat_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=artifact_schema(artifact_role, tuple(sorted(state.enabled_domain_packs.keys()))),
-            )
+        elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
+            primary_schema = artifact_schema(artifact_role, tuple(sorted(state.active_domain_pack_records.keys())))
+            if active_methodology is not None:
+                methodology_schema = self._build_methodology_schema(active_methodology, complexity_value)
+                combined_schema = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["primary", "reasoning"],
+                    "properties": {
+                        "primary": primary_schema,
+                        "reasoning": methodology_schema,
+                    },
+                }
+                effective_system = system_prompt + "\n\n" + self._methodology_system_section(active_methodology, complexity_value)
+            else:
+                combined_schema = primary_schema
+                effective_system = system_prompt
+            if active_provider == "openrouter":
+                full_payload = OpenRouterClient.from_env().chat_json(
+                    system_prompt=effective_system,
+                    user_prompt=user_prompt,
+                    schema=combined_schema,
+                )
+            elif active_provider == "claude_sdk":
+                full_payload = ClaudeSdkClient.from_env(model=active_model).chat_json(
+                    system_prompt=effective_system,
+                    user_prompt=user_prompt,
+                    schema=combined_schema,
+                )
+            else:
+                full_payload = ClaudeSubscriptionClient.from_env(model=active_model).chat_json(
+                    system_prompt=effective_system,
+                    user_prompt=user_prompt,
+                    schema=combined_schema,
+                )
+            if active_methodology is not None:
+                payload = full_payload.get("primary", {}) or {}
+                live_reasoning = full_payload.get("reasoning")
+            else:
+                payload = full_payload
+                live_reasoning = None
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
+        if active_provider == "stub":
+            live_reasoning = None
 
         artifact_id = str(uuid.uuid4())
         artifact_record = ArtifactRecord(
@@ -88,7 +139,7 @@ class ExecutionService:
             project_id=manifest.project_id,
             artifact_role=artifact_role,
             title=f"{template.name} ({artifact_role})",
-            description=f"Артефакт, созданный задачей {task.recipe_step_id}",
+            description=f"Артефакт, созданный задачей {task.task_key}",
             artifact_format="json",
             artifact_kind="primary",
             created_by_task_id=task.task_id,
@@ -134,11 +185,34 @@ class ExecutionService:
             provider=active_provider,
             model=active_model,
             actor="workflow",
+            complexity=complexity_value,
+            methodology_pack_ref=active_methodology.ref.as_string() if active_methodology else None,
         )
+        outputs: list[ExecutionOutput] = [ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role)]
+        if active_methodology is not None:
+            reasoning_id = self._attach_reasoning_artifact(
+                workspace=workspace,
+                manifest_project_id=manifest.project_id,
+                task=task,
+                methodology=active_methodology,
+                complexity=complexity_value,
+                primary_payload=payload,
+                live_reasoning=live_reasoning,
+            )
+            trace_id = self._attach_methodology_trace(
+                workspace=workspace,
+                manifest_project_id=manifest.project_id,
+                task=task,
+                methodology=active_methodology,
+                complexity=complexity_value,
+                stage_outputs={},
+            )
+            outputs.append(ExecutionOutput(artifact_id=reasoning_id, artifact_role="reasoning_artifact", kind="reasoning"))
+            outputs.append(ExecutionOutput(artifact_id=trace_id, artifact_role="methodology_trace", kind="trace"))
         result = ExecutionResult(
             execution_run_id=request.execution_run_id,
             status="succeeded",
-            outputs=(ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role),),
+            outputs=tuple(outputs),
             trace_ids=tuple(trace.trace_id for trace in traces),
             proposed_goal=proposed_goal,
         )
@@ -197,12 +271,22 @@ class ExecutionService:
                     parsed_inputs[item.title] = json.loads(item.content)
                 except json.JSONDecodeError:
                     parsed_inputs[item.title] = item.content
-        frontend_enabled = "frontend.web_app_requirements@1.0.0" in domain_pack_refs
-        frontend_v2_enabled = any(ref.startswith("frontend.web_app_requirements@2.") for ref in domain_pack_refs)
-        ml_enabled = any(ref.startswith("ml.predictive_analytics_pov_requirements@") for ref in domain_pack_refs)
-        security_enabled = any(ref.startswith("security.enterprise_compliance_requirements@") for ref in domain_pack_refs)
-        integration_enabled = any(ref.startswith("integration.enterprise_delivery_requirements@") for ref in domain_pack_refs)
-        frontend_enabled = frontend_enabled or frontend_v2_enabled
+        frontend_enabled = any(
+            ref.startswith("frontend.web_workspace@") or ref.startswith("frontend.web_app_requirements@")
+            for ref in domain_pack_refs
+        )
+        ml_enabled = any(
+            ref.startswith("ml.predictive_analytics@") or ref.startswith("ml.predictive_analytics_pov_requirements@")
+            for ref in domain_pack_refs
+        )
+        security_enabled = any(
+            ref.startswith("security.enterprise_compliance@") or ref.startswith("security.enterprise_compliance_requirements@")
+            for ref in domain_pack_refs
+        )
+        integration_enabled = any(
+            ref.startswith("integration.enterprise_integration@") or ref.startswith("integration.enterprise_delivery_requirements@")
+            for ref in domain_pack_refs
+        )
         if artifact_role == "clarification_notes":
             return {
                 "clarified_goal": goal or f"Подготовить качественное ТЗ по запросу: {business_request}",
@@ -871,18 +955,18 @@ class ExecutionService:
             clarification = self._find_payload(parsed_inputs, "Уточнение бизнес-цели")
             user_story_map = self._find_payload(parsed_inputs, "Анализ user story")
             alternatives = self._find_payload(parsed_inputs, "Сравнение альтернатив")
-            ui_outline = self._find_payload(parsed_inputs, "Анализ пользовательских потоков")
-            normalized_request = self._find_payload(parsed_inputs, "Нормализация исходного бизнес-запроса")
-            business_outcome = self._find_payload(parsed_inputs, "Формализация бизнес-результата")
-            scope_boundary = self._find_payload(parsed_inputs, "Определение границ этапа")
-            stakeholders = self._find_payload(parsed_inputs, "Карта стейкхолдеров")
-            tradeoff = self._find_payload(parsed_inputs, "Сравнение вариантов решения")
+            ui_outline = self._find_payload(parsed_inputs, "Разобрать пользовательские потоки", "Анализ пользовательских потоков")
+            normalized_request = self._find_payload(parsed_inputs, "Нормализовать запрос", "Нормализация исходного бизнес-запроса")
+            business_outcome = self._find_payload(parsed_inputs, "Определить бизнес-результат", "Формализация бизнес-результата")
+            scope_boundary = self._find_payload(parsed_inputs, "Зафиксировать границы этапа", "Определение границ этапа")
+            stakeholders = self._find_payload(parsed_inputs, "Выделить стейкхолдеров", "Карта стейкхолдеров")
+            tradeoff = self._find_payload(parsed_inputs, "Сформировать варианты решения", "Сравнение вариантов решения")
             acceptance = self._find_payload(parsed_inputs, "Сводная модель поставки и приемки")
             implementation_plan = self._find_payload(parsed_inputs, "План реализации и зависимости")
-            predictive_definition = self._find_payload(parsed_inputs, "Определение предиктивной задачи")
-            data_assessment = self._find_payload(parsed_inputs, "Оценка ландшафта данных и реализуемости")
-            security_constraints = self._find_payload(parsed_inputs, "Оценка ограничений ИБ и комплаенса")
-            integration_model = self._find_payload(parsed_inputs, "Интеграционная и операционная модель")
+            predictive_definition = self._find_payload(parsed_inputs, "Определить предиктивную задачу", "Определение предиктивной задачи")
+            data_assessment = self._find_payload(parsed_inputs, "Оценить данные для аналитики и ML", "Оценка ландшафта данных и реализуемости")
+            security_constraints = self._find_payload(parsed_inputs, "Оценить ограничения ИБ и комплаенса", "Оценка ограничений ИБ и комплаенса")
+            integration_model = self._find_payload(parsed_inputs, "Описать интеграционную и операционную модель", "Интеграционная и операционная модель")
             spec = {
                 "title": "Техническое задание на подготовку решения",
                 "business_goal": (
@@ -1018,7 +1102,7 @@ class ExecutionService:
                 }
             return spec
         if artifact_role == "review_report":
-            spec_payload = self._find_payload(parsed_inputs, "Подготовка структурированного ТЗ")
+            spec_payload = self._find_payload(parsed_inputs, "Подготовить структурированное ТЗ", "Подготовка структурированного ТЗ")
             if not spec_payload:
                 spec_payload = self._find_payload(parsed_inputs, "Подготовка черновика ТЗ")
             issues = []
@@ -1058,10 +1142,216 @@ class ExecutionService:
             }
         raise ConflictError(f"Stub не умеет генерировать артефакт роли '{artifact_role}'.")
 
-    def _find_payload(self, parsed_inputs: dict[str, object], title_prefix: str) -> dict[str, object]:
+
+
+    def _build_methodology_schema(self, methodology: MethodologyPackSpec, complexity: str | None) -> dict:
+        active_stages = methodology.stages_for_complexity(complexity)
+        properties: dict = {}
+        required: list[str] = []
+        for stage in active_stages:
+            stage_fields: dict = {}
+            stage_required: list[str] = []
+            for produces in stage.produces:
+                schema_fragment = self._field_to_schema(produces)
+                stage_fields[produces.field_name] = schema_fragment
+                if produces.required:
+                    stage_required.append(produces.field_name)
+            stage_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": stage_fields,
+            }
+            if stage_required:
+                stage_schema["required"] = stage_required
+            properties[stage.identifier] = stage_schema
+            if stage.identifier in methodology.reasoning_artifact.required_stages:
+                required.append(stage.identifier)
+        result: dict = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": properties,
+        }
+        if required:
+            result["required"] = required
+        return result
+
+    def _field_to_schema(self, produces) -> dict:
+        type_value = produces.field_type
+        nullable = produces.nullable
+        if type_value == "string":
+            base = {"type": "string"}
+        elif type_value == "number":
+            base = {"type": "number"}
+        elif type_value == "integer":
+            base = {"type": "integer"}
+        elif type_value == "boolean":
+            base = {"type": "boolean"}
+        elif type_value == "array":
+            item_schema = produces.item_schema or {}
+            if isinstance(item_schema, dict) and item_schema:
+                base = {"type": "array", "items": {"type": "object", "properties": {k: {} for k in item_schema}}}
+            else:
+                base = {"type": "array", "items": {}}
+        elif type_value == "object":
+            schema_payload = produces.schema or {}
+            if isinstance(schema_payload, dict) and schema_payload:
+                base = {"type": "object", "properties": {k: {} for k in schema_payload}}
+            else:
+                base = {"type": "object"}
+        else:
+            base = {}
+        if nullable:
+            return {"anyOf": [base, {"type": "null"}]}
+        return base
+
+    def _methodology_system_section(self, methodology: MethodologyPackSpec, complexity: str | None) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        lines = [
+            f"Применяй методологию '{methodology.title}' (ref={methodology.ref.as_string()}).",
+            "Возвращай два блока: 'primary' (основной артефакт по схеме задачи) и 'reasoning' (по схеме методологии).",
+            "Стадии методологии (заполни их выходы в 'reasoning'):",
+        ]
+        for stage in active_stages:
+            fields_desc = ", ".join(f"{p.field_name}:{p.field_type}" for p in stage.produces)
+            lines.append(f"- {stage.identifier} — {stage.title}. Поля: {fields_desc}")
+            if stage.description:
+                lines.append(f"  {stage.description.strip()}")
+        return "\n".join(lines)
+
+    def _attach_reasoning_artifact(
+        self,
+        *,
+        workspace,
+        manifest_project_id: str,
+        task,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        primary_payload: dict,
+        live_reasoning: dict | None = None,
+    ) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        if isinstance(live_reasoning, dict) and live_reasoning:
+            stages_payload = []
+            for stage in active_stages:
+                stage_fields = live_reasoning.get(stage.identifier)
+                if not isinstance(stage_fields, dict):
+                    stage_fields = {}
+                stages_payload.append(
+                    {
+                        "stage_id": stage.identifier,
+                        "title": stage.title,
+                        "outputs": dict(stage_fields),
+                        "_source": {
+                            "methodology_pack": methodology.ref.as_string(),
+                            "stage": stage.identifier,
+                        },
+                    }
+                )
+        else:
+            stages_payload = []
+            for stage in active_stages:
+                fields = {}
+                for produces in stage.produces:
+                    if produces.required:
+                        if produces.field_type == "string":
+                            fields[produces.field_name] = (
+                                f"[stub] результат стадии {stage.identifier}: {task.title}"
+                            )
+                        elif produces.field_type == "array":
+                            fields[produces.field_name] = []
+                        elif produces.field_type == "object":
+                            fields[produces.field_name] = {}
+                        else:
+                            fields[produces.field_name] = None
+                    else:
+                        fields[produces.field_name] = None
+                stages_payload.append(
+                    {
+                        "stage_id": stage.identifier,
+                        "title": stage.title,
+                        "outputs": fields,
+                        "_source": {
+                            "methodology_pack": methodology.ref.as_string(),
+                            "stage": stage.identifier,
+                        },
+                    }
+                )
+        reasoning_payload = {
+            "methodology_pack_ref": methodology.ref.as_string(),
+            "stages": stages_payload,
+            "complexity": complexity,
+        }
+        artifact_id = str(uuid.uuid4())
+        record = ArtifactRecord(
+            artifact_id=artifact_id,
+            project_id=manifest_project_id,
+            artifact_role="reasoning_artifact",
+            title=f"Reasoning ({task.task_key})",
+            description=f"Reasoning artifact задачи {task.task_key} по методологии {methodology.ref.as_string()}",
+            artifact_format="json",
+            artifact_kind="reasoning",
+            created_by_task_id=task.task_id,
+            parent_artifact_id=None,
+            metadata={
+                "methodology_pack_ref": methodology.ref.as_string(),
+                "complexity": complexity,
+            },
+            storage_path=f"artifacts/{artifact_id}.json",
+            created_at=utc_now_iso(),
+        )
+        self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(reasoning_payload))
+        return artifact_id
+
+    def _attach_methodology_trace(
+        self,
+        *,
+        workspace,
+        manifest_project_id: str,
+        task,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        stage_outputs: dict,
+    ) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        trace_payload = {
+            "methodology_pack_ref": methodology.ref.as_string(),
+            "stage_execution_mode": methodology.stage_execution_mode,
+            "complexity": complexity,
+            "stages_executed": [stage.identifier for stage in active_stages],
+            "rules_evaluated": [
+                {"stage_id": stage.identifier, "rule_id": rule.identifier, "fired": False}
+                for stage in active_stages
+                for rule in stage.rules
+            ],
+            "candidates_emitted": [],
+        }
+        artifact_id = str(uuid.uuid4())
+        record = ArtifactRecord(
+            artifact_id=artifact_id,
+            project_id=manifest_project_id,
+            artifact_role="methodology_trace",
+            title=f"Methodology trace ({task.task_key})",
+            description=f"Трасса исполнения методологии {methodology.ref.as_string()}",
+            artifact_format="json",
+            artifact_kind="trace",
+            created_by_task_id=task.task_id,
+            parent_artifact_id=None,
+            metadata={
+                "methodology_pack_ref": methodology.ref.as_string(),
+                "complexity": complexity,
+            },
+            storage_path=f"artifacts/{artifact_id}.json",
+            created_at=utc_now_iso(),
+        )
+        self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(trace_payload))
+        return artifact_id
+
+    def _find_payload(self, parsed_inputs: dict[str, object], *title_prefixes: str) -> dict[str, object]:
         for title, payload in parsed_inputs.items():
-            if title_prefix.lower() in title.lower() and isinstance(payload, dict):
-                return payload
+            normalized_title = title.lower()
+            for title_prefix in title_prefixes:
+                if title_prefix.lower() in normalized_title and isinstance(payload, dict):
+                    return payload
         return {}
 
     def _extract_proposed_goal(self, payload: dict[str, object]) -> str | None:

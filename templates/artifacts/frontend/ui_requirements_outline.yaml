@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: frontend.ui_requirements_outline
+version: 1.0.0
+title: Контур UI-требований
+schema:
+  type: object
+  additionalProperties: true
+

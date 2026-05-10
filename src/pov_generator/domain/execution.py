@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-ExecutionProvider = Literal["stub", "openrouter"]
+ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
 ExecutionStatus = Literal["succeeded", "failed", "cancelled"]
 
 
@@ -18,12 +18,15 @@ class ExecutionRequest:
     provider: ExecutionProvider
     model: str
     actor: str
+    complexity: str | None = None
+    methodology_pack_ref: str | None = None
 
 
 @dataclass(frozen=True)
 class ExecutionOutput:
     artifact_id: str
     artifact_role: str
+    kind: Literal["primary", "reasoning", "trace"] = "primary"
 
 
 @dataclass(frozen=True)

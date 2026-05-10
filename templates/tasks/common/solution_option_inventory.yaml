@@ -1,0 +1,32 @@
+kind: task_template
+id: common.solution_option_inventory
+version: 1.0.0
+title: Сформировать варианты решения
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.business_outcome_model@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+produces:
+  artifact: common.solution_option_inventory@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.business_outcome_model
+    - artifact.common.scope_boundary_matrix
+  max_tokens: 24000
+planning:
+  priority: 760
+effects:
+  readiness:
+    set:
+      - dimension: solution_option_space_defined
+        status: ready
+framework:
+  summary: Сформируй жизнеспособные варианты решения и явно отдели PoV от промышленного контура.

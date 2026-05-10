@@ -1,20 +1,22 @@
 import type {
   ArtifactDetailView,
   ArtifactSummaryView,
+  ClarificationItemView,
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
+  ObjectiveCatalogItemView,
   ProjectCreatedView,
+  ProjectClarificationsView,
   ProjectDebugView,
-  ProjectJourneyView,
   ProjectListItemView,
   ProjectReviewView,
   ProjectShellView,
   ProjectSituationView,
   ProjectStateView,
+  ProjectTaskGraphView,
   ProjectTimelineView,
   ProjectionName,
-  RecipeCatalogItemView,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -39,7 +41,7 @@ export const api = {
   listProjects: () => request<ProjectListItemView[]>("/api/projects"),
   createProject: (payload: {
     name: string;
-    recipe_ref: string;
+    objective_ref: string;
     request_text: string;
     domain_pack_refs: string[];
   }) =>
@@ -47,12 +49,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  listRecipes: () => request<RecipeCatalogItemView[]>("/api/registry/recipes"),
+  listObjectives: () => request<ObjectiveCatalogItemView[]>("/api/registry/objectives"),
   listDomainPacks: () => request<DomainPackCatalogItemView[]>("/api/registry/domain-packs"),
+  listMethodologyPacks: () => request<unknown[]>("/api/registry/methodology-packs"),
   getShell: (projectId: string) => request<ProjectShellView>(`/api/projects/${projectId}/shell`),
-  getJourney: (projectId: string) => request<ProjectJourneyView>(`/api/projects/${projectId}/journey`),
+  getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
+  getClarifications: (projectId: string) => request<ProjectClarificationsView>(`/api/projects/${projectId}/clarifications`),
+  getClarificationDetail: (projectId: string, clarificationId: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/clarifications/${clarificationId}`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
@@ -97,6 +103,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
+  answerClarification: (
+    projectId: string,
+    payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string },
+  ) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/answer-clarification`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  acceptAssumption: (projectId: string, clarificationId: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/accept-assumption`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId }),
+    }),
+  setClarificationMode: (projectId: string, mode: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/set-clarification-mode`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    }),
+  setMethodology: (projectId: string, packRef: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/set-methodology`, {
+      method: "POST",
+      body: JSON.stringify({ pack_ref: packRef }),
+    }),
+  getOverview: (projectId: string) =>
+    request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
+  getMethodologyTrace: (projectId: string, taskId: string) =>
+    request<{ task_id: string; trace: unknown; reasoning: unknown; trace_artifact_id?: string; reasoning_artifact_id?: string | null; message?: string }>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

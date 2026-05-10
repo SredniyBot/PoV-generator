@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: ml.predictive_problem_definition
+version: 1.0.0
+title: Постановка предиктивной задачи
+schema:
+  type: object
+  additionalProperties: true
+

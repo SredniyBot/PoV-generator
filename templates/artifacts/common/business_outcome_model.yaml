@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.business_outcome_model
+version: 1.0.0
+title: Модель бизнес-результата
+schema:
+  type: object
+  additionalProperties: true
+

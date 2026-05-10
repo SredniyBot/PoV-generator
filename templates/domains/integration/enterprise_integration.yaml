@@ -1,0 +1,20 @@
+kind: domain_pack
+id: integration.enterprise_integration
+version: 1.0.0
+title: Интеграции и операционная поставка
+description: Добавляет анализ источников, API, обновления данных и операционной модели интеграций.
+domain: integration
+status: active
+detect:
+  signals:
+    - api
+    - интеграция
+    - 1с
+    - портал
+    - обновление данных
+    - adfs
+contributes:
+  - to: solution.outputs
+    add:
+      - id: integration_operating_model
+        task: integration.operating_model@1.0.0

@@ -82,11 +82,8 @@ def _dispatch(
         if args.action == "show-template":
             print(json_dumps(snapshot.resolve_template(args.template)))
             return
-        if args.action == "show-recipe":
-            print(json_dumps(snapshot.resolve_recipe(args.recipe)))
-            return
-        if args.action == "show-fragment":
-            print(json_dumps(snapshot.resolve_recipe_fragment(args.fragment)))
+        if args.action == "show-objective":
+            print(json_dumps(snapshot.resolve_objective(args.objective)))
             return
         if args.action == "show-domain-pack":
             print(json_dumps(snapshot.resolve_domain_pack(args.domain_pack)))
@@ -98,7 +95,7 @@ def _dispatch(
             if not report.is_valid:
                 raise PovGeneratorError("Registry невалиден. Сначала выполните 'povgen registry validate'.")
             request_text = args.request_text or Path(args.request_file).read_text(encoding="utf-8")
-            recipe_ref = ObjectRef.parse(args.recipe)
+            objective_ref = ObjectRef.parse(args.objective)
             if args.domain_pack:
                 enabled_pack_refs = tuple(sorted(set(args.domain_pack)))
                 selection_payload = {
@@ -112,7 +109,7 @@ def _dispatch(
             else:
                 selection = domain_pack_selection_service.select_for_request(
                     snapshot,
-                    recipe_ref=recipe_ref.as_string(),
+                    objective_ref=objective_ref.as_string(),
                     request_text=request_text.strip(),
                     provider=args.selection_provider,
                     model=args.selection_model,
@@ -126,18 +123,15 @@ def _dispatch(
                     "rationale": selection.rationale,
                     "confidence": selection.confidence,
                 }
-            bootstrap_recipe = planning_service.build_recipe_bootstrap(
-                snapshot,
-                recipe_ref.as_string(),
-                enabled_domain_pack_refs=enabled_pack_refs,
-            )
+            domain_packs = tuple(snapshot.resolve_domain_pack(pack_ref) for pack_ref in enabled_pack_refs)
             bootstrap = project_service.init_project(
                 workspace=Path(args.workspace),
                 name=args.name,
-                recipe_ref=recipe_ref,
+                objective_ref=objective_ref,
                 request_text=request_text,
-                bootstrap_recipe=bootstrap_recipe,
+                domain_packs=domain_packs,
             )
+            planning_service.expand_graph(Path(args.workspace), snapshot)
             project_service.add_fact(
                 Path(args.workspace),
                 fact_id="domain_pack_selection",
@@ -215,10 +209,6 @@ def _dispatch(
             pack = snapshot.resolve_domain_pack(args.domain_pack)
             print(json_dumps(project_service.enable_domain_pack(workspace, pack)))
             return
-        if args.action == "composition-show":
-            state = project_service.load_problem_state(workspace)
-            print(json_dumps(state.recipe_composition))
-            return
 
     if args.entity == "plan":
         workspace = Path(args.workspace)
@@ -234,9 +224,6 @@ def _dispatch(
         if args.action == "history":
             print(json_dumps(planning_service.planning_history(workspace)))
             return
-        if args.action == "show-composed-recipe":
-            print(json_dumps(planning_service.current_composed_recipe(workspace, snapshot)))
-            return
 
     if args.entity == "tasks":
         workspace = Path(args.workspace)
@@ -248,10 +235,6 @@ def _dispatch(
             return
         if args.action == "transition":
             print(json_dumps(planning_service.transition_task(workspace, args.task_id, args.command)))
-            return
-        if args.action == "recipe-progress":
-            manifest = project_service.load_manifest(workspace)
-            print(json_dumps(planning_service.list_recipe_progress(workspace, manifest.recipe_ref)))
             return
 
     if args.entity == "artifacts":
@@ -351,10 +334,8 @@ def _build_parser() -> argparse.ArgumentParser:
     registry_subparsers.add_parser("validate")
     show_template = registry_subparsers.add_parser("show-template")
     show_template.add_argument("--template", required=True)
-    show_recipe = registry_subparsers.add_parser("show-recipe")
-    show_recipe.add_argument("--recipe", required=True)
-    show_fragment = registry_subparsers.add_parser("show-fragment")
-    show_fragment.add_argument("--fragment", required=True)
+    show_objective = registry_subparsers.add_parser("show-objective")
+    show_objective.add_argument("--objective", required=True)
     show_domain_pack = registry_subparsers.add_parser("show-domain-pack")
     show_domain_pack.add_argument("--domain-pack", required=True)
 
@@ -363,7 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
     project_init = project_subparsers.add_parser("init")
     project_init.add_argument("--workspace", required=True)
     project_init.add_argument("--name", required=True)
-    project_init.add_argument("--recipe", required=True)
+    project_init.add_argument("--objective", default="common.requirements_specification@1.0.0")
     project_init.add_argument("--domain-pack", action="append", default=[])
     project_init.add_argument("--selection-provider")
     project_init.add_argument("--selection-model")
@@ -375,7 +356,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     problem = subparsers.add_parser("problem")
     problem_subparsers = problem.add_subparsers(dest="action", required=True)
-    for action in ("show", "history", "composition-show"):
+    for action in ("show", "history"):
         command = problem_subparsers.add_parser(action)
         command.add_argument("--workspace", required=True)
     goal_set = problem_subparsers.add_parser("goal-set")
@@ -408,7 +389,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     plan = subparsers.add_parser("plan")
     plan_subparsers = plan.add_subparsers(dest="action", required=True)
-    for action in ("dry-run", "apply", "history", "show-composed-recipe"):
+    for action in ("dry-run", "apply", "history"):
         command = plan_subparsers.add_parser(action)
         command.add_argument("--workspace", required=True)
 
@@ -423,9 +404,6 @@ def _build_parser() -> argparse.ArgumentParser:
     task_transition.add_argument("--workspace", required=True)
     task_transition.add_argument("--task-id", required=True)
     task_transition.add_argument("--command", required=True)
-    recipe_progress = tasks_subparsers.add_parser("recipe-progress")
-    recipe_progress.add_argument("--workspace", required=True)
-
     artifacts = subparsers.add_parser("artifacts")
     artifacts_subparsers = artifacts.add_subparsers(dest="action", required=True)
     artifact_list = artifacts_subparsers.add_parser("list")

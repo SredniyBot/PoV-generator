@@ -71,9 +71,9 @@ entries:
   - id: data_feasibility_assessed
     label: Реализуемость по данным оценена
     description: Поняты источники, качество данных, критические пробелы и feasibility для PoV.
-  - id: security_constraints_defined
-    label: Ограничения ИБ определены
-    description: Понятны требования по ПДн, контуру, доступу, шифрованию и допустимому использованию AI.
+  - id: security_constraints_assessed
+    label: Ограничения ИБ оценены
+    description: Понятны требования по персональным данным, контуру, доступу, шифрованию и допустимому использованию ИИ.
   - id: integration_model_defined
     label: Интеграционная модель определена
     description: Понятны источники, API, схема обновления и эксплуатационная модель решения.
@@ -83,6 +83,6 @@ entries:
   - id: specification_reviewed
     label: ТЗ прошло ревью
     description: Черновик технического задания прошёл структурированную проверку.
-  - id: frontend_user_flows_covered
-    label: Интерфейсные потоки покрыты
-    description: Для фронтенд-части зафиксированы основные роли, пользовательские потоки и ожидания по экранам.
+  - id: ui_requirements_outlined
+    label: UI-требования намечены
+    description: Для интерфейсной части зафиксированы основные роли, пользовательские потоки и ожидания по экранам.

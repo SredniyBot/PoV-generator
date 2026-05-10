@@ -1,0 +1,65 @@
+kind: domain_pack
+id: ml.predictive_analytics
+version: 1.0.0
+title: Предиктивная аналитика и ML
+status: active
+
+detect:
+  signals:
+    - прогноз
+    - предиктивная аналитика
+    - машинное обучение
+    - скоринг
+    - модель риска
+
+tasks:
+  - ml.define_observation_unit@1.0.0
+  - ml.define_prediction_target@1.0.0
+  - ml.define_label@1.0.0
+  - ml.assess_label_quality@1.0.0
+  - ml.define_model_metrics@1.0.0
+
+artifacts:
+  - ml.observation_unit@1.0.0
+  - ml.prediction_target@1.0.0
+  - ml.label_definition@1.0.0
+  - ml.model_metrics@1.0.0
+
+clarification_policy:
+  topics:
+    - id: ml.target_event
+      title: Целевое событие прогноза
+      ask_when:
+        - missing_owner_decision
+        - conflicting_goal
+      default_blocking_scope: task
+    - id: ml.model_usage
+      title: Использование прогноза в процессе
+      ask_when:
+        - high_impact_low_confidence
+      default_blocking_scope: subtree
+
+contributes:
+  - to: data.entities
+    add:
+      - id: observation_unit
+        task: ml.define_observation_unit@1.0.0
+      - id: prediction_target
+        task: ml.define_prediction_target@1.0.0
+      - id: label_definition
+        task: ml.define_label@1.0.0
+
+  - to: data.quality
+    add:
+      - id: label_quality
+        task: ml.assess_label_quality@1.0.0
+
+  - to: solution.evaluation
+    add:
+      - id: model_metrics
+        task: ml.define_model_metrics@1.0.0
+
+  - to: review.domain_gates
+    add:
+      - id: ml_requirements_review
+        gate: ml.requirements_complete@1.0.0

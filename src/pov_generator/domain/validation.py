@@ -26,6 +26,7 @@ class ValidationRun:
     execution_run_id: str
     status: ValidationStatus
     findings: tuple[ValidationFinding, ...] = field(default_factory=tuple)
+    clarification_candidate_ids: tuple[str, ...] = field(default_factory=tuple)
     created_at: str = ""
 
 

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.goal_hypothesis
+version: 1.0.0
+title: Гипотеза цели проекта
+schema:
+  type: object
+  additionalProperties: true
+

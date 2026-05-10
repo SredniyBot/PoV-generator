@@ -1,0 +1,37 @@
+kind: task_template
+id: common.requirements_spec_generation
+version: 1.0.0
+title: Подготовить структурированное ТЗ
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.business_outcome_model@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+      - common.stakeholder_map@1.0.0
+      - common.solution_option_inventory@1.0.0
+    optional:
+      - ml.predictive_problem_definition@1.0.0
+      - ml.data_landscape_assessment@1.0.0
+      - security.security_compliance_constraints@1.0.0
+      - integration.integration_operating_model@1.0.0
+      - frontend.ui_requirements_outline@1.0.0
+produces:
+  artifact: common.requirements_spec@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 64000
+planning:
+  priority: 100
+effects:
+  readiness:
+    set:
+      - dimension: specification_drafted
+        status: ready
+framework:
+  summary: Синтезируй итоговое ТЗ из всех доступных артефактов, включая активные доменные разделы.

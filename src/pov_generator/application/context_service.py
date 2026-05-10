@@ -9,7 +9,7 @@ import uuid
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ContextBudget, ContextItem, ContextManifest
-from ..domain.registry import RegistrySnapshot, compose_recipe
+from ..domain.registry import RegistrySnapshot
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -30,11 +30,7 @@ class ContextService:
         manifest = self._runtime.load_manifest(workspace)
         state = self._runtime.load_problem_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
-        template = snapshot.resolve_template(f"{task.template_id}@{task.template_version}")
-        composed_recipe = compose_recipe(snapshot, manifest.recipe_ref, tuple(sorted(state.enabled_domain_packs.keys())))
-        current_step = next((step for step in composed_recipe.steps if step.identifier == task.recipe_step_id), None)
-        if current_step is None:
-            raise ConflictError(f"Шаг '{task.recipe_step_id}' отсутствует в composed recipe.")
+        template = snapshot.resolve_template(task.template_ref)
 
         items: list[ContextItem] = []
         source_refs: list[str] = []
@@ -57,20 +53,13 @@ class ContextService:
             items.append(item)
             source_refs.append(item.source_ref)
 
-        produced_before_current = {
-            artifact_role
-            for previous_step in composed_recipe.steps
-            if previous_step.order < current_step.order
-            for artifact_role in previous_step.completion.artifact_roles
-        }
-
         required_artifact_roles = template.inputs.required_artifact_roles
         optional_artifact_roles = tuple(
             role for role in template.inputs.optional_artifact_roles if role not in required_artifact_roles
         )
 
         if not required_artifact_roles and not optional_artifact_roles:
-            required_artifact_roles = tuple(sorted(produced_before_current))
+            optional_artifact_roles = tuple(sorted({artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}))
 
         for artifact_role in required_artifact_roles:
             artifact = self._runtime.latest_artifact_by_role(workspace, artifact_role)

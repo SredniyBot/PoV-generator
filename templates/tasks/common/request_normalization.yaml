@@ -1,0 +1,35 @@
+kind: task_template
+id: common.request_normalization
+version: 1.0.0
+title: Нормализовать запрос
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.request_fact_sheet@1.0.0
+      - common.goal_hypothesis@1.0.0
+      - common.constraint_inventory@1.0.0
+      - common.ambiguity_gap_report@1.0.0
+produces:
+  artifact: common.normalized_request@1.0.0
+context:
+  include:
+    - state.business_request
+    - artifact.common.request_fact_sheet
+    - artifact.common.goal_hypothesis
+    - artifact.common.constraint_inventory
+    - artifact.common.ambiguity_gap_report
+  max_tokens: 24000
+planning:
+  priority: 900
+effects:
+  readiness:
+    set:
+      - dimension: request_normalized
+        status: ready
+framework:
+  summary: Собери сводную опорную модель запроса на основе уже выполненных локальных задач.

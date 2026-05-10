@@ -1,0 +1,13 @@
+kind: task_template
+id: common.generate_requirements_spec
+version: 1.0.0
+title: Сформировать итоговое ТЗ
+type: composite
+status: active
+domain: common
+children:
+  - id: requirements_spec_generation
+    task: common.requirements_spec_generation@1.0.0
+slots:
+  - id: spec.domain_sections
+    title: Доменные разделы ТЗ

@@ -1,0 +1,21 @@
+kind: domain_pack
+id: security.enterprise_compliance
+version: 1.0.0
+title: Безопасность, приватность и комплаенс
+description: Добавляет анализ ИБ, приватности, доступа и ограничений размещения.
+domain: security
+status: active
+detect:
+  signals:
+    - иб
+    - безопасность
+    - персональные данные
+    - шифрование
+    - обезличивание
+    - on-premise
+    - защищенное облако
+contributes:
+  - to: data.privacy
+    add:
+      - id: security_constraints_assessment
+        task: security.constraints_assessment@1.0.0

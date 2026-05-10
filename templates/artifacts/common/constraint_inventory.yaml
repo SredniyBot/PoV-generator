@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.constraint_inventory
+version: 1.0.0
+title: Реестр ограничений проекта
+schema:
+  type: object
+  additionalProperties: true
+

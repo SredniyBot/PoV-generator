@@ -50,23 +50,23 @@ class WorkflowService:
         model: str | None = None,
     ) -> WorkflowStepResult:
         decision = self._planning_service.plan(workspace, snapshot, mode="apply")
-        if decision.outcome != "materialized" or not decision.created_task_id:
+        if decision.outcome != "selected" or not decision.selected_task_id:
             return WorkflowStepResult(
                 planning_outcome=decision.outcome,
                 task_id=None,
-                selected_step_id=decision.selected_step_id,
+                selected_step_id=decision.selected_task_key,
                 execution_run_id=None,
                 validation_status=None,
                 reasons=decision.reasons,
             )
 
-        task_id = decision.created_task_id
+        task_id = decision.selected_task_id
         return self._execute_existing_task(
             workspace,
             snapshot,
             task_id=task_id,
             planning_outcome=decision.outcome,
-            selected_step_id=decision.selected_step_id,
+            selected_step_id=decision.selected_task_key,
             provider=provider,
             model=model,
             reasons=decision.reasons,
@@ -88,7 +88,7 @@ class WorkflowService:
             snapshot,
             task_id=task_id,
             planning_outcome="retried",
-            selected_step_id=task.recipe_step_id,
+            selected_step_id=task.task_key,
             provider=provider,
             model=model,
             reasons=("Шаг запущен повторно после ошибки.",),
@@ -185,30 +185,20 @@ class WorkflowService:
         for _ in range(max_steps):
             result = self.run_next(workspace, snapshot, provider=provider, model=model)
             steps.append(result)
-            if result.planning_outcome != "materialized":
+            if result.planning_outcome not in {"selected", "retried"}:
                 return WorkflowRunResult(steps=tuple(steps), stopped_reason="planner_blocked")
             if result.validation_status != "passed":
                 return WorkflowRunResult(
                     steps=tuple(steps),
                     stopped_reason="execution_failed" if result.execution_run_id is None else "validation_failed",
                 )
-            manifest = self._runtime.load_manifest(workspace)
-            state = self._runtime.load_problem_state(workspace)
-            expected_step_ids = set(state.recipe_composition.step_ids) if state.recipe_composition else set()
-            progress = {
-                item.recipe_step_id: item
-                for item in self._runtime.list_recipe_progress(workspace, manifest.recipe_ref)
-            }
-            if expected_step_ids and all(
-                step_id in progress and progress[step_id].status == "completed"
-                for step_id in expected_step_ids
-            ):
-                return WorkflowRunResult(steps=tuple(steps), stopped_reason="recipe_completed")
+            if self._planning_service.plan(workspace, snapshot, mode="dry-run", record=False).outcome == "objective_completed":
+                return WorkflowRunResult(steps=tuple(steps), stopped_reason="objective_completed")
         return WorkflowRunResult(steps=tuple(steps), stopped_reason="max_steps_reached")
 
     def _apply_success_effects(self, workspace: Path, snapshot, task_id: str, execution_bundle: ExecutionBundle) -> list[str]:
         task = self._runtime.get_task(workspace, task_id)
-        template = snapshot.resolve_template(f"{task.template_id}@{task.template_version}")
+        template = snapshot.resolve_template(task.template_ref)
         state = self._runtime.load_problem_state(workspace)
         applied: list[str] = []
 
@@ -217,22 +207,22 @@ class WorkflowService:
                 workspace,
                 SetGoalPatch(text=execution_bundle.result.proposed_goal),
                 actor="workflow",
-                reason=f"goal extracted from {task.recipe_step_id}",
+                reason=f"goal extracted from {task.task_key}",
             )
             applied.append("SetGoalPatch")
 
-        for gap_id in template.semantics.closes_gaps:
+        for gap_id in template.effects.closes_gaps:
             if gap_id in state.active_gaps:
                 self._runtime.apply_problem_patch(
                     workspace,
                     CloseGapPatch(gap_id=gap_id),
                     actor="workflow",
-                    reason=f"gap closed by {task.recipe_step_id}",
+                    reason=f"gap closed by {task.task_key}",
                 )
                 applied.append(f"CloseGapPatch:{gap_id}")
 
         latest_state = self._runtime.load_problem_state(workspace)
-        for readiness_raise in template.semantics.raises_readiness:
+        for readiness_raise in template.effects.raises_readiness:
             current = latest_state.readiness.get(readiness_raise.dimension)
             blocking = current.blocking if current is not None else False
             self._runtime.apply_problem_patch(
@@ -245,7 +235,7 @@ class WorkflowService:
                     evidence=(execution_bundle.result.execution_run_id,),
                 ),
                 actor="workflow",
-                reason=f"readiness raised by {task.recipe_step_id}",
+                reason=f"readiness raised by {task.task_key}",
             )
             applied.append(f"UpsertReadinessPatch:{readiness_raise.dimension}")
 

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.scope_boundary_matrix
+version: 1.0.0
+title: Матрица границ этапа
+schema:
+  type: object
+  additionalProperties: true
+

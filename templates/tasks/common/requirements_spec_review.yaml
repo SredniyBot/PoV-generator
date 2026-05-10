@@ -1,0 +1,26 @@
+kind: task_template
+id: common.requirements_spec_review
+version: 1.0.0
+title: Провести ревью ТЗ
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required: [common.requirements_spec@1.0.0]
+produces:
+  artifact: common.review_report@1.0.0
+context:
+  include: [artifact.common.requirements_spec]
+  max_tokens: 24000
+planning:
+  priority: 50
+effects:
+  readiness:
+    set:
+      - dimension: specification_reviewed
+        status: ready
+framework:
+  summary: Проверь ТЗ на полноту, противоречия, доменные разделы, риски и готовность к передаче дальше.

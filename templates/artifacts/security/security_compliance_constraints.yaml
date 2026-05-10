@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: security.security_compliance_constraints
+version: 1.0.0
+title: Ограничения безопасности и комплаенса
+schema:
+  type: object
+  additionalProperties: true
+

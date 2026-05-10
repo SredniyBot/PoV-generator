@@ -1,0 +1,24 @@
+kind: domain_pack
+id: ml.predictive_analytics
+version: 1.0.0
+title: Предиктивная аналитика и ML
+description: Добавляет постановку аналитической/ML-задачи и оценку данных.
+domain: ml
+status: active
+detect:
+  signals:
+    - ml
+    - машинное обучение
+    - предиктивная аналитика
+    - прогноз
+    - модель
+    - скоринг
+contributes:
+  - to: solution.evaluation
+    add:
+      - id: predictive_problem_definition
+        task: ml.predictive_problem_definition@1.0.0
+  - to: data.quality
+    add:
+      - id: data_landscape_assessment
+        task: ml.data_landscape_assessment@1.0.0

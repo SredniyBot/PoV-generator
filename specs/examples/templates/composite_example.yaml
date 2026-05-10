@@ -1,92 +1,44 @@
-# Пример Composite-шаблона: фаза работы с требованиями.
-# Состоит из 3 последовательных executable-шагов.
-id: requirements_phase
+﻿kind: task_template
+id: common.prepare_requirements_spec
 version: 1.0.0
+title: Подготовить техническое задание
 type: composite
-description: >-
-  Цикл сбора требований: intake опросника → синтез ТЗ → валидация и
-  подтверждение заказчиком. Bubble-up: итоговое ТЗ и журнал уточнений.
-owner: g.orlov@pov-lab.ru
 status: active
-domain: common
 
-input_requirements:
-  - name: client_brief
-    kind: hard
-    artifact_type: brief
-    schema_ref: pov_lab:input.brief@1.0.0
-    selector:
-      kind: by_type
-      artifact_type: brief
-    description: Исходный бизнес-запрос от заказчика.
+children:
+  - id: request
+    task: common.analyze_request@1.0.0
 
-output_contract:
-  - name: final_requirements
-    artifact_type: requirements
-    mime_type: application/json
-    schema_ref: pov_lab:output.requirements@1.0.0
-    description: Согласованное ТЗ.
-    required: true
-    multiplicity: one
-  - name: decision_log
-    artifact_type: log
-    mime_type: application/json
-    description: Журнал решений и уточнений, сопровождавших фазу.
-    required: true
-    multiplicity: one
+  - id: business
+    task: common.build_business_understanding@1.0.0
 
-composite:
-  children:
-    - alias: intake
-      template_id: questionnaire_intake
-      template_version: "1.0.0"
-      depends_on: []
-      input_bindings:
-        brief:
-          from_parent_input: client_brief
-    - alias: synthesis
-      template_id: requirements_synthesis
-      template_version: "1.0.0"
-      depends_on:
-        - intake
-      input_bindings:
-        questionnaire:
-          from_alias: intake
-          output: questionnaire
-    - alias: review
-      template_id: requirements_review
-      template_version: "1.0.0"
-      depends_on:
-        - synthesis
-      input_bindings:
-        draft_requirements:
-          from_alias: synthesis
-          output: requirements_doc
-        open_questions:
-          from_alias: synthesis
-          output: open_questions
-  bubble_up_outputs:
-    final_requirements:
-      from_alias: review
-      output: approved_requirements
-    decision_log:
-      from_alias: review
-      output: decision_log
+  - id: data
+    task: common.analyze_data@1.0.0
 
-escalation:
-  max_attempts: 1
-  max_llm_calls: 20
-  wall_clock_seconds: 3600
+  - id: solution
+    task: common.analyze_solution@1.0.0
 
-metadata:
-  stage_gate: requirements
-  labels:
-    phase: "requirements"
-  tags:
-    - requirements
-    - composite
+  - id: delivery
+    task: common.define_delivery_model@1.0.0
 
-provenance:
-  actor: engineer:g.orlov
-  timestamp: "2026-04-15T12:00:00Z"
-  reason: initial publication
+  - id: spec
+    task: common.compose_requirements_spec@1.0.0
+
+  - id: review
+    task: common.review_requirements_spec@1.0.0
+
+slots:
+  - id: spec.domain_sections
+    title: Доменные разделы ТЗ
+
+  - id: review.domain_gates
+    title: Доменные проверки итогового ТЗ
+
+completion:
+  when:
+    children: all_required_completed
+    gates: all_required_passed
+  artifacts:
+    require_in_subtree:
+      - common.requirements_spec@1.0.0
+      - common.review_report@1.0.0

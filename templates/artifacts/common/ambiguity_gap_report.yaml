@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.ambiguity_gap_report
+version: 1.0.0
+title: Карта неоднозначностей и пробелов
+schema:
+  type: object
+  additionalProperties: true
+

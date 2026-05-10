@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.normalized_request
+version: 1.0.0
+title: Нормализованный бизнес-запрос
+schema:
+  type: object
+  additionalProperties: true
+

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: integration.integration_operating_model
+version: 1.0.0
+title: Интеграционная и операционная модель
+schema:
+  type: object
+  additionalProperties: true
+

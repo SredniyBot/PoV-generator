@@ -1,0 +1,26 @@
+kind: task_template
+id: frontend.user_flow_analysis
+version: 1.0.0
+title: Разобрать пользовательские потоки интерфейса
+type: leaf
+status: active
+domain: frontend
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required: [common.normalized_request@1.0.0]
+produces:
+  artifact: frontend.ui_requirements_outline@1.0.0
+context:
+  include: [artifact.common.normalized_request]
+  max_tokens: 24000
+planning:
+  priority: 700
+effects:
+  readiness:
+    set:
+      - dimension: ui_requirements_outlined
+        status: ready
+framework:
+  summary: Определи пользовательские роли, сценарии, экраны, аналитические представления и UX-ограничения.

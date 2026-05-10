@@ -14,6 +14,7 @@ from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+OBJECTIVE_REF = "common.requirements_specification@1.0.0"
 
 
 def build_services(registry_root: Path | None = None):
@@ -21,167 +22,237 @@ def build_services(registry_root: Path | None = None):
     runtime = SqliteRuntime()
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
-    return registry_service, project_service, planning_service
+    return registry_service, runtime, project_service, planning_service
 
 
 def init_workspace(tmp_path: Path, domain_packs: tuple[str, ...] = ()):
-    registry_service, project_service, planning_service = build_services()
+    registry_service, runtime, project_service, planning_service = build_services()
     snapshot, report = registry_service.validate()
     assert report.is_valid
-    recipe_ref = ObjectRef.parse("common.build_requirements_spec@1.0.0")
-    bootstrap_recipe = planning_service.build_recipe_bootstrap(
-        snapshot,
-        recipe_ref.as_string(),
-        enabled_domain_pack_refs=domain_packs,
-    )
+    packs = tuple(snapshot.resolve_domain_pack(pack_ref) for pack_ref in domain_packs)
     workspace = tmp_path / "case"
     project_service.init_project(
         workspace=workspace,
         name="Demo",
-        recipe_ref=recipe_ref,
+        objective_ref=ObjectRef.parse(OBJECTIVE_REF),
         request_text="Нужен сервис для преобразования бизнес-запроса в ТЗ.",
-        bootstrap_recipe=bootstrap_recipe,
+        domain_packs=packs,
     )
-    return workspace, registry_service, project_service, planning_service
+    return workspace, snapshot, runtime, project_service, planning_service
 
 
-def complete_task(workspace: Path, planning_service: PlanningService, task_id: str) -> None:
-    planning_service.transition_task(workspace, task_id, "start")
-    planning_service.transition_task(workspace, task_id, "complete")
-
-
-def test_registry_validation_passes_for_sample_corpus() -> None:
-    registry_service, _, _ = build_services()
+def test_registry_validation_passes_for_task_graph_corpus() -> None:
+    registry_service, _, _, _ = build_services()
     snapshot, report = registry_service.validate()
 
     assert report.is_valid
-    assert len(snapshot.templates) >= 32
-    assert len(snapshot.recipes) == 2
-    assert len(snapshot.recipe_fragments) == 5
-    assert len(snapshot.domain_packs) == 5
+    assert len(snapshot.objectives) == 1
+    assert len(snapshot.templates) >= 21
+    assert len(snapshot.artifact_contracts) >= 16
+    assert len(snapshot.domain_packs) == 4
+    assert len(snapshot.methodology_packs) >= 1
+    assert len(snapshot.quality_gates) == 1
     assert len(snapshot.vocabularies) == 5
 
 
-def test_registry_validation_detects_unknown_gap_reference(tmp_path: Path) -> None:
+def test_registry_validation_detects_unknown_domain_slot(tmp_path: Path) -> None:
     registry_root = tmp_path / "templates"
     shutil.copytree(REPO_ROOT / "templates", registry_root)
-    template_path = registry_root / "templates" / "common" / "goal_clarification.yaml"
-    raw = yaml.safe_load(template_path.read_text(encoding="utf-8"))
-    raw["semantics"]["closes_gaps"] = ["unknown_gap"]
-    template_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    pack_path = registry_root / "domains" / "ml" / "predictive_analytics.yaml"
+    raw = yaml.safe_load(pack_path.read_text(encoding="utf-8"))
+    raw["contributes"][0]["to"] = "unknown.slot"
+    pack_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
-    registry_service, _, _ = build_services(registry_root)
+    registry_service, _, _, _ = build_services(registry_root)
     _, report = registry_service.validate()
 
     assert not report.is_valid
-    assert any("unknown_gap" in issue.message for issue in report.errors)
+    assert any("unknown.slot" in issue.message for issue in report.errors)
 
 
 def test_problem_state_patches_persist_and_history(tmp_path: Path) -> None:
-    workspace, _, project_service, _ = init_workspace(tmp_path)
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
 
     project_service.set_goal(workspace, "Подготовить качественное ТЗ.")
-    project_service.set_readiness(workspace, "goal_clarity", "ready", blocking=False, confidence=0.95)
-    project_service.close_gap(workspace, "unclear_goal")
+    project_service.set_readiness(workspace, "request_normalized", "ready", blocking=False, confidence=0.95)
+    project_service.add_gap(workspace, "missing_kpi", "Нет KPI", "Не указан измеримый эффект.", "medium", True)
+    project_service.close_gap(workspace, "missing_kpi")
     state = project_service.load_problem_state(workspace)
     history = project_service.problem_history(workspace)
 
     assert state.goal == "Подготовить качественное ТЗ."
-    assert state.readiness["goal_clarity"].status == "ready"
-    assert "unclear_goal" not in state.active_gaps
-    assert len(history) >= 4
+    assert state.readiness["request_normalized"].status == "ready"
+    assert "missing_kpi" not in state.active_gaps
+    assert len(history) >= 5
 
 
-def test_planner_materializes_first_meta_step_and_tracks_progress(tmp_path: Path) -> None:
-    workspace, registry_service, project_service, planning_service = init_workspace(tmp_path)
-    snapshot, _ = registry_service.validate()
+def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) -> None:
+    workspace, snapshot, runtime, project_service, planning_service = init_workspace(tmp_path)
 
-    decision = planning_service.plan(workspace, snapshot, mode="apply")
-    tasks = planning_service.list_tasks(workspace)
-
-    assert decision.outcome == "materialized"
-    assert decision.selected_step_id == "goal_clarification"
-    assert decision.domain_pack_refs == ()
-    assert len(tasks) == 1
-    assert tasks[0].status == "queued"
-
-    complete_task(workspace, planning_service, tasks[0].task_id)
-    recipe_progress = planning_service.list_recipe_progress(
-        workspace, project_service.load_manifest(workspace).recipe_ref
-    )
-
-    assert any(item.recipe_step_id == "goal_clarification" and item.status == "completed" for item in recipe_progress)
-
-
-def test_planner_moves_to_next_step_only_after_manual_readiness_progress(tmp_path: Path) -> None:
-    workspace, registry_service, project_service, planning_service = init_workspace(tmp_path)
-    snapshot, _ = registry_service.validate()
-
-    first_decision = planning_service.plan(workspace, snapshot, mode="apply")
-    first_task = planning_service.list_tasks(workspace)[0]
-    assert first_decision.selected_step_id == "goal_clarification"
-
-    planning_service.transition_task(workspace, first_task.task_id, "start")
-    project_service.set_goal(workspace, "Подготовить согласованное ТЗ.")
-    project_service.set_readiness(workspace, "goal_clarity", "ready", blocking=False, confidence=0.9)
-    project_service.close_gap(workspace, "unclear_goal")
-    planning_service.transition_task(workspace, first_task.task_id, "complete")
-
-    second_decision = planning_service.plan(workspace, snapshot, mode="dry-run")
-
-    assert second_decision.selected_step_id == "user_story_scan"
-    assert second_decision.selected_template_ref == "common.user_story_scan@1.0.0"
-
-
-def test_planner_blocks_duplicate_materialization(tmp_path: Path) -> None:
-    workspace, registry_service, _, planning_service = init_workspace(tmp_path)
-    snapshot, _ = registry_service.validate()
-
-    planning_service.plan(workspace, snapshot, mode="apply")
-    second_decision = planning_service.plan(workspace, snapshot, mode="dry-run")
-
-    assert second_decision.outcome == "blocked"
-    assert any(
-        candidate.recipe_step_id == "goal_clarification" and candidate.duplicate
-        for candidate in second_decision.candidates
-    )
-
-
-def test_frontend_domain_pack_extends_recipe_and_blocks_core_until_frontend_step_done(tmp_path: Path) -> None:
-    workspace, registry_service, project_service, planning_service = init_workspace(
-        tmp_path,
-        domain_packs=("frontend.web_app_requirements@1.0.0",),
-    )
-    snapshot, _ = registry_service.validate()
+    planning_service.expand_graph(workspace, snapshot)
     state = project_service.load_problem_state(workspace)
-    composed_recipe = planning_service.current_composed_recipe(workspace, snapshot)
+    tasks = runtime.list_tasks(workspace)
 
-    assert "frontend.web_app_requirements@1.0.0" in state.enabled_domain_packs
-    assert state.recipe_composition is not None
-    assert "frontend_user_flow_analysis" in state.recipe_composition.step_ids
-    assert composed_recipe.domain_pack_refs == ("frontend.web_app_requirements@1.0.0",)
-    assert any(step.identifier == "frontend_user_flow_analysis" for step in composed_recipe.steps)
+    assert state.root_task_id is not None
+    assert len(tasks) == 16
+    assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
+    assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
 
-    for readiness_id, gap_id in (
-        ("goal_clarity", "unclear_goal"),
-        ("user_story_coverage", "missing_user_stories"),
-        ("alternatives_explored", "alternatives_not_explored"),
-    ):
-        decision = planning_service.plan(workspace, snapshot, mode="apply")
-        assert decision.outcome == "materialized"
-        assert decision.created_task_id is not None
-        complete_task(workspace, planning_service, decision.created_task_id)
-        project_service.set_readiness(workspace, readiness_id, "ready", blocking=False, confidence=0.9)
-        project_service.close_gap(workspace, gap_id)
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+    assert decision.outcome == "selected"
+    assert decision.selected_task_key == "common.request_fact_extraction@1.0.0"
 
-    frontend_decision = planning_service.plan(workspace, snapshot, mode="dry-run")
 
-    assert frontend_decision.selected_step_id == "frontend_user_flow_analysis"
-    assert frontend_decision.domain_pack_refs == ("frontend.web_app_requirements@1.0.0",)
-    assert frontend_decision.recipe_fragment_refs == ("frontend.requirements_extension@1.0.0",)
-    assert any(
-        candidate.recipe_step_id == "frontend_user_flow_analysis"
-        and candidate.step_source_kind == "recipe_fragment"
-        and candidate.step_source_ref == "frontend.requirements_extension@1.0.0"
-        for candidate in frontend_decision.candidates
+def test_domain_pack_contributes_tasks_into_configured_slots(tmp_path: Path) -> None:
+    workspace, snapshot, runtime, _, planning_service = init_workspace(
+        tmp_path,
+        domain_packs=(
+            "ml.predictive_analytics@1.0.0",
+            "frontend.web_workspace@1.0.0",
+        ),
     )
+
+    planning_service.expand_graph(workspace, snapshot)
+    tasks = runtime.list_tasks(workspace)
+
+    assert any(
+        task.template_ref == "ml.predictive_problem_definition@1.0.0"
+        and task.origin_kind == "domain_contribution"
+        and task.slot_id == "solution.evaluation"
+        for task in tasks
+    )
+    assert any(
+        task.template_ref == "frontend.user_flow_analysis@1.0.0"
+        and task.origin_kind == "domain_contribution"
+        and task.slot_id == "spec.domain_sections"
+        for task in tasks
+    )
+
+
+def test_graph_expansion_is_idempotent(tmp_path: Path) -> None:
+    workspace, snapshot, runtime, _, planning_service = init_workspace(
+        tmp_path,
+        domain_packs=("security.enterprise_compliance@1.0.0",),
+    )
+
+    planning_service.expand_graph(workspace, snapshot)
+    first_count = len(runtime.list_tasks(workspace))
+    planning_service.expand_graph(workspace, snapshot)
+    second_count = len(runtime.list_tasks(workspace))
+
+    assert first_count == second_count
+
+
+def test_methodology_pack_is_registered_with_stages() -> None:
+    registry_service, _, _, _ = build_services()
+    snapshot, report = registry_service.validate()
+
+    assert report.is_valid
+    pack = snapshot.resolve_methodology_pack("process.lean_jtbd@1.0.0")
+    assert pack.stage_execution_mode == "single_call"
+    stage_ids = tuple(stage.identifier for stage in pack.stages)
+    assert {"goal_framing", "decision"}.issubset(set(stage_ids))
+    assert "goal_framing" in pack.reasoning_artifact.required_stages
+    trivial_stages = pack.stages_for_complexity("trivial")
+    assert all(stage.identifier != "option_generation" for stage in trivial_stages)
+
+
+def test_quality_gate_normalizes_legacy_check_type() -> None:
+    registry_service, _, _, _ = build_services()
+    snapshot, report = registry_service.validate()
+
+    assert report.is_valid
+    gate = snapshot.resolve_quality_gate("common.requirements_spec_review_passed@1.0.0")
+    assert gate.check_type == "automated_review"
+
+
+def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> None:
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    state = project_service.load_problem_state(workspace)
+    active = state.active_methodology_pack_records
+    assert "process.lean_jtbd@1.0.0" in active
+    assert active["process.lean_jtbd@1.0.0"].source == "bootstrap"
+
+
+def test_set_methodology_keeps_active_pack(tmp_path: Path) -> None:
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    state = project_service.set_methodology(workspace, "process.lean_jtbd@1.0.0")
+    assert "process.lean_jtbd@1.0.0" in state.active_methodology_pack_records
+
+
+def test_execution_emits_reasoning_and_methodology_trace_artifacts(tmp_path: Path) -> None:
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+
+    workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
+    planning_service.expand_graph(workspace, snapshot)
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+    task_id = decision.selected_task_id
+    assert task_id is not None
+
+    context_service = ContextService(runtime)
+    execution_service = ExecutionService(runtime, context_service)
+    bundle = execution_service.execute_task(workspace, snapshot, task_id, provider="stub")
+
+    output_kinds = {output.kind for output in bundle.result.outputs}
+    assert output_kinds == {"primary", "reasoning", "trace"}
+    assert bundle.request.methodology_pack_ref == "process.lean_jtbd@1.0.0"
+
+    artifacts = list(runtime.list_artifacts(workspace))
+    kinds = {artifact.artifact_kind for artifact in artifacts}
+    assert {"primary", "reasoning", "trace"}.issubset(kinds)
+
+
+def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> None:
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+    from pov_generator.application.validation_service import ValidationService
+    from pov_generator.application.workflow_service import WorkflowService
+    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+
+    workspace, snapshot, runtime, project_service, planning_service = init_workspace(tmp_path)
+    context = ContextService(runtime)
+    execution = ExecutionService(runtime, context)
+    cl = ClarificationService(runtime)
+    val = ValidationService(runtime, cl)
+    wf = WorkflowService(runtime, planning_service, execution, val)
+    wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
+
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    qs = WorkspaceQueryService(catalog, RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates")), runtime, planning_service)
+    pid = runtime.load_manifest(workspace).project_id
+    overview = qs.project_overview(pid)
+    assert overview.active_methodology == "process.lean_jtbd@1.0.0"
+    assert overview.objective_progress.artifacts_required >= 1
+    assert isinstance(overview.stage_summary, str) and overview.stage_summary
+
+    methodologies = qs.list_methodology_packs()
+    assert any(m["pack_ref"] == "process.lean_jtbd@1.0.0" for m in methodologies)
+
+
+def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> None:
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+    from pov_generator.application.validation_service import ValidationService
+    from pov_generator.application.workflow_service import WorkflowService
+    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+
+    workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
+    context = ContextService(runtime)
+    execution = ExecutionService(runtime, context)
+    cl = ClarificationService(runtime)
+    val = ValidationService(runtime, cl)
+    wf = WorkflowService(runtime, planning_service, execution, val)
+    wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
+
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    qs = WorkspaceQueryService(catalog, RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates")), runtime, planning_service)
+    pid = runtime.load_manifest(workspace).project_id
+    completed = next(t for t in runtime.list_tasks(workspace) if t.template_type == "leaf" and t.status == "completed")
+    trace = qs.task_methodology_trace(pid, completed.task_id)
+    assert trace["trace"] is not None
+    assert trace["reasoning"] is not None

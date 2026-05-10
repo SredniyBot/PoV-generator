@@ -1,0 +1,24 @@
+kind: task_template
+id: common.constraint_inventory
+version: 1.0.0
+title: Собрать ограничения проекта
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+produces:
+  artifact: common.constraint_inventory@1.0.0
+context:
+  include: [state.business_request]
+  max_tokens: 12000
+planning:
+  priority: 980
+effects:
+  readiness:
+    set:
+      - dimension: constraints_inventoried
+        status: ready
+framework:
+  summary: Выдели явные и неявные ограничения проекта, включая рамку этапа, зависимости и среду.

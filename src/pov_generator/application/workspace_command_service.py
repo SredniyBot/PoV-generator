@@ -7,12 +7,16 @@ import uuid
 from ..common.errors import ConflictError
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
+from .clarification_service import ClarificationService
 from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
 from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 from .workspace_catalog import WorkspaceCatalog
+
+
+GRAPH_PROJECTIONS = ("task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state", "debug")
 
 
 class WorkspaceCommandService:
@@ -24,6 +28,7 @@ class WorkspaceCommandService:
         planning_service: PlanningService,
         workflow_service: WorkflowService,
         domain_pack_selection_service: DomainPackSelectionService,
+        clarification_service: ClarificationService,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
@@ -31,14 +36,15 @@ class WorkspaceCommandService:
         self._planning_service = planning_service
         self._workflow_service = workflow_service
         self._domain_pack_selection_service = domain_pack_selection_service
+        self._clarification_service = clarification_service
 
     def run_next(self, project_id: str, *, provider: str | None = None, model: str | None = None) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
         snapshot = self._validated_snapshot()
         result = self._workflow_service.run_next(workspace_ref.workspace, snapshot, provider=provider, model=model)
-        status = "accepted" if result.planning_outcome == "materialized" else "blocked"
+        status = "accepted" if result.planning_outcome == "selected" else "blocked"
         summary = (
-            f"Запущен шаг '{result.selected_step_id}'."
+            f"Запущена задача '{result.selected_step_id}'."
             if result.task_id
             else (result.reasons[0] if result.reasons else "Команда не изменила состояние проекта.")
         )
@@ -46,7 +52,7 @@ class WorkspaceCommandService:
             status=status,
             command_name="run-next",
             summary=summary,
-            changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
+            changed_projections=GRAPH_PROJECTIONS,
             resource_id=result.task_id,
         )
 
@@ -67,23 +73,23 @@ class WorkspaceCommandService:
             model=model,
             max_steps=max_steps,
         )
-        if result.stopped_reason == "recipe_completed":
+        if result.stopped_reason == "objective_completed":
             status = "accepted"
-            summary = f"Workflow завершён успешно: все шаги recipe пройдены за {len(result.steps)} шагов."
+            summary = f"Цель завершена: выполнено задач {len(result.steps)}."
         elif result.stopped_reason == "validation_failed":
             status = "warning"
-            summary = "Workflow остановлен: ревью или валидация требуют внимания."
+            summary = "Процесс остановлен: ревью или валидация требуют внимания."
         elif result.stopped_reason == "planner_blocked":
             status = "blocked"
-            summary = "Workflow остановлен: автоматических следующих шагов сейчас нет."
+            summary = "Процесс остановлен: автоматических следующих задач сейчас нет."
         else:
             status = "warning"
-            summary = f"Workflow остановлен со статусом '{result.stopped_reason}' после {len(result.steps)} шагов."
+            summary = f"Процесс остановлен со статусом '{result.stopped_reason}' после {len(result.steps)} задач."
         return CommandResultView(
             status=status,
             command_name="run-until-blocked",
             summary=summary,
-            changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
+            changed_projections=GRAPH_PROJECTIONS,
         )
 
     def retry_task(
@@ -105,15 +111,15 @@ class WorkspaceCommandService:
         )
         if result.validation_status == "passed":
             status = "accepted"
-            summary = f"Шаг '{result.selected_step_id or task_id}' успешно выполнен повторно."
+            summary = f"Задача '{result.selected_step_id or task_id}' успешно выполнена повторно."
         else:
             status = "warning"
-            summary = result.reasons[0] if result.reasons else "Повторный запуск шага завершился с ошибкой."
+            summary = result.reasons[0] if result.reasons else "Повторный запуск задачи завершился с ошибкой."
         return CommandResultView(
             status=status,
             command_name="retry-task",
             summary=summary,
-            changed_projections=("journey", "situation", "timeline", "artifacts", "review", "state", "debug"),
+            changed_projections=GRAPH_PROJECTIONS,
             resource_id=task_id,
         )
 
@@ -134,7 +140,7 @@ class WorkspaceCommandService:
             status="accepted",
             command_name="close-gap",
             summary=f"Gap '{gap_id}' закрыт.",
-            changed_projections=("situation", "timeline", "state"),
+            changed_projections=("situation", "timeline", "state", "task_graph"),
             resource_id=gap_id,
         )
 
@@ -159,7 +165,7 @@ class WorkspaceCommandService:
             status="accepted",
             command_name="set-readiness",
             summary=f"Readiness '{dimension}' обновлена.",
-            changed_projections=("situation", "timeline", "state"),
+            changed_projections=("situation", "timeline", "state", "task_graph"),
             resource_id=dimension,
         )
 
@@ -168,12 +174,77 @@ class WorkspaceCommandService:
         snapshot = self._validated_snapshot()
         pack = snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
         self._project_service.enable_domain_pack(workspace_ref.workspace, pack)
-        self._planning_service.current_composed_recipe(workspace_ref.workspace, snapshot)
+        self._planning_service.expand_graph(workspace_ref.workspace, snapshot)
         return CommandResultView(
             status="accepted",
             command_name="enable-domain-pack",
             summary=f"Подключён доменный пакет '{pack_ref}'.",
-            changed_projections=("shell", "journey", "situation", "timeline", "state", "debug"),
+            changed_projections=("shell", "task_graph", "situation", "timeline", "clarifications", "state", "debug"),
+            resource_id=pack_ref,
+        )
+
+    def answer_clarification(
+        self,
+        project_id: str,
+        *,
+        clarification_id: str,
+        selected_option_ids: tuple[str, ...] = (),
+        free_text: str | None = None,
+    ) -> CommandResultView:
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        snapshot = self._validated_snapshot()
+        request = self._clarification_service.answer_clarification(
+            workspace_ref.workspace,
+            request_id=clarification_id,
+            selected_option_ids=selected_option_ids,
+            free_text=free_text,
+        )
+        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
+        return CommandResultView(
+            status="accepted",
+            command_name="answer-clarification",
+            summary="Ответ на уточнение сохранен. Система пересчитает доступные следующие действия.",
+            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
+            resource_id=request.request_id,
+        )
+
+    def accept_assumption(self, project_id: str, *, clarification_id: str) -> CommandResultView:
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        snapshot = self._validated_snapshot()
+        request = self._clarification_service.accept_assumption(
+            workspace_ref.workspace,
+            request_id=clarification_id,
+        )
+        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
+        return CommandResultView(
+            status="accepted",
+            command_name="accept-assumption",
+            summary="Предложенное допущение принято и зафиксировано в состоянии проекта.",
+            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
+            resource_id=request.request_id,
+        )
+
+    def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        self._clarification_service.set_mode(workspace_ref.workspace, mode)  # type: ignore[arg-type]
+        return CommandResultView(
+            status="accepted",
+            command_name="set-clarification-mode",
+            summary=f"Режим уточнений изменен на '{mode}'.",
+            changed_projections=("shell", "clarifications", "situation", "timeline", "state"),
+            resource_id=mode,
+        )
+
+    def set_methodology(self, project_id: str, *, pack_ref: str) -> CommandResultView:
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        snapshot = self._validated_snapshot()
+        snapshot.resolve_methodology_pack(ObjectRef.parse(pack_ref))
+        self._project_service.set_methodology(workspace_ref.workspace, pack_ref)
+        return CommandResultView(
+            status="accepted",
+            command_name="set-methodology",
+            summary=f"Активная методология обновлена: '{pack_ref}'.",
+            changed_projections=("shell", "situation", "timeline", "state", "debug"),
             resource_id=pack_ref,
         )
 
@@ -181,45 +252,40 @@ class WorkspaceCommandService:
         self,
         *,
         name: str,
-        recipe_ref: str,
+        objective_ref: str,
         request_text: str,
         domain_pack_refs: tuple[str, ...] = (),
         selection_provider: str | None = None,
         selection_model: str | None = None,
     ) -> ProjectCreatedView:
         snapshot = self._validated_snapshot()
-        recipe_object_ref = ObjectRef.parse(recipe_ref)
+        objective_object_ref = ObjectRef.parse(objective_ref)
         if domain_pack_refs:
             resolved_pack_refs = tuple(sorted(set(domain_pack_refs)))
-            for pack_ref in resolved_pack_refs:
-                snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
-            selection_summary = "Использован явный ручной выбор domain pack."
+            packs = tuple(snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref)) for pack_ref in resolved_pack_refs)
+            selection_summary = "Использован явный ручной выбор доменных пакетов."
         else:
             selection = self._domain_pack_selection_service.select_for_request(
                 snapshot,
-                recipe_ref=recipe_object_ref.as_string(),
+                objective_ref=objective_object_ref.as_string(),
                 request_text=request_text.strip(),
                 provider=selection_provider,
                 model=selection_model,
             )
             resolved_pack_refs = selection.selected_pack_refs
+            packs = tuple(snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref)) for pack_ref in resolved_pack_refs)
             selection_summary = (
                 f"Автоматический модуль подбора доменных пакетов ({selection.provider}) выбрал: "
                 f"{', '.join(selection.selected_pack_refs) if selection.selected_pack_refs else 'ничего'}. "
                 f"Обоснование: {selection.rationale}"
             )
-        bootstrap_recipe = self._planning_service.build_recipe_bootstrap(
-            snapshot,
-            recipe_object_ref.as_string(),
-            enabled_domain_pack_refs=resolved_pack_refs,
-        )
         workspace = self._allocate_workspace(name)
         bootstrap = self._project_service.init_project(
             workspace=workspace,
             name=name.strip(),
-            recipe_ref=recipe_object_ref,
+            objective_ref=objective_object_ref,
             request_text=request_text.strip(),
-            bootstrap_recipe=bootstrap_recipe,
+            domain_packs=packs,
         )
         self._project_service.add_fact(
             workspace,
@@ -227,10 +293,11 @@ class WorkspaceCommandService:
             statement=selection_summary,
             source="domain_pack_selector",
         )
+        self._planning_service.expand_graph(workspace, snapshot)
         return ProjectCreatedView(
             project_id=bootstrap.manifest.project_id,
             name=bootstrap.manifest.name,
-            recipe_ref=bootstrap.manifest.recipe_ref,
+            objective_ref=bootstrap.manifest.objective_ref,
             domain_pack_refs=resolved_pack_refs,
             workspace_path=str(workspace),
         )
@@ -244,7 +311,6 @@ class WorkspaceCommandService:
     def _allocate_workspace(self, name: str) -> Path:
         bucket = self._catalog.runtime_root / "ui_cases"
         bucket.mkdir(parents=True, exist_ok=True)
-        slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
+        slug = re.sub(r"[^a-z0-9а-яё]+", "-", name.strip().lower())
         slug = slug.strip("-")[:32] or "project"
-        workspace = bucket / f"{slug}-{uuid.uuid4().hex[:8]}"
-        return workspace
+        return bucket / f"{slug}-{uuid.uuid4().hex[:8]}"

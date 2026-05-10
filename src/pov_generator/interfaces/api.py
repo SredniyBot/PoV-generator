@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
 from ..application.execution_service import ExecutionService
 from ..application.planning_service import PlanningService
@@ -40,11 +41,12 @@ def create_app(
 
     registry_service = RegistryService(FilesystemRegistryLoader(resolved_repo_root / "templates"))
     runtime = SqliteRuntime()
+    clarification_service = ClarificationService(runtime)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    validation_service = ValidationService(runtime)
+    validation_service = ValidationService(runtime, clarification_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
@@ -56,6 +58,7 @@ def create_app(
         planning_service,
         workflow_service,
         domain_pack_selection_service,
+        clarification_service,
     )
 
     app.state.query_service = query_service
@@ -86,7 +89,7 @@ def create_app(
         return to_primitive(
             command_service.create_project(
                 name=_required_str(payload, "name"),
-                recipe_ref=_required_str(payload, "recipe_ref"),
+                objective_ref=_required_str(payload, "objective_ref"),
                 request_text=_required_str(payload, "request_text"),
                 domain_pack_refs=tuple(_required_string_list(domain_pack_refs, "domain_pack_refs")),
                 selection_provider=_optional_str(payload, "selection_provider"),
@@ -94,21 +97,29 @@ def create_app(
             )
         )
 
-    @app.get("/api/registry/recipes")
-    def list_recipes() -> Any:
-        return to_primitive(query_service.list_recipes())
+    @app.get("/api/registry/objectives")
+    def list_objectives() -> Any:
+        return to_primitive(query_service.list_objectives())
 
     @app.get("/api/registry/domain-packs")
     def list_domain_packs() -> Any:
         return to_primitive(query_service.list_domain_packs())
 
+    @app.get("/api/registry/methodology-packs")
+    def list_methodology_packs() -> Any:
+        return to_primitive(query_service.list_methodology_packs())
+
     @app.get("/api/projects/{project_id}/shell")
     def project_shell(project_id: str) -> Any:
         return to_primitive(query_service.project_shell(project_id))
 
-    @app.get("/api/projects/{project_id}/journey")
-    def project_journey(project_id: str) -> Any:
-        return to_primitive(query_service.project_journey(project_id))
+    @app.get("/api/projects/{project_id}/overview")
+    def project_overview(project_id: str) -> Any:
+        return to_primitive(query_service.project_overview(project_id))
+
+    @app.get("/api/projects/{project_id}/task-graph")
+    def project_task_graph(project_id: str) -> Any:
+        return to_primitive(query_service.project_task_graph(project_id))
 
     @app.get("/api/projects/{project_id}/situation")
     def project_situation(project_id: str) -> Any:
@@ -117,6 +128,14 @@ def create_app(
     @app.get("/api/projects/{project_id}/timeline")
     def project_timeline(project_id: str, after_sequence: int = 0) -> Any:
         return to_primitive(query_service.project_timeline(project_id, after_sequence=after_sequence))
+
+    @app.get("/api/projects/{project_id}/clarifications")
+    def project_clarifications(project_id: str) -> Any:
+        return to_primitive(query_service.project_clarifications(project_id))
+
+    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}")
+    def project_clarification_detail(project_id: str, clarification_id: str) -> Any:
+        return to_primitive(query_service.clarification_detail(project_id, clarification_id))
 
     @app.get("/api/projects/{project_id}/artifacts")
     def project_artifacts(project_id: str) -> Any:
@@ -137,6 +156,10 @@ def create_app(
     @app.get("/api/projects/{project_id}/debug")
     def project_debug(project_id: str) -> Any:
         return to_primitive(query_service.project_debug(project_id))
+
+    @app.get("/api/projects/{project_id}/tasks/{task_id}/methodology-trace")
+    def task_methodology_trace(project_id: str, task_id: str) -> Any:
+        return to_primitive(query_service.task_methodology_trace(project_id, task_id))
 
     @app.post("/api/projects/{project_id}/commands/run-next")
     def run_next(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
@@ -196,6 +219,41 @@ def create_app(
             command_service.enable_domain_pack(project_id, pack_ref=_required_str(payload, "pack_ref"))
         )
 
+    @app.post("/api/projects/{project_id}/commands/answer-clarification")
+    def answer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        selected_option_ids = payload.get("selected_option_ids", [])
+        if not isinstance(selected_option_ids, list):
+            raise PovGeneratorError("Поле 'selected_option_ids' должно быть списком.")
+        return to_primitive(
+            command_service.answer_clarification(
+                project_id,
+                clarification_id=_required_str(payload, "clarification_id"),
+                selected_option_ids=tuple(_required_string_list(selected_option_ids, "selected_option_ids")),
+                free_text=_optional_str(payload, "free_text"),
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/commands/accept-assumption")
+    def accept_assumption(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        return to_primitive(
+            command_service.accept_assumption(
+                project_id,
+                clarification_id=_required_str(payload, "clarification_id"),
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/commands/set-clarification-mode")
+    def set_clarification_mode(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        mode = _required_str(payload, "mode")
+        if mode not in {"autopilot", "balanced", "control", "expert"}:
+            raise PovGeneratorError("Режим уточнений должен быть одним из: autopilot, balanced, control, expert.")
+        return to_primitive(command_service.set_clarification_mode(project_id, mode=mode))
+
+    @app.post("/api/projects/{project_id}/commands/set-methodology")
+    def set_methodology(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        pack_ref = _required_str(payload, "pack_ref")
+        return to_primitive(command_service.set_methodology(project_id, pack_ref=pack_ref))
+
     @app.websocket("/ws/projects/{project_id}")
     async def project_updates(websocket: WebSocket, project_id: str) -> None:
         await websocket.accept()
@@ -203,7 +261,7 @@ def create_app(
         projections = (
             tuple(name.strip() for name in raw_projections.split(",") if name.strip())
             if raw_projections
-            else ("shell", "journey", "situation", "timeline", "artifacts", "review", "state")
+            else ("shell", "task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state")
         )
         try:
             last_token = await asyncio.to_thread(

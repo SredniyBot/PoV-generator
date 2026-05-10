@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.request_fact_sheet
+version: 1.0.0
+title: Выделенные факты запроса
+schema:
+  type: object
+  additionalProperties: true
+

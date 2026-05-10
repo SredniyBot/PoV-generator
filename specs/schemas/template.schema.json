@@ -1,442 +1,332 @@
-{
+﻿{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://pov-lab.ru/schemas/template.schema.json",
-  "title": "PoV Lab Task Template",
-  "description": "Декларативное описание класса задач. См. specs/01_template_registry.md §2.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "id",
-    "version",
-    "type",
-    "description",
-    "owner",
-    "status",
-    "domain",
-    "input_requirements",
-    "output_contract",
-    "escalation",
-    "metadata"
+  "$id": "https://pov-generator.local/schemas/registry-object.schema.json",
+  "title": "PoV Generator Registry Object",
+  "description": "v2.1 registry DSL: objective, task_template, artifact_contract, domain_pack, methodology_pack, quality_gate, vocabulary.",
+  "oneOf": [
+    { "$ref": "#/$defs/Objective" },
+    { "$ref": "#/$defs/TaskTemplate" },
+    { "$ref": "#/$defs/ArtifactContract" },
+    { "$ref": "#/$defs/DomainPack" },
+    { "$ref": "#/$defs/MethodologyPack" },
+    { "$ref": "#/$defs/QualityGate" },
+    { "$ref": "#/$defs/Vocabulary" }
   ],
-  "allOf": [
-    {
-      "if": { "properties": { "type": { "const": "composite" } } },
-      "then": { "required": ["composite"], "not": { "anyOf": [{ "required": ["executable"] }, { "required": ["dynamic"] }] } }
-    },
-    {
-      "if": { "properties": { "type": { "const": "executable" } } },
-      "then": { "required": ["executable"], "not": { "anyOf": [{ "required": ["composite"] }, { "required": ["dynamic"] }] } }
-    },
-    {
-      "if": { "properties": { "type": { "const": "dynamic" } } },
-      "then": { "required": ["dynamic"], "not": { "anyOf": [{ "required": ["composite"] }, { "required": ["executable"] }] } }
-    }
-  ],
-  "properties": {
-    "id": {
-      "type": "string",
-      "pattern": "^[a-z][a-z0-9_]{2,63}$"
-    },
-    "version": {
-      "type": "string",
-      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
-    },
-    "type": {
-      "type": "string",
-      "enum": ["composite", "executable", "dynamic"]
-    },
-    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
-    "owner": { "type": "string", "minLength": 1 },
-    "status": { "type": "string", "enum": ["draft", "active", "deprecated"] },
-    "domain": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,31}$" },
-    "input_requirements": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/InputRequirement" }
-    },
-    "output_contract": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "$ref": "#/$defs/OutputArtifactSpec" }
-    },
-    "escalation": { "$ref": "#/$defs/EscalationPolicy" },
-    "metadata": { "$ref": "#/$defs/TemplateMetadata" },
-    "provenance": { "$ref": "#/$defs/Provenance" },
-    "composite": { "$ref": "#/$defs/CompositeSpec" },
-    "executable": { "$ref": "#/$defs/ExecutableSpec" },
-    "dynamic": { "$ref": "#/$defs/DynamicSpec" }
-  },
   "$defs": {
-    "SchemaRef": {
+    "SemVer": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9_]*:[a-z][a-z0-9_.]*@\\d+\\.\\d+\\.\\d+$"
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
     },
-    "TemplateRef": {
+    "NamespacedId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "VersionedRef": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "Status": {
+      "type": "string",
+      "enum": ["draft", "active", "deprecated"]
+    },
+    "Header": {
+      "type": "object",
+      "required": ["kind", "id", "version", "title"],
+      "properties": {
+        "kind": { "type": "string" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" }
+      }
+    },
+    "Objective": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id"],
+      "required": ["kind", "id", "version", "title", "root", "done_when"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
-        "version": {
-          "oneOf": [
-            { "type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$" },
-            { "type": "string", "const": "latest" }
-          ],
-          "default": "latest"
+        "kind": { "const": "objective" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "root": { "$ref": "#/$defs/VersionedRef" },
+        "done_when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "artifacts": { "type": "array", "items": { "$ref": "#/$defs/VersionedRef" } },
+            "gates": { "type": "array", "items": { "$ref": "#/$defs/VersionedRef" } }
+          }
         }
       }
     },
-    "Provenance": {
+    "TaskTemplate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["actor", "timestamp"],
+      "required": ["kind", "id", "version", "title", "type"],
       "properties": {
-        "actor": { "type": "string" },
-        "timestamp": { "type": "string", "format": "date-time" },
-        "reason": { "type": "string" },
-        "correlation_id": { "type": "string", "format": "uuid" }
-      }
-    },
-    "InputRequirement": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "kind", "artifact_type", "selector", "description"],
-      "properties": {
-        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" },
-        "kind": { "type": "string", "enum": ["hard", "soft", "semantic"] },
-        "artifact_type": { "type": "string", "minLength": 1 },
-        "schema_ref": { "$ref": "#/$defs/SchemaRef" },
-        "selector": { "$ref": "#/$defs/Selector" },
-        "description": { "type": "string", "minLength": 1 }
+        "kind": { "const": "task_template" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "type": { "type": "string", "enum": ["composite", "leaf"] },
+        "complexity": { "type": "string", "enum": ["trivial", "standard", "complex"] },
+        "children": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "task"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              "task": { "$ref": "#/$defs/VersionedRef" },
+              "after": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title"],
+            "properties": {
+              "id": { "$ref": "#/$defs/NamespacedId" },
+              "title": { "type": "string" },
+              "accepts": { "type": "array", "items": { "type": "string", "enum": ["task", "gate"] } }
+            }
+          }
+        },
+        "executor": { "type": "string", "enum": ["llm", "script", "tool", "human", "hybrid"] },
+        "requires": { "type": "object" },
+        "produces": { "type": "object" },
+        "context": { "type": "object" },
+        "instruction": { "type": "string" },
+        "completion": { "type": "object" },
+        "validation": { "type": "object" },
+        "clarification_policy": { "type": "object" },
+        "skip": { "type": "object" },
+        "effects": { "type": "object" }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "semantic" } } },
-          "then": { "properties": { "selector": { "properties": { "kind": { "const": "semantic" } } } } }
+          "if": { "properties": { "type": { "const": "leaf" } } },
+          "then": { "required": ["executor", "produces", "instruction"] }
         },
         {
-          "if": { "properties": { "kind": { "enum": ["hard", "soft"] } } },
+          "if": { "properties": { "type": { "const": "composite" } } },
           "then": {
+            "anyOf": [
+              { "required": ["children"] },
+              { "required": ["slots"] }
+            ]
+          }
+        }
+      ]
+    },
+    "ArtifactContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "version", "title", "schema"],
+      "properties": {
+        "kind": { "const": "artifact_contract" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string" },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "schema": { "type": "object" }
+      }
+    },
+    "DomainPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "version", "title", "contributes"],
+      "properties": {
+        "kind": { "const": "domain_pack" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string" },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "detect": { "type": "object" },
+        "tasks": { "type": "array", "items": { "$ref": "#/$defs/VersionedRef" } },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/VersionedRef" } },
+        "gates": { "type": "array", "items": { "$ref": "#/$defs/VersionedRef" } },
+        "clarification_policy": { "type": "object" },
+        "contributes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["to", "add"],
             "properties": {
-              "selector": {
-                "properties": {
-                  "kind": { "enum": ["by_artifact_id", "by_producer", "by_type"] }
+              "to": { "$ref": "#/$defs/NamespacedId" },
+              "when": { "type": "object" },
+              "add": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id"],
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                    "task": { "$ref": "#/$defs/VersionedRef" },
+                    "gate": { "$ref": "#/$defs/VersionedRef" }
+                  },
+                  "oneOf": [
+                    { "required": ["task"] },
+                    { "required": ["gate"] }
+                  ]
                 }
               }
             }
           }
         }
-      ]
-    },
-    "Selector": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "artifact_id"],
-          "properties": {
-            "kind": { "const": "by_artifact_id" },
-            "artifact_id": { "type": "string", "format": "uuid" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "producer_template_id", "output_name"],
-          "properties": {
-            "kind": { "const": "by_producer" },
-            "producer_template_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
-            "output_name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "artifact_type"],
-          "properties": {
-            "kind": { "const": "by_type" },
-            "artifact_type": { "type": "string" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "query"],
-          "properties": {
-            "kind": { "const": "semantic" },
-            "query": { "type": "string", "minLength": 1 },
-            "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5 },
-            "filter": { "type": "object", "additionalProperties": { "type": "string" } }
-          }
-        }
-      ]
-    },
-    "OutputArtifactSpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "artifact_type", "mime_type", "description"],
-      "properties": {
-        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" },
-        "artifact_type": { "type": "string" },
-        "mime_type": { "type": "string", "pattern": "^[a-z]+/[a-zA-Z0-9.+_-]+$" },
-        "schema_ref": { "$ref": "#/$defs/SchemaRef" },
-        "description": { "type": "string", "minLength": 1 },
-        "required": { "type": "boolean", "default": true },
-        "multiplicity": { "type": "string", "enum": ["one", "many"], "default": "one" }
       }
     },
-    "EscalationPolicy": {
+    "QualityGate": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["kind", "id", "version", "title", "check"],
       "properties": {
-        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
-        "max_llm_calls": { "type": "integer", "minimum": 1, "maximum": 500, "default": 10 },
-        "wall_clock_seconds": { "type": "integer", "minimum": 30, "maximum": 86400, "default": 1800 },
-        "on_escalation": { "$ref": "#/$defs/TemplateRef" }
+        "kind": { "const": "quality_gate" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string" },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "trigger": { "type": "object" },
+        "requires": { "type": "object" },
+        "check": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["human_approval", "external_signoff", "automated_review"] },
+            "approver_role": { "type": "string" },
+            "decision_modes": { "type": "array", "items": { "type": "string" } },
+            "blocking": { "type": "boolean" },
+            "timeout_hours": { "type": "integer", "minimum": 0 },
+            "validator_ref": { "$ref": "#/$defs/VersionedRef" },
+            "instruction": { "type": "string" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "type": { "enum": ["human_approval", "external_signoff"] } } },
+              "then": { "required": ["approver_role", "decision_modes"] }
+            },
+            {
+              "if": { "properties": { "type": { "const": "automated_review" } } },
+              "then": {
+                "anyOf": [
+                  { "required": ["validator_ref"] },
+                  { "required": ["instruction"] }
+                ]
+              }
+            }
+          ]
+        },
+        "clarification_policy": { "type": "object" },
+        "on_pass": { "type": "string" },
+        "on_fail": { "type": "string" },
+        "on_comments": { "type": "string" }
       }
     },
-    "TemplateMetadata": {
+    "MethodologyPack": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["stage_gate"],
+      "required": ["kind", "id", "version", "title", "stages", "reasoning_artifact"],
       "properties": {
-        "stage_gate": {
+        "kind": { "const": "methodology_pack" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/Status" },
+        "description": { "type": "string" },
+        "stage_execution_mode": {
           "type": "string",
-          "enum": ["intake", "requirements", "architecture", "implementation", "validation", "delivery"]
+          "enum": ["single_call", "per_stage_cot"],
+          "default": "single_call"
         },
-        "labels": {
-          "type": "object",
-          "additionalProperties": { "type": "string" }
-        },
-        "tags": {
-          "type": "array",
-          "items": { "type": "string" },
-          "uniqueItems": true
-        },
-        "docs_url": { "type": "string", "format": "uri" },
-        "since_version": {
-          "type": "string",
-          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
-        }
-      }
-    },
-    "CompositeSpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["children"],
-      "properties": {
-        "children": {
+        "stages": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/CompositeChildRef" }
-        },
-        "bubble_up_outputs": {
-          "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/OutputBinding" }
-        }
-      }
-    },
-    "CompositeChildRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["alias", "template_id"],
-      "properties": {
-        "alias": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" },
-        "template_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
-        "template_version": {
-          "oneOf": [
-            { "type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$" },
-            { "type": "string", "const": "latest" }
-          ],
-          "default": "latest"
-        },
-        "depends_on": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" },
-          "uniqueItems": true,
-          "default": []
-        },
-        "input_bindings": {
-          "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/InputBinding" }
-        },
-        "enabled_if": { "$ref": "#/$defs/Expression" }
-      }
-    },
-    "InputBinding": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["from_alias", "output"],
-          "properties": {
-            "from_alias": { "type": "string" },
-            "output": { "type": "string" }
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "produces"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "produces": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["field", "type"],
+                  "properties": {
+                    "field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean" },
+                    "nullable": { "type": "boolean" },
+                    "schema": {},
+                    "item_schema": {}
+                  }
+                }
+              },
+              "constraints": { "type": "object" },
+              "rules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id"],
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                    "if": { "type": "string" },
+                    "emit_candidate": { "type": "object" }
+                  }
+                }
+              }
+            }
           }
         },
-        {
+        "reasoning_artifact": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["from_parent_input"],
           "properties": {
-            "from_parent_input": { "type": "string" }
+            "required_stages": { "type": "array", "items": { "type": "string" } },
+            "optional_stages": { "type": "array", "items": { "type": "string" } }
           }
         },
-        {
+        "complexity_overrides": { "type": "object" },
+        "clarification_policy": { "type": "object" },
+        "provenance": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["literal"],
           "properties": {
-            "literal": {}
+            "emit_source_refs": { "type": "boolean" }
           }
         }
-      ]
-    },
-    "OutputBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["from_alias", "output"],
-      "properties": {
-        "from_alias": { "type": "string" },
-        "output": { "type": "string" }
       }
     },
-    "Expression": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Безопасное boolean-выражение; грамматика описана в specs/01_template_registry.md §2.8"
-    },
-    "ExecutableSpec": {
+    "Vocabulary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["executor"],
+      "required": ["kind", "id", "version", "title", "entries"],
       "properties": {
-        "executor": { "type": "string", "enum": ["llm", "script", "hybrid"] },
-        "llm": { "$ref": "#/$defs/LlmExecutorConfig" },
-        "script": { "$ref": "#/$defs/ScriptExecutorConfig" }
-      },
-      "allOf": [
-        {
-          "if": { "properties": { "executor": { "const": "llm" } } },
-          "then": { "required": ["llm"], "not": { "required": ["script"] } }
-        },
-        {
-          "if": { "properties": { "executor": { "const": "script" } } },
-          "then": { "required": ["script"], "not": { "required": ["llm"] } }
-        },
-        {
-          "if": { "properties": { "executor": { "const": "hybrid" } } },
-          "then": { "required": ["llm", "script"] }
-        }
-      ]
-    },
-    "LlmExecutorConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["model", "prompt_ref", "token_budget"],
-      "properties": {
-        "model": { "type": "string", "pattern": "^[a-z0-9_-]+:[a-z0-9.-]+$" },
-        "prompt_ref": { "$ref": "#/$defs/SchemaRef" },
-        "tool_allowlist": {
-          "type": "array",
-          "items": { "type": "string" },
-          "uniqueItems": true,
-          "default": []
-        },
-        "token_budget": { "$ref": "#/$defs/TokenBudget" },
-        "temperature": { "type": "number", "minimum": 0, "maximum": 2, "default": 0.0 },
-        "json_mode": { "type": "boolean", "default": false }
+        "kind": { "const": "vocabulary" },
+        "id": { "$ref": "#/$defs/NamespacedId" },
+        "version": { "$ref": "#/$defs/SemVer" },
+        "title": { "type": "string" },
+        "entries": { "type": "array", "items": { "type": "object" } }
       }
-    },
-    "TokenBudget": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["input_tokens_max", "output_tokens_max", "total_tokens_max"],
-      "properties": {
-        "input_tokens_max": { "type": "integer", "minimum": 512, "maximum": 2000000 },
-        "output_tokens_max": { "type": "integer", "minimum": 128, "maximum": 200000 },
-        "total_tokens_max": { "type": "integer", "minimum": 640, "maximum": 2200000 }
-      }
-    },
-    "ScriptExecutorConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["entrypoint", "timeout_seconds", "environment"],
-      "properties": {
-        "entrypoint": {
-          "type": "string",
-          "pattern": "^[a-zA-Z_][a-zA-Z0-9_.]*:[a-zA-Z_][a-zA-Z0-9_]*$"
-        },
-        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
-        "environment": { "$ref": "#/$defs/EnvironmentRef" },
-        "resources": { "$ref": "#/$defs/ResourceLimits" }
-      }
-    },
-    "EnvironmentRef": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "image"],
-          "properties": {
-            "kind": { "const": "docker" },
-            "image": { "type": "string" },
-            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "spec"],
-          "properties": {
-            "kind": { "const": "conda" },
-            "spec": { "type": "string" }
-          }
-        }
-      ]
-    },
-    "ResourceLimits": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "cpu": { "type": "string", "pattern": "^\\d+(\\.\\d+)?$", "default": "1" },
-        "memory_mib": { "type": "integer", "minimum": 128, "default": 1024 },
-        "gpu": { "type": "integer", "minimum": 0, "default": 0 }
-      }
-    },
-    "DynamicSpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["decision_executor", "max_depth", "max_children", "decomposition_rules", "fallback_template"],
-      "properties": {
-        "decision_executor": { "$ref": "#/$defs/LlmExecutorConfig" },
-        "max_depth": { "type": "integer", "minimum": 1, "maximum": 5 },
-        "max_children": { "type": "integer", "minimum": 1, "maximum": 20 },
-        "decomposition_rules": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/DecompositionRule" }
-        },
-        "fallback_template": { "$ref": "#/$defs/TemplateRef" }
-      }
-    },
-    "DecompositionRule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["condition", "action"],
-      "properties": {
-        "condition": { "$ref": "#/$defs/Expression" },
-        "action": { "type": "string", "enum": ["execute", "decompose"] },
-        "child_templates": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/TemplateRef" }
-        }
-      },
-      "allOf": [
-        {
-          "if": { "properties": { "action": { "const": "decompose" } } },
-          "then": { "required": ["child_templates"], "properties": { "child_templates": { "minItems": 1 } } }
-        }
-      ]
     }
   }
 }

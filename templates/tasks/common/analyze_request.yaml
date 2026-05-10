@@ -1,0 +1,21 @@
+kind: task_template
+id: common.analyze_request
+version: 1.0.0
+title: Разобрать исходный бизнес-запрос
+type: composite
+status: active
+domain: common
+children:
+  - id: request_fact_extraction
+    task: common.request_fact_extraction@1.0.0
+  - id: goal_hypothesis
+    task: common.goal_hypothesis@1.0.0
+  - id: constraint_inventory
+    task: common.constraint_inventory@1.0.0
+  - id: ambiguity_gap_analysis
+    task: common.ambiguity_gap_analysis@1.0.0
+  - id: request_normalization
+    task: common.request_normalization@1.0.0
+slots:
+  - id: request.domain_signals
+    title: Доменные сигналы исходного запроса

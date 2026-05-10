@@ -35,10 +35,10 @@ def _analysis_object(required: list[str], properties: JSONSchema) -> JSONSchema:
 
 
 def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) -> JSONSchema:
-    frontend_enabled = _pack_enabled(domain_pack_refs, "frontend.web_app_requirements")
-    ml_enabled = _pack_enabled(domain_pack_refs, "ml.predictive_analytics_pov_requirements")
-    security_enabled = _pack_enabled(domain_pack_refs, "security.enterprise_compliance_requirements")
-    integration_enabled = _pack_enabled(domain_pack_refs, "integration.enterprise_delivery_requirements")
+    frontend_enabled = _pack_enabled(domain_pack_refs, "frontend.web_workspace") or _pack_enabled(domain_pack_refs, "frontend.web_app_requirements")
+    ml_enabled = _pack_enabled(domain_pack_refs, "ml.predictive_analytics") or _pack_enabled(domain_pack_refs, "ml.predictive_analytics_pov_requirements")
+    security_enabled = _pack_enabled(domain_pack_refs, "security.enterprise_compliance") or _pack_enabled(domain_pack_refs, "security.enterprise_compliance_requirements")
+    integration_enabled = _pack_enabled(domain_pack_refs, "integration.enterprise_integration") or _pack_enabled(domain_pack_refs, "integration.enterprise_delivery_requirements")
 
     requirements_spec_properties: JSONSchema = {
         "title": {"type": "string"},

@@ -35,19 +35,22 @@ import type {
   ActionDescriptor,
   ArtifactDetailView,
   ArtifactSummaryView,
+  ClarificationItemView,
   CommandResultView,
   DomainPackCatalogItemView,
-  JourneyStepView,
+  ObjectiveCatalogItemView,
   ProjectCreatedView,
+  ProjectClarificationsView,
   ProjectDebugView,
-  ProjectJourneyView,
   ProjectReviewView,
+  ProjectOverviewView,
   ProjectShellView,
   ProjectSituationView,
   ProjectStateView,
+  ProjectTaskGraphView,
   ProjectTimelineView,
   ProjectionName,
-  RecipeCatalogItemView,
+  TaskNodeView,
   TimelineEntryView,
 } from "./types";
 import { useProjectRealtime } from "./useProjectRealtime";
@@ -66,7 +69,7 @@ import {
   TimelineFeed,
   WorkspaceHeader,
   WorkspaceTabs,
-  JourneyStrip,
+  TaskGraphTree,
   cx,
   formatDateTime,
   prettyLabel,
@@ -74,10 +77,11 @@ import {
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
   "shell",
-  "journey",
+  "task_graph",
   "situation",
   "timeline",
   "artifacts",
+  "clarifications",
   "review",
   "state",
 ];
@@ -99,6 +103,9 @@ interface WorkspaceActionApi {
   closeGap: (gapId: string) => void;
   setReadiness: (payload: { dimension: string; status: string; blocking: boolean; confidence: number }) => void;
   enableDomainPack: (packRef: string) => void;
+  answerClarification: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
+  acceptAssumption: (clarificationId: string) => void;
+  setClarificationMode: (mode: string) => void;
   busy: boolean;
 }
 
@@ -144,17 +151,15 @@ function toneForSemanticStatus(
 
 function labelForSourceKind(sourceKind: string): string {
   switch (sourceKind) {
-    case "recipe_fragment":
-      return "Фрагмент";
-    case "base_recipe":
-      return "Базовый рецепт";
+    case "objective":
+      return "Цель";
+    case "child":
+      return "Подзадача";
+    case "domain_pack":
+      return "Доменный пакет";
     default:
       return prettyLabel(sourceKind);
   }
-}
-
-function labelForRequirement(required: boolean): string {
-  return required ? "Обязательный шаг" : "Опциональный шаг";
 }
 
 function toneForCommandStatus(status: string | null | undefined): ToastTone {
@@ -332,6 +337,11 @@ function WorkspaceRoute({
     queryFn: () => api.getShell(projectId),
     enabled: Boolean(projectId),
   });
+  const headerClarificationsQuery = useQuery({
+    queryKey: projectionKey(projectId, "clarifications"),
+    queryFn: () => api.getClarifications(projectId),
+    enabled: Boolean(projectId),
+  });
 
   const commandRequest = async (promiseFactory: () => Promise<CommandResultView>) => {
     setCommandBusy(true);
@@ -357,6 +367,9 @@ function WorkspaceRoute({
       closeGap: (gapId: string) => void commandRequest(() => api.closeGap(projectId, gapId)),
       setReadiness: (payload) => void commandRequest(() => api.setReadiness(projectId, payload)),
       enableDomainPack: (packRef: string) => void commandRequest(() => api.enableDomainPack(projectId, packRef)),
+      answerClarification: (payload) => void commandRequest(() => api.answerClarification(projectId, payload)),
+      acceptAssumption: (clarificationId: string) => void commandRequest(() => api.acceptAssumption(projectId, clarificationId)),
+      setClarificationMode: (mode: string) => void commandRequest(() => api.setClarificationMode(projectId, mode)),
       busy: commandBusy,
     }),
     [commandBusy, model, projectId, provider],
@@ -403,6 +416,9 @@ function WorkspaceRoute({
       <WorkspaceHeader
         shell={shellQuery.data}
         connectionStatus={realtimeStatus}
+        clarificationMode={headerClarificationsQuery.data?.mode}
+        onClarificationModeChange={commandMutations.setClarificationMode}
+        modePending={commandMutations.busy}
         actions={
           <CommandBar
             provider={provider}
@@ -430,7 +446,7 @@ function WorkspaceRoute({
         />
         <Route path="artifacts" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="artifacts/:artifactId" element={<ArtifactsPage projectId={projectId} />} />
-        <Route path="journey" element={<JourneyPage projectId={projectId} />} />
+        <Route path="task-graph" element={<TaskGraphPage projectId={projectId} />} />
         <Route path="state" element={<StatePage projectId={projectId} actions={commandMutations} />} />
         <Route path="review" element={<ReviewPage projectId={projectId} />} />
         <Route
@@ -440,6 +456,48 @@ function WorkspaceRoute({
         <Route path="*" element={<Navigate to="overview" replace />} />
       </Routes>
     </div>
+  );
+}
+
+
+function MethodologyOverviewSection({ projectId }: { projectId: string }) {
+  const overviewQuery = useQuery({
+    queryKey: ["overview", projectId],
+    queryFn: () => api.getOverview(projectId),
+    refetchInterval: 30_000,
+  });
+  if (overviewQuery.isLoading) {
+    return <SectionCard title="Обзор проекта"><LoadingPanel label="Загружаем обзор..." /></SectionCard>;
+  }
+  if (overviewQuery.isError) {
+    return <SectionCard title="Обзор проекта"><EmptyState title="Не удалось загрузить обзор" description={String((overviewQuery.error as Error)?.message ?? "")} /></SectionCard>;
+  }
+  const overview = overviewQuery.data as ProjectOverviewView | undefined;
+  if (!overview) return null;
+  return (
+    <SectionCard title="Обзор проекта">
+      <div style={{ display: "grid", gap: "0.5rem", fontSize: "0.95rem" }}>
+        <div><strong>Стадия:</strong> {overview.stage_summary}</div>
+        <div><strong>Сейчас:</strong> {overview.current_activity}</div>
+        <div>
+          <strong>Прогресс:</strong> артефактов {overview.objective_progress.artifacts_ready}/{overview.objective_progress.artifacts_required},
+          gates {overview.objective_progress.gates_passed}/{overview.objective_progress.gates_required}
+        </div>
+        <div>
+          <strong>Активная методология:</strong> {overview.active_methodology ?? "не назначена"}
+        </div>
+        {overview.critical_clarifications.length > 0 && (
+          <div>
+            <strong>Критичные уточнения ({overview.critical_clarifications.length}):</strong>
+            <ul>
+              {overview.critical_clarifications.map((c) => (
+                <li key={c.clarification_id}>{c.title} — {c.priority} ({c.source_type})</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -455,11 +513,12 @@ function OverviewPage({
   commands: WorkspaceActionApi;
 }) {
   const [selectedEvent, setSelectedEvent] = useState<TimelineEntryView | null>(null);
-  const [selectedStep, setSelectedStep] = useState<JourneyStepView | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
+  const [selectedClarification, setSelectedClarification] = useState<ClarificationItemView | null>(null);
 
-  const journeyQuery = useQuery({
-    queryKey: projectionKey(projectId, "journey"),
-    queryFn: () => api.getJourney(projectId),
+  const taskGraphQuery = useQuery({
+    queryKey: projectionKey(projectId, "task_graph"),
+    queryFn: () => api.getTaskGraph(projectId),
   });
   const situationQuery = useQuery({
     queryKey: projectionKey(projectId, "situation"),
@@ -468,6 +527,10 @@ function OverviewPage({
   const timelineQuery = useQuery({
     queryKey: projectionKey(projectId, "timeline"),
     queryFn: () => api.getTimeline(projectId),
+  });
+  const clarificationsQuery = useQuery({
+    queryKey: projectionKey(projectId, "clarifications"),
+    queryFn: () => api.getClarifications(projectId),
   });
   const artifactsQuery = useQuery({
     queryKey: projectionKey(projectId, "artifacts"),
@@ -485,9 +548,10 @@ function OverviewPage({
   const recentSequences = useTimelineFreshness(timelineQuery.data?.entries ?? []);
 
   if (
-    journeyQuery.isLoading ||
+    taskGraphQuery.isLoading ||
     situationQuery.isLoading ||
     timelineQuery.isLoading ||
+    clarificationsQuery.isLoading ||
     artifactsQuery.isLoading ||
     reviewQuery.isLoading ||
     stateQuery.isLoading
@@ -496,9 +560,10 @@ function OverviewPage({
   }
 
   if (
-    !journeyQuery.data ||
+    !taskGraphQuery.data ||
     !situationQuery.data ||
     !timelineQuery.data ||
+    !clarificationsQuery.data ||
     !artifactsQuery.data ||
     !reviewQuery.data ||
     !stateQuery.data
@@ -510,30 +575,82 @@ function OverviewPage({
     );
   }
 
+  const primaryClarification = pickPrimaryClarification(clarificationsQuery.data.items);
+  const taskList = flattenTaskNodes(taskGraphQuery.data.nodes);
+
+  const openClarification = (clarification: ClarificationItemView) => {
+    setSelectedClarification(clarification);
+  };
+
+  const openAction = (action: ActionDescriptor) => {
+    if (action.target_view === "clarification" && action.target_id) {
+      const clarification = clarificationsQuery.data.items.find((item) => item.clarification_id === action.target_id);
+      if (clarification) {
+        openClarification(clarification);
+        return;
+      }
+    }
+    onAction(action);
+  };
+
   return (
     <>
+      <ProjectCockpit
+        situation={situationQuery.data}
+        taskGraph={taskGraphQuery.data}
+        artifacts={artifactsQuery.data}
+        review={reviewQuery.data}
+        clarifications={clarificationsQuery.data}
+        onAction={openAction}
+        onRunUntilBlocked={commands.runUntilBlocked}
+        pending={commands.busy}
+        flash={flashProjection === "situation" || flashProjection === "task_graph"}
+      />
+
+      {primaryClarification ? (
+        <BlockingClarificationPanel
+          clarification={primaryClarification}
+          onOpenAnswer={() => openClarification(primaryClarification)}
+          flash={flashProjection === "clarifications"}
+        />
+      ) : null}
+
       <div className="overview-grid">
         <div className="overview-grid__main">
-          <JourneyStrip
-            steps={journeyQuery.data.steps}
-            onOpenStep={setSelectedStep}
-            flash={flashProjection === "journey"}
-          />
-            <SituationPanel
-              situation={situationQuery.data}
-              onAction={onAction}
-              onRetryTask={commands.retryTask}
-              retryTaskId={retryTaskIdForSituation(situationQuery.data)}
-              flash={flashProjection === "situation"}
-            />
           <TimelineFeed
             entries={timelineQuery.data.entries}
-            onOpenEntry={setSelectedEvent}
+            onOpenEntry={(entry) => {
+              if (entry.detail_view === "clarification" && entry.entity_id) {
+                const clarification = clarificationsQuery.data.items.find((item) => item.clarification_id === entry.entity_id);
+                if (clarification) {
+                  openClarification(clarification);
+                  return;
+                }
+              }
+              setSelectedEvent(entry);
+            }}
             recentSequences={recentSequences}
             flash={flashProjection === "timeline"}
           />
+          <WorkMapSummary tasks={taskList} onOpenTask={setSelectedTask} flash={flashProjection === "task_graph"} />
         </div>
         <div className="overview-grid__side">
+          <AttentionPanel
+            situation={situationQuery.data}
+            clarifications={clarificationsQuery.data}
+            onAction={openAction}
+            onOpenClarification={openClarification}
+            onRetryTask={commands.retryTask}
+            retryTaskId={retryTaskIdForSituation(situationQuery.data)}
+          />
+          <ClarificationCenter
+            clarifications={clarificationsQuery.data}
+            highlightedClarificationId={primaryClarification?.clarification_id}
+            onOpenClarification={openClarification}
+            onAcceptAssumption={commands.acceptAssumption}
+            pending={commands.busy}
+            flash={flashProjection === "clarifications"}
+          />
           <ArtifactRail
             projectId={projectId}
             artifacts={artifactsQuery.data}
@@ -559,12 +676,757 @@ function OverviewPage({
           ) : null}
         </Drawer>
 
-        <Drawer open={Boolean(selectedStep)} title={selectedStep?.title ?? "Шаг"} onClose={() => setSelectedStep(null)}>
-          {selectedStep ? <JourneyStepDetail step={selectedStep} onRetryTask={commands.retryTask} /> : null}
+        <Drawer open={Boolean(selectedTask)} title={selectedTask?.title ?? "Задача"} onClose={() => setSelectedTask(null)}>
+          {selectedTask ? <TaskNodeDetail task={selectedTask} onRetryTask={commands.retryTask} /> : null}
         </Drawer>
+
+        <Modal
+          open={Boolean(selectedClarification)}
+          title="Ответ на уточнение"
+          onClose={() => setSelectedClarification(null)}
+        >
+          {selectedClarification ? (
+            <ClarificationDetailPanel
+              clarification={selectedClarification}
+              onAnswer={(payload) => {
+                commands.answerClarification(payload);
+                setSelectedClarification(null);
+              }}
+              onAcceptAssumption={(clarificationId) => {
+                commands.acceptAssumption(clarificationId);
+                setSelectedClarification(null);
+              }}
+              pending={commands.busy}
+            />
+          ) : null}
+        </Modal>
       </>
     );
   }
+
+type ProgressStageStatus = "done" | "active" | "waiting" | "blocked";
+
+interface ProgressStageView {
+  id: string;
+  label: string;
+  description: string;
+  status: ProgressStageStatus;
+}
+
+const PROGRESS_STAGE_DEFINITIONS = [
+  {
+    id: "intake",
+    label: "Разбор запроса",
+    description: "Факты, цель, ограничения",
+    artifactRoles: ["request_fact_sheet", "goal_hypothesis", "constraint_inventory", "normalized_request"],
+  },
+  {
+    id: "framing",
+    label: "Формализация",
+    description: "Границы, стейкхолдеры, варианты",
+    artifactRoles: ["business_outcome_model", "scope_boundary_matrix", "stakeholder_map", "solution_option_inventory"],
+  },
+  {
+    id: "domain",
+    label: "Доменная проработка",
+    description: "ML, интеграции, ИБ, интерфейс",
+    artifactRoles: [
+      "predictive_problem_definition",
+      "data_landscape_assessment",
+      "security_compliance_constraints",
+      "integration_operating_model",
+      "ui_requirements_outline",
+    ],
+  },
+  {
+    id: "spec",
+    label: "Сборка ТЗ",
+    description: "Черновик требований",
+    artifactRoles: ["requirements_spec"],
+  },
+  {
+    id: "quality",
+    label: "Проверка качества",
+    description: "Ревью и замечания",
+    artifactRoles: ["review_report"],
+  },
+] as const;
+
+function pickPrimaryClarification(items: ClarificationItemView[]): ClarificationItemView | null {
+  const candidates = items
+    .filter((item) => item.status === "open" && item.blocking_scope !== "none")
+    .slice()
+    .sort((left, right) => {
+      const scopeWeight = (scope: string) => ({ objective: 0, subtree: 1, task: 2, none: 3 })[scope] ?? 4;
+      const priorityWeight = (priority: string) => ({ critical: 0, high: 1, medium: 2, low: 3 })[priority] ?? 4;
+      return scopeWeight(left.blocking_scope) - scopeWeight(right.blocking_scope) || priorityWeight(left.priority) - priorityWeight(right.priority);
+    });
+  return candidates[0] ?? null;
+}
+
+function buildProgressStages(
+  artifacts: ArtifactSummaryView[],
+  review: ProjectReviewView,
+  situation: ProjectSituationView,
+): ProgressStageView[] {
+  const artifactRoles = new Set(artifacts.map((artifact) => artifact.artifact_role));
+  if (review.status !== "missing") {
+    artifactRoles.add("review_report");
+  }
+  const firstOpenIndex = PROGRESS_STAGE_DEFINITIONS.findIndex((stage) => !stage.artifactRoles.some((role) => artifactRoles.has(role)));
+  return PROGRESS_STAGE_DEFINITIONS.map((stage, index) => {
+    const done = stage.artifactRoles.some((role) => artifactRoles.has(role));
+    let status: ProgressStageStatus = "waiting";
+    if (done) {
+      status = "done";
+    } else if (index === Math.max(firstOpenIndex, 0)) {
+      status = situation.blocking ? "blocked" : "active";
+    }
+    return {
+      id: stage.id,
+      label: stage.label,
+      description: stage.description,
+      status,
+    };
+  });
+}
+
+function progressTone(status: ProgressStageStatus): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
+  if (status === "done") return "success";
+  if (status === "active") return "active";
+  if (status === "blocked") return "warning";
+  return "muted";
+}
+
+function ProjectCockpit({
+  situation,
+  taskGraph,
+  artifacts,
+  review,
+  clarifications,
+  onAction,
+  onRunUntilBlocked,
+  pending,
+  flash,
+}: {
+  situation: ProjectSituationView;
+  taskGraph: ProjectTaskGraphView;
+  artifacts: ArtifactSummaryView[];
+  review: ProjectReviewView;
+  clarifications: ProjectClarificationsView;
+  onAction: (action: ActionDescriptor) => void;
+  onRunUntilBlocked: () => void;
+  pending: boolean;
+  flash?: boolean;
+}) {
+  const stages = buildProgressStages(artifacts, review, situation);
+  const completed = taskGraph.completed_leaf_tasks;
+  const total = taskGraph.total_leaf_tasks || 1;
+  const progress = Math.round((completed / total) * 100);
+  const primaryAction = situation.primary_action;
+  const canContinue = !situation.blocking;
+
+  return (
+    <section className={cx("project-cockpit", situation.blocking && "project-cockpit--blocked", flash && "live-flash")}>
+      <div className="project-cockpit__main">
+        <div className="project-cockpit__status">
+          <StatusPill tone={situation.blocking ? "danger" : situation.status_label === "Готово" ? "success" : "active"}>
+            {situation.status_label}
+          </StatusPill>
+          <span>{situation.blocking ? "Работа остановлена до решения" : "Система может продолжать работу"}</span>
+        </div>
+        <h2>{situation.headline}</h2>
+        <p>{situation.summary}</p>
+        <div className="project-cockpit__actions">
+          {primaryAction ? (
+            <Button tone={situation.blocking ? "danger" : "primary"} icon={situation.blocking ? <AlertTriangle size={16} /> : <Sparkles size={16} />} onClick={() => onAction(primaryAction)}>
+              {primaryAction.label}
+            </Button>
+          ) : null}
+          {canContinue ? (
+            <Button tone={primaryAction ? "secondary" : "primary"} icon={<Sparkles size={16} />} onClick={onRunUntilBlocked} busy={pending}>
+              Выполнить до остановки
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <div className="project-cockpit__progress">
+        <div className="progress-meter">
+          <div className="progress-meter__head">
+            <span>Прогресс работ</span>
+            <strong>{progress}%</strong>
+          </div>
+          <div className="progress-meter__bar" aria-hidden="true">
+            <span style={{ width: `${progress}%` }} />
+          </div>
+          <div className="progress-meter__meta">
+            <span>{completed} из {taskGraph.total_leaf_tasks} листовых задач завершено</span>
+            <span>{artifacts.length} артефактов</span>
+            <span>{clarifications.open_count} открытых вопросов</span>
+          </div>
+        </div>
+        <div className="stage-strip" aria-label="Смысловые стадии проекта">
+          {stages.map((stage) => (
+            <div key={stage.id} className={cx("stage-chip", `stage-chip--${stage.status}`)}>
+              <div className="stage-chip__dot" />
+              <div>
+                <strong>{stage.label}</strong>
+                <span>{stage.description}</span>
+              </div>
+              <StatusPill tone={progressTone(stage.status)}>{prettyLabel(stage.status)}</StatusPill>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BlockingClarificationPanel({
+  clarification,
+  onOpenAnswer,
+  flash,
+}: {
+  clarification: ClarificationItemView;
+  onOpenAnswer: () => void;
+  flash?: boolean;
+}) {
+  const choices = answerOptions(clarification);
+  return (
+    <section className={cx("blocking-question", flash && "live-flash")}>
+      <div className="blocking-question__intro">
+        <StatusPill tone={toneForClarificationPriority(clarification.priority)}>Нужно ваше решение</StatusPill>
+        <h2>{clarification.question}</h2>
+        <p>{clarificationDescription(clarification)}</p>
+      </div>
+      <div className="blocking-question__answer-preview">
+        <span>Варианты ответа</span>
+        {clarification.answer_mode === "multiple" ? <p className="answer-mode-hint">Можно выбрать несколько вариантов.</p> : null}
+        <div className="answer-preview-list">
+          {choices.slice(0, 3).map((choice) => (
+            <div key={choice.option_id} className="answer-preview-item">
+              <strong>
+                {choice.label}
+                {confidenceLabel(choice.confidence) ? <small>{confidenceLabel(choice.confidence)}</small> : null}
+              </strong>
+              <p>{choice.description}</p>
+            </div>
+          ))}
+        </div>
+        <Button tone="primary" icon={<MessageSquareWarning size={16} />} onClick={onOpenAnswer}>
+          Ответить в окне
+        </Button>
+      </div>
+      <details className="context-details">
+        <summary>Почему система остановилась</summary>
+        <div className="context-details__body">
+          <p>{clarification.reason}</p>
+          <span>Область блокировки: {prettyLabel(clarification.blocking_scope)}</span>
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function AttentionPanel({
+  situation,
+  clarifications,
+  onAction,
+  onOpenClarification,
+  onRetryTask,
+  retryTaskId,
+}: {
+  situation: ProjectSituationView;
+  clarifications: ProjectClarificationsView;
+  onAction: (action: ActionDescriptor) => void;
+  onOpenClarification: (clarification: ClarificationItemView) => void;
+  onRetryTask: (taskId: string) => void;
+  retryTaskId: string | null;
+}) {
+  const openQuestions = clarifications.items.filter((item) => item.status === "open");
+  const hasAttention = situation.blockers.length > 0 || openQuestions.length > 0;
+  return (
+    <SectionCard
+      title="Требует внимания"
+      subtitle={hasAttention ? "Решения, которые могут влиять на движение проекта" : "Нет блокирующих действий пользователя"}
+      tone={hasAttention ? "warning" : "default"}
+    >
+      {!hasAttention ? (
+        <EmptyState title="Ничего срочного" description="Система может продолжать работу без вашего участия." icon={<CheckCircle2 size={18} />} />
+      ) : (
+        <div className="attention-list">
+          {situation.blockers.slice(0, 3).map((blocker) => (
+            <button
+              key={`${blocker.kind}-${blocker.related_id ?? blocker.summary}`}
+              type="button"
+              className="attention-item"
+              onClick={() => {
+                const clarification = openQuestions.find((item) => item.clarification_id === blocker.related_id);
+                if (clarification) {
+                  onOpenClarification(clarification);
+                  return;
+                }
+                if (retryTaskId && (blocker.kind === "task_failure" || blocker.kind === "execution_failure")) {
+                  onRetryTask(retryTaskId);
+                  return;
+                }
+                onAction({
+                  kind: `open_${blocker.detail_view}`,
+                  label: blocker.title,
+                  description: blocker.summary,
+                  target_view: blocker.detail_view,
+                  target_id: blocker.related_id,
+                  command_name: null,
+                  blocking: true,
+                });
+              }}
+            >
+              <AlertTriangle size={16} />
+              <div>
+                <strong>{blocker.title}</strong>
+                <p>{blocker.summary}</p>
+              </div>
+              <ChevronRight size={14} />
+            </button>
+          ))}
+          {openQuestions
+            .filter((item) => !situation.blockers.some((blocker) => blocker.related_id === item.clarification_id))
+            .slice(0, 3)
+            .map((item) => (
+              <button key={item.clarification_id} type="button" className="attention-item" onClick={() => onOpenClarification(item)}>
+                <MessageSquareWarning size={16} />
+                <div>
+                  <strong>{item.title}</strong>
+                  <p>{item.question}</p>
+                </div>
+                <ChevronRight size={14} />
+              </button>
+            ))}
+          {situation.primary_action ? (
+            <Button tone={situation.blocking ? "danger" : "secondary"} onClick={() => onAction(situation.primary_action!)}>
+              {situation.primary_action.label}
+            </Button>
+          ) : null}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function WorkMapSummary({
+  tasks,
+  onOpenTask,
+  flash,
+}: {
+  tasks: TaskNodeView[];
+  onOpenTask: (task: TaskNodeView) => void;
+  flash?: boolean;
+}) {
+  const leafTasks = tasks.filter((task) => task.template_type === "leaf");
+  const failed = leafTasks.filter((task) => task.status === "failed");
+  const ready = leafTasks.filter((task) => task.status === "ready" || task.is_current);
+  const waitingForInput = leafTasks.filter((task) => task.status === "blocked" && task.blocking_clarification_count > 0);
+  const waiting = leafTasks.filter(
+    (task) => task.status === "blocked" && task.blocking_clarification_count === 0,
+  );
+  const done = leafTasks.filter((task) => task.status === "completed");
+  const visibleTasks = [...failed, ...waitingForInput, ...ready, ...waiting].slice(0, 7);
+
+  return (
+    <SectionCard
+      title="Карта работ"
+      subtitle="Это не порядок выполнения, а состояние зависимостей: задачи могут стартовать нелинейно"
+      className={cx("work-map-card", flash && "live-flash")}
+      actions={<Link className="text-link" to="../task-graph">Открыть полный граф</Link>}
+    >
+      <div className="work-map-metrics">
+        <div>
+          <span>Готово</span>
+          <strong>{done.length}</strong>
+        </div>
+        <div>
+          <span>Можно запускать</span>
+          <strong>{ready.length}</strong>
+        </div>
+        <div>
+          <span>Ждет ответа</span>
+          <strong>{waitingForInput.length}</strong>
+        </div>
+        <div>
+          <span>Ошибки</span>
+          <strong>{failed.length}</strong>
+        </div>
+      </div>
+      {visibleTasks.length === 0 ? (
+        <EmptyState title="Нет активных задач" description="Завершенные работы видны в истории и полном графе." />
+      ) : (
+        <div className="work-list">
+          {visibleTasks.map((task) => (
+            <button key={task.task_id} type="button" className="work-list__item" onClick={() => onOpenTask(task)}>
+              <StatusPill tone={taskStatusTone(task)}>{taskStatusLabel(task)}</StatusPill>
+              <div>
+                <strong>{task.title}</strong>
+                <p>{task.status_summary ?? task.template_ref}</p>
+              </div>
+              <ChevronRight size={14} />
+            </button>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function taskStatusTone(task: TaskNodeView): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
+  if (task.status === "failed") return "danger";
+  if (task.blocking_clarification_count > 0) return "warning";
+  if (task.status === "ready" || task.is_current) return "active";
+  if (task.status === "completed") return "success";
+  return "muted";
+}
+
+function taskStatusLabel(task: TaskNodeView): string {
+  if (task.status === "failed") return "Ошибка";
+  if (task.blocking_clarification_count > 0) return "Ждет ответа";
+  if (task.status === "ready" || task.is_current) return "Можно запускать";
+  return prettyLabel(task.status);
+}
+
+function toneForClarificationPriority(priority: string): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
+  switch (priority) {
+    case "critical":
+      return "danger";
+    case "high":
+      return "warning";
+    case "medium":
+      return "active";
+    case "low":
+      return "muted";
+    default:
+      return "neutral";
+  }
+}
+
+function clarificationModeLabel(mode: string): string {
+  const labels: Record<string, string> = {
+    autopilot: "Автопилот",
+    balanced: "Сбалансированный",
+    control: "Контроль",
+    expert: "Экспертный",
+  };
+  return labels[mode] ?? mode;
+}
+
+interface AnswerChoice {
+  option_id: string;
+  label: string;
+  description: string;
+  effect_preview: string;
+  confidence?: number | null;
+  synthetic?: boolean;
+}
+
+function clarificationDescription(clarification: ClarificationItemView): string {
+  return (
+    clarification.description ||
+    [clarification.reason, clarification.impact].filter(Boolean).join(" ") ||
+    "Система обнаружила неопределенность, которая может повлиять на дальнейшую работу проекта."
+  );
+}
+
+function answerOptions(clarification: ClarificationItemView): AnswerChoice[] {
+  if (clarification.options.length > 0) {
+    return clarification.options;
+  }
+  return [
+    {
+      option_id: "synthetic:include_in_current_project",
+      label: "Да, учитывать в текущем проекте",
+      description: "Эта информация важна для текущего PoC/PoV и должна повлиять на дальнейшую работу.",
+      effect_preview: "Ответ будет сохранен как решение проекта и учтен в следующих задачах.",
+      confidence: 0.55,
+      synthetic: true,
+    },
+    {
+      option_id: "synthetic:use_working_assumption",
+      label: "Продолжить с рабочим допущением",
+      description: clarification.default_assumption || "Система зафиксирует допущение и продолжит работу без дополнительной детализации.",
+      effect_preview: "Допущение попадет в историю проекта.",
+      confidence: clarification.default_assumption ? 0.45 : 0.35,
+      synthetic: true,
+    },
+  ];
+}
+
+function confidenceLabel(confidence: number | null | undefined): string | null {
+  if (confidence === null || confidence === undefined) {
+    return null;
+  }
+  return `Уверенность ${Math.round(confidence * 100)}%`;
+}
+
+function ClarificationCenter({
+  clarifications,
+  highlightedClarificationId,
+  onOpenClarification,
+  onAcceptAssumption,
+  pending,
+  flash,
+}: {
+  clarifications: ProjectClarificationsView;
+  highlightedClarificationId?: string;
+  onOpenClarification: (clarification: ClarificationItemView) => void;
+  onAcceptAssumption: (clarificationId: string) => void;
+  pending: boolean;
+  flash?: boolean;
+}) {
+  const visibleItems = clarifications.items
+    .filter((item) => (item.status === "open" || item.status === "assumed") && item.clarification_id !== highlightedClarificationId)
+    .slice()
+    .sort((left, right) => {
+      const statusWeight = (status: string) => (status === "open" ? 0 : 1);
+      const priorityWeight = (priority: string) => ({ critical: 0, high: 1, medium: 2, low: 3 })[priority] ?? 4;
+      return statusWeight(left.status) - statusWeight(right.status) || priorityWeight(left.priority) - priorityWeight(right.priority);
+    });
+
+  if (visibleItems.length === 0 && clarifications.mode === "balanced") {
+    return null;
+  }
+
+  return (
+    <SectionCard
+      title="Уточнения"
+      subtitle={
+        clarifications.open_count > 0
+          ? `${clarifications.open_count} открытых вопросов, ${clarifications.blocking_count} блокируют работу`
+          : "Открытых вопросов нет"
+      }
+      className={cx(flash && "live-flash")}
+    >
+      {visibleItems.length === 0 ? (
+        <EmptyState title="Вопросов нет" description="Система продолжает работу без участия пользователя." />
+      ) : (
+        <div className="clarification-list">
+          {visibleItems.map((item) => (
+            <div key={item.clarification_id} className={cx("clarification-card", item.status === "open" && "clarification-card--open")}>
+              <div className="clarification-card__head">
+                <div>
+                  <span className="clarification-card__eyebrow">
+                    {item.status === "open" ? "Открытый вопрос" : "Рабочее допущение"}
+                  </span>
+                  <strong>{item.question}</strong>
+                  <p>{clarificationDescription(item)}</p>
+                </div>
+                <StatusPill tone={item.status === "open" ? toneForClarificationPriority(item.priority) : "muted"}>
+                  {item.status === "open" ? prettyLabel(item.priority) : prettyLabel(item.status)}
+                </StatusPill>
+              </div>
+              <div className="clarification-card__meta">
+                <span>{item.blocking_scope === "none" ? "Не блокирует работу" : "Может влиять на дальнейшие шаги"}</span>
+                <span>{formatDateTime(item.updated_at)}</span>
+              </div>
+              {item.default_assumption ? (
+                <div className="clarification-assumption">
+                  <span>Предложенное допущение</span>
+                  <p>{item.default_assumption}</p>
+                </div>
+              ) : null}
+              <div className="inline-actions">
+                <Button tone="primary" icon={<MessageSquareWarning size={16} />} onClick={() => onOpenClarification(item)}>
+                  {item.status === "open" ? "Ответить" : "Открыть"}
+                </Button>
+                {item.status === "open" && item.default_assumption ? (
+                  <Button tone="secondary" onClick={() => onAcceptAssumption(item.clarification_id)} disabled={pending}>
+                    Принять допущение
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function ClarificationDetailPanel({
+  clarification,
+  onAnswer,
+  onAcceptAssumption,
+  pending,
+}: {
+  clarification: ClarificationItemView;
+  onAnswer: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
+  onAcceptAssumption: (clarificationId: string) => void;
+  pending: boolean;
+}) {
+  return (
+    <div className="detail-stack clarification-detail">
+        <MethodologyOverviewSection projectId={projectId} />
+      <div className="detail-callout">
+        <StatusPill tone={toneForClarificationPriority(clarification.priority)}>
+          {clarification.status === "open" ? "Нужно решение" : prettyLabel(clarification.status)}
+        </StatusPill>
+        <span>{formatDateTime(clarification.updated_at)}</span>
+      </div>
+      <div className="clarification-detail__question">
+        <span>Вопрос</span>
+        <h3>{clarification.question}</h3>
+        <p>{clarificationDescription(clarification)}</p>
+      </div>
+
+      {clarification.status === "open" ? (
+        <ClarificationAnswerForm
+          clarification={clarification}
+          onAnswer={onAnswer}
+          onAcceptAssumption={onAcceptAssumption}
+          pending={pending}
+          variant="modal"
+        />
+      ) : (
+        <div className="clarification-resolution">
+          <span>Решение</span>
+          <p>{clarification.resolution_summary || clarification.default_assumption || "Уточнение закрыто."}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClarificationAnswerForm({
+  clarification,
+  onAnswer,
+  onAcceptAssumption,
+  pending,
+  variant,
+}: {
+  clarification: ClarificationItemView;
+  onAnswer: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
+  onAcceptAssumption: (clarificationId: string) => void;
+  pending: boolean;
+  variant: "focus" | "modal";
+}) {
+  const choices = answerOptions(clarification);
+  const canSelectMultiple = clarification.answer_mode === "multiple";
+  const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>(
+    clarification.recommended_option_id ? [clarification.recommended_option_id] : [choices[0]?.option_id ?? ""].filter(Boolean),
+  );
+  const [freeText, setFreeText] = useState("");
+  const [customAnswerSelected, setCustomAnswerSelected] = useState(false);
+
+  useEffect(() => {
+    setSelectedOptionIds(clarification.recommended_option_id ? [clarification.recommended_option_id] : [choices[0]?.option_id ?? ""].filter(Boolean));
+    setFreeText("");
+    setCustomAnswerSelected(false);
+  }, [clarification.clarification_id, clarification.recommended_option_id]);
+
+  const toggleOption = (optionId: string) => {
+    setCustomAnswerSelected(false);
+    setSelectedOptionIds((current) => {
+      if (canSelectMultiple) {
+        return current.includes(optionId) ? current.filter((item) => item !== optionId) : [...current, optionId];
+      }
+      return [optionId];
+    });
+  };
+  const selectCustomAnswer = () => {
+    setCustomAnswerSelected(true);
+    setSelectedOptionIds([]);
+  };
+  const canAnswer =
+    clarification.status === "open" &&
+    (customAnswerSelected ? freeText.trim().length > 0 : selectedOptionIds.length > 0);
+  const submitAnswer = () => {
+    if (customAnswerSelected) {
+      onAnswer({
+        clarification_id: clarification.clarification_id,
+        selected_option_ids: [],
+        free_text: freeText.trim(),
+      });
+      return;
+    }
+    const backendOptionIds = selectedOptionIds.filter((optionId) =>
+      clarification.options.some((option) => option.option_id === optionId),
+    );
+    const syntheticLabels = selectedOptionIds
+      .filter((optionId) => !clarification.options.some((option) => option.option_id === optionId))
+      .map((optionId) => choices.find((option) => option.option_id === optionId)?.label)
+      .filter((label): label is string => Boolean(label));
+    const mergedFreeText = syntheticLabels.join("; ");
+    onAnswer({
+      clarification_id: clarification.clarification_id,
+      selected_option_ids: backendOptionIds,
+      free_text: mergedFreeText || undefined,
+    });
+  };
+
+  return (
+    <div className={cx("clarification-answer", `clarification-answer--${variant}`)}>
+      {clarification.default_assumption ? (
+        <div className="clarification-assumption clarification-assumption--detail">
+          <span>Предложенное допущение</span>
+          <p>{clarification.default_assumption}</p>
+        </div>
+      ) : null}
+
+      <div className="field-stack">
+        <div className="answer-section-title">
+          <span>Возможные варианты ответа</span>
+          {canSelectMultiple ? <p>Можно выбрать несколько вариантов, если они одновременно применимы.</p> : <p>Выберите наиболее подходящий вариант или уточните ответ в комментарии.</p>}
+        </div>
+        <div className="choice-list">
+          {choices.map((option) => {
+              const selected = selectedOptionIds.includes(option.option_id);
+              const confidence = confidenceLabel(option.confidence);
+              return (
+                <button
+                  key={option.option_id}
+                  type="button"
+                  className={cx("choice-card", selected && "choice-card--selected")}
+                  onClick={() => toggleOption(option.option_id)}
+                >
+                  <strong>
+                    {option.label}
+                    {confidence ? <small>{confidence}</small> : null}
+                  </strong>
+                  {option.description ? <span>{option.description}</span> : null}
+                  {option.effect_preview ? <p>{option.effect_preview}</p> : null}
+                </button>
+              );
+            })}
+        </div>
+        <label className={cx("choice-card", "choice-card--input", customAnswerSelected && "choice-card--selected")}>
+          <strong>Свой ответ</strong>
+          <span>Выберите этот вариант, если предложенные ответы не подходят или требуют замены.</span>
+          <input
+            value={freeText}
+            onFocus={selectCustomAnswer}
+            onChange={(event) => {
+              setFreeText(event.target.value);
+              selectCustomAnswer();
+            }}
+            placeholder="Напишите ответ обычным языком…"
+          />
+        </label>
+        <div className="inline-actions">
+          <Button
+            tone="primary"
+            disabled={!canAnswer || pending}
+            busy={pending}
+            onClick={submitAnswer}
+          >
+            Сохранить ответ
+          </Button>
+          {clarification.default_assumption ? (
+            <Button tone="secondary" disabled={pending} onClick={() => onAcceptAssumption(clarification.clarification_id)}>
+              Принять допущение
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function TimelineEventDetail({
   event,
@@ -619,19 +1481,19 @@ function TimelineEventDetail({
             Повторить шаг
           </Button>
         ) : null}
-        <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/journey`)}>
-          Открыть путь выполнения
+        <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/task-graph`)}>
+          Открыть граф задач
         </Button>
       </div>
     </div>
   );
 }
 
-function JourneyStepDetail({
-  step,
+function TaskNodeDetail({
+  task,
   onRetryTask,
 }: {
-  step: JourneyStepView;
+  task: TaskNodeView;
   onRetryTask: (taskId: string) => void;
 }) {
   return (
@@ -639,37 +1501,41 @@ function JourneyStepDetail({
       <div className="detail-callout">
         <StatusPill
           tone={
-            step.status === "completed"
+            task.status === "completed"
               ? "success"
-              : step.status === "failed" || step.status === "blocked"
+              : task.status === "failed" || task.status === "blocked"
                 ? "danger"
-                : step.is_current
+                : task.is_current
                   ? "active"
                   : "muted"
           }
         >
-          {prettyLabel(step.status)}
+          {prettyLabel(task.status)}
         </StatusPill>
-        <span>{step.required ? "Обязательный шаг" : "Опциональный шаг"}</span>
+        <span>{prettyLabel(task.template_type)}</span>
       </div>
-      {step.status_summary ? <p>{step.status_summary}</p> : null}
+      {task.status_summary ? <p>{task.status_summary}</p> : null}
         <div className="detail-meta-list">
         <div>
           <span>Шаблон</span>
-          <strong>{step.template_ref}</strong>
+          <strong>{task.template_ref}</strong>
         </div>
         <div>
           <span>Источник</span>
-          <strong>{labelForSourceKind(step.source_kind)}</strong>
+          <strong>{labelForSourceKind(task.origin_kind)}</strong>
         </div>
           <div>
-            <span>Источник</span>
-            <strong>{step.source_ref}</strong>
+            <span>Ref источника</span>
+            <strong>{task.origin_ref}</strong>
+          </div>
+          <div>
+            <span>Слот</span>
+            <strong>{task.slot_id ?? "—"}</strong>
           </div>
         </div>
-        {step.retryable && step.latest_task_id ? (
+        {task.retryable ? (
           <div className="inline-actions">
-            <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(step.latest_task_id!)}>
+            <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(task.task_id)}>
               Повторить шаг
             </Button>
           </div>
@@ -818,19 +1684,23 @@ function ArtifactDetailPanel({ detail }: { detail: ArtifactDetailView }) {
   );
 }
 
-function JourneyPage({ projectId }: { projectId: string }) {
+function flattenTaskNodes(nodes: TaskNodeView[]): TaskNodeView[] {
+  return nodes.flatMap((node) => [node, ...flattenTaskNodes(node.children)]);
+}
+
+function TaskGraphPage({ projectId }: { projectId: string }) {
   const [provider] = useStoredState("povgen.provider", "stub");
   const [model] = useStoredState("povgen.model", "openai/gpt-4.1-mini");
   const queryClient = useQueryClient();
-  const journeyQuery = useQuery({
-    queryKey: projectionKey(projectId, "journey"),
-    queryFn: () => api.getJourney(projectId),
+  const taskGraphQuery = useQuery({
+    queryKey: projectionKey(projectId, "task_graph"),
+    queryFn: () => api.getTaskGraph(projectId),
   });
   const retryMutation = useMutation({
     mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "journey") }),
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "task_graph") }),
         queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "situation") }),
         queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "timeline") }),
         queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") }),
@@ -841,44 +1711,45 @@ function JourneyPage({ projectId }: { projectId: string }) {
     },
   });
 
-  if (journeyQuery.isLoading || !journeyQuery.data) {
-    return <LoadingPanel title="Загрузка пути выполнения…" />;
+  if (taskGraphQuery.isLoading || !taskGraphQuery.data) {
+    return <LoadingPanel title="Загрузка графа задач…" />;
   }
 
+  const tasks = flattenTaskNodes(taskGraphQuery.data.nodes);
   return (
     <SectionCard
-      title="Ход выполнения"
-      subtitle={`Завершено ${journeyQuery.data.completed_steps} из ${journeyQuery.data.total_steps} шагов`}
+      title="Граф задач"
+      subtitle={`Завершено ${taskGraphQuery.data.completed_leaf_tasks} из ${taskGraphQuery.data.total_leaf_tasks} листовых задач`}
     >
-      <div className="journey-table">
-        {journeyQuery.data.steps.map((step) => (
-          <article key={step.step_id} className={cx("journey-row", step.is_current && "journey-row--current")}>
-            <div className="journey-row__title">
-              <strong>{step.title}</strong>
-              <p>{step.template_ref}</p>
-              {step.status_summary ? <p>{step.status_summary}</p> : null}
+      <div className="task-table">
+        {tasks.map((task) => (
+          <article key={task.task_id} className={cx("task-row", task.is_current && "task-row--current")}>
+            <div className="task-row__title">
+              <strong>{"· ".repeat(Math.max(0, task.depth))}{task.title}</strong>
+              <p>{task.template_ref}</p>
+              {task.status_summary ? <p>{task.status_summary}</p> : null}
             </div>
-            <div className="journey-row__meta">
+            <div className="task-row__meta">
                 <StatusPill
                 tone={
-                  step.status === "completed"
+                  task.status === "completed"
                     ? "success"
-                    : step.status === "failed" || step.status === "blocked"
+                    : task.status === "failed" || task.status === "blocked"
                       ? "danger"
-                      : step.is_current
+                      : task.is_current
                         ? "active"
                         : "muted"
                 }
               >
-                {prettyLabel(step.status)}
+                {prettyLabel(task.status)}
               </StatusPill>
-                <span>{labelForSourceKind(step.source_kind)}</span>
-                <span>{labelForRequirement(step.required)}</span>
-                {step.retryable && step.latest_task_id ? (
+                <span>{prettyLabel(task.template_type)}</span>
+                <span>{labelForSourceKind(task.origin_kind)}</span>
+                {task.retryable ? (
                   <Button
                     tone="secondary"
                     icon={<RefreshCcw size={16} />}
-                    onClick={() => retryMutation.mutate(step.latest_task_id!)}
+                    onClick={() => retryMutation.mutate(task.task_id)}
                     busy={retryMutation.isPending}
                   >
                     Повторить
@@ -921,7 +1792,7 @@ function StatePage({
 
   const state = stateQuery.data;
   const enabledPackRefs = new Set(
-    state.enabled_domain_packs.map((item) => String(item.ref ?? item.pack_ref ?? item.identifier ?? "")),
+    state.active_domain_packs.map((item) => String(item.ref ?? item.pack_ref ?? item.identifier ?? "")),
   );
   const availablePacks = (packsQuery.data ?? []).filter((pack) => !enabledPackRefs.has(pack.pack_ref));
 
@@ -943,6 +1814,44 @@ function StatePage({
               Сохранить цель
             </Button>
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Уточнения, допущения и решения"
+        subtitle="Что система спросила, что приняла как рабочее допущение и какие решения уже зафиксированы"
+      >
+        <div className="state-mini-grid">
+          <div className="mini-metric">
+            <span>Режим уточнений</span>
+            <strong>{clarificationModeLabel(state.clarification_mode)}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Допущения</span>
+            <strong>{state.assumptions.length}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Решения</span>
+            <strong>{state.decisions.length}</strong>
+          </div>
+          <div className="mini-metric">
+            <span>Факты</span>
+            <strong>{state.known_facts.length}</strong>
+          </div>
+        </div>
+        <div className="state-record-grid">
+          <StateRecordList
+            title="Принятые допущения"
+            items={state.assumptions}
+            emptyTitle="Допущений пока нет"
+            emptyDescription="Они появятся, когда система безопасно продолжит работу без вопроса или оператор подтвердит допущение."
+          />
+          <StateRecordList
+            title="Решения пользователя"
+            items={state.decisions}
+            emptyTitle="Решений пока нет"
+            emptyDescription="Здесь будут ответы на уточнения и другие значимые решения по проекту."
+          />
         </div>
       </SectionCard>
 
@@ -988,7 +1897,7 @@ function StatePage({
         </div>
       </SectionCard>
 
-      <SectionCard title="Доменные пакеты" subtitle="Доменные расширения, влияющие на собранный маршрут проекта">
+      <SectionCard title="Доменные пакеты" subtitle="Доменные расширения, которые добавляют задачи в нужные слоты графа">
         {availablePacks.length === 0 ? (
           <EmptyState title="Новых пакетов нет" description="Все доступные доменные пакеты уже подключены или отсутствуют." />
         ) : (
@@ -1013,9 +1922,47 @@ function StatePage({
         )}
       </SectionCard>
 
-      <SectionCard title="Состав маршрута" subtitle="Собранный путь проекта и подключённые фрагменты">
-        <pre className="code-block">{JSON.stringify(state.recipe_composition ?? {}, null, 2)}</pre>
+      <SectionCard title="Корень графа задач" subtitle="Техническая привязка текущего состояния к runtime-графу">
+        <pre className="code-block">{JSON.stringify({ root_task_id: state.root_task_id }, null, 2)}</pre>
       </SectionCard>
+    </div>
+  );
+}
+
+function StateRecordList({
+  title,
+  items,
+  emptyTitle,
+  emptyDescription,
+}: {
+  title: string;
+  items: Record<string, unknown>[];
+  emptyTitle: string;
+  emptyDescription: string;
+}) {
+  return (
+    <div className="state-record-list">
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <EmptyState title={emptyTitle} description={emptyDescription} />
+      ) : (
+        <div className="entity-list">
+          {items.map((item, index) => {
+            const identifier = String(item.identifier ?? `record-${index}`);
+            return (
+              <article key={identifier} className="entity-card">
+                <div className="entity-card__head">
+                  <div>
+                    <strong>{identifier}</strong>
+                    <p>{String(item.statement ?? item.description ?? "")}</p>
+                  </div>
+                  <StatusPill tone="muted">{String(item.source ?? "system")}</StatusPill>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1198,8 +2145,8 @@ function DebugPage({ projectId, onRetryTask }: { projectId: string; onRetryTask:
             return (
               <article key={taskId} className="debug-row">
                 <div>
-                  <strong>{String(task.recipe_step_id ?? taskId)}</strong>
-                  <p>{String(task.template_id ?? "")}@{String(task.template_version ?? "")}</p>
+                  <strong>{String(task.title ?? task.task_key ?? taskId)}</strong>
+                  <p>{String(task.template_ref ?? "")}</p>
                 </div>
                 <div className="debug-row__actions">
                   <StatusPill tone={toneForSemanticStatus(status)}>
@@ -1268,15 +2215,15 @@ function CreateProjectModal({
   onClose: () => void;
   onSubmit: (payload: {
     name: string;
-    recipe_ref: string;
+    objective_ref: string;
     request_text: string;
     domain_pack_refs: string[];
   }) => void;
   busy: boolean;
 }) {
-  const recipesQuery = useQuery({
-    queryKey: ["registry", "recipes"],
-    queryFn: api.listRecipes,
+  const objectivesQuery = useQuery({
+    queryKey: ["registry", "objectives"],
+    queryFn: api.listObjectives,
     enabled: open,
   });
   const packsQuery = useQuery({
@@ -1287,21 +2234,22 @@ function CreateProjectModal({
 
   const [name, setName] = useState("");
   const [requestText, setRequestText] = useState("");
-  const [recipeRef, setRecipeRef] = useState("");
+  const [objectiveRef, setObjectiveRef] = useState("");
   const [selectedPacks, setSelectedPacks] = useState<string[]>([]);
   const [manualPackOverride, setManualPackOverride] = useState(false);
 
   useEffect(() => {
-    const firstRecipe = recipesQuery.data?.[0];
-    if (firstRecipe && !recipeRef) {
-      setRecipeRef(firstRecipe.recipe_ref);
+    const firstObjective = objectivesQuery.data?.[0];
+    if (firstObjective && !objectiveRef) {
+      setObjectiveRef(firstObjective.objective_ref);
     }
-  }, [recipeRef, recipesQuery.data]);
+  }, [objectiveRef, objectivesQuery.data]);
 
   useEffect(() => {
     if (!open) {
       setName("");
       setRequestText("");
+      setObjectiveRef("");
       setSelectedPacks([]);
       setManualPackOverride(false);
     }
@@ -1322,7 +2270,7 @@ function CreateProjectModal({
           event.preventDefault();
           onSubmit({
             name,
-            recipe_ref: recipeRef,
+            objective_ref: objectiveRef,
             request_text: requestText,
             domain_pack_refs: selectedPacks,
           });
@@ -1342,11 +2290,11 @@ function CreateProjectModal({
           />
         </label>
         <label className="field field--stacked">
-          <span>Recipe</span>
-          <select value={recipeRef} onChange={(event) => setRecipeRef(event.target.value)}>
-            {(recipesQuery.data ?? []).map((recipe) => (
-              <option key={recipe.recipe_ref} value={recipe.recipe_ref}>
-                {recipe.name} · {recipe.step_count} шагов
+          <span>Цель обработки</span>
+          <select value={objectiveRef} onChange={(event) => setObjectiveRef(event.target.value)}>
+            {(objectivesQuery.data ?? []).map((objective) => (
+              <option key={objective.objective_ref} value={objective.objective_ref}>
+                {objective.title} · {objective.required_artifact_count} артефакта
               </option>
             ))}
           </select>
@@ -1355,8 +2303,8 @@ function CreateProjectModal({
         <div className="field field--stacked">
           <span>Доменные пакеты (необязательно)</span>
           <small className="field__hint">
-            Если ничего не выбирать, система сама подберёт нужные domain pack по тексту запроса.
-            Ручной выбор здесь работает как override.
+            Если ничего не выбирать, система сама подберёт нужные доменные пакеты по тексту запроса.
+            Ручной выбор здесь работает как переопределение.
           </small>
           <div className="inline-actions">
             <Button
@@ -1408,7 +2356,7 @@ function CreateProjectModal({
             tone="primary"
             type="submit"
             busy={busy}
-            disabled={!name.trim() || !requestText.trim() || !recipeRef}
+            disabled={!name.trim() || !requestText.trim() || !objectiveRef}
           >
             Создать проект
           </Button>
@@ -1453,8 +2401,8 @@ function handleAction(
     navigate(`/projects/${projectId}/artifacts/${action.target_id}`);
     return;
   }
-  if (action.target_view === "journey") {
-    navigate(`/projects/${projectId}/journey`);
+  if (action.target_view === "task_graph") {
+    navigate(`/projects/${projectId}/task-graph`);
     return;
   }
   if (action.target_view === "state") {

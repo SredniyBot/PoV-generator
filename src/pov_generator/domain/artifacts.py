@@ -5,7 +5,7 @@ from typing import Literal
 
 
 ArtifactFormat = Literal["json", "markdown", "text"]
-ArtifactKind = Literal["primary", "derived"]
+ArtifactKind = Literal["primary", "reasoning", "trace", "derived"]
 ContextItemType = Literal["problem_field", "artifact", "instruction"]
 
 

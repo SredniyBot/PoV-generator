@@ -1,0 +1,24 @@
+kind: task_template
+id: common.request_fact_extraction
+version: 1.0.0
+title: Выделить факты из запроса
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+produces:
+  artifact: common.request_fact_sheet@1.0.0
+context:
+  include: [state.business_request]
+  max_tokens: 12000
+planning:
+  priority: 1000
+effects:
+  readiness:
+    set:
+      - dimension: request_facts_extracted
+        status: ready
+framework:
+  summary: Выдели только явные факты, сущности, ограничения и ожидаемые результаты исходного запроса.

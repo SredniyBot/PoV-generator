@@ -1,0 +1,26 @@
+kind: task_template
+id: common.stakeholder_mapping
+version: 1.0.0
+title: Выделить стейкхолдеров
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required: [common.normalized_request@1.0.0]
+produces:
+  artifact: common.stakeholder_map@1.0.0
+context:
+  include: [artifact.common.normalized_request]
+  max_tokens: 24000
+planning:
+  priority: 800
+effects:
+  readiness:
+    set:
+      - dimension: stakeholders_identified
+        status: ready
+framework:
+  summary: Определи группы стейкхолдеров, владельцев решений, пользователей и операционные роли.

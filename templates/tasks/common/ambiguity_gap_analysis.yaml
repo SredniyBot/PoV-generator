@@ -1,0 +1,24 @@
+kind: task_template
+id: common.ambiguity_gap_analysis
+version: 1.0.0
+title: Разобрать неоднозначности запроса
+type: leaf
+status: active
+domain: common
+executor: llm
+requires:
+  state: [business_request]
+produces:
+  artifact: common.ambiguity_gap_report@1.0.0
+context:
+  include: [state.business_request]
+  max_tokens: 12000
+planning:
+  priority: 970
+effects:
+  readiness:
+    set:
+      - dimension: request_ambiguities_scanned
+        status: ready
+framework:
+  summary: Найди неоднозначности, противоречия, безопасные допущения и кандидаты на эскалацию.

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.stakeholder_map
+version: 1.0.0
+title: Карта стейкхолдеров
+schema:
+  type: object
+  additionalProperties: true
+

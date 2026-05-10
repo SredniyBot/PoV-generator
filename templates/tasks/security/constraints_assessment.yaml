@@ -1,0 +1,26 @@
+kind: task_template
+id: security.constraints_assessment
+version: 1.0.0
+title: Оценить ограничения ИБ и комплаенса
+type: leaf
+status: active
+domain: security
+executor: llm
+requires:
+  state: [business_request]
+  artifacts:
+    required: [common.normalized_request@1.0.0]
+produces:
+  artifact: security.security_compliance_constraints@1.0.0
+context:
+  include: [artifact.common.normalized_request]
+  max_tokens: 24000
+planning:
+  priority: 720
+effects:
+  readiness:
+    set:
+      - dimension: security_constraints_assessed
+        status: ready
+framework:
+  summary: Выдели требования безопасности, приватности, доступа, размещения, ИИ-использования и комплаенса.

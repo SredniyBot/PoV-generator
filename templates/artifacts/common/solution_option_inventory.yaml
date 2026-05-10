@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.solution_option_inventory
+version: 1.0.0
+title: Набор вариантов решения
+schema:
+  type: object
+  additionalProperties: true
+
