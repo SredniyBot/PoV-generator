@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0.2,<7.0",
   "fastapi>=0.115.0,<1.0",
+  # Pin starlette below 0.42: claude-agent-sdk → mcp transitively pulls
+  # starlette 1.0.0, which breaks fastapi 0.115 (Router.__init__ kwargs).
+  "starlette>=0.40,<0.42",
   "uvicorn>=0.35.0,<1.0",
   "websockets>=13.1,<16.0",
   "anthropic>=0.39.0,<1.0",
