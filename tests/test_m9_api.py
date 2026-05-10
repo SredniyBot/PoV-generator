@@ -94,10 +94,27 @@ def init_project(workspace: Path, request_text: str, domain_packs: tuple[str, ..
 
 
 def run_stub_workflow(workspace: Path) -> None:
-    registry_service, _runtime, _project_service, _planning_service, workflow_service = build_services()
+    registry_service, runtime, _project_service, _planning_service, workflow_service = build_services()
     snapshot, report = registry_service.validate()
     assert report.is_valid
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
+    # `client.requirements_signoff` (human_approval gate) blocks the
+    # objective until the operator confirms approval.
+    assert result.stopped_reason == "planner_blocked"
+
+    clarification_service = ClarificationService(runtime, provider="stub")
+    signoff = next(
+        req
+        for req in runtime.list_clarification_requests(workspace)
+        if req.source_type == "quality_gate"
+        and req.source_id == "client.requirements_signoff@1.0.0"
+        and req.status == "open"
+    )
+    clarification_service.answer_clarification(
+        workspace, request_id=signoff.request_id, selected_option_ids=("approved",)
+    )
+
+    result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
     assert result.stopped_reason == "objective_completed"
 
 

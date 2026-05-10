@@ -1,0 +1,18 @@
+kind: quality_gate
+id: client.requirements_signoff
+version: 1.0.0
+title: Согласование ТЗ с заказчиком
+status: active
+requires:
+  artifacts:
+    - common.requirements_spec@1.0.0
+    - common.review_report@1.0.0
+check:
+  type: human_approval
+  approver_role: client
+  decision_modes: [approved, approved_with_comments, rejected]
+  blocking: true
+  timeout_hours: 120
+on_pass: complete_objective
+on_fail: create_repair_task
+on_comments: rerun_via_clarifications

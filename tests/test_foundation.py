@@ -51,7 +51,7 @@ def test_registry_validation_passes_for_task_graph_corpus() -> None:
     assert len(snapshot.artifact_contracts) >= 16
     assert len(snapshot.domain_packs) == 4
     assert len(snapshot.methodology_packs) >= 1
-    assert len(snapshot.quality_gates) == 1
+    assert len(snapshot.quality_gates) >= 2
     assert len(snapshot.vocabularies) == 5
 
 

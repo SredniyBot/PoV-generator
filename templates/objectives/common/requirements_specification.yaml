@@ -9,3 +9,4 @@ done_when:
     - common.review_report@1.0.0
   gates:
     - common.requirements_spec_review_passed@1.0.0
+    - client.requirements_signoff@1.0.0

@@ -186,7 +186,18 @@ class WorkflowService:
             result = self.run_next(workspace, snapshot, provider=provider, model=model)
             steps.append(result)
             if result.planning_outcome not in {"selected", "retried"}:
-                return WorkflowRunResult(steps=tuple(steps), stopped_reason="planner_blocked")
+                # Planner может вернуть "objective_completed", когда нет ни одной
+                # допустимой задачи и все gate'ы пройдены — это успешный финал,
+                # а не блокировка. Раньше это было невидимо, потому что цепочка
+                # планировщик → дальше всегда успевала выполнить хотя бы один
+                # шаг и попадала в пост-step проверку ниже. С появлением
+                # human_approval gate цикл может закончиться без шага.
+                stopped_reason = (
+                    "objective_completed"
+                    if result.planning_outcome == "objective_completed"
+                    else "planner_blocked"
+                )
+                return WorkflowRunResult(steps=tuple(steps), stopped_reason=stopped_reason)
             if result.validation_status != "passed":
                 return WorkflowRunResult(
                     steps=tuple(steps),

@@ -127,6 +127,24 @@ def test_context_builder_collects_previous_artifacts_for_spec_generation(tmp_pat
     assert manifest.budget.used_tokens > 0
 
 
+def _approve_requirements_signoff(runtime: SqliteRuntime, workspace: Path) -> None:
+    """Хелпер: после первого `run_until_blocked` находит открытое
+    уточнение `client.requirements_signoff@1.0.0` и отвечает на него
+    `approved`. Нужен, потому что objective не закроется, пока заказчик
+    не согласовал ТЗ через human_approval gate."""
+    clarification_service = ClarificationService(runtime, provider="stub")
+    target = next(
+        req
+        for req in runtime.list_clarification_requests(workspace)
+        if req.source_type == "quality_gate"
+        and req.source_id == "client.requirements_signoff@1.0.0"
+        and req.status == "open"
+    )
+    clarification_service.answer_clarification(
+        workspace, request_id=target.request_id, selected_option_ids=("approved",)
+    )
+
+
 def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     (
         workspace,
@@ -141,7 +159,14 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     ) = init_workspace(tmp_path)
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
+    # Stub-flow доходит до момента, когда review_report готов и
+    # human_approval gate `client.requirements_signoff@1.0.0` блокирует
+    # завершение objective: ждём согласования заказчика.
+    assert result.stopped_reason == "planner_blocked"
 
+    _approve_requirements_signoff(runtime, workspace)
+
+    result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
     assert result.stopped_reason == "objective_completed"
     artifact_roles = {artifact.artifact_role for artifact in runtime.list_artifacts(workspace)}
     assert {
@@ -184,6 +209,9 @@ def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) ->
     )
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
+    assert result.stopped_reason == "planner_blocked"
+    _approve_requirements_signoff(runtime, workspace)
+    result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
 
     assert result.stopped_reason == "objective_completed"
     artifact_roles = {artifact.artifact_role for artifact in runtime.list_artifacts(workspace)}
