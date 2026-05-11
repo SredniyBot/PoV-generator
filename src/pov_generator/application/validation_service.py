@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
-from ..domain.clarifications import ClarificationCandidate
+from ..domain.clarifications import ClarificationCandidate, ClarificationOption
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -450,11 +450,6 @@ class ValidationService:
             if already:
                 continue
             decision_modes = gate.decision_modes or ("approved", "approved_with_comments", "rejected")
-            options = tuple(
-                {"option_id": mode, "label": mode}
-                for mode in decision_modes
-            )
-            from ..domain.clarifications import ClarificationOption
             options_typed = tuple(
                 ClarificationOption(option_id=mode, label=mode, description="")
                 for mode in decision_modes
