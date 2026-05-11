@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -230,7 +231,12 @@ class ValidationService:
                     self._clarification_service.candidate_from_question(
                         project_id=project_id,
                         source_type="validation",
-                        source_id=f"{task_id}:{artifact_id}:low_confidence",
+                        # W6/B2: source_id ДОЛЖЕН быть стабильным между re-run
+                        # одной задачи. Раньше включали artifact_id, который
+                        # меняется при каждом исполнении → find_clarification_by_source
+                        # не находил answered request → дубли вопросов после
+                        # ответа. Теперь привязываемся к (task_id, artifact_role).
+                        source_id=f"{task_id}:{artifact_role}:low_confidence",
                         question="Какой ключевой бизнес-контекст нужно учесть, чтобы повысить уверенность результата?",
                         affected_task_ids=(task_id,),
                         related_artifact_ids=(artifact_id,),
@@ -253,20 +259,29 @@ class ValidationService:
                     related_artifact_ids=(artifact_id,),
                 )
             )
-            for index, question in enumerate(blocking_questions, start=1):
-                if str(question).strip():
-                    candidates.append(
-                        self._clarification_service.candidate_from_question(
-                            project_id=project_id,
-                            source_type="validation",
-                            source_id=f"{task_id}:{artifact_id}:question:{index}",
-                            question=str(question),
-                            affected_task_ids=(task_id,),
-                            related_artifact_ids=(artifact_id,),
-                            severity="high",
-                            confidence_without_user=0.2,
-                        )
+            for question in blocking_questions:
+                normalized_question = str(question).strip()
+                if not normalized_question:
+                    continue
+                # W6/B2: hash вопроса в source_id даёт стабильный идентификатор
+                # между re-run (порядок blocking_questions может меняться —
+                # `index` был ненадёжным якорем). artifact_id тоже выкинут
+                # как нестабильный между запусками задачи.
+                question_hash = hashlib.sha1(
+                    normalized_question.lower().encode("utf-8")
+                ).hexdigest()[:10]
+                candidates.append(
+                    self._clarification_service.candidate_from_question(
+                        project_id=project_id,
+                        source_type="validation",
+                        source_id=f"{task_id}:{artifact_role}:question:{question_hash}",
+                        question=normalized_question,
+                        affected_task_ids=(task_id,),
+                        related_artifact_ids=(artifact_id,),
+                        severity="high",
+                        confidence_without_user=0.2,
                     )
+                )
 
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))
