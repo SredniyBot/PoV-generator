@@ -132,6 +132,21 @@ def _option_from_dict(payload: dict[str, object]) -> ClarificationOption:
     )
 
 
+def _normalize_clarification_question(question: str | None) -> str:
+    """Канонизирует question text для дедупликации в find_clarification_by_source.
+
+    - case-fold (не просто .lower(), но и для unicode);
+    - collapse whitespace (любая последовательность пробелов/таб'ов/новых
+      строк → один пробел);
+    - strip trailing punctuation (.,!?;:…).
+    """
+    if not question:
+        return ""
+    import re as _re
+    normalized = " ".join(question.casefold().split())
+    return _re.sub(r"[.,!?;:…]+$", "", normalized).strip()
+
+
 def _fallback_clarification_description(payload: dict[str, object]) -> str:
     question = str(payload.get("question", "")).strip()
     rationale = str(payload.get("rationale", "")).strip()
@@ -1000,18 +1015,28 @@ class SqliteRuntime:
         source_id: str,
         question: str,
     ) -> ClarificationRequest | None:
+        """W5.1: возвращает существующий request с тем же `(source_type,
+        source_id)`, **нормализуя** question text перед сравнением
+        (lower-case, схлопывание whitespace, обрезанная пунктуация).
+
+        Раньше малейшая правка question (например прибавили точку, заменили
+        пробел на neбольшой Unicode) делала record уникальным — это и было
+        источником повторных вопросов в UI."""
+        target_normalized = _normalize_clarification_question(question)
         with self._connect(workspace) as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
                 select * from clarification_requests
-                where source_type = ? and source_id = ? and question = ?
+                where source_type = ? and source_id = ?
                   and status in ('open', 'answered', 'assumed', 'deferred')
                 order by created_at desc
-                limit 1
                 """,
-                (source_type, source_id, question),
-            ).fetchone()
-        return None if row is None else _request_from_row(row)
+                (source_type, source_id),
+            ).fetchall()
+        for row in rows:
+            if _normalize_clarification_question(row["question"]) == target_normalized:
+                return _request_from_row(row)
+        return None
 
     def create_clarification_request(self, workspace: Path, request: ClarificationRequest) -> ClarificationRequest:
         now = request.created_at or utc_now_iso()
@@ -1128,6 +1153,122 @@ class SqliteRuntime:
             )
             connection.commit()
         return self.get_clarification_request(workspace, request_id)
+
+    def defer_clarification_request(
+        self, workspace: Path, request_id: str, *, reason: str | None = None
+    ) -> ClarificationRequest:
+        """W5.1: пользователь явно отложил вопрос. Это не игнор — это
+        деклaрация "сейчас не время; вернусь позже". В UI карточка остаётся
+        в инбоксе, но переезжает на вкладку "отложенные"."""
+        now = utc_now_iso()
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update clarification_requests
+                set status = 'deferred',
+                    resolution_summary = ?,
+                    updated_at = ?
+                where request_id = ?
+                """,
+                (reason or "Отложено пользователем.", now, request_id),
+            )
+            connection.commit()
+        return self.get_clarification_request(workspace, request_id)
+
+    def reopen_clarification_request(self, workspace: Path, request_id: str) -> ClarificationRequest:
+        """W5.1: разлочивает ответ — переводит запись обратно в `open` и
+        очищает поля ответа, чтобы пользователь мог переответить.
+        Audit-история сохраняется через clarification_events; в самом
+        request'е остаётся только последний state."""
+        now = utc_now_iso()
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update clarification_requests
+                set status = 'open',
+                    selected_option_ids_json = '[]',
+                    free_text = NULL,
+                    resolution_summary = NULL,
+                    updated_at = ?
+                where request_id = ?
+                """,
+                (now, request_id),
+            )
+            connection.commit()
+        return self.get_clarification_request(workspace, request_id)
+
+    def record_clarification_event(
+        self,
+        workspace: Path,
+        *,
+        event_id: str,
+        request_id: str,
+        project_id: str,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+        actor: str = "operator",
+    ) -> dict[str, object]:
+        """W5.1: добавляет audit-запись о смене состояния уточнения.
+        event_type ∈ {created, answered, assumed, deferred, reopened,
+        cancelled, mode_changed}."""
+        now = utc_now_iso()
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into clarification_events(
+                  event_id, request_id, project_id, event_type, payload_json, actor, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    request_id,
+                    project_id,
+                    event_type,
+                    json_dumps(payload or {}),
+                    actor,
+                    now,
+                ),
+            )
+            connection.commit()
+        return {
+            "event_id": event_id,
+            "request_id": request_id,
+            "project_id": project_id,
+            "event_type": event_type,
+            "payload": payload or {},
+            "actor": actor,
+            "created_at": now,
+        }
+
+    def list_clarification_events(
+        self, workspace: Path, request_id: str
+    ) -> list[dict[str, object]]:
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                # `order by rowid` гарантирует insertion order даже когда
+                # created_at совпадает по точности (utc_now_iso() имеет
+                # резолюцию секунды).
+                """
+                select * from clarification_events
+                where request_id = ?
+                order by rowid
+                """,
+                (request_id,),
+            ).fetchall()
+        from ..common.serialization import json_loads as _json_loads
+        return [
+            {
+                "event_id": row["event_id"],
+                "request_id": row["request_id"],
+                "project_id": row["project_id"],
+                "event_type": row["event_type"],
+                "payload": _json_loads(row["payload_json"]) if row["payload_json"] else {},
+                "actor": row["actor"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def _insert_task_event(
         self,
@@ -1365,6 +1506,22 @@ class SqliteRuntime:
             "clarification_requests",
             "decision_owner_role",
             "text not null default 'business'",
+        )
+        # W5.1: audit log событий уточнений.
+        connection.executescript(
+            """
+            create table if not exists clarification_events (
+              event_id text primary key,
+              request_id text not null,
+              project_id text not null,
+              event_type text not null,
+              payload_json text not null default '{}',
+              actor text not null default 'operator',
+              created_at text not null
+            );
+            create index if not exists clarification_events_request_idx
+                on clarification_events(request_id, created_at);
+            """
         )
         # W4.1 (R1): async workflow runs.
         connection.executescript(

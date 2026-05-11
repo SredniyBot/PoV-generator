@@ -182,12 +182,16 @@ def create_app(
         # через GET /workflow-runs/active (polling) или WS broadcast,
         # которое поднимается каждый раз когда runner UPDATE'ит запись.
         workspace_ref = catalog.resolve_workspace(project_id)
+        # W5.1: cap снят. По умолчанию даём workflow пройти столько шагов,
+        # сколько нужно до естественной блокировки (objective_completed /
+        # planner_blocked / validation_failed). 100 — sanity ceiling против
+        # бесконечной петли при поломке планировщика; cancel доступен в UI.
         record = workflow_runner_service.start_run_until_blocked(
             workspace_ref.workspace,
             project_id,
             provider=_optional_str(payload, "provider"),
             model=_optional_str(payload, "model"),
-            max_steps=int(payload.get("max_steps", 3)),
+            max_steps=int(payload.get("max_steps", 100)),
         )
         return to_primitive(record)
 
@@ -290,6 +294,53 @@ def create_app(
     def set_methodology(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         pack_ref = _required_str(payload, "pack_ref")
         return to_primitive(command_service.set_methodology(project_id, pack_ref=pack_ref))
+
+    # ---- W5.1: defer / reopen / events / next ---------------------------
+
+    @app.post("/api/projects/{project_id}/commands/defer-clarification")
+    def defer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        request_id = _required_str(payload, "clarification_id")
+        reason = _optional_str(payload, "reason")
+        return to_primitive(
+            clarification_service.defer_clarification(
+                workspace_ref.workspace, request_id=request_id, reason=reason,
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/commands/reopen-clarification")
+    def reopen_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        request_id = _required_str(payload, "clarification_id")
+        return to_primitive(
+            clarification_service.reopen_clarification(workspace_ref.workspace, request_id=request_id)
+        )
+
+    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}/events")
+    def clarification_events(project_id: str, clarification_id: str) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        return to_primitive(
+            clarification_service.list_events(workspace_ref.workspace, clarification_id)
+        )
+
+    @app.get("/api/projects/{project_id}/clarifications/next")
+    def clarification_next(project_id: str, after_id: str | None = None) -> Any:
+        """Возвращает следующий открытый вопрос (по приоритету), отличный
+        от `after_id`. Это flow-навигация UI wizard'а после ответа."""
+        workspace_ref = catalog.resolve_workspace(project_id)
+        opens = [
+            req for req in runtime.list_clarification_requests(
+                workspace_ref.workspace, statuses=("open",),
+            )
+            if req.request_id != after_id
+        ]
+        # Сортируем по priority desc, потом по created_at asc — старые более
+        # приоритетные сверху.
+        priority_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+        opens.sort(
+            key=lambda r: (-priority_rank.get(r.priority, 0), r.created_at)
+        )
+        return to_primitive(opens[0]) if opens else None
 
     @app.websocket("/ws/projects/{project_id}")
     async def project_updates(websocket: WebSocket, project_id: str) -> None:

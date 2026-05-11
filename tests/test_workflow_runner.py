@@ -129,7 +129,10 @@ def test_cancel_run_finishes_with_cancelled_status(tmp_path: Path, monkeypatch) 
     original_run_next = WorkflowService.run_next
 
     def slow_run_next(self, workspace, snapshot, *, provider=None, model=None):
-        time.sleep(0.15)
+        # 0.5s гарантирует, что в общем pytest-сweep (где другие тесты
+        # держат БД lock'и) runner всё ещё в середине первого шага к
+        # моменту cancel_run.
+        time.sleep(0.5)
         return original_run_next(self, workspace, snapshot, provider=provider, model=model)
 
     monkeypatch.setattr(WorkflowService, "run_next", slow_run_next)

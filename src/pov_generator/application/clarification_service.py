@@ -150,6 +150,20 @@ class ClarificationService:
                     actor="clarification_coordinator",
                     reason="safe assumption accepted automatically",
                 )
+            self._emit_event(
+                workspace,
+                request_id=created.request_id,
+                project_id=candidate.project_id,
+                event_type="created" if action == "ask" else "assumed_auto",
+                payload={
+                    "source_type": candidate.source_type,
+                    "source_id": candidate.source_id,
+                    "decision_owner_role": candidate.decision_owner_role,
+                    "min_participation_mode": candidate.min_participation_mode,
+                    "default_assumption": candidate.default_assumption,
+                },
+                actor="clarification_coordinator",
+            )
             decisions.append(
                 ClarificationDecision(
                     candidate_id=candidate.candidate_id,
@@ -193,7 +207,95 @@ class ClarificationService:
             actor="operator",
             reason="clarification answered",
         )
+        self._emit_event(
+            workspace,
+            request_id=request_id,
+            project_id=request.project_id,
+            event_type="answered",
+            payload={
+                "selected_option_ids": list(selected_option_ids),
+                "free_text": free_text.strip() if free_text else None,
+                "resolution_summary": summary,
+                "previous_status": request.status,
+            },
+        )
         return answered
+
+    def defer_clarification(
+        self,
+        workspace: Path,
+        *,
+        request_id: str,
+        reason: str | None = None,
+    ) -> ClarificationRequest:
+        """W5.1: явный 'отложить' — мягкий skip. В отличие от accept_assumption,
+        не фиксирует допущение в ProblemState; в отличие от answer, не даёт
+        Decision. Просто перевод в `deferred`, чтобы инбокс был чище и
+        планировщик мог идти дальше."""
+        request = self._runtime.get_clarification_request(workspace, request_id)
+        if request.status not in {"open", "answered", "assumed"}:
+            raise ConflictError("Это уточнение уже отложено или закрыто.")
+        updated = self._runtime.defer_clarification_request(
+            workspace, request_id, reason=reason,
+        )
+        self._emit_event(
+            workspace,
+            request_id=request_id,
+            project_id=request.project_id,
+            event_type="deferred",
+            payload={"reason": reason, "previous_status": request.status},
+        )
+        return updated
+
+    def reopen_clarification(
+        self,
+        workspace: Path,
+        *,
+        request_id: str,
+    ) -> ClarificationRequest:
+        """W5.1: отвечавший пользователь хочет пере-ответить. Очищает
+        ответ в request'е, но audit-trail (clarification_events) сохраняет
+        предыдущий ответ полностью."""
+        request = self._runtime.get_clarification_request(workspace, request_id)
+        if request.status not in {"answered", "assumed", "deferred"}:
+            raise ConflictError("Это уточнение и так открыто.")
+        updated = self._runtime.reopen_clarification_request(workspace, request_id)
+        self._emit_event(
+            workspace,
+            request_id=request_id,
+            project_id=request.project_id,
+            event_type="reopened",
+            payload={
+                "previous_status": request.status,
+                "previous_selected_option_ids": list(request.selected_option_ids),
+                "previous_free_text": request.free_text,
+                "previous_resolution_summary": request.resolution_summary,
+            },
+        )
+        return updated
+
+    def list_events(self, workspace: Path, request_id: str) -> list[dict]:
+        return self._runtime.list_clarification_events(workspace, request_id)
+
+    def _emit_event(
+        self,
+        workspace: Path,
+        *,
+        request_id: str,
+        project_id: str,
+        event_type: str,
+        payload: dict,
+        actor: str = "operator",
+    ) -> None:
+        self._runtime.record_clarification_event(
+            workspace,
+            event_id=str(uuid.uuid4()),
+            request_id=request_id,
+            project_id=project_id,
+            event_type=event_type,
+            payload=payload,
+            actor=actor,
+        )
 
     def accept_assumption(self, workspace: Path, *, request_id: str) -> ClarificationRequest:
         request = self._runtime.get_clarification_request(workspace, request_id)
@@ -215,6 +317,16 @@ class ClarificationService:
             ),
             actor="operator",
             reason="clarification assumption accepted",
+        )
+        self._emit_event(
+            workspace,
+            request_id=request_id,
+            project_id=request.project_id,
+            event_type="assumed",
+            payload={
+                "default_assumption": request.default_assumption,
+                "previous_status": request.status,
+            },
         )
         return accepted
 
