@@ -331,8 +331,8 @@ function WorkspaceRoute({
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [provider, setProvider] = useStoredState("povgen.provider", "stub");
-  const [model, setModel] = useStoredState("povgen.model", "openai/gpt-4.1-mini");
+  const [provider, setProvider] = useStoredState("povgen.provider", "openrouter");
+  const [model, setModel] = useStoredState("povgen.model", "deepseek/deepseek-v4-flash");
   const [flashProjection, setFlashProjection] = useState<ProjectionName | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
 
@@ -2317,8 +2317,8 @@ function flattenTaskNodes(nodes: TaskNodeView[]): TaskNodeView[] {
 }
 
 function TaskGraphPage({ projectId }: { projectId: string }) {
-  const [provider] = useStoredState("povgen.provider", "stub");
-  const [model] = useStoredState("povgen.model", "openai/gpt-4.1-mini");
+  const [provider] = useStoredState("povgen.provider", "openrouter");
+  const [model] = useStoredState("povgen.model", "deepseek/deepseek-v4-flash");
   const queryClient = useQueryClient();
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),

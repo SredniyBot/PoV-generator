@@ -72,7 +72,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined }),
     }),
-  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 20) =>
+  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 3) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
