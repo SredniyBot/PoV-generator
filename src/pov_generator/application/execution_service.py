@@ -21,6 +21,7 @@ from ..infrastructure.claude_subscription_client import (
 from ..infrastructure.openrouter_client import OpenRouterClient
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
+from .complexity_selector_service import select_complexity
 from .context_service import ContextService
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -58,7 +59,12 @@ class ExecutionService:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
         active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER", "stub")
-        complexity_value = template.complexity
+        # W3.2: pre-selector сложности задачи. Default — off, в этом случае
+        # возвращает declared `template.complexity`. С `POV_COMPLEXITY_SELECTOR=on`
+        # или `=stub` оценка может перезаписать сложность по фактическому
+        # контексту проекта (число активных domain packs, бизнес-запрос и т.д.).
+        complexity_selection = select_complexity(template=template, state=state)
+        complexity_value = complexity_selection.complexity
         if active_provider == "claude_sdk":
             active_model = model or model_for_complexity(complexity_value)
         elif active_provider == "claude_subscription":
@@ -167,6 +173,9 @@ class ExecutionService:
                     {
                         "provider": active_provider,
                         "model": active_model,
+                        "complexity": complexity_value,
+                        "complexity_source": complexity_selection.source,
+                        "complexity_rationale": complexity_selection.rationale,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                     }
