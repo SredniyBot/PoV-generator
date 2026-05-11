@@ -2721,4 +2721,108 @@ code {
 .clar-role--data_owner { background: rgba(180, 165, 134, 0.18); color: #cbb98e; }
 .clar-role--security { background: rgba(215, 131, 131, 0.18); color: #e3a3a3; }
 
+/* ---- L4 ProvenanceViewer ---------------------------------------------- */
+
+.provenance {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.provenance__section h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.provenance__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.provenance__field {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.provenance__field dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #9aa4b2);
+  margin: 0;
+}
+
+.provenance__field dd {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-primary, #e8ecf3);
+  word-break: break-all;
+}
+
+.provenance__mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+}
+
+.provenance__null {
+  color: var(--text-secondary, #9aa4b2);
+  font-style: italic;
+}
+
+.provenance__steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.provenance__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.provenance__table th,
+.provenance__table td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.provenance__table th {
+  font-weight: 500;
+  color: var(--text-secondary, #9aa4b2);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+.provenance__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.provenance__source {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--text-secondary, #9aa4b2);
+  margin-top: 0.2rem;
+}
+
+.provenance__empty {
+  margin: 0;
+  color: var(--text-secondary, #9aa4b2);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
 

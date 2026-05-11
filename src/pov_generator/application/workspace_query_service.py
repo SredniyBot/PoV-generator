@@ -967,10 +967,25 @@ class WorkspaceQueryService:
         reasoning_payload = None
         if reasoning_artifact is not None:
             reasoning_payload = _json.loads(self._runtime.load_artifact_content(context.workspace, reasoning_artifact.artifact_id))
+        # Найдём execution_run, в котором эта задача была исполнена. На один
+        # taskId может прийтись несколько runs (ретраи) — берём последний
+        # (по created_at, list_execution_runs уже сортирует ASC).
+        execution_summary: dict | None = None
+        for run in self._runtime.list_execution_runs(context.workspace):
+            if run.get("task_id") == task_id:
+                execution_summary = {
+                    "execution_run_id": run.get("execution_run_id"),
+                    "provider": run.get("provider"),
+                    "model": run.get("model"),
+                    "status": run.get("status"),
+                    "context_manifest_id": run.get("context_manifest_id"),
+                    "created_at": run.get("created_at"),
+                }
         return {
             "task_id": task_id,
             "trace": trace_payload,
             "reasoning": reasoning_payload,
             "trace_artifact_id": trace_artifact.artifact_id,
             "reasoning_artifact_id": reasoning_artifact.artifact_id if reasoning_artifact else None,
+            "execution": execution_summary,
         }

@@ -404,11 +404,21 @@ export interface MethodologyTracePayload {
   candidates_emitted: MethodologyTraceCandidate[];
 }
 
+export interface MethodologyExecutionSummary {
+  execution_run_id: string | null;
+  provider: string | null;
+  model: string | null;
+  status: string | null;
+  context_manifest_id: string | null;
+  created_at: string | null;
+}
+
 export interface MethodologyTraceResponse {
   task_id: string;
   trace: MethodologyTracePayload | null;
   reasoning: MethodologyReasoningPayload | null;
   trace_artifact_id?: string;
   reasoning_artifact_id?: string | null;
+  execution?: MethodologyExecutionSummary | null;
   message?: string;
 }

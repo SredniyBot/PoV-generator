@@ -799,6 +799,7 @@ function ReasoningPanel({
   projectId: string;
   taskId: string;
 }) {
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
   const traceQuery = useQuery({
     queryKey: [projectId, "methodology-trace", taskId],
     queryFn: () => api.getMethodologyTrace(projectId, taskId),
@@ -829,20 +830,157 @@ function ReasoningPanel({
   }
 
   return (
-    <SectionCard
-      title="Рассуждение"
-      subtitle={`Методология ${data.reasoning.methodology_pack_ref}${data.reasoning.complexity ? ` · сложность ${data.reasoning.complexity}` : ""}`}
-    >
-      <div className="reasoning-panel">
-        {data.reasoning.stages.map((stage) => (
-          <ReasoningStageCard
-            key={stage.stage_id}
-            stage={stage}
-            firedRules={firedByStage[stage.stage_id] ?? []}
-          />
-        ))}
-      </div>
-    </SectionCard>
+    <>
+      <SectionCard
+        title="Рассуждение"
+        subtitle={`Методология ${data.reasoning.methodology_pack_ref}${data.reasoning.complexity ? ` · сложность ${data.reasoning.complexity}` : ""}`}
+        actions={
+          <Button tone="secondary" onClick={() => setProvenanceOpen(true)}>
+            Откуда это
+          </Button>
+        }
+      >
+        <div className="reasoning-panel">
+          {data.reasoning.stages.map((stage) => (
+            <ReasoningStageCard
+              key={stage.stage_id}
+              stage={stage}
+              firedRules={firedByStage[stage.stage_id] ?? []}
+            />
+          ))}
+        </div>
+      </SectionCard>
+      <Modal
+        open={provenanceOpen}
+        onClose={() => setProvenanceOpen(false)}
+        title="Provenance / откуда это"
+      >
+        <ProvenanceViewer data={data} />
+      </Modal>
+    </>
+  );
+}
+
+// ---- L4 ProvenanceViewer ------------------------------------------------
+
+function ProvenanceViewer({ data }: { data: import("./types").MethodologyTraceResponse }) {
+  const trace = data.trace;
+  const execution = data.execution ?? null;
+  return (
+    <div className="provenance">
+      <section className="provenance__section">
+        <h4>Контекст методологии</h4>
+        <dl className="provenance__grid">
+          <ProvenanceField label="Methodology pack" value={trace?.methodology_pack_ref ?? data.reasoning?.methodology_pack_ref} />
+          <ProvenanceField label="Режим стадий" value={trace?.stage_execution_mode ?? "—"} />
+          <ProvenanceField label="Сложность" value={trace?.complexity ?? data.reasoning?.complexity ?? "—"} />
+        </dl>
+      </section>
+
+      {trace && trace.stages_executed && trace.stages_executed.length > 0 ? (
+        <section className="provenance__section">
+          <h4>Пройденные стадии</h4>
+          <ol className="provenance__steps">
+            {trace.stages_executed.map((stageId) => (
+              <li key={stageId}>
+                <code>{stageId}</code>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      {trace && trace.rules_evaluated && trace.rules_evaluated.length > 0 ? (
+        <section className="provenance__section">
+          <h4>Проверенные правила</h4>
+          <table className="provenance__table">
+            <thead>
+              <tr>
+                <th>Стадия</th>
+                <th>Правило</th>
+                <th>Сработало</th>
+                <th>Кандидат</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trace.rules_evaluated.map((rule) => (
+                <tr key={`${rule.stage_id}.${rule.rule_id}`}>
+                  <td><code>{rule.stage_id}</code></td>
+                  <td><code>{rule.rule_id}</code></td>
+                  <td>
+                    {rule.fired ? (
+                      <StatusPill tone="warning">да</StatusPill>
+                    ) : (
+                      <StatusPill tone="muted">нет</StatusPill>
+                    )}
+                  </td>
+                  <td>{rule.candidate_id ? <code>{rule.candidate_id.slice(0, 8)}</code> : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {trace && trace.candidates_emitted && trace.candidates_emitted.length > 0 ? (
+        <section className="provenance__section">
+          <h4>Сгенерированные кандидаты уточнений</h4>
+          <ul className="provenance__list">
+            {trace.candidates_emitted.map((c) => (
+              <li key={c.candidate_id}>
+                <code>{c.candidate_id.slice(0, 8)}</code> —
+                <StatusPill tone={c.severity === "critical" ? "danger" : c.severity === "high" ? "warning" : "muted"}>
+                  {c.severity}
+                </StatusPill>
+                · {prettyLabel(c.blocking_scope)}
+                <div className="provenance__source">{c.source_id}</div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <section className="provenance__section">
+        <h4>Исполнитель</h4>
+        {execution ? (
+          <dl className="provenance__grid">
+            <ProvenanceField label="Execution run" value={execution.execution_run_id} mono />
+            <ProvenanceField label="Provider" value={execution.provider} />
+            <ProvenanceField label="Model" value={execution.model} />
+            <ProvenanceField label="Статус" value={execution.status} />
+            <ProvenanceField label="Context manifest" value={execution.context_manifest_id} mono />
+            <ProvenanceField label="Время" value={execution.created_at ? formatDateTime(execution.created_at) : null} />
+          </dl>
+        ) : (
+          <p className="provenance__empty">Execution run не зафиксирован для этой задачи.</p>
+        )}
+      </section>
+
+      <section className="provenance__section">
+        <h4>Артефакты</h4>
+        <dl className="provenance__grid">
+          <ProvenanceField label="Trace artifact" value={data.trace_artifact_id ?? null} mono />
+          <ProvenanceField label="Reasoning artifact" value={data.reasoning_artifact_id ?? null} mono />
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function ProvenanceField({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
+  return (
+    <div className="provenance__field">
+      <dt>{label}</dt>
+      <dd className={mono ? "provenance__mono" : undefined}>{value ? value : <span className="provenance__null">—</span>}</dd>
+    </div>
   );
 }
 
@@ -2065,7 +2203,7 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
             <div className="skeleton skeleton--line skeleton--sm" />
           </div>
         ) : artifactDetailQuery.data ? (
-          <ArtifactDetailPanel detail={artifactDetailQuery.data} />
+          <ArtifactDetailPanel detail={artifactDetailQuery.data} projectId={projectId} />
         ) : (
           <EmptyState title="Артефакт недоступен" description="Не удалось загрузить детальную карточку артефакта." />
         )}
@@ -2074,12 +2212,18 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   );
 }
 
-function ArtifactDetailPanel({ detail }: { detail: ArtifactDetailView }) {
+function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "validations">("doc");
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
   const html = useMemo(
     () => (detail.markdown_content ? marked.parse(detail.markdown_content) : "<p>Markdown-представление отсутствует.</p>"),
     [detail.markdown_content],
   );
+  const traceQuery = useQuery({
+    queryKey: [projectId, "methodology-trace", detail.created_by_task_id],
+    queryFn: () => api.getMethodologyTrace(projectId, detail.created_by_task_id!),
+    enabled: provenanceOpen && Boolean(detail.created_by_task_id),
+  });
 
   return (
     <div className="artifact-detail">
@@ -2097,6 +2241,16 @@ function ArtifactDetailPanel({ detail }: { detail: ArtifactDetailView }) {
         >
           Проверки
         </button>
+        {detail.created_by_task_id ? (
+          <button
+            className="segmented__item"
+            onClick={() => setProvenanceOpen(true)}
+            type="button"
+            title="Откуда пришёл этот артефакт"
+          >
+            Provenance
+          </button>
+        ) : null}
       </div>
       <div className="detail-meta-list detail-meta-list--artifact">
         <div>
@@ -2112,6 +2266,15 @@ function ArtifactDetailPanel({ detail }: { detail: ArtifactDetailView }) {
           <strong>{detail.created_by_task_id ?? "—"}</strong>
         </div>
       </div>
+      <Modal open={provenanceOpen} onClose={() => setProvenanceOpen(false)} title="Provenance / откуда это">
+        {traceQuery.isLoading ? (
+          <LoadingPanel title="Грузим provenance…" />
+        ) : traceQuery.data ? (
+          <ProvenanceViewer data={traceQuery.data} />
+        ) : (
+          <EmptyState title="Provenance недоступен" description="Не удалось получить methodology-trace для задачи-производителя." />
+        )}
+      </Modal>
       {mode === "doc" ? (
         <article className="document-surface" dangerouslySetInnerHTML={{ __html: html }} />
       ) : null}

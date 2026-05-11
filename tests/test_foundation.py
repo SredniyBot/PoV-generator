@@ -232,6 +232,42 @@ def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> No
     assert any(m["pack_ref"] == "process.lean_jtbd@1.0.0" for m in methodologies)
 
 
+def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_path: Path) -> None:
+    """W2.3: methodology-trace должен возвращать execution_run_id /
+    provider / model / context_manifest_id, чтобы UI L4 ProvenanceViewer
+    мог показать «откуда это» без отдельного запроса к /debug."""
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+    from pov_generator.application.validation_service import ValidationService
+    from pov_generator.application.workflow_service import WorkflowService
+    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+
+    workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
+    context = ContextService(runtime)
+    execution = ExecutionService(runtime, context)
+    cl = ClarificationService(runtime)
+    val = ValidationService(runtime, cl)
+    wf = WorkflowService(runtime, planning_service, execution, val)
+    wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
+
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    qs = WorkspaceQueryService(
+        catalog, RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates")), runtime, planning_service
+    )
+    pid = runtime.load_manifest(workspace).project_id
+    completed = next(t for t in runtime.list_tasks(workspace) if t.template_type == "leaf" and t.status == "completed")
+
+    trace = qs.task_methodology_trace(pid, completed.task_id)
+    assert trace["execution"] is not None
+    execution_summary = trace["execution"]
+    assert execution_summary["execution_run_id"]
+    assert execution_summary["provider"] == "stub"
+    assert execution_summary["context_manifest_id"]
+    assert execution_summary["status"] == "succeeded"
+
+
 def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> None:
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
