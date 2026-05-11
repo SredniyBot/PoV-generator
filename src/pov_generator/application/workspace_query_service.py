@@ -12,18 +12,26 @@ from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
     ActionDescriptor,
     ArtifactDetailView,
+    ArtifactSectionView,
+    ArtifactSkeletonView,
     ArtifactSummaryView,
     ArtifactValidationView,
+    ArtifactVersionItemView,
     ClarificationItemView,
     ClarificationOptionView,
     ContextManifestSummaryView,
+    DecisionLogEntryView,
     DomainPackCatalogItemView,
+    FailurePinView,
     ObjectiveCatalogItemView,
     ObjectiveProgressView,
     OverviewArtifactItem,
     OverviewClarificationItem,
+    ProjectArtifactVersionsView,
     ProjectClarificationsView,
     ProjectDebugView,
+    ProjectDecisionLogView,
+    ProjectFailurePinsView,
     ProjectListItemView,
     ProjectOverviewView,
     ProjectReviewView,
@@ -445,6 +453,367 @@ class WorkspaceQueryService:
             clarification_candidates=tuple(to_primitive(item) for item in self._runtime.list_clarification_candidates(context.workspace)),
             clarification_requests=tuple(to_primitive(item) for item in self._runtime.list_clarification_requests(context.workspace)),
         )
+
+    # ------------------------------------------------------------------
+    # L6 design extensions (P3 v2 skeleton, P5 failure pins, P7 decisions, P8 versions)
+    # Все методы — read-only поверх существующих данных, без миграций.
+    # ------------------------------------------------------------------
+
+    def artifact_skeleton(self, project_id: str, artifact_id: str) -> ArtifactSkeletonView:
+        """P3 v2: skeleton артефакта со статусами разделов для главного экрана.
+
+        Эвристика парсинга json_content:
+        - dict с полем `sections: list[{id, title, content}]` → используем как есть
+        - dict без `sections` → top-level ключи (кроме служебных `_*` и `meta*`)
+        - list → индекс = раздел
+        - примитив или невалидный JSON → один раздел «Содержимое»
+        """
+        context = self._load_context(project_id)
+        artifact = self._runtime.load_artifact(context.workspace, artifact_id)
+        json_content = self._runtime.load_artifact_content(context.workspace, artifact_id)
+        markdown_path = context.workspace / artifact.storage_path.replace(".json", ".md")
+        try:
+            data = json.loads(json_content) if json_content else None
+        except (ValueError, TypeError):
+            data = None
+        pins = self._failure_pins_for_project(context.workspace, artifact_id)
+        pins_by_section: dict[str | None, int] = {}
+        for pin in pins:
+            pins_by_section[pin.section_id] = pins_by_section.get(pin.section_id, 0) + 1
+        sections = self._extract_artifact_sections(data, pins_by_section)
+        sections_done = sum(1 for s in sections if s.status == "done")
+        return ArtifactSkeletonView(
+            project_id=context.manifest.project_id,
+            artifact_id=artifact.artifact_id,
+            artifact_role=artifact.artifact_role,
+            title=artifact.title,
+            sections=sections,
+            sections_done=sections_done,
+            sections_total=len(sections),
+            has_markdown=markdown_path.exists(),
+            created_at=artifact.created_at,
+        )
+
+    def project_decision_log(self, project_id: str) -> ProjectDecisionLogView:
+        """P7: журнал решений проекта.
+
+        Агрегируется из ClarificationRequest со статусом answered/assumed.
+        Один request = одно решение. Альтернативы — options, которые не
+        выбраны. Сортировка — по `updated_at` descending (свежее сверху).
+        """
+        context = self._load_context(project_id)
+        requests = list(self._runtime.list_clarification_requests(context.workspace))
+        decisions = [r for r in requests if r.status in ("answered", "assumed")]
+        decisions.sort(key=lambda r: r.updated_at or "", reverse=True)
+        entries = tuple(
+            DecisionLogEntryView(
+                decision_id=r.request_id,
+                kind=r.status,
+                title=r.title,
+                question=r.question,
+                resolution_summary=r.resolution_summary,
+                selected_option_ids=r.selected_option_ids,
+                free_text=r.free_text,
+                rationale=r.reason,
+                impact=r.impact,
+                blocking_scope=r.blocking_scope,
+                decision_owner_role=r.decision_owner_role,
+                source_type=r.source_type,
+                source_id=r.source_id,
+                affected_task_ids=r.affected_task_ids,
+                related_artifact_ids=r.related_artifact_ids,
+                alternatives=tuple(
+                    ClarificationOptionView(
+                        option_id=opt.option_id,
+                        label=opt.label,
+                        description=opt.description,
+                        effect_preview=opt.effect_preview,
+                        confidence=opt.confidence,
+                    )
+                    for opt in r.options
+                    if opt.option_id not in r.selected_option_ids
+                ),
+                auto_resolved=r.auto_resolved,
+                decided_at=r.updated_at,
+                created_at=r.created_at,
+            )
+            for r in decisions
+        )
+        return ProjectDecisionLogView(
+            project_id=context.manifest.project_id,
+            entries=entries,
+            total_count=len(entries),
+            answered_count=sum(1 for e in entries if e.kind == "answered"),
+            assumed_count=sum(1 for e in entries if e.kind == "assumed"),
+        )
+
+    def project_artifact_versions(self, project_id: str) -> ProjectArtifactVersionsView:
+        """P8: цепочки версий артефактов проекта.
+
+        Группировка по `artifact_role` среди primary-артефактов.
+        Внутри группы сортировка по `created_at`; последний = is_current.
+        Если есть `parent_artifact_id`, используется для информации, но
+        порядок всё равно определяется по `created_at` (стабильно).
+        """
+        context = self._load_context(project_id)
+        artifacts = list(self._runtime.list_artifacts(context.workspace))
+        primary = [a for a in artifacts if a.artifact_kind == "primary"]
+        by_role: dict[str, list] = {}
+        for a in primary:
+            by_role.setdefault(a.artifact_role, []).append(a)
+        chains: list[tuple[ArtifactVersionItemView, ...]] = []
+        for role in sorted(by_role.keys()):
+            group = sorted(by_role[role], key=lambda a: a.created_at or "")
+            latest_idx = len(group) - 1
+            items = tuple(
+                ArtifactVersionItemView(
+                    artifact_id=a.artifact_id,
+                    artifact_role=a.artifact_role,
+                    title=a.title,
+                    label=self._format_version_label(idx, a.created_at),
+                    is_current=(idx == latest_idx),
+                    created_at=a.created_at,
+                    created_by_task_id=a.created_by_task_id,
+                    parent_artifact_id=a.parent_artifact_id,
+                    description=a.description,
+                )
+                for idx, a in enumerate(group)
+            )
+            chains.append(items)
+        return ProjectArtifactVersionsView(
+            project_id=context.manifest.project_id,
+            chains=tuple(chains),
+        )
+
+    def project_failure_pins(
+        self, project_id: str, artifact_id: str | None = None
+    ) -> ProjectFailurePinsView:
+        """P5: маркеры подозрительных мест в артефактах.
+
+        Источники:
+        - открытые ClarificationCandidate с низкой confidence_without_user
+        - принятые допущения (ClarificationRequest со status=assumed)
+        Привязка к артефакту — через related_artifact_ids.
+        """
+        context = self._load_context(project_id)
+        pins = self._failure_pins_for_project(context.workspace, artifact_id)
+        return ProjectFailurePinsView(
+            project_id=context.manifest.project_id,
+            artifact_id=artifact_id,
+            pins=tuple(pins),
+            total_count=len(pins),
+        )
+
+    # --- internal helpers for L6 extensions ----------------------------
+
+    _ARTIFACT_META_PREFIXES: tuple[str, ...] = ("_", "meta")
+    _CONFIDENCE_PIN_THRESHOLD: float = 0.85
+
+    def _extract_artifact_sections(
+        self,
+        data: object,
+        pins_by_section: dict[str | None, int],
+    ) -> tuple[ArtifactSectionView, ...]:
+        if data is None:
+            return (
+                ArtifactSectionView(
+                    section_id="content",
+                    title="Содержимое",
+                    status="pending",
+                    summary=None,
+                    has_pins=False,
+                    pin_count=0,
+                ),
+            )
+        if isinstance(data, dict) and isinstance(data.get("sections"), list):
+            sections: list[ArtifactSectionView] = []
+            for idx, item in enumerate(data["sections"]):
+                if not isinstance(item, dict):
+                    continue
+                sid = str(item.get("id") or f"section_{idx + 1}")
+                title = str(item.get("title") or self._humanize_key(sid))
+                content = item.get("content")
+                sections.append(self._build_section_view(sid, title, content, pins_by_section))
+            return tuple(sections)
+        if isinstance(data, dict):
+            sections = []
+            for key, value in data.items():
+                key_str = str(key)
+                if any(key_str.lower().startswith(prefix) for prefix in self._ARTIFACT_META_PREFIXES):
+                    continue
+                sections.append(
+                    self._build_section_view(key_str, self._humanize_key(key_str), value, pins_by_section)
+                )
+            if not sections:
+                sections.append(
+                    ArtifactSectionView(
+                        section_id="content",
+                        title="Содержимое",
+                        status="done",
+                        summary=None,
+                        has_pins=False,
+                        pin_count=0,
+                    )
+                )
+            return tuple(sections)
+        if isinstance(data, list):
+            return tuple(
+                self._build_section_view(
+                    f"item_{idx + 1}", f"Пункт {idx + 1}", item, pins_by_section
+                )
+                for idx, item in enumerate(data)
+            )
+        # primitive
+        summary = str(data)[:200] if data is not None else None
+        return (
+            ArtifactSectionView(
+                section_id="content",
+                title="Содержимое",
+                status="done" if summary else "pending",
+                summary=summary,
+                has_pins=False,
+                pin_count=0,
+            ),
+        )
+
+    def _build_section_view(
+        self,
+        section_id: str,
+        title: str,
+        value: object,
+        pins_by_section: dict[str | None, int],
+    ) -> ArtifactSectionView:
+        is_empty = self._is_section_empty(value)
+        pin_count = pins_by_section.get(section_id, 0)
+        has_pins = pin_count > 0
+        if is_empty:
+            status = "pending"
+        elif has_pins:
+            status = "needs_review"
+        else:
+            status = "done"
+        return ArtifactSectionView(
+            section_id=section_id,
+            title=title,
+            status=status,
+            summary=self._section_summary(value),
+            has_pins=has_pins,
+            pin_count=pin_count,
+        )
+
+    @staticmethod
+    def _is_section_empty(value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized:
+                return True
+            if normalized in {"tbd", "todo", "n/a", "—", "-"}:
+                return True
+            return False
+        if isinstance(value, (list, tuple, dict)) and len(value) == 0:
+            return True
+        return False
+
+    @staticmethod
+    def _section_summary(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text[:200] if text else None
+        if isinstance(value, (list, tuple)):
+            return f"{len(value)} элементов" if value else None
+        if isinstance(value, dict):
+            return f"{len(value)} полей" if value else None
+        return str(value)[:200]
+
+    @staticmethod
+    def _humanize_key(key: str) -> str:
+        if not key:
+            return key
+        normalized = key.replace("_", " ").replace("-", " ").strip()
+        if not normalized:
+            return key
+        return normalized[:1].upper() + normalized[1:]
+
+    @staticmethod
+    def _format_version_label(index: int, created_at: str | None) -> str:
+        base = f"v{index + 1}"
+        if not created_at:
+            return base
+        date_part = created_at.split("T")[0]
+        return f"{base} · {date_part}"
+
+    def _failure_pins_for_project(
+        self, workspace: Path, artifact_id_filter: str | None
+    ) -> list[FailurePinView]:
+        pins: list[FailurePinView] = []
+        # 1. Open candidates with low confidence — подозрительные места
+        for cand in self._runtime.list_clarification_candidates(workspace):
+            status = getattr(cand, "status", "open")
+            if status != "open":
+                continue
+            confidence = getattr(cand, "confidence_without_user", None)
+            if confidence is not None and confidence >= self._CONFIDENCE_PIN_THRESHOLD:
+                continue
+            related = getattr(cand, "related_artifact_ids", ()) or ()
+            if not related:
+                continue
+            severity = self._severity_from_priority(getattr(cand, "priority", "medium"))
+            for art_id in related:
+                if artifact_id_filter is not None and art_id != artifact_id_filter:
+                    continue
+                pins.append(
+                    FailurePinView(
+                        pin_id=getattr(cand, "candidate_id", ""),
+                        artifact_id=art_id,
+                        section_id=getattr(cand, "section_id", None),
+                        severity=severity,
+                        kind="candidate_open",
+                        message=getattr(cand, "title", ""),
+                        source_type=getattr(cand, "source_type", "unknown"),
+                        source_id=getattr(cand, "source_id", None),
+                        confidence_without_user=confidence,
+                        related_clarification_id=None,
+                    )
+                )
+        # 2. Assumptions — авто-решения, требующие точечной проверки
+        for r in self._runtime.list_clarification_requests(workspace):
+            if r.status != "assumed":
+                continue
+            if not r.related_artifact_ids:
+                continue
+            severity = self._severity_from_priority(r.priority)
+            for art_id in r.related_artifact_ids:
+                if artifact_id_filter is not None and art_id != artifact_id_filter:
+                    continue
+                pins.append(
+                    FailurePinView(
+                        pin_id=r.request_id,
+                        artifact_id=art_id,
+                        section_id=None,
+                        severity=severity,
+                        kind="assumption",
+                        message=r.title,
+                        source_type=r.source_type,
+                        source_id=r.source_id,
+                        confidence_without_user=None,
+                        related_clarification_id=r.request_id,
+                    )
+                )
+        return pins
+
+    @staticmethod
+    def _severity_from_priority(priority: str | None) -> str:
+        mapping = {
+            "critical": "high",
+            "high": "high",
+            "medium": "medium",
+            "low": "low",
+        }
+        return mapping.get(priority or "", "medium")
 
     def projection_signatures(self, project_id: str, projections: tuple[ProjectionName, ...] | None = None) -> dict[str, str]:
         projection_names = projections or self.DEFAULT_PROJECTIONS

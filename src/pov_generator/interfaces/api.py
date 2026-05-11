@@ -165,6 +165,23 @@ def create_app(
     def task_methodology_trace(project_id: str, task_id: str) -> Any:
         return to_primitive(query_service.task_methodology_trace(project_id, task_id))
 
+    # ------ L6 design extensions ------------------------------------------
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/skeleton")
+    def project_artifact_skeleton(project_id: str, artifact_id: str) -> Any:
+        return to_primitive(query_service.artifact_skeleton(project_id, artifact_id))
+
+    @app.get("/api/projects/{project_id}/decisions")
+    def project_decision_log(project_id: str) -> Any:
+        return to_primitive(query_service.project_decision_log(project_id))
+
+    @app.get("/api/projects/{project_id}/artifact-versions")
+    def project_artifact_versions(project_id: str) -> Any:
+        return to_primitive(query_service.project_artifact_versions(project_id))
+
+    @app.get("/api/projects/{project_id}/failure-pins")
+    def project_failure_pins(project_id: str, artifact_id: str | None = None) -> Any:
+        return to_primitive(query_service.project_failure_pins(project_id, artifact_id))
+
     @app.post("/api/projects/{project_id}/commands/run-next")
     def run_next(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         return to_primitive(

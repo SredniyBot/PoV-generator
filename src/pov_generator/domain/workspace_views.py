@@ -336,3 +336,136 @@ class ProjectOverviewView:
     active_domain_packs: tuple[str, ...]
     clarification_mode: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# L6 design extensions (P3 v2 skeleton, P5 failure pins, P7 decisions, P8 versions)
+#
+# Эти views агрегируют существующие данные без миграций БД. Все поля —
+# производные от ArtifactRecord / ClarificationRequest / ClarificationCandidate
+# / ProblemState.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArtifactSectionView:
+    """Раздел артефакта со статусом — для P3 v2 skeleton mission control."""
+
+    section_id: str
+    title: str
+    status: str  # "done" | "in_progress" | "pending" | "needs_review"
+    summary: str | None  # короткая выжимка содержания (≤ 200 символов)
+    has_pins: bool  # есть ли P5 failure pins в этом разделе
+    pin_count: int
+
+
+@dataclass(frozen=True)
+class ArtifactSkeletonView:
+    """Skeleton артефакта: список разделов со статусами + сводный прогресс.
+
+    Используется на L1 Обзоре проекта (P3 v2). Парсит json_content
+    артефакта по эвристике "top-level dict keys = разделы".
+    """
+
+    project_id: str
+    artifact_id: str
+    artifact_role: str
+    title: str
+    sections: tuple[ArtifactSectionView, ...]
+    sections_done: int
+    sections_total: int
+    has_markdown: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
+class DecisionLogEntryView:
+    """Запись в журнале решений проекта (P7).
+
+    Агрегируется из ClarificationRequest со статусом answered/assumed.
+    Один request = одно решение. Альтернативы — options, которые НЕ
+    выбраны. Источник — source_type + source_id.
+    """
+
+    decision_id: str  # = request_id
+    kind: str  # "answered" | "assumed"
+    title: str
+    question: str
+    resolution_summary: str | None
+    selected_option_ids: tuple[str, ...]
+    free_text: str | None
+    rationale: str  # reason
+    impact: str
+    blocking_scope: str
+    decision_owner_role: str
+    source_type: str
+    source_id: str | None
+    affected_task_ids: tuple[str, ...]
+    related_artifact_ids: tuple[str, ...]
+    alternatives: tuple[ClarificationOptionView, ...]  # все options кроме выбранных
+    auto_resolved: bool
+    decided_at: str  # updated_at request'а
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ProjectDecisionLogView:
+    project_id: str
+    entries: tuple[DecisionLogEntryView, ...]
+    total_count: int
+    answered_count: int
+    assumed_count: int
+
+
+@dataclass(frozen=True)
+class ArtifactVersionItemView:
+    """Одна версия артефакта в цепочке (P8 snapshots)."""
+
+    artifact_id: str
+    artifact_role: str
+    title: str
+    label: str  # "v1", "v2", … или "v1 — 11.05"
+    is_current: bool
+    created_at: str
+    created_by_task_id: str | None
+    parent_artifact_id: str | None
+    description: str
+
+
+@dataclass(frozen=True)
+class ProjectArtifactVersionsView:
+    """Все цепочки версий артефактов проекта, сгруппированные по artifact_role.
+
+    Цепочка строится по parent_artifact_id когда поле заполнено; иначе
+    fallback: артефакты с одним artifact_role сортируются по created_at,
+    последний = current.
+    """
+
+    project_id: str
+    chains: tuple[tuple[ArtifactVersionItemView, ...], ...]  # каждая цепочка — tuple версий от старой к новой
+
+
+@dataclass(frozen=True)
+class FailurePinView:
+    """Маркер «здесь система не уверена / есть допущение» (P5)."""
+
+    pin_id: str  # candidate_id или request_id
+    artifact_id: str
+    section_id: str | None  # если можно определить раздел; иначе раздел "общий"
+    severity: str  # "high" | "medium" | "low" — из priority кандидата
+    kind: str  # "candidate_open" | "assumption" | "validation_finding"
+    message: str  # title / question / message
+    source_type: str
+    source_id: str | None
+    confidence_without_user: float | None
+    related_clarification_id: str | None
+
+
+@dataclass(frozen=True)
+class ProjectFailurePinsView:
+    """Сводка failure pins по проекту (или фильтр по артефакту)."""
+
+    project_id: str
+    artifact_id: str | None  # None = по всему проекту
+    pins: tuple[FailurePinView, ...]
+    total_count: int
