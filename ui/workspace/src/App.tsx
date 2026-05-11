@@ -32,6 +32,7 @@ import { marked } from "marked";
 
 import { api } from "./api";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
+import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ActionDescriptor,
@@ -275,8 +276,12 @@ function AppFrame() {
             element={
               projectsQuery.isLoading ? (
                 <LoadingPanel title="Загрузка проектов…" />
-              ) : firstProject ? (
-                <Navigate to={`/projects/${firstProject.project_id}/overview`} replace />
+              ) : projectsQuery.data && projectsQuery.data.length > 0 ? (
+                <ProjectsHomeDashboard
+                  projects={projectsQuery.data}
+                  onCreate={() => setCreateOpen(true)}
+                  onOpenProject={(pid) => navigate(`/projects/${pid}/overview`)}
+                />
               ) : (
                 <LandingEmpty onCreate={() => setCreateOpen(true)} />
               )
@@ -3417,6 +3422,9 @@ function CreateProjectModal({
   }) => void;
   busy: boolean;
 }) {
+  // L6-3: paste/upload first (P6). Большая textarea — главный объект формы.
+  // Название, цель, доменные пакеты — за «Дополнительно». Если пользователь
+  // не ввёл название — система генерирует из первой строки или даты.
   const objectivesQuery = useQuery({
     queryKey: ["registry", "objectives"],
     queryFn: api.listObjectives,
@@ -3433,6 +3441,8 @@ function CreateProjectModal({
   const [objectiveRef, setObjectiveRef] = useState("");
   const [selectedPacks, setSelectedPacks] = useState<string[]>([]);
   const [manualPackOverride, setManualPackOverride] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     const firstObjective = objectivesQuery.data?.[0];
@@ -3448,6 +3458,8 @@ function CreateProjectModal({
       setObjectiveRef("");
       setSelectedPacks([]);
       setManualPackOverride(false);
+      setAdvancedOpen(false);
+      setDragOver(false);
     }
   }, [open]);
 
@@ -3458,102 +3470,203 @@ function CreateProjectModal({
     );
   };
 
+  const handleFileChosen = async (file: File | null | undefined) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      // Append (а не replace), чтобы пользователь мог накопить материал.
+      setRequestText((current) =>
+        current.trim()
+          ? `${current.trim()}\n\n--- ${file.name} ---\n${text}`
+          : text,
+      );
+    } catch (error) {
+      // на крайний случай — игнорируем; пользователь увидит что текст не вставился
+      console.error("file read failed", error);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragOver(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void handleFileChosen(file);
+  };
+
+  const handleAppendPaste = async () => {
+    try {
+      const clipboardText = await navigator.clipboard?.readText?.();
+      if (clipboardText) {
+        setRequestText((current) =>
+          current.trim() ? `${current.trim()}\n\n${clipboardText}` : clipboardText,
+        );
+      }
+    } catch {
+      // clipboard API недоступен — игнорируем
+    }
+  };
+
+  const deriveName = (): string => {
+    if (name.trim()) return name.trim();
+    const firstLine = requestText.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    if (firstLine) return firstLine.slice(0, 80);
+    return `Проект ${new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" })}`;
+  };
+
+  const requestCharCount = requestText.trim().length;
+  const canSubmit = requestText.trim().length > 0 && Boolean(objectiveRef);
+
   return (
     <Modal open={open} title="Новый проект" onClose={onClose}>
       <form
-        className="form-stack"
+        className="form-stack create-form"
         onSubmit={(event) => {
           event.preventDefault();
+          if (!canSubmit) return;
           onSubmit({
-            name,
+            name: deriveName(),
             objective_ref: objectiveRef,
             request_text: requestText,
             domain_pack_refs: selectedPacks,
           });
         }}
       >
-        <label className="field field--stacked">
-          <span>Название проекта</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Например: ТЗ для нового сервиса" />
-        </label>
-        <label className="field field--stacked">
-          <span>Исходный бизнес-запрос</span>
+        <div className="create-form__intro">
+          <p className="create-form__lead">
+            Вставьте сюда всё, что есть про задачу: бриф, письмо, описание системы,
+            ответы заказчика, протокол встречи. Можно несколько кусков подряд.
+          </p>
+        </div>
+
+        <div
+          className={cx("create-form__paste-zone", dragOver && "create-form__paste-zone--drag")}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
           <textarea
-            rows={6}
+            className="create-form__textarea"
+            rows={14}
             value={requestText}
             onChange={(event) => setRequestText(event.target.value)}
-            placeholder="Опишите задачу обычным языком. Система сама проведёт вас по процессу."
+            placeholder={
+              "Например:\n\nК нам пришёл запрос на CRM-интеграцию для отдела продаж...\n\nИз письма заказчика: «нужно подключить нашу систему к Salesforce, чтобы менеджеры видели свои сделки в одном окне».\n\nИз встречи: упомянули миграцию ~50k клиентов, MVP к сентябрю, бюджет на интеграцию."
+            }
           />
-        </label>
-        <label className="field field--stacked">
-          <span>Цель обработки</span>
-          <select value={objectiveRef} onChange={(event) => setObjectiveRef(event.target.value)}>
-            {(objectivesQuery.data ?? []).map((objective) => (
-              <option key={objective.objective_ref} value={objective.objective_ref}>
-                {objective.title} · {objective.required_artifact_count} артефакта
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="field field--stacked">
-          <span>Доменные пакеты (необязательно)</span>
-          <small className="field__hint">
-            Если ничего не выбирать, система сама подберёт нужные доменные пакеты по тексту запроса.
-            Ручной выбор здесь работает как переопределение.
-          </small>
-          <div className="inline-actions">
-            <Button
-              tone={manualPackOverride ? "secondary" : "ghost"}
-              onClick={() => {
-                setManualPackOverride((current) => {
-                  const next = !current;
-                  if (!next) {
-                    setSelectedPacks([]);
-                  }
-                  return next;
-                });
-              }}
+          <div className="create-form__paste-actions">
+            <label className="create-form__file-button">
+              <input
+                type="file"
+                accept=".txt,.md,.rst,.log,text/*"
+                onChange={(event) => void handleFileChosen(event.target.files?.[0] ?? null)}
+                hidden
+              />
+              <span>📎 Загрузить файл</span>
+            </label>
+            <button
+              type="button"
+              className="create-form__paste-button"
+              onClick={handleAppendPaste}
+              title="Вставить из буфера обмена (добавит в конец)"
             >
-              {manualPackOverride ? "Скрыть ручной override" : "Выбрать пакеты вручную"}
-            </Button>
-            {manualPackOverride && selectedPacks.length > 0 ? (
-              <StatusPill tone="active">Выбрано: {selectedPacks.length}</StatusPill>
-            ) : null}
+              📋 Вставить
+            </button>
+            <span className="create-form__counter">
+              {requestCharCount > 0 ? `${requestCharCount} символов` : "пока пусто"}
+            </span>
           </div>
-          {manualPackOverride ? (
-            <div className="pack-grid pack-grid--modal">
-              {(packsQuery.data ?? []).map((pack) => {
-                const active = selectedPacks.includes(pack.pack_ref);
-                return (
-                  <button
-                    key={pack.pack_ref}
-                    type="button"
-                    className={cx("pack-card", active && "pack-card--active")}
-                    onClick={() => togglePack(pack.pack_ref)}
-                  >
-                    <div className="pack-card__head">
-                      <strong>{pack.name}</strong>
-                      <StatusPill tone={active ? "success" : "muted"}>{pack.domain}</StatusPill>
-                    </div>
-                    <p>{pack.description}</p>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
         </div>
+
+        <button
+          type="button"
+          className="create-form__advanced-toggle"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          aria-expanded={advancedOpen}
+        >
+          {advancedOpen ? "▾ Скрыть дополнительные настройки" : "▸ Дополнительные настройки"}
+        </button>
+
+        {advancedOpen && (
+          <div className="create-form__advanced">
+            <label className="field field--stacked">
+              <span>Название проекта</span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder={deriveName()}
+              />
+              <small className="field__hint">
+                Если не заполнить — система возьмёт первую строку запроса или дату.
+              </small>
+            </label>
+
+            <label className="field field--stacked">
+              <span>Цель обработки</span>
+              <select value={objectiveRef} onChange={(event) => setObjectiveRef(event.target.value)}>
+                {(objectivesQuery.data ?? []).map((objective) => (
+                  <option key={objective.objective_ref} value={objective.objective_ref}>
+                    {objective.title} · {objective.required_artifact_count} артефакта
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="field field--stacked">
+              <span>Доменные пакеты</span>
+              <small className="field__hint">
+                По умолчанию система подберёт сама по тексту запроса. Ручной выбор —
+                как переопределение.
+              </small>
+              <div className="inline-actions">
+                <Button
+                  tone={manualPackOverride ? "secondary" : "ghost"}
+                  onClick={() => {
+                    setManualPackOverride((current) => {
+                      const next = !current;
+                      if (!next) setSelectedPacks([]);
+                      return next;
+                    });
+                  }}
+                >
+                  {manualPackOverride ? "Скрыть ручной выбор" : "Выбрать вручную"}
+                </Button>
+                {manualPackOverride && selectedPacks.length > 0 ? (
+                  <StatusPill tone="active">Выбрано: {selectedPacks.length}</StatusPill>
+                ) : null}
+              </div>
+              {manualPackOverride ? (
+                <div className="pack-grid pack-grid--modal">
+                  {(packsQuery.data ?? []).map((pack) => {
+                    const active = selectedPacks.includes(pack.pack_ref);
+                    return (
+                      <button
+                        key={pack.pack_ref}
+                        type="button"
+                        className={cx("pack-card", active && "pack-card--active")}
+                        onClick={() => togglePack(pack.pack_ref)}
+                      >
+                        <div className="pack-card__head">
+                          <strong>{pack.name}</strong>
+                          <StatusPill tone={active ? "success" : "muted"}>{pack.domain}</StatusPill>
+                        </div>
+                        <p>{pack.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         <div className="modal__footer">
           <Button tone="ghost" onClick={onClose}>
             Отмена
           </Button>
-          <Button
-            tone="primary"
-            type="submit"
-            busy={busy}
-            disabled={!name.trim() || !requestText.trim() || !objectiveRef}
-          >
+          <Button tone="primary" type="submit" busy={busy} disabled={!canSubmit}>
             Создать проект
           </Button>
         </div>

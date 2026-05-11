@@ -1,0 +1,145 @@
+/* ============================================================
+   L6-3: Project create form (P6 paste/upload first)
+   ============================================================ */
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.create-form__intro {
+  background: var(--surface-elevated-strong);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+.create-form__lead {
+  margin: 0;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--text-secondary);
+}
+
+.create-form__paste-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--surface-base);
+  transition:
+    border-color var(--motion-fast) var(--motion-easing),
+    background var(--motion-fast) var(--motion-easing);
+}
+
+.create-form__paste-zone:focus-within {
+  border-color: var(--border-accent);
+}
+
+.create-form__paste-zone--drag {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.create-form__textarea {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  background: transparent;
+  border: 0;
+  color: var(--text-primary);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  padding: var(--space-2);
+}
+
+.create-form__textarea:focus {
+  outline: none;
+}
+
+.create-form__textarea::placeholder {
+  color: var(--text-disabled);
+  white-space: pre-wrap;
+}
+
+.create-form__paste-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+}
+
+.create-form__file-button,
+.create-form__paste-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-easing),
+    background var(--motion-fast) var(--motion-easing);
+}
+
+.create-form__file-button:hover,
+.create-form__paste-button:hover {
+  border-color: var(--border-accent);
+  background: var(--surface-elevated-strong);
+}
+
+.create-form__file-button:focus-within,
+.create-form__paste-button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.create-form__counter {
+  margin-left: auto;
+  font-size: var(--font-size-meta);
+  color: var(--text-disabled);
+}
+
+.create-form__advanced-toggle {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  padding: var(--space-2) 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-body);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--motion-easing);
+}
+
+.create-form__advanced-toggle:hover {
+  color: var(--text-primary);
+}
+
+.create-form__advanced-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+.create-form__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated-strong);
+}
