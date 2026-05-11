@@ -138,6 +138,16 @@ class ExecutionService:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
 
         artifact_id = str(uuid.uuid4())
+        # B4: при retry или повторном создании артефакта того же role
+        # текущей задачи — связываем версии через parent_artifact_id и
+        # помечаем предыдущую superseded. Это даёт работающую цепочку
+        # версий (для L6-6 versions dropdown) и корректный «current» во
+        # всех view-методах.
+        previous_active = self._runtime.latest_active_artifact_by_role_and_task(
+            workspace,
+            artifact_role=artifact_role,
+            created_by_task_id=task.task_id,
+        )
         artifact_record = ArtifactRecord(
             artifact_id=artifact_id,
             project_id=manifest.project_id,
@@ -147,13 +157,18 @@ class ExecutionService:
             artifact_format="json",
             artifact_kind="primary",
             created_by_task_id=task.task_id,
-            parent_artifact_id=None,
+            parent_artifact_id=previous_active.artifact_id if previous_active else None,
             metadata={"template_ref": template.ref.as_string()},
             storage_path=f"artifacts/{artifact_id}.json",
             created_at=utc_now_iso(),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
+        if previous_active is not None:
+            # Сначала записываем новый, потом помечаем старый — атомарность
+            # не нужна (worst case — оба current, query вернёт latest по
+            # created_at). После этого UI и view-методы видят только новый.
+            self._runtime.mark_artifact_superseded(workspace, previous_active.artifact_id)
         markdown_render = render_markdown(artifact_role, payload)
         (workspace / markdown_path).parent.mkdir(parents=True, exist_ok=True)
         (workspace / markdown_path).write_text(markdown_render, encoding="utf-8")
@@ -422,6 +437,12 @@ class ExecutionService:
         current_step_title: str,
         context_manifest,
     ) -> tuple[str, str]:
+        # B5: system_prompt — Promp Authority Layer.
+        # Без явного указания иерархии источников LLM трактует все данные
+        # одинаково и может проигнорировать ответ пользователя. Здесь мы
+        # фиксируем: USER DECISIONS — обязательные ограничения, ASSUMPTIONS —
+        # рабочие, FACTS — база, GAPS — не утверждать, UPSTREAM — пересмотрим
+        # если противоречит decision.
         system_prompt = (
             "Ты работаешь как дисциплинированный системный аналитик. "
             "Пиши только на русском языке. "
@@ -430,6 +451,24 @@ class ExecutionService:
             "Если информации недостаточно для уверенного вывода, не останавливайся сразу: "
             "сделай максимально ответственный анализ, но явно снижай поле `confidence` и заполняй `blocking_questions`. "
             "Эскалация к человеку допустима только если без ответа нельзя продолжать добросовестно. "
+            "\n\n"
+            "ВАЖНО — ИЕРАРХИЯ ИСТОЧНИКОВ ЗНАНИЯ.\n"
+            "В блоке «Контекст проекта» источники маркированы значками. Уважай иерархию:\n"
+            "🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ (USER DECISIONS) — обязательные ограничения. "
+            "Они зафиксированы пользователем и НЕ ПОДЛЕЖАТ пересмотру тобой. "
+            "Если твой вывод противоречит решению — перепиши вывод. "
+            "Если без нарушения решения задачу не выполнить — добавь конкретный пункт в blocking_questions, не молчи.\n"
+            "🟡 ДОПУЩЕНИЯ СИСТЕМЫ (ASSUMPTIONS) — рабочие предположения. "
+            "Используй, но при конфликте с решением пользователя выбирай решение, а допущение явно отмечай как устаревшее в reasoning.\n"
+            "🔵 ИЗВЕСТНЫЕ ФАКТЫ — извлечены из исходного запроса, можно использовать как базу.\n"
+            "⚫ ОТКРЫТЫЕ ПРОБЕЛЫ (GAPS) — это области, где данных нет. "
+            "НЕ УТВЕРЖДАЙ ничего в этих областях; либо опирайся на default, либо явно укажи нехватку в blocking_questions.\n"
+            "🔻 АРТЕФАКТЫ ПРЕДЫДУЩИХ ШАГОВ — выводы других задач. Опирайся, но при конфликте с решением пользователя — решение важнее.\n"
+            "\n"
+            "Не задавай в `blocking_questions` то, на что УЖЕ есть ответ в «Решениях пользователя». "
+            "Если в схеме твоего ответа есть `reasoning_steps` или поле для логики решения — "
+            "явно отмечай какие решения пользователя ты учёл (по их формулировке).\n"
+            "\n"
             "Верни только валидный JSON без пояснений вне JSON."
         )
         context_sections = []
@@ -439,8 +478,9 @@ class ExecutionService:
             f"Текущий шаг: {current_step_title}",
             f"Тип работы: {template_name}",
         ]
-        if task_summary:
-            prompt_lines.append(f"Что нужно сделать: {task_summary}")
+        # B5: task_summary ниже попадает через context_manifest item
+        # «Что должна сделать задача» (priority=1000) — здесь его НЕ
+        # дублируем, чтобы избежать двойного включения и шум.
         prompt_lines.extend(
             [
                 f"Активные доменные пакеты: {', '.join(domain_pack_refs) if domain_pack_refs else 'нет'}",
@@ -865,12 +905,28 @@ class ExecutionService:
                         },
                     }
                 )
+        # B5: applied_decisions — список decision_id, доступных на момент
+        # исполнения и потенциально учтённых этой задачей. Это даёт явную
+        # трассировку: пользователь видит «вот эти ответы повлияли на
+        # вывод». Заполняем системно по релевантности (LLM не обязан
+        # ничего знать про id'ы — мы их матчим сами по state.decisions
+        # и affected_task_ids источника).
+        applied_decisions = self._collect_applied_decisions(workspace, task.task_id)
         reasoning_payload = {
             "methodology_pack_ref": methodology.ref.as_string(),
             "stages": stages_payload,
             "complexity": complexity,
+            "applied_decisions": applied_decisions,
         }
         artifact_id = str(uuid.uuid4())
+        # B4: при retry задачи прошлый reasoning_artifact помечается
+        # superseded, и новый ссылается на него через parent_artifact_id.
+        # Это даёт чистую историю reasoning per attempt.
+        previous_reasoning = self._runtime.latest_active_artifact_by_role_and_task(
+            workspace,
+            artifact_role="reasoning_artifact",
+            created_by_task_id=task.task_id,
+        )
         record = ArtifactRecord(
             artifact_id=artifact_id,
             project_id=manifest_project_id,
@@ -880,7 +936,7 @@ class ExecutionService:
             artifact_format="json",
             artifact_kind="reasoning",
             created_by_task_id=task.task_id,
-            parent_artifact_id=None,
+            parent_artifact_id=previous_reasoning.artifact_id if previous_reasoning else None,
             metadata={
                 "methodology_pack_ref": methodology.ref.as_string(),
                 "complexity": complexity,
@@ -889,6 +945,8 @@ class ExecutionService:
             created_at=utc_now_iso(),
         )
         self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(reasoning_payload))
+        if previous_reasoning is not None:
+            self._runtime.mark_artifact_superseded(workspace, previous_reasoning.artifact_id)
         return artifact_id, reasoning_payload
 
     def _attach_methodology_trace(
@@ -933,6 +991,13 @@ class ExecutionService:
             "candidates_emitted": candidates_emitted,
         }
         artifact_id = str(uuid.uuid4())
+        # B4: при retry задачи прошлый methodology_trace помечается
+        # superseded; новый ссылается на него через parent_artifact_id.
+        previous_trace = self._runtime.latest_active_artifact_by_role_and_task(
+            workspace,
+            artifact_role="methodology_trace",
+            created_by_task_id=task.task_id,
+        )
         record = ArtifactRecord(
             artifact_id=artifact_id,
             project_id=manifest_project_id,
@@ -942,7 +1007,7 @@ class ExecutionService:
             artifact_format="json",
             artifact_kind="trace",
             created_by_task_id=task.task_id,
-            parent_artifact_id=None,
+            parent_artifact_id=previous_trace.artifact_id if previous_trace else None,
             metadata={
                 "methodology_pack_ref": methodology.ref.as_string(),
                 "complexity": complexity,
@@ -951,7 +1016,54 @@ class ExecutionService:
             created_at=utc_now_iso(),
         )
         self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(trace_payload))
+        if previous_trace is not None:
+            self._runtime.mark_artifact_superseded(workspace, previous_trace.artifact_id)
         return artifact_id
+
+    def _collect_applied_decisions(
+        self, workspace: Path, task_id: str
+    ) -> list[dict[str, object]]:
+        """B5: формирует список decisions, релевантных текущей задаче.
+
+        Семантика: если decision из ClarificationRequest, чей
+        `affected_task_ids` содержит task_id — он применим. Также сюда
+        попадают global decisions (не привязанные к конкретной задаче).
+
+        Используется в reasoning_artifact как трассировка: пользователь
+        видит «вот эти ответы повлияли на этот reasoning». Closes M-J6.
+        """
+        try:
+            state = self._runtime.load_problem_state(workspace)
+        except Exception:
+            return []
+        result: list[dict[str, object]] = []
+        for decision_id, fact in state.decisions.items():
+            source = (fact.source or "").strip()
+            relevant = True
+            request_id: str | None = None
+            if source.startswith("clarification:"):
+                request_id = source.split(":", 1)[1]
+                try:
+                    request = self._runtime.get_clarification_request(
+                        workspace, request_id
+                    )
+                except Exception:
+                    request = None
+                if request is not None:
+                    affected = request.affected_task_ids or ()
+                    if affected and task_id not in affected:
+                        relevant = False
+            if not relevant:
+                continue
+            result.append(
+                {
+                    "decision_id": decision_id,
+                    "statement": fact.statement,
+                    "source": source,
+                    "via_clarification_id": request_id,
+                }
+            )
+        return result
 
     # W3.3: путь до статических stub-фикстур. Зависит только от расположения
     # репозитория (templates/stub_fixtures/<artifact_role>.json), не привязан

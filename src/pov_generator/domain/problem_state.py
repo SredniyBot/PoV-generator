@@ -162,6 +162,21 @@ class UpsertDecisionPatch:
     source: str
 
 
+# B5: явные delete-patches для очистки противоречий.
+# Используются когда пользователь явно ответил на вопрос, по которому
+# ранее было принято допущение (assumption должна уйти); или когда
+# clarification переоткрыт (старое decision должно уйти, иначе оно
+# попадёт в контекст вместе с будущим новым ответом).
+@dataclass(frozen=True)
+class RemoveAssumptionPatch:
+    assumption_id: str
+
+
+@dataclass(frozen=True)
+class RemoveDecisionPatch:
+    decision_id: str
+
+
 @dataclass(frozen=True)
 class DetectDomainSignalPatch:
     domain: str
@@ -210,6 +225,8 @@ ProblemPatch = (
     | AddFactPatch
     | UpsertAssumptionPatch
     | UpsertDecisionPatch
+    | RemoveAssumptionPatch
+    | RemoveDecisionPatch
     | DetectDomainSignalPatch
     | ActivateDomainPackPatch
     | DisableDomainPackPatch
@@ -291,6 +308,15 @@ def apply_problem_patch(state: ProblemState, patch: ProblemPatch) -> ProblemStat
     if isinstance(patch, UpsertDecisionPatch):
         decisions = dict(state.decisions)
         decisions[patch.decision_id] = FactRecord(patch.decision_id, patch.statement, patch.source)
+        return _copy_state(state, decisions=decisions)
+    if isinstance(patch, RemoveAssumptionPatch):
+        assumptions = dict(state.assumptions)
+        # Идемпотентно: если уже нет — не ошибка.
+        assumptions.pop(patch.assumption_id, None)
+        return _copy_state(state, assumptions=assumptions)
+    if isinstance(patch, RemoveDecisionPatch):
+        decisions = dict(state.decisions)
+        decisions.pop(patch.decision_id, None)
         return _copy_state(state, decisions=decisions)
     if isinstance(patch, DetectDomainSignalPatch):
         signals = dict(state.domain_signals)

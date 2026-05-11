@@ -91,6 +91,12 @@ def _task_from_row(row: sqlite3.Row) -> TaskRecord:
 
 
 def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
+    # B4: is_superseded — мигрированное поле; для старых БД где колонки нет
+    # sqlite вернёт KeyError, тогда дефолтим в False (артефакт current).
+    try:
+        is_superseded_value = row["is_superseded"]
+    except (KeyError, IndexError):
+        is_superseded_value = 0
     return ArtifactRecord(
         artifact_id=row["artifact_id"],
         project_id=row["project_id"],
@@ -104,6 +110,7 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         metadata=json_loads(row["metadata_json"]),
         storage_path=row["storage_path"],
         created_at=row["created_at"],
+        is_superseded=bool(is_superseded_value),
     )
 
 
@@ -508,9 +515,9 @@ class SqliteRuntime:
                 """
                 insert into artifacts(
                   artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
-                  created_by_task_id, parent_artifact_id, metadata_json, storage_path, created_at
+                  created_by_task_id, parent_artifact_id, metadata_json, storage_path, created_at, is_superseded
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
@@ -525,10 +532,48 @@ class SqliteRuntime:
                     json_dumps(artifact.metadata),
                     artifact.storage_path,
                     artifact.created_at,
+                    1 if artifact.is_superseded else 0,
                 ),
             )
             connection.commit()
         return artifact
+
+    def mark_artifact_superseded(self, workspace: Path, artifact_id: str) -> None:
+        """B4: помечает артефакт устаревшим (заменён новой версией).
+        Используется при retry-task создании новой версии того же role.
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update artifacts set is_superseded = 1 where artifact_id = ?",
+                (artifact_id,),
+            )
+            connection.commit()
+
+    def latest_active_artifact_by_role_and_task(
+        self,
+        workspace: Path,
+        *,
+        artifact_role: str,
+        created_by_task_id: str,
+    ) -> ArtifactRecord | None:
+        """B4: ищет существующий не-superseded artifact того же role,
+        созданный той же задачей. Используется при retry чтобы:
+        1) указать его id как parent_artifact_id новой версии;
+        2) пометить старый как superseded.
+        """
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select * from artifacts
+                where artifact_role = ?
+                  and created_by_task_id = ?
+                  and (is_superseded is null or is_superseded = 0)
+                order by created_at desc, artifact_id desc
+                limit 1
+                """,
+                (artifact_role, created_by_task_id),
+            ).fetchone()
+        return None if row is None else _artifact_from_row(row)
 
     def load_artifact(self, workspace: Path, artifact_id: str) -> ArtifactRecord:
         with self._connect(workspace) as connection:
@@ -1579,6 +1624,17 @@ class SqliteRuntime:
             connection,
             "clarification_requests",
             "auto_resolved",
+            "integer not null default 0",
+        )
+        # B4: маркер «артефакт заменён более новой версией».
+        # При auto-retry задачи новый артефакт записывается, а старый
+        # помечается is_superseded=1 чтобы UI L6-1 skeleton показывал
+        # только current версию, а artifact_versions строил цепочку через
+        # parent_artifact_id.
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "is_superseded",
             "integer not null default 0",
         )
         # W5.1: audit log событий уточнений.

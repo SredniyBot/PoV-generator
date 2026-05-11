@@ -27,6 +27,20 @@ class ContextService:
         self._runtime = runtime
 
     def build_for_task(self, workspace: Path, snapshot: RegistrySnapshot, task_id: str) -> ContextBuildResult:
+        """B4: ContextManifest = три слоя.
+
+        Слой 1 — Project state context (всегда): goal, business_request,
+        decisions, assumptions, gaps, known_facts. Без этого LLM не имеет
+        доступа к ответам пользователя через clarifications и работает «без
+        scope». См. USERS_AND_JTBD §5B C1/C4.
+
+        Слой 2 — Task inputs (по template): required_problem_fields,
+        required_artifact_roles, optional_artifact_roles, instruction.
+
+        Слой 3 — Previous attempt context (только при retry): что было в
+        прошлой попытке + почему она забракована. Даёт LLM continuity, не
+        повторяет ту же ошибку.
+        """
         manifest = self._runtime.load_manifest(workspace)
         state = self._runtime.load_problem_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
@@ -35,6 +49,24 @@ class ContextService:
         items: list[ContextItem] = []
         source_refs: list[str] = []
 
+        # Слой 1 — Project state (всегда первым, priority=1500 — выше
+        # инструкции, чтобы LLM видел контекст ДО постановки задачи).
+        project_state_item = self._build_project_state_section(
+            workspace, task, template, state
+        )
+        if project_state_item is not None:
+            items.append(project_state_item)
+            source_refs.append(project_state_item.source_ref)
+
+        # Слой 3 — Previous attempt (если retry). Делаем рано, чтобы LLM
+        # сразу видел «прошлая попытка не вышла потому что …», прежде чем
+        # читать те же входы заново.
+        previous_attempt_item = self._build_previous_attempt_section(workspace, task)
+        if previous_attempt_item is not None:
+            items.append(previous_attempt_item)
+            source_refs.append(previous_attempt_item.source_ref)
+
+        # Слой 2 — Task inputs (template-declared, как раньше).
         for field_name in template.inputs.required_problem_fields:
             value = getattr(state, field_name, None)
             if value in (None, ""):
@@ -169,3 +201,343 @@ class ContextService:
             required=required,
             priority=80,
         )
+
+    # ------------------------------------------------------------------
+    # B4: Project state context (всегда добавляется к prompt)
+    # ------------------------------------------------------------------
+
+    # Внутри одной задачи decisions/assumptions делятся на «relevant к этой
+    # задаче» (полный текст) и «глобальные» (компактный список). Это даёт
+    # фокус на нужном без потери видимости общего.
+    _RELEVANT_FULL_LIMIT: int = 12   # сколько relevant items с полным телом
+    _GLOBAL_LIST_LIMIT: int = 20     # сколько global items в коротком списке
+    # B5: жёсткий cap на размер project_state section (в estimated tokens).
+    # Если контекст разрастается — relevant items сохраняются полностью,
+    # global секции обрезаются. Это защита от outsize project state,
+    # который мог бы вытолкнуть upstream артефакты из budget.
+    _PROJECT_STATE_TOKEN_HARD_CAP: int = 2000
+
+    def _build_project_state_section(
+        self,
+        workspace: Path,
+        task,
+        template,
+        state,
+    ) -> ContextItem | None:
+        """Собирает компактный markdown-снимок «что мы уже знаем о проекте».
+
+        Зачем: задача не должна повторно изобретать колесо или
+        противоречить уже принятым решениям/допущениям. Без этой секции
+        LLM работает «без scope»: видит только входные артефакты, но не
+        знает что пользователь уже ответил на вопросы.
+        """
+        # B5: контекст с явной иерархией источников через visual markers.
+        # См. system_prompt — он опирается на эти маркеры для приоритезации.
+        sections: list[str] = []
+
+        # 🎯 Goal (главное что задача держит в голове)
+        if state.goal:
+            sections.append("## 🎯 Цель проекта\n" + state.goal.strip())
+
+        # 📥 Business request (исходный raw input)
+        business_request = (state.business_request or "").strip()
+        if business_request:
+            if len(business_request) > 1500:
+                business_request = business_request[:1500].rstrip() + " …"
+            sections.append(
+                "## 📥 Исходный бизнес-запрос (база — отсюда выведены остальные знания)\n"
+                + business_request
+            )
+
+        # 🟢 USER DECISIONS — обязательные ограничения (видны в system_prompt
+        # иерархии как «🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ»). Только не-clarification
+        # источники не маркируются как user — это решения из других каналов
+        # (operator, system), но всё равно decisions; их тоже сюда.
+        decisions_section = self._format_facts_section(
+            workspace=workspace,
+            task=task,
+            template=template,
+            facts=state.decisions,
+            relevant_title="🟢 Решения пользователя — ОБЯЗАТЕЛЬНО учитывай в выводе",
+            global_title="🟢 Другие принятые решения проекта (тоже учитывай)",
+            kind="decision",
+        )
+        if decisions_section:
+            sections.append(decisions_section)
+
+        # 🟡 ASSUMPTIONS — рабочие, можно override decision'ом
+        assumptions_section = self._format_facts_section(
+            workspace=workspace,
+            task=task,
+            template=template,
+            facts=state.assumptions,
+            relevant_title="🟡 Допущения системы для этой задачи (можно использовать, decision важнее)",
+            global_title="🟡 Другие активные допущения проекта",
+            kind="assumption",
+        )
+        if assumptions_section:
+            sections.append(assumptions_section)
+
+        # ⚫ Open gaps — НЕ утверждать
+        gaps_lines = [
+            f"- **{gap.title}** ({gap.severity}): {gap.description}".rstrip()
+            for gap in state.active_gaps.values()
+            if gap.closed_at is None
+        ]
+        if gaps_lines:
+            sections.append(
+                "## ⚫ Открытые пробелы — НЕ утверждай ничего в этих областях\n"
+                "_Если задача требует ответа в этих областях — снижай confidence "
+                "или добавь конкретный вопрос в blocking_questions._\n\n"
+                + "\n".join(gaps_lines[: self._GLOBAL_LIST_LIMIT])
+            )
+
+        # 🔵 Known facts — extracted база
+        facts_lines = [
+            f"- {fact.statement}".rstrip()
+            for fact in state.known_facts.values()
+            if fact.statement
+        ]
+        if facts_lines:
+            sections.append(
+                "## 🔵 Известные факты (извлечены из бизнес-запроса)\n"
+                + "\n".join(facts_lines[: self._GLOBAL_LIST_LIMIT])
+            )
+
+        # Active methodology (лензa рассуждения)
+        methodology_records = state.active_methodology_pack_records
+        if methodology_records:
+            method_ref = next(iter(methodology_records.values())).ref
+            sections.append(f"## 📐 Активная методология рассуждения\n{method_ref}")
+
+        if not sections:
+            return None
+
+        intro = (
+            "# Контекст проекта\n\n"
+            "_Это общее знание о проекте, накопленное к моменту запуска задачи. "
+            "Источники маркированы значками — соблюдай иерархию приоритетов "
+            "(подробности в system-инструкции):_\n"
+            "- 🟢 = решения пользователя (обязательные ограничения)\n"
+            "- 🟡 = допущения системы (можно override решением)\n"
+            "- 🔵 = факты из запроса\n"
+            "- ⚫ = пробелы (не утверждай)\n"
+        )
+        content = intro + "\n\n".join(sections)
+        # B5: жёсткий cap. Если состояние проекта раздулось — truncate
+        # по символам (с явной пометкой), сохраняя intro и начало.
+        token_estimate = estimate_tokens(content)
+        if token_estimate > self._PROJECT_STATE_TOKEN_HARD_CAP:
+            # 1 token ≈ 4 char (см. estimate_tokens) → допустимо ~8000 char
+            max_chars = self._PROJECT_STATE_TOKEN_HARD_CAP * 4
+            content = (
+                content[:max_chars].rstrip()
+                + "\n\n_… [контекст проекта обрезан для соблюдения token budget — "
+                "показаны самые приоритетные секции]_"
+            )
+            token_estimate = estimate_tokens(content)
+        return ContextItem(
+            item_id=str(uuid.uuid4()),
+            item_type="problem_field",
+            source_ref=f"project_state:{state.version}",
+            title="Контекст проекта",
+            content=content,
+            token_estimate=token_estimate,
+            required=True,
+            priority=1500,
+        )
+
+    def _format_facts_section(
+        self,
+        *,
+        workspace: Path,
+        task,
+        template,
+        facts: dict,
+        relevant_title: str,
+        global_title: str,
+        kind: str,
+    ) -> str | None:
+        """Разбивает facts на relevant и global, форматирует markdown.
+
+        Relevant decisions/assumptions — те, что:
+        - пришли из clarification, чей affected_task_ids содержит task.task_id, ИЛИ
+        - related_artifact_ids пересекаются с template required/optional roles.
+
+        Остальные = global → отображаются компактным списком (заголовок + 1 строка).
+        """
+        if not facts:
+            return None
+        relevant: list[tuple[str, str]] = []  # (statement, source_meta)
+        global_items: list[tuple[str, str]] = []
+        template_roles = set(template.inputs.required_artifact_roles) | set(
+            template.inputs.optional_artifact_roles
+        )
+        for fact in facts.values():
+            is_relevant = self._is_fact_relevant_to_task(
+                workspace, fact, task, template_roles
+            )
+            statement = (fact.statement or "").strip()
+            source = (fact.source or "").strip()
+            if not statement:
+                continue
+            if is_relevant:
+                relevant.append((statement, source))
+            else:
+                global_items.append((statement, source))
+        chunks: list[str] = []
+        if relevant:
+            relevant_lines = [
+                self._format_fact_line(statement, source, full=True)
+                for statement, source in relevant[: self._RELEVANT_FULL_LIMIT]
+            ]
+            chunks.append(f"## {relevant_title}\n" + "\n".join(relevant_lines))
+        if global_items:
+            head = global_items[: self._GLOBAL_LIST_LIMIT]
+            remaining = len(global_items) - len(head)
+            global_lines = [
+                self._format_fact_line(statement, source, full=False)
+                for statement, source in head
+            ]
+            if remaining > 0:
+                global_lines.append(f"- … и ещё {remaining}")
+            chunks.append(f"## {global_title}\n" + "\n".join(global_lines))
+        return "\n\n".join(chunks) if chunks else None
+
+    @staticmethod
+    def _format_fact_line(statement: str, source: str, *, full: bool) -> str:
+        # Источник в виде "clarification:{id}" / "system:..." / "operator:..." —
+        # выводим в человеко-читаемом виде, без UUID в спам-режиме.
+        source_label = ""
+        if source.startswith("clarification:"):
+            source_label = " _(ответ на вопрос пользователя)_"
+        elif source:
+            source_label = f" _(источник: {source.split(':', 1)[0]})_"
+        if full:
+            return f"- {statement.rstrip()}.{source_label}".replace("..", ".")
+        # Compact: первые 120 символов
+        compact = statement if len(statement) <= 120 else statement[:117] + "…"
+        return f"- {compact}".rstrip()
+
+    def _is_fact_relevant_to_task(
+        self,
+        workspace: Path,
+        fact,
+        task,
+        template_roles: set[str],
+    ) -> bool:
+        """Decision/assumption считается relevant к task если:
+        - источник fact'а — clarification, чей affected_task_ids содержит task.task_id, ИЛИ
+        - related_artifact_ids этого clarification пересекаются с required/optional artifact roles задачи.
+
+        Для прочих источников (system/operator/etc.) — relevant по умолчанию,
+        чтобы случайно не отфильтровать что-то важное.
+        """
+        source = (fact.source or "").strip()
+        if not source.startswith("clarification:"):
+            return True
+        request_id = source.split(":", 1)[1]
+        try:
+            request = self._runtime.get_clarification_request(workspace, request_id)
+        except Exception:
+            return True
+        if task.task_id in (request.affected_task_ids or ()):
+            return True
+        if template_roles and set(request.related_artifact_ids or ()) & template_roles:
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # B4: Previous attempt context (для retry задач)
+    # ------------------------------------------------------------------
+
+    def _build_previous_attempt_section(
+        self, workspace: Path, task
+    ) -> ContextItem | None:
+        """Если задача исполняется повторно — добавляем секцию о прошлой
+        попытке: artifact + validation findings. Это даёт LLM continuity
+        и помогает не повторять ту же ошибку.
+        """
+        attempt = getattr(task, "attempt", 0) or 0
+        if attempt <= 1:
+            # Первая попытка либо attempt не отслеживается — нечего показывать.
+            return None
+        # Ищем последний primary артефакт, созданный этой задачей.
+        previous_artifact = None
+        try:
+            all_artifacts = self._runtime.list_artifacts(workspace)
+        except Exception:
+            return None
+        for art in sorted(
+            (a for a in all_artifacts if a.created_by_task_id == task.task_id and a.artifact_kind == "primary"),
+            key=lambda a: a.created_at or "",
+            reverse=True,
+        ):
+            previous_artifact = art
+            break
+        if previous_artifact is None:
+            return None
+        # Загружаем содержимое и validation findings последнего validation_run.
+        previous_content = ""
+        try:
+            previous_content = self._runtime.load_artifact_content(
+                workspace, previous_artifact.artifact_id
+            )
+        except Exception:
+            previous_content = ""
+        validation_summary = self._collect_previous_validation_findings(
+            workspace, task
+        )
+        if not previous_content and not validation_summary:
+            return None
+        sections = [
+            "# Прошлая попытка этой задачи",
+            "",
+            f"_Это попытка №{attempt}. Ниже — что было сделано в прошлый раз и почему это не приняли._",
+            "",
+        ]
+        if validation_summary:
+            sections.append("## Что не приняли в прошлый раз")
+            sections.append(validation_summary)
+            sections.append("")
+        if previous_content:
+            # Компактный preview, чтобы не дублировать всё тело — пусть LLM
+            # видит что было, и сделает иначе.
+            preview = previous_content
+            if len(preview) > 1500:
+                preview = preview[:1500].rstrip() + "\n…"
+            sections.append(f"## Прошлый результат ({previous_artifact.artifact_role})")
+            sections.append("```json")
+            sections.append(preview)
+            sections.append("```")
+        content = "\n".join(sections)
+        return ContextItem(
+            item_id=str(uuid.uuid4()),
+            item_type="instruction",
+            source_ref=f"previous_attempt:{task.task_id}:{attempt}",
+            title="Прошлая попытка",
+            content=content,
+            token_estimate=estimate_tokens(content),
+            required=True,
+            priority=1400,
+        )
+
+    def _collect_previous_validation_findings(self, workspace: Path, task) -> str:
+        try:
+            runs = self._runtime.list_validation_runs(workspace)
+        except Exception:
+            return ""
+        # Берём последний validation_run по этой задаче.
+        task_runs = [r for r in runs if getattr(r, "task_id", None) == task.task_id]
+        if not task_runs:
+            return ""
+        latest = max(task_runs, key=lambda r: getattr(r, "created_at", "") or "")
+        findings = getattr(latest, "findings", ()) or ()
+        if not findings:
+            return ""
+        lines = [
+            f"- **{getattr(f, 'finding_type', 'finding')}** "
+            f"({getattr(f, 'severity', 'info')}): {getattr(f, 'message', '')}"
+            for f in findings
+        ]
+        return "\n".join(lines)

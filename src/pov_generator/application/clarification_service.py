@@ -16,7 +16,14 @@ from ..domain.clarifications import (
     ClarificationRequest,
     DecisionOwnerRole,
 )
-from ..domain.problem_state import ProblemState, SetClarificationModePatch, UpsertAssumptionPatch, UpsertDecisionPatch
+from ..domain.problem_state import (
+    ProblemState,
+    RemoveAssumptionPatch,
+    RemoveDecisionPatch,
+    SetClarificationModePatch,
+    UpsertAssumptionPatch,
+    UpsertDecisionPatch,
+)
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient
 from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
 from ..infrastructure.claude_subscription_client import ClaudeSubscriptionClient
@@ -271,12 +278,58 @@ class ClarificationService:
         # Это предотвращает повторное появление вопроса в UI после того
         # как пользователь уже ответил на семантически тот же вопрос в
         # другом источнике. См. B2 жалобу пользователя.
-        self._propagate_answer_to_duplicates(
+        propagated_request_ids = self._propagate_answer_to_duplicates(
             workspace,
             answered_request=answered,
             resolution_summary=summary,
         )
+        # B4: auto-retry задач, заваленных по этому вопросу.
+        # Цель: пользователь ответил → задача, чьё low_confidence/
+        # blocking_question породили этот вопрос, автоматически
+        # перевыполняется с обновлённым ProblemState (включая новый
+        # Decision). Без этого ответ "висит мёртвым" — пользователь
+        # ответил, но артефакт не обновлён.
+        #
+        # Собираем affected_task_ids из основного request И всех
+        # пропагированных дублей (они закрылись тем же ответом).
+        all_affected_task_ids: set[str] = set(answered.affected_task_ids or ())
+        for prop_id in propagated_request_ids:
+            try:
+                prop_request = self._runtime.get_clarification_request(workspace, prop_id)
+                all_affected_task_ids.update(prop_request.affected_task_ids or ())
+            except Exception:
+                continue
+        self._auto_retry_failed_tasks(workspace, all_affected_task_ids)
         return answered
+
+    def _auto_retry_failed_tasks(
+        self, workspace: Path, task_ids: set[str]
+    ) -> None:
+        """B4: переводит failed-задачи из задействованных в ready (retry).
+
+        Только статус 'failed' — для blocked задач planner сам пересмотрит
+        admission на следующей итерации (open clarifications исчезли).
+        """
+        for task_id in task_ids:
+            try:
+                task = self._runtime.get_task(workspace, task_id)
+            except Exception:
+                continue
+            if task.status != "failed":
+                continue
+            try:
+                self._runtime.transition_task(
+                    workspace,
+                    task_id,
+                    "retry",
+                    payload={
+                        "reason": "auto-retry after clarification answered",
+                        "source": "answer_clarification",
+                    },
+                )
+            except Exception:
+                # Best-effort: один failed retry не должен ломать основной flow
+                continue
 
     def _propagate_answer_to_duplicates(
         self,
@@ -284,21 +337,30 @@ class ClarificationService:
         *,
         answered_request: ClarificationRequest,
         resolution_summary: str,
-    ) -> None:
+    ) -> list[str]:
         """Закрывает все OPEN requests с тем же нормализованным вопросом
         в проекте, помечая их как deferred с указанием источника ответа.
         Audit event пишется для каждого закрытого дубля.
+
+        Возвращает список request_id, которые были закрыты — используется
+        в `answer_clarification` для auto-retry задач, связанных с дублями.
         """
+        propagated: list[str] = []
         target_normalized = _normalize_clarification_question_local(
             answered_request.question
         )
         if not target_normalized:
-            return
-        all_open = self._runtime.list_clarification_requests(
-            workspace, statuses=("open",)
+            return propagated
+        # B5: захватываем также `assumed` — если по этому вопросу ранее
+        # было принято допущение (autopilot), а теперь пользователь явно
+        # ответил, его ответ должен переопределить допущение. Иначе в
+        # ProblemState останутся ОБЕ записи (assumption + decision) и LLM
+        # увидит конфликт в контексте.
+        candidates = self._runtime.list_clarification_requests(
+            workspace, statuses=("open", "assumed")
         )
         propagation_reason = f"resolved_via:{answered_request.request_id}"
-        for other in all_open:
+        for other in candidates:
             if other.request_id == answered_request.request_id:
                 continue
             if other.project_id != answered_request.project_id:
@@ -308,12 +370,31 @@ class ClarificationService:
                 != target_normalized
             ):
                 continue
+            previous_status = other.status
             try:
                 self._runtime.defer_clarification_request(
                     workspace,
                     other.request_id,
                     reason=propagation_reason,
                 )
+                # Если был assumed — assumption была записана в state с
+                # id=f"clarification_{other.request_id}". Удаляем её,
+                # чтобы не противоречила свежему decision пользователя.
+                if previous_status == "assumed":
+                    try:
+                        self._runtime.apply_problem_patch(
+                            workspace,
+                            RemoveAssumptionPatch(
+                                assumption_id=f"clarification_{other.request_id}",
+                            ),
+                            actor="clarification_coordinator",
+                            reason=(
+                                f"assumption replaced by user answer "
+                                f"on request {answered_request.request_id}"
+                            ),
+                        )
+                    except Exception:
+                        pass
                 self._emit_event(
                     workspace,
                     request_id=other.request_id,
@@ -321,16 +402,19 @@ class ClarificationService:
                     event_type="deferred",
                     payload={
                         "reason": propagation_reason,
-                        "previous_status": "open",
+                        "previous_status": previous_status,
                         "resolution_summary": resolution_summary,
                         "via_request_id": answered_request.request_id,
                         "auto": True,
+                        "assumption_removed": previous_status == "assumed",
                     },
                 )
+                propagated.append(other.request_id)
             except Exception:
                 # Best-effort: один сбойный дубль не должен ломать ответ
                 # на основной request.
                 continue
+        return propagated
 
     def defer_clarification(
         self,
@@ -371,6 +455,32 @@ class ClarificationService:
         if request.status not in {"answered", "assumed", "deferred"}:
             raise ConflictError("Это уточнение и так открыто.")
         updated = self._runtime.reopen_clarification_request(workspace, request_id)
+        # B5: пере-открытие должно очистить из ProblemState запись, ранее
+        # созданную этим request'ом. Иначе при будущем ответе в state
+        # окажутся ДВЕ записи: старая (от прошлого ответа) и новая (от
+        # текущего). LLM увидит конфликт.
+        if request.status == "answered":
+            try:
+                self._runtime.apply_problem_patch(
+                    workspace,
+                    RemoveDecisionPatch(decision_id=f"clarification_{request_id}"),
+                    actor="operator",
+                    reason="clarification reopened — old decision removed",
+                )
+            except Exception:
+                pass
+        elif request.status == "assumed":
+            try:
+                self._runtime.apply_problem_patch(
+                    workspace,
+                    RemoveAssumptionPatch(
+                        assumption_id=f"clarification_{request_id}"
+                    ),
+                    actor="operator",
+                    reason="clarification reopened — old assumption removed",
+                )
+            except Exception:
+                pass
         self._emit_event(
             workspace,
             request_id=request_id,

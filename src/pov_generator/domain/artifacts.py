@@ -22,6 +22,11 @@ class ArtifactRecord:
     metadata: dict[str, object]
     storage_path: str
     created_at: str
+    # B4: помечает что артефакт устарел — заменён более новой версией
+    # (например, после auto-retry задачи). Используется UI L6-1 skeleton,
+    # чтобы показывать только current; и view artifact_versions чтобы
+    # отделить current от истории.
+    is_superseded: bool = False
 
 
 @dataclass(frozen=True)
