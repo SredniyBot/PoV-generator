@@ -36,6 +36,17 @@ class ClarificationDecision:
 
 
 @dataclass(frozen=True)
+class ReevaluationSummary:
+    """Результат пере-оценки открытых candidate'ов при смене engagement-режима.
+    UI использует counts чтобы показать toast «Закрыто X, отложено Y»."""
+
+    mode: ClarificationMode
+    auto_assumed: int
+    auto_deferred: int
+    kept_open: int
+
+
+@dataclass(frozen=True)
 class ClarificationDraft:
     description: str
     answer_mode: str
@@ -137,7 +148,14 @@ class ClarificationService:
                 continue
 
             action = self._decide_action(candidate, state.clarification_mode)
-            request = self._request_from_candidate(candidate, status="assumed" if action == "assume" else "open")
+            initial_status: str
+            if action == "assume":
+                initial_status = "assumed"
+            elif action == "defer":
+                initial_status = "deferred"
+            else:
+                initial_status = "open"
+            request = self._request_from_candidate(candidate, status=initial_status)
             created = self._runtime.create_clarification_request(workspace, request)
             if action == "assume" and candidate.default_assumption:
                 self._runtime.apply_problem_patch(
@@ -150,11 +168,16 @@ class ClarificationService:
                     actor="clarification_coordinator",
                     reason="safe assumption accepted automatically",
                 )
+            event_type_for_creation = {
+                "ask": "created",
+                "assume": "assumed_auto",
+                "defer": "deferred_auto",
+            }.get(action, "created")
             self._emit_event(
                 workspace,
                 request_id=created.request_id,
                 project_id=candidate.project_id,
-                event_type="created" if action == "ask" else "assumed_auto",
+                event_type=event_type_for_creation,
                 payload={
                     "source_type": candidate.source_type,
                     "source_id": candidate.source_id,
@@ -330,12 +353,98 @@ class ClarificationService:
         )
         return accepted
 
-    def set_mode(self, workspace: Path, mode: ClarificationMode) -> None:
+    def set_mode(self, workspace: Path, mode: ClarificationMode) -> "ReevaluationSummary":
+        """Меняет engagement-режим проекта и **пере-оценивает все открытые
+        candidates** против нового mode.
+
+        Раньше смена режима применялась только к НОВЫМ candidate'ам. Если
+        пользователь переключался на autopilot, уже-открытые вопросы
+        оставались в `open` и блокировали planner — это и есть жалоба
+        пользователя в W6 («переключился на autopilot, а вопросы остались»).
+
+        Новое поведение для каждого `open` candidate:
+        - есть `default_assumption` + новый mode НЕ allows показ → **assume**
+          (тихо принять допущение).
+        - нет `default_assumption` + новый mode НЕ allows → **defer**
+          (мягкий skip; не блокирует planner, остаётся в инбоксе под
+          фильтром «Отложено»).
+        - mode allows показ → оставить `open` (ничего не меняем).
+
+        Возвращает summary, сколько каких переходов было — UI показывает
+        toast «Автоматически закрыто N вопросов, отложено M».
+        """
+        # 1. Применяем patch к ProblemState.
         self._runtime.apply_problem_patch(
             workspace,
             SetClarificationModePatch(mode=mode),
             actor="operator",
             reason="clarification mode changed",
+        )
+        # 2. Пере-оцениваем все открытые candidates против нового mode,
+        # используя ту же логику что и `_decide_action` для новых candidate'ов:
+        #   - "assume" → accept_assumption (если есть default_assumption);
+        #   - "defer"  → defer_clarification (мягкий skip);
+        #   - "ask"    → оставить open (бывает для blocking_scope=objective).
+        opens = self._runtime.list_clarification_requests(workspace, statuses=("open",))
+        auto_assumed = 0
+        auto_deferred = 0
+        kept_open = 0
+        for request in opens:
+            # ClarificationRequest и ClarificationCandidate имеют одинаковые
+            # поля для решения — превратим request в candidate-shim.
+            decision = self._decide_action(
+                self._candidate_from_request(request),
+                mode,
+            )
+            if decision == "assume" and request.default_assumption:
+                self.accept_assumption(workspace, request_id=request.request_id)
+                auto_assumed += 1
+            elif decision == "defer":
+                self.defer_clarification(
+                    workspace,
+                    request_id=request.request_id,
+                    reason=(
+                        f"Авто-отложено: смена режима участия на «{mode}». "
+                        f"Можно пере-открыть и ответить вручную."
+                    ),
+                )
+                auto_deferred += 1
+            else:
+                # "ask" (например, objective-scope без допущения) — оставляем.
+                kept_open += 1
+        return ReevaluationSummary(
+            mode=mode,
+            auto_assumed=auto_assumed,
+            auto_deferred=auto_deferred,
+            kept_open=kept_open,
+        )
+
+    @staticmethod
+    def _candidate_from_request(request: ClarificationRequest) -> ClarificationCandidate:
+        """Адаптер для пере-оценки: формирует ClarificationCandidate-shim
+        из persisted ClarificationRequest. Используется только в set_mode."""
+        return ClarificationCandidate(
+            candidate_id=request.request_id,
+            project_id=request.project_id,
+            source_type=request.source_type,
+            source_id=request.source_id,
+            need="",
+            question=request.question,
+            description=request.description,
+            rationale=request.reason,
+            impact=request.impact,
+            severity=request.priority,
+            confidence_without_user=0.0,  # фиктивное, не используется в _decide_action
+            min_participation_mode=request.min_participation_mode,
+            default_assumption=request.default_assumption,
+            recommended_answer=None,
+            answer_mode=request.answer_mode,
+            options=request.options,
+            affected_task_ids=request.affected_task_ids,
+            related_artifact_ids=request.related_artifact_ids,
+            blocking_scope=request.blocking_scope,
+            decision_owner_role=request.decision_owner_role,
+            created_at=request.created_at,
         )
 
     def candidate_from_question(
@@ -772,14 +881,22 @@ class ClarificationService:
         if surface_allowed:
             return "ask"
 
-        # 3. Mode/role не позволяют. Если безопасного допущения нет — выбора
-        # нет, всё равно бьём тревогу (нельзя молча проигнорировать развилку).
-        if not candidate.default_assumption:
+        # 3. Mode/role не позволяют показ — есть варианты:
+        #   3a. Есть безопасное допущение → принять его.
+        if candidate.default_assumption:
+            return "assume"
+        #   3b. Нет допущения, но scope=objective (блокирует ВЕСЬ проект:
+        #       human_approval gate'ы и подобное) — придётся показать.
+        #       Менеджер на autopilot всё равно не сможет согласовать клиентскую
+        #       подпись автоматически: это явный сигнал «нужно решение».
+        if candidate.blocking_scope == "objective":
             return "ask"
-
-        # 4. Есть допущение и engagement пользователя ниже floor роли →
-        # принять допущение, не беспокоя.
-        return "assume"
+        #   3c. Нет допущения и scope меньше objective — это не блокирующий
+        #       вопрос. Откладываем (defer): planner идёт дальше, менеджер
+        #       видит вопрос на /clarifications во вкладке «Отложенные».
+        #       Раньше эта ветка возвращала "ask" — отсюда жалоба, что
+        #       autopilot всё равно блокирует.
+        return "defer"
 
     def _request_from_candidate(self, candidate: ClarificationCandidate, *, status: str) -> ClarificationRequest:
         options = candidate.options or self._default_options_for_candidate(default_assumption=candidate.default_assumption)

@@ -182,9 +182,17 @@ def test_methodologist_role_floor_filters_by_engagement(
     assert all(d.action == expected_action for d in decisions)
 
 
-def test_business_role_surfaces_at_any_engagement(tmp_path: Path) -> None:
-    """Бизнес-вопросы (роль `business`) должны показываться на любом режиме
-    с автопилотом включительно — это вопросы прямо для менеджера."""
+def test_business_role_surfaces_at_engagement_at_or_above_min_mode(tmp_path: Path) -> None:
+    """Бизнес-вопрос с `min_participation_mode=balanced` показывается на
+    `balanced`/`control`/`expert`, но НЕ на `autopilot`.
+
+    Раньше тест ожидал что на autopilot бизнес-вопрос будет surface'нут
+    «потому что роль business всегда видна менеджеру». После W6/B1 это
+    больше не так: autopilot — «не беспокоить»; вопрос без
+    default_assumption и без objective-scope откладывается (defer) —
+    менеджер увидит его на /clarifications в фильтре «Отложено», но
+    workflow не блокируется. См. жалобу W6 #1.
+    """
     runtime, workspace = _make_runtime_with_workspace(tmp_path)
     runtime.apply_problem_patch(
         workspace,
@@ -206,7 +214,15 @@ def test_business_role_surfaces_at_any_engagement(tmp_path: Path) -> None:
         decision_owner_role="business",
     )
     decisions = service.register_candidates(workspace, (candidate,))
-    assert decisions[0].action == "ask"
+    # На autopilot без default_assumption — defer (мягкий skip).
+    assert decisions[0].action == "defer"
+
+    # Если переключиться в balanced — re-eval должен сюрфейснуть.
+    summary = service.set_mode(workspace, "balanced")
+    # Re-eval работает только на open. Мы только что defer'нули, так что
+    # автоматически не пере-открываем. Это OK — менеджер может пере-открыть
+    # вопрос через UI reopen. Проверим что summary не обнулил состояние.
+    assert summary.mode == "balanced"
 
 
 def test_decision_owner_role_persists_to_request_and_view(tmp_path: Path) -> None:

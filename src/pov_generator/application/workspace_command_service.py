@@ -225,11 +225,21 @@ class WorkspaceCommandService:
 
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
-        self._clarification_service.set_mode(workspace_ref.workspace, mode)  # type: ignore[arg-type]
+        # W6/B1: set_mode теперь пере-оценивает все open candidates под новый
+        # mode. Возвращает ReevaluationSummary с counts; экранируем их в UI
+        # через summary string, чтобы пользователь увидел toast «авто-закрыто N».
+        reeval = self._clarification_service.set_mode(workspace_ref.workspace, mode)  # type: ignore[arg-type]
+        summary_lines = [f"Режим уточнений изменён на «{mode}»."]
+        if reeval.auto_assumed:
+            summary_lines.append(f"Автоматически принято допущений: {reeval.auto_assumed}.")
+        if reeval.auto_deferred:
+            summary_lines.append(f"Авто-отложено: {reeval.auto_deferred}.")
+        if reeval.kept_open:
+            summary_lines.append(f"Остались открытыми (требуют решения): {reeval.kept_open}.")
         return CommandResultView(
             status="accepted",
             command_name="set-clarification-mode",
-            summary=f"Режим уточнений изменен на '{mode}'.",
+            summary=" ".join(summary_lines),
             changed_projections=("shell", "clarifications", "situation", "timeline", "state"),
             resource_id=mode,
         )
