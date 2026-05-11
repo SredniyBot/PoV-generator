@@ -7,7 +7,9 @@ export type ProjectionName =
   | "clarifications"
   | "review"
   | "state"
-  | "debug";
+  | "debug"
+  | "overview"
+  | "methodology";
 
 export interface ProjectListItemView {
   project_id: string;

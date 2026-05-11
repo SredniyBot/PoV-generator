@@ -84,6 +84,10 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   "clarifications",
   "review",
   "state",
+  // C6: aggregated L1 / L2 projections — when these fire, MissionControl
+  // and MethodologyPage queries get invalidated automatically.
+  "overview",
+  "methodology",
 ];
 
 type ToastTone = "success" | "warning" | "danger";
@@ -380,6 +384,10 @@ function WorkspaceRoute({
     projections: REALTIME_PROJECTIONS,
     onProjectionChanged: (projection) => {
       void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, projection) });
+      // "methodology" event also invalidates the registry-wide list query.
+      if (projection === "methodology") {
+        void queryClient.invalidateQueries({ queryKey: ["methodology-packs"] });
+      }
       setFlashProjection(projection);
       window.setTimeout(() => setFlashProjection(null), 1200);
     },
@@ -482,7 +490,7 @@ function MissionControlPage({
 }) {
   const navigate = useNavigate();
   const overviewQuery = useQuery({
-    queryKey: ["overview", projectId],
+    queryKey: projectionKey(projectId, "overview"),
     queryFn: () => api.getOverview(projectId),
     refetchInterval: 30_000,
   });
@@ -649,14 +657,14 @@ function MethodologyPage({ projectId }: { projectId: string }) {
     staleTime: 60_000,
   });
   const overviewQuery = useQuery({
-    queryKey: ["overview", projectId],
+    queryKey: projectionKey(projectId, "overview"),
     queryFn: () => api.getOverview(projectId),
   });
   const queryClient = useQueryClient();
   const setMethodologyMutation = useMutation({
     mutationFn: (packRef: string) => api.setMethodology(projectId, packRef),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["overview", projectId] });
+      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "overview") });
     },
   });
 

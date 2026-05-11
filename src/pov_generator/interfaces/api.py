@@ -261,7 +261,21 @@ def create_app(
         projections = (
             tuple(name.strip() for name in raw_projections.split(",") if name.strip())
             if raw_projections
-            else ("shell", "task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state")
+            else (
+                "shell",
+                "task_graph",
+                "situation",
+                "timeline",
+                "artifacts",
+                "clarifications",
+                "review",
+                "state",
+                # Aggregated L1 / L2 projections (W2 UI). realtime_token tracks
+                # the workspace as a whole, so any change broadcasts these too,
+                # which is exactly what L1 Mission Control needs.
+                "overview",
+                "methodology",
+            )
         )
         try:
             last_token = await asyncio.to_thread(
