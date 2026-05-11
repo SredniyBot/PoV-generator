@@ -2847,6 +2847,137 @@ code {
 .workflow-run__step-status--failed { color: rgba(215, 131, 131, 0.85); }
 .workflow-run__step-status--error { color: rgba(215, 131, 131, 0.85); }
 
+/* ---- TaskGraphCanvas (ReactFlow + dagre, W4.2 / G1) -------------------- */
+
+.tg-canvas {
+  width: 100%;
+  min-height: 60vh;
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.tg-canvas .react-flow__attribution { display: none; }
+.tg-canvas .react-flow__controls {
+  background: rgba(18, 22, 28, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.4rem;
+}
+.tg-canvas .react-flow__controls button {
+  background: transparent;
+  color: var(--text-primary, #e8ecf3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.tg-canvas .react-flow__controls button:hover {
+  background: rgba(120, 184, 201, 0.15);
+}
+.tg-canvas .react-flow__minimap {
+  background: rgba(18, 22, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.4rem;
+}
+
+.tg-node {
+  width: 240px;
+  min-height: 96px;
+  background: var(--surface-primary, rgba(28, 32, 38, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  display: grid;
+  gap: 0.3rem;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.2s ease;
+  font-size: 0.8rem;
+}
+
+.tg-node:hover {
+  transform: translateY(-1px);
+  border-color: rgba(120, 184, 201, 0.35);
+}
+
+.tg-node--current {
+  outline: 2px solid rgba(120, 184, 201, 0.55);
+  outline-offset: 1px;
+}
+
+.tg-node--completed { border-left: 3px solid rgba(140, 196, 153, 0.7); }
+.tg-node--in_progress,
+.tg-node--ready { border-left: 3px solid rgba(120, 184, 201, 0.7); }
+.tg-node--waiting_for_children { border-left: 3px solid rgba(214, 173, 89, 0.6); }
+.tg-node--failed,
+.tg-node--blocked { border-left: 3px solid rgba(215, 131, 131, 0.7); }
+.tg-node--skipped,
+.tg-node--obsolete {
+  border-left: 3px solid rgba(150, 150, 150, 0.4);
+  opacity: 0.65;
+}
+.tg-node--candidate { border-left: 3px solid rgba(150, 160, 180, 0.4); }
+
+.tg-node__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.tg-pill {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+}
+.tg-pill--completed { background: rgba(140, 196, 153, 0.18); color: #a8d5b3; }
+.tg-pill--in_progress,
+.tg-pill--ready { background: rgba(120, 184, 201, 0.22); color: #9fd2dd; }
+.tg-pill--waiting_for_children { background: rgba(214, 173, 89, 0.22); color: #e0c179; }
+.tg-pill--failed,
+.tg-pill--blocked { background: rgba(215, 131, 131, 0.22); color: #e3a3a3; }
+.tg-pill--skipped,
+.tg-pill--obsolete { background: rgba(150, 150, 150, 0.15); color: #aaa; }
+.tg-pill--candidate { background: rgba(150, 160, 180, 0.15); color: #b0bccc; }
+
+.tg-node__origin {
+  font-size: 0.65rem;
+  color: var(--text-secondary, #9aa4b2);
+  text-transform: lowercase;
+}
+
+.tg-node__title {
+  font-weight: 600;
+  color: var(--text-primary, #e8ecf3);
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tg-node__meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.tg-node__warn {
+  color: rgba(214, 173, 89, 0.95);
+  font-weight: 600;
+}
+
+.tg-handle {
+  width: 6px;
+  height: 6px;
+  background: rgba(120, 184, 201, 0.3);
+  border: none;
+}
+
+
 
 /* ---- L4 ProvenanceViewer ---------------------------------------------- */
 

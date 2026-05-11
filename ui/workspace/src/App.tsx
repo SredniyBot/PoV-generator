@@ -31,6 +31,7 @@ import {
 import { marked } from "marked";
 
 import { api } from "./api";
+import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ActionDescriptor,
   ArtifactDetailView,
@@ -2485,77 +2486,45 @@ function flattenTaskNodes(nodes: TaskNodeView[]): TaskNodeView[] {
 }
 
 function TaskGraphPage({ projectId }: { projectId: string }) {
+  // W4.2 (G1): canvas-based task graph через ReactFlow + dagre.
+  // Кликнул на узел → открывается drawer с тем же TaskNodeDetail,
+  // что и на L2 Activity, плюс панель «Рассуждение» внутри.
   const [provider] = useStoredState("povgen.provider", "openrouter");
   const [model] = useStoredState("povgen.model", "deepseek/deepseek-v4-flash");
-  const queryClient = useQueryClient();
+  const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
     queryFn: () => api.getTaskGraph(projectId),
   });
   const retryMutation = useMutation({
     mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "task_graph") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "situation") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "timeline") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "review") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "state") }),
-        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "debug") }),
-      ]);
-    },
   });
 
   if (taskGraphQuery.isLoading || !taskGraphQuery.data) {
     return <LoadingPanel title="Загрузка графа задач…" />;
   }
 
-  const tasks = flattenTaskNodes(taskGraphQuery.data.nodes);
+  const data = taskGraphQuery.data;
   return (
     <SectionCard
       title="Граф задач"
-      subtitle={`Завершено ${taskGraphQuery.data.completed_leaf_tasks} из ${taskGraphQuery.data.total_leaf_tasks} листовых задач`}
+      subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
     >
-      <div className="task-table">
-        {tasks.map((task) => (
-          <article key={task.task_id} className={cx("task-row", task.is_current && "task-row--current")}>
-            <div className="task-row__title">
-              <strong>{"· ".repeat(Math.max(0, task.depth))}{task.title}</strong>
-              <p>{task.template_ref}</p>
-              {task.status_summary ? <p>{task.status_summary}</p> : null}
-            </div>
-            <div className="task-row__meta">
-                <StatusPill
-                tone={
-                  task.status === "completed"
-                    ? "success"
-                    : task.status === "failed" || task.status === "blocked"
-                      ? "danger"
-                      : task.is_current
-                        ? "active"
-                        : "muted"
-                }
-              >
-                {prettyLabel(task.status)}
-              </StatusPill>
-                <span>{prettyLabel(task.template_type)}</span>
-                <span>{labelForSourceKind(task.origin_kind)}</span>
-                {task.retryable ? (
-                  <Button
-                    tone="secondary"
-                    icon={<RefreshCcw size={16} />}
-                    onClick={() => retryMutation.mutate(task.task_id)}
-                    busy={retryMutation.isPending}
-                  >
-                    Повторить
-                  </Button>
-                ) : null}
-              </div>
-            </article>
-          ))}
-        </div>
-      </SectionCard>
+      <TaskGraphCanvas tree={data.nodes} onSelectNode={setSelectedTask} />
+      <Drawer
+        open={Boolean(selectedTask)}
+        title={selectedTask?.title ?? "Задача"}
+        onClose={() => setSelectedTask(null)}
+      >
+        {selectedTask ? (
+          <TaskNodeDetail
+            task={selectedTask}
+            projectId={projectId}
+            onRetryTask={(taskId) => retryMutation.mutate(taskId)}
+          />
+        ) : null}
+      </Drawer>
+    </SectionCard>
   );
 }
 
