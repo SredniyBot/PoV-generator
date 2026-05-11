@@ -137,6 +137,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode }),
     }),
+  // W5.1: clarification flow operations + audit events
+  deferClarification: (projectId: string, clarificationId: string, reason?: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/commands/defer-clarification`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId, reason }),
+    }),
+  reopenClarification: (projectId: string, clarificationId: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/commands/reopen-clarification`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId }),
+    }),
+  getClarificationEvents: (projectId: string, clarificationId: string) =>
+    request<Array<{
+      event_id: string;
+      request_id: string;
+      project_id: string;
+      event_type: string;
+      payload: Record<string, unknown>;
+      actor: string;
+      created_at: string;
+    }>>(`/api/projects/${projectId}/clarifications/${clarificationId}/events`),
+  getNextOpenClarification: (projectId: string, afterId?: string) =>
+    request<ClarificationItemView | null>(
+      `/api/projects/${projectId}/clarifications/next${afterId ? `?after_id=${encodeURIComponent(afterId)}` : ""}`,
+    ),
   setMethodology: (projectId: string, packRef: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-methodology`, {
       method: "POST",

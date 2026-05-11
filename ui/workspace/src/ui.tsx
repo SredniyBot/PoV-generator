@@ -344,9 +344,10 @@ export function ProjectRail({
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
-    { to: `/projects/${projectId}/activity`, label: "Активность" },
-    { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
+    { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
     { to: `/projects/${projectId}/task-graph`, label: "Граф задач" },
+    { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
+    { to: `/projects/${projectId}/activity`, label: "Активность" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
     { to: `/projects/${projectId}/state`, label: "Состояние" },
     { to: `/projects/${projectId}/review`, label: "Замечания" },
@@ -409,6 +410,9 @@ export function WorkspaceHeader({
   onClarificationModeChange,
   modePending,
   actions,
+  openClarificationCount,
+  blockingClarificationCount,
+  onOpenClarifications,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
@@ -416,6 +420,10 @@ export function WorkspaceHeader({
   onClarificationModeChange?: (mode: string) => void;
   modePending?: boolean;
   actions?: ReactNode;
+  // W5.2: счётчики из ProjectClarificationsView. Клик ведёт на /clarifications.
+  openClarificationCount?: number;
+  blockingClarificationCount?: number;
+  onOpenClarifications?: () => void;
 }) {
   const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
   const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
@@ -437,6 +445,27 @@ export function WorkspaceHeader({
             <Layers3 size={14} />
             Доменов: {shell.active_domain_packs.length}
           </span>
+          {openClarificationCount && openClarificationCount > 0 ? (
+            <button
+              type="button"
+              className={cx(
+                "meta-chip meta-chip--button",
+                (blockingClarificationCount ?? 0) > 0 && "meta-chip--warning",
+              )}
+              onClick={onOpenClarifications}
+              title={
+                blockingClarificationCount && blockingClarificationCount > 0
+                  ? `${blockingClarificationCount} вопросов блокируют работу`
+                  : "Открытые вопросы"
+              }
+            >
+              <MessageSquareWarning size={14} />
+              Вопросов: {openClarificationCount}
+              {blockingClarificationCount && blockingClarificationCount > 0
+                ? ` (${blockingClarificationCount} блок.)`
+                : null}
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="workspace-header__side">

@@ -446,6 +446,9 @@ function WorkspaceRoute({
         clarificationMode={headerClarificationsQuery.data?.mode}
         onClarificationModeChange={commandMutations.setClarificationMode}
         modePending={commandMutations.busy}
+        openClarificationCount={headerClarificationsQuery.data?.open_count}
+        blockingClarificationCount={headerClarificationsQuery.data?.blocking_count}
+        onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
         actions={
           <CommandBar
             provider={provider}
@@ -485,6 +488,10 @@ function WorkspaceRoute({
         <Route path="artifacts" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="artifacts/:artifactId" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="task-graph" element={<TaskGraphPage projectId={projectId} />} />
+        <Route
+          path="clarifications"
+          element={<ClarificationsPage projectId={projectId} commands={commandMutations} />}
+        />
         <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
         <Route path="state" element={<StatePage projectId={projectId} actions={commandMutations} />} />
         <Route path="review" element={<ReviewPage projectId={projectId} />} />
@@ -814,6 +821,402 @@ function MissionControlPage({
       </div>
     </div>
   );
+}
+
+
+// ---- L2 ClarificationsPage (W5.2) ---------------------------------------
+
+type ClarFilter = "open" | "answered" | "assumed" | "deferred" | "all";
+
+function ClarificationsPage({
+  projectId,
+  commands,
+}: {
+  projectId: string;
+  commands: WorkspaceActionApi;
+}) {
+  const [filter, setFilter] = useState<ClarFilter>("open");
+  const [wizardId, setWizardId] = useState<string | null>(null);
+  const clarQuery = useQuery({
+    queryKey: projectionKey(projectId, "clarifications"),
+    queryFn: () => api.getClarifications(projectId),
+  });
+
+  if (clarQuery.isLoading || !clarQuery.data) {
+    return <LoadingPanel title="Загружаем вопросы…" />;
+  }
+
+  const view = clarQuery.data;
+  const counts = {
+    open: view.open_count,
+    answered: view.answered_count,
+    assumed: view.assumed_count,
+    deferred: view.items.filter((i) => i.status === "deferred").length,
+    blocking: view.blocking_count,
+  };
+  const filtered = view.items.filter((item) => {
+    if (filter === "all") return true;
+    return item.status === filter;
+  });
+
+  return (
+    <div className="clar-page">
+      <SectionCard title="Вопросы к менеджеру">
+        <div className="clar-hero">
+          <ClarCounter label="Открытых" value={counts.open} tone="active" emphasis />
+          <ClarCounter label="Блокирующих" value={counts.blocking} tone={counts.blocking > 0 ? "danger" : "muted"} />
+          <ClarCounter label="Отвечено" value={counts.answered} tone="success" />
+          <ClarCounter label="Допущений" value={counts.assumed} tone="muted" />
+          <ClarCounter label="Отложено" value={counts.deferred} tone="warning" />
+        </div>
+        <div className="clar-toolbar">
+          <div className="segmented">
+            {(["open", "answered", "assumed", "deferred", "all"] as ClarFilter[]).map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={cx("segmented__item", filter === f && "segmented__item--active")}
+                onClick={() => setFilter(f)}
+              >
+                {labelForClarFilter(f)} ({f === "all" ? view.items.length : counts[f as keyof typeof counts] ?? 0})
+              </button>
+            ))}
+          </div>
+          {counts.open > 0 ? (
+            <Button
+              tone="primary"
+              onClick={() => {
+                const firstOpen = view.items.find((i) => i.status === "open");
+                if (firstOpen) setWizardId(firstOpen.clarification_id);
+              }}
+            >
+              Пройти все по очереди ({counts.open})
+            </Button>
+          ) : null}
+        </div>
+        <ul className="clar-list">
+          {filtered.length === 0 ? (
+            <li className="clar-list__empty">
+              <EmptyState
+                title={filter === "open" ? "Открытых вопросов нет" : "Нет записей в этой категории"}
+                description={
+                  filter === "open"
+                    ? "Когда система решит спросить — карточка появится здесь и в шапке проекта."
+                    : "Переключи фильтр выше, чтобы увидеть остальные."
+                }
+              />
+            </li>
+          ) : (
+            filtered.map((item) => (
+              <li key={item.clarification_id}>
+                <ClarRowCard
+                  item={item}
+                  onOpen={() => setWizardId(item.clarification_id)}
+                />
+              </li>
+            ))
+          )}
+        </ul>
+      </SectionCard>
+      {wizardId ? (
+        <ClarificationWizardModal
+          projectId={projectId}
+          startId={wizardId}
+          onClose={() => setWizardId(null)}
+          commands={commands}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ClarCounter({
+  label,
+  value,
+  tone,
+  emphasis,
+}: {
+  label: string;
+  value: number;
+  tone: "active" | "success" | "warning" | "danger" | "muted";
+  emphasis?: boolean;
+}) {
+  return (
+    <div className={cx("clar-counter", `clar-counter--${tone}`, emphasis && "clar-counter--emphasis")}>
+      <span className="clar-counter__value">{value}</span>
+      <span className="clar-counter__label">{label}</span>
+    </div>
+  );
+}
+
+function ClarRowCard({
+  item,
+  onOpen,
+}: {
+  item: ClarificationItemView;
+  onOpen: () => void;
+}) {
+  const blocking = item.blocking_scope !== "none";
+  return (
+    <button type="button" className={cx("clar-row", blocking && "clar-row--blocking")} onClick={onOpen}>
+      <div className="clar-row__head">
+        <StatusPill tone={toneForClarificationPriority(item.priority)}>{prettyLabel(item.priority)}</StatusPill>
+        <span className={cx("clar-role", `clar-role--${item.decision_owner_role}`)}>
+          {prettyDecisionOwnerRole(item.decision_owner_role)}
+        </span>
+        <span className={cx("clar-blocking", `clar-blocking--${item.blocking_scope}`)}>
+          {labelForBlockingScope(item.blocking_scope)}
+        </span>
+        <span className="clar-row__mode">
+          мин. режим: <strong>{labelForEngagementMode(item.min_participation_mode)}</strong>
+        </span>
+        <span className="clar-row__status">{labelForClarStatus(item.status)}</span>
+      </div>
+      <div className="clar-row__body">
+        <span className="clar-row__question">{item.question}</span>
+        {item.resolution_summary ? (
+          <span className="clar-row__answer">→ {item.resolution_summary}</span>
+        ) : null}
+      </div>
+      <div className="clar-row__meta">
+        <span>{formatDateTime(item.updated_at)}</span>
+        <span>{item.affected_task_ids.length} задач · {item.related_artifact_ids.length} артефактов</span>
+      </div>
+    </button>
+  );
+}
+
+function labelForClarFilter(filter: ClarFilter): string {
+  switch (filter) {
+    case "open": return "Открытые";
+    case "answered": return "Отвечено";
+    case "assumed": return "Допущения";
+    case "deferred": return "Отложено";
+    case "all": return "Все";
+  }
+}
+
+function labelForBlockingScope(scope: string): string {
+  switch (scope) {
+    case "objective": return "🔒 блокирует цель";
+    case "subtree": return "⚠ блокирует ветку";
+    case "task": return "⛔ блокирует задачу";
+    case "none": return "не блокирует";
+    default: return scope;
+  }
+}
+
+function labelForEngagementMode(mode: string): string {
+  switch (mode) {
+    case "autopilot": return "автопилот";
+    case "balanced": return "сбалансированный";
+    case "control": return "контроль";
+    case "expert": return "эксперт";
+    default: return mode;
+  }
+}
+
+function labelForClarStatus(status: string): string {
+  switch (status) {
+    case "open": return "Ожидает ответа";
+    case "answered": return "Отвечено";
+    case "assumed": return "Принято допущение";
+    case "deferred": return "Отложено";
+    case "cancelled": return "Закрыто";
+    default: return prettyLabel(status);
+  }
+}
+
+// ---- Wizard-модалка с auto-advance (W5.2) ------------------------------
+
+function ClarificationWizardModal({
+  projectId,
+  startId,
+  onClose,
+  commands,
+}: {
+  projectId: string;
+  startId: string;
+  onClose: () => void;
+  commands: WorkspaceActionApi;
+}) {
+  const [currentId, setCurrentId] = useState(startId);
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const queryClient = useQueryClient();
+
+  const detailQuery = useQuery({
+    queryKey: [projectId, "clarification-detail", currentId],
+    queryFn: () => api.getClarificationDetail(projectId, currentId),
+    enabled: Boolean(currentId),
+  });
+  const eventsQuery = useQuery({
+    queryKey: [projectId, "clarification-events", currentId],
+    queryFn: () => api.getClarificationEvents(projectId, currentId),
+    enabled: Boolean(currentId) && historyVisible,
+  });
+  const deferMutation = useMutation({
+    mutationFn: (reason: string | undefined) => api.deferClarification(projectId, currentId, reason),
+    onSuccess: () => advanceOrClose(),
+  });
+  const reopenMutation = useMutation({
+    mutationFn: () => api.reopenClarification(projectId, currentId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [projectId, "clarification-detail", currentId] });
+      await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") });
+    },
+  });
+  const answerMutation = useMutation({
+    mutationFn: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) =>
+      api.answerClarification(projectId, payload),
+    onSuccess: () => advanceOrClose(),
+  });
+  const acceptMutation = useMutation({
+    mutationFn: () => api.acceptAssumption(projectId, currentId),
+    onSuccess: () => advanceOrClose(),
+  });
+
+  const advanceOrClose = async () => {
+    await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") });
+    const next = await api.getNextOpenClarification(projectId, currentId);
+    if (next) {
+      setCurrentId(next.clarification_id);
+      setHistoryVisible(false);
+    } else {
+      onClose();
+    }
+  };
+
+  if (detailQuery.isLoading || !detailQuery.data) {
+    return (
+      <Modal open onClose={onClose} title="Вопрос">
+        <LoadingPanel title="Загружаем вопрос…" />
+      </Modal>
+    );
+  }
+  const detail = detailQuery.data;
+  const events = eventsQuery.data ?? [];
+  const isOpen = detail.status === "open";
+  const isAnswered = detail.status === "answered" || detail.status === "assumed";
+  const isDeferred = detail.status === "deferred";
+  const busy =
+    answerMutation.isPending ||
+    acceptMutation.isPending ||
+    deferMutation.isPending ||
+    reopenMutation.isPending;
+
+  return (
+    <Modal open onClose={onClose} title="Вопрос к менеджеру">
+      <div className="clar-wizard">
+        <div className="clar-wizard__chips">
+          <StatusPill tone={toneForClarificationPriority(detail.priority)}>
+            {prettyLabel(detail.priority)}
+          </StatusPill>
+          <span className={cx("clar-role", `clar-role--${detail.decision_owner_role}`)}>
+            {prettyDecisionOwnerRole(detail.decision_owner_role)}
+          </span>
+          <span className={cx("clar-blocking", `clar-blocking--${detail.blocking_scope}`)}>
+            {labelForBlockingScope(detail.blocking_scope)}
+          </span>
+          <span className="clar-wizard__mode">
+            мин. режим: <strong>{labelForEngagementMode(detail.min_participation_mode)}</strong>
+          </span>
+          <span className="clar-wizard__status">{labelForClarStatus(detail.status)}</span>
+        </div>
+        <div className="clar-wizard__question">
+          <h3>{detail.question}</h3>
+          <p>{clarificationDescription(detail)}</p>
+        </div>
+
+        {isOpen ? (
+          <ClarificationAnswerForm
+            clarification={detail}
+            onAnswer={(payload) => answerMutation.mutate(payload)}
+            onAcceptAssumption={() => acceptMutation.mutate()}
+            pending={busy}
+            variant="modal"
+          />
+        ) : (
+          <div className="clarification-resolution">
+            <span>{isAnswered ? "Ответ" : isDeferred ? "Причина" : "Резолюция"}</span>
+            <p>{detail.resolution_summary || detail.default_assumption || "—"}</p>
+          </div>
+        )}
+
+        <div className="clar-wizard__actions">
+          {isOpen ? (
+            <Button
+              tone="secondary"
+              onClick={() => deferMutation.mutate("Пропущено пользователем.")}
+              disabled={busy}
+            >
+              Отложить
+            </Button>
+          ) : null}
+          {(isAnswered || isDeferred) ? (
+            <Button
+              tone="secondary"
+              onClick={() => reopenMutation.mutate()}
+              disabled={busy}
+            >
+              Переответить
+            </Button>
+          ) : null}
+          <Button
+            tone="secondary"
+            onClick={() => setHistoryVisible((v) => !v)}
+          >
+            {historyVisible ? "Скрыть историю" : "История"}
+          </Button>
+          <div className="clar-wizard__nav">
+            <Button
+              tone="secondary"
+              onClick={async () => {
+                const next = await api.getNextOpenClarification(projectId, currentId);
+                if (next) setCurrentId(next.clarification_id);
+                else onClose();
+              }}
+              disabled={busy}
+            >
+              Дальше →
+            </Button>
+          </div>
+        </div>
+
+        {historyVisible && (
+          <div className="clar-wizard__history">
+            <h4>История вопроса</h4>
+            {events.length === 0 ? (
+              <p className="clar-wizard__history-empty">События не зафиксированы.</p>
+            ) : (
+              <ol>
+                {events.map((evt) => (
+                  <li key={evt.event_id}>
+                    <span className="clar-wizard__history-type">{labelForEventType(evt.event_type)}</span>
+                    <span className="clar-wizard__history-time">{formatDateTime(evt.created_at)}</span>
+                    {Object.keys(evt.payload).length > 0 ? (
+                      <pre>{JSON.stringify(evt.payload, null, 2)}</pre>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function labelForEventType(type: string): string {
+  switch (type) {
+    case "created": return "Создан";
+    case "assumed_auto": return "Принято авто-допущение";
+    case "answered": return "Получен ответ";
+    case "assumed": return "Принято допущение";
+    case "deferred": return "Отложено";
+    case "reopened": return "Возобновлён";
+    default: return type;
+  }
 }
 
 
