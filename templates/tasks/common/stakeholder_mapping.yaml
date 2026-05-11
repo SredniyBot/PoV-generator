@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.stakeholder_mapping
 version: 1.0.0
 title: Выделить стейкхолдеров
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: stakeholders_identified
         status: ready
-framework:
-  summary: Определи группы стейкхолдеров, владельцев решений, пользователей и операционные роли.
+summary: Определи группы стейкхолдеров, владельцев решений, пользователей и операционные роли.

@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.solution_option_inventory
 version: 1.0.0
 title: Сформировать варианты решения
@@ -28,5 +28,4 @@ effects:
     set:
       - dimension: solution_option_space_defined
         status: ready
-framework:
-  summary: Сформируй жизнеспособные варианты решения и явно отдели PoV от промышленного контура.
+summary: Сформируй жизнеспособные варианты решения и явно отдели PoV от промышленного контура.

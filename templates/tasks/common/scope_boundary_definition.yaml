@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.scope_boundary_definition
 version: 1.0.0
 title: Зафиксировать границы этапа
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: scope_boundaries_defined
         status: ready
-framework:
-  summary: Раздели scope in, scope out, спорные зоны и границы текущего этапа.
+summary: Раздели scope in, scope out, спорные зоны и границы текущего этапа.

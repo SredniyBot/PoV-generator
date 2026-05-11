@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.business_outcome_framing
 version: 1.0.0
 title: Определить бизнес-результат
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: business_outcome_defined
         status: ready
-framework:
-  summary: Определи бизнес-результат, KPI, метрики успеха, допущения и риски ценности.
+summary: Определи бизнес-результат, KPI, метрики успеха, допущения и риски ценности.

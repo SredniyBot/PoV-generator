@@ -73,7 +73,7 @@ class ExecutionService:
 
         system_prompt, user_prompt = self._build_prompt(
             template_name=template.name,
-            framework_summary=template.framework_summary,
+            task_summary=template.summary,
             artifact_role=artifact_role,
             domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
             current_step_title=task.title,
@@ -234,7 +234,7 @@ class ExecutionService:
         self,
         *,
         template_name: str,
-        framework_summary: str,
+        task_summary: str,
         artifact_role: str,
         domain_pack_refs: tuple[str, ...],
         current_step_title: str,
@@ -253,17 +253,21 @@ class ExecutionService:
         context_sections = []
         for item in context_manifest.items:
             context_sections.append(f"### {item.title}\n{item.content}")
-        user_prompt = "\n\n".join(
+        prompt_lines = [
+            f"Текущий шаг: {current_step_title}",
+            f"Тип работы: {template_name}",
+        ]
+        if task_summary:
+            prompt_lines.append(f"Что нужно сделать: {task_summary}")
+        prompt_lines.extend(
             [
-                f"Текущий шаг: {current_step_title}",
-                f"Тип работы: {template_name}",
-                f"Методология шага: {framework_summary}",
                 f"Активные доменные пакеты: {', '.join(domain_pack_refs) if domain_pack_refs else 'нет'}",
                 schema_instruction(artifact_role, domain_pack_refs),
                 "Контекст:",
                 *context_sections,
             ]
         )
+        user_prompt = "\n\n".join(prompt_lines)
         return system_prompt, user_prompt
 
     def _execute_stub(

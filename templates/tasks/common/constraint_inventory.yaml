@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.constraint_inventory
 version: 1.0.0
 title: Собрать ограничения проекта
@@ -20,5 +20,4 @@ effects:
     set:
       - dimension: constraints_inventoried
         status: ready
-framework:
-  summary: Выдели явные и неявные ограничения проекта, включая рамку этапа, зависимости и среду.
+summary: Выдели явные и неявные ограничения проекта, включая рамку этапа, зависимости и среду.

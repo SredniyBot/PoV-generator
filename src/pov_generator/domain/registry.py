@@ -145,7 +145,12 @@ class TemplateSpec:
     context_policy: TemplateContextPolicy = field(default_factory=TemplateContextPolicy)
     validation_policy: TemplateValidationPolicy = field(default_factory=TemplateValidationPolicy)
     instruction: str | None = None
-    framework_summary: str = ""
+    # Краткое описание задачи (одно-два предложения), которое попадает в
+    # контекст исполнителя как "что нужно сделать". Раньше называлось
+    # framework_summary, но это было misleading — методологическая часть
+    # живёт в methodology_pack (R8/TS9), а это поле — task-specific
+    # инструкция. Переименовано в W2.cleanup (C2).
+    summary: str = ""
     source_path: Path = Path("")
 
     @property
@@ -571,7 +576,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             min_confidence=float(validation["min_confidence"]) if isinstance(validation.get("min_confidence"), (int, float)) else None,
         ),
         instruction=optional_str(raw, "instruction"),
-        framework_summary=str(require_mapping(raw, "framework", owner).get("summary", "")),
+        summary=optional_str(raw, "summary") or "",
         source_path=source_path,
     )
 

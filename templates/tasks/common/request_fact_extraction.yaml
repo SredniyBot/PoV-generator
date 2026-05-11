@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.request_fact_extraction
 version: 1.0.0
 title: Выделить факты из запроса
@@ -20,5 +20,4 @@ effects:
     set:
       - dimension: request_facts_extracted
         status: ready
-framework:
-  summary: Выдели только явные факты, сущности, ограничения и ожидаемые результаты исходного запроса.
+summary: Выдели только явные факты, сущности, ограничения и ожидаемые результаты исходного запроса.

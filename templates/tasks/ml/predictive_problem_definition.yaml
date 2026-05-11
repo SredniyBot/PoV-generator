@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: ml.predictive_problem_definition
 version: 1.0.0
 title: Определить предиктивную задачу
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: predictive_problem_defined
         status: ready
-framework:
-  summary: Определи целевое событие прогноза, горизонт, единицу прогноза, выходы модели, метрики и требования к объяснимости.
+summary: Определи целевое событие прогноза, горизонт, единицу прогноза, выходы модели, метрики и требования к объяснимости.

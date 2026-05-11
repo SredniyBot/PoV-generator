@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: frontend.user_flow_analysis
 version: 1.0.0
 title: Разобрать пользовательские потоки интерфейса
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: ui_requirements_outlined
         status: ready
-framework:
-  summary: Определи пользовательские роли, сценарии, экраны, аналитические представления и UX-ограничения.
+summary: Определи пользовательские роли, сценарии, экраны, аналитические представления и UX-ограничения.

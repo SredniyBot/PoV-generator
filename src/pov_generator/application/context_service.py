@@ -69,18 +69,21 @@ class ContextService:
                 )
             self._append_artifact_item(workspace, items, source_refs, artifact, required=True)
 
-        instruction = ContextItem(
-            item_id=str(uuid.uuid4()),
-            item_type="instruction",
-            source_ref=f"template:{template.ref.as_string()}",
-            title="Локальная методология шага",
-            content=template.framework_summary,
-            token_estimate=estimate_tokens(template.framework_summary),
-            required=True,
-            priority=1000,
-        )
-        items.append(instruction)
-        source_refs.append(instruction.source_ref)
+        # Краткое описание задачи (R8/TS9: методологическая часть приходит
+        # из methodology_pack wrapper'а, здесь — только task-specific guidance).
+        if template.summary:
+            instruction = ContextItem(
+                item_id=str(uuid.uuid4()),
+                item_type="instruction",
+                source_ref=f"template:{template.ref.as_string()}",
+                title="Что должна сделать задача",
+                content=template.summary,
+                token_estimate=estimate_tokens(template.summary),
+                required=True,
+                priority=1000,
+            )
+            items.append(instruction)
+            source_refs.append(instruction.source_ref)
 
         max_tokens = self._effective_max_tokens(template.context_policy.max_tokens)
 

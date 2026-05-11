@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.requirements_spec_review
 version: 1.0.0
 title: Провести ревью ТЗ
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: specification_reviewed
         status: ready
-framework:
-  summary: Проверь ТЗ на полноту, противоречия, доменные разделы, риски и готовность к передаче дальше.
+summary: Проверь ТЗ на полноту, противоречия, доменные разделы, риски и готовность к передаче дальше.

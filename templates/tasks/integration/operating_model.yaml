@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: integration.operating_model
 version: 1.0.0
 title: Описать интеграционную и операционную модель
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: integration_model_defined
         status: ready
-framework:
-  summary: Опиши системы-источники, целевые интеграции, обновление данных, API, роли эксплуатации и риски зависимостей.
+summary: Опиши системы-источники, целевые интеграции, обновление данных, API, роли эксплуатации и риски зависимостей.

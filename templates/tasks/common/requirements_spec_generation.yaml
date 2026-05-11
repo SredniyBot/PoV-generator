@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.requirements_spec_generation
 version: 1.0.0
 title: Подготовить структурированное ТЗ
@@ -33,5 +33,4 @@ effects:
     set:
       - dimension: specification_drafted
         status: ready
-framework:
-  summary: Синтезируй итоговое ТЗ из всех доступных артефактов, включая активные доменные разделы.
+summary: Синтезируй итоговое ТЗ из всех доступных артефактов, включая активные доменные разделы.

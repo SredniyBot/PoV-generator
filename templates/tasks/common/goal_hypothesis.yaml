@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.goal_hypothesis
 version: 1.0.0
 title: Сформировать гипотезу цели
@@ -20,5 +20,4 @@ effects:
     set:
       - dimension: project_goal_hypothesized
         status: ready
-framework:
-  summary: Сформулируй рабочую цель проекта, ожидаемые эффекты и нерешенные вопросы цели.
+summary: Сформулируй рабочую цель проекта, ожидаемые эффекты и нерешенные вопросы цели.

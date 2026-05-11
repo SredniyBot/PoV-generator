@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: security.constraints_assessment
 version: 1.0.0
 title: Оценить ограничения ИБ и комплаенса
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: security_constraints_assessed
         status: ready
-framework:
-  summary: Выдели требования безопасности, приватности, доступа, размещения, ИИ-использования и комплаенса.
+summary: Выдели требования безопасности, приватности, доступа, размещения, ИИ-использования и комплаенса.

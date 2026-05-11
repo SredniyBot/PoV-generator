@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: common.request_normalization
 version: 1.0.0
 title: Нормализовать запрос
@@ -31,5 +31,4 @@ effects:
     set:
       - dimension: request_normalized
         status: ready
-framework:
-  summary: Собери сводную опорную модель запроса на основе уже выполненных локальных задач.
+summary: Собери сводную опорную модель запроса на основе уже выполненных локальных задач.

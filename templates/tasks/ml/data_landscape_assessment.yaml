@@ -1,4 +1,4 @@
-kind: task_template
+﻿kind: task_template
 id: ml.data_landscape_assessment
 version: 1.0.0
 title: Оценить данные для аналитики и ML
@@ -22,5 +22,4 @@ effects:
     set:
       - dimension: data_feasibility_assessed
         status: ready
-framework:
-  summary: Оцени источники данных, качество, признаки, доступность, ограничения и риски реализуемости ML-задачи.
+summary: Оцени источники данных, качество, признаки, доступность, ограничения и риски реализуемости ML-задачи.
