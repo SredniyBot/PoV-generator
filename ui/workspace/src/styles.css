@@ -3061,6 +3061,15 @@ code {
   outline: none;
 }
 .clar-row--blocking { border-left-color: rgba(215, 131, 131, 0.6); }
+.clar-row--auto { background: rgba(120, 184, 201, 0.04); }
+.clar-auto-badge {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.35rem;
+  background: rgba(120, 184, 201, 0.15);
+  color: #9fd2dd;
+  letter-spacing: 0.02em;
+}
 
 .clar-row__head {
   display: flex;

@@ -156,6 +156,7 @@ export interface ClarificationItemView {
   default_assumption: string | null;
   blocking_scope: string;
   decision_owner_role: string;
+  auto_resolved: boolean;
   affected_task_ids: string[];
   related_artifact_ids: string[];
   selected_option_ids: string[];

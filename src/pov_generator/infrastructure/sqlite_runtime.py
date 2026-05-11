@@ -195,6 +195,11 @@ def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
         if "decision_owner_role" in row.keys()
         else "business"
     )
+    auto_resolved_flag = (
+        bool(row["auto_resolved"])
+        if "auto_resolved" in row.keys()
+        else False
+    )
     return ClarificationRequest(
         request_id=row["request_id"],
         project_id=row["project_id"],
@@ -216,6 +221,7 @@ def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
         related_artifact_ids=tuple(json_loads(row["related_artifact_ids_json"])),
         blocking_scope=row["blocking_scope"],
         decision_owner_role=decision_owner_role or "business",
+        auto_resolved=auto_resolved_flag,
         source_type=row["source_type"],
         source_id=row["source_id"],
         created_from_candidate_ids=tuple(json_loads(row["created_from_candidate_ids_json"])),
@@ -1048,10 +1054,10 @@ class SqliteRuntime:
                   request_id, project_id, status, priority, title, question, description, reason, impact,
                   answer_mode, options_json, recommended_option_id, min_participation_mode, default_assumption,
                   affected_task_ids_json, related_artifact_ids_json, blocking_scope, decision_owner_role,
-                  source_type, source_id, created_from_candidate_ids_json,
+                  auto_resolved, source_type, source_id, created_from_candidate_ids_json,
                   selected_option_ids_json, free_text, resolution_summary, created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.request_id,
@@ -1072,6 +1078,7 @@ class SqliteRuntime:
                     json_dumps(request.related_artifact_ids),
                     request.blocking_scope,
                     request.decision_owner_role,
+                    int(request.auto_resolved),
                     request.source_type,
                     request.source_id,
                     json_dumps(request.created_from_candidate_ids),
@@ -1153,6 +1160,18 @@ class SqliteRuntime:
             )
             connection.commit()
         return self.get_clarification_request(workspace, request_id)
+
+    def mark_clarification_auto_resolved(self, workspace: Path, request_id: str) -> None:
+        """V1 (W6): помечает уже-существующий request как «решено
+        автоматически». Используется в `set_mode` re-eval, когда мы
+        вызываем accept_assumption / defer_clarification из системного
+        кода, а не из ручного действия пользователя."""
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update clarification_requests set auto_resolved = 1 where request_id = ?",
+                (request_id,),
+            )
+            connection.commit()
 
     def defer_clarification_request(
         self, workspace: Path, request_id: str, *, reason: str | None = None
@@ -1506,6 +1525,15 @@ class SqliteRuntime:
             "clarification_requests",
             "decision_owner_role",
             "text not null default 'business'",
+        )
+        # W6 / V1: маркер «решено автоматически» (assume/defer в обход
+        # явного ответа пользователя). UI использует для визуальной
+        # дифференциации (🤖 badge + отдельный счётчик).
+        self._ensure_column(
+            connection,
+            "clarification_requests",
+            "auto_resolved",
+            "integer not null default 0",
         )
         # W5.1: audit log событий уточнений.
         connection.executescript(

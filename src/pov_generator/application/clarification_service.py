@@ -398,6 +398,7 @@ class ClarificationService:
             )
             if decision == "assume" and request.default_assumption:
                 self.accept_assumption(workspace, request_id=request.request_id)
+                self._runtime.mark_clarification_auto_resolved(workspace, request.request_id)
                 auto_assumed += 1
             elif decision == "defer":
                 self.defer_clarification(
@@ -408,6 +409,7 @@ class ClarificationService:
                         f"Можно пере-открыть и ответить вручную."
                     ),
                 )
+                self._runtime.mark_clarification_auto_resolved(workspace, request.request_id)
                 auto_deferred += 1
             else:
                 # "ask" (например, objective-scope без допущения) — оставляем.
@@ -902,6 +904,9 @@ class ClarificationService:
         options = candidate.options or self._default_options_for_candidate(default_assumption=candidate.default_assumption)
         recommended_option_id = self._recommended_option_id(options, candidate.recommended_answer)
         answer_mode = "single" if candidate.answer_mode == "free_text" and options else candidate.answer_mode
+        # V1: если первоначальный статус не "open" — это auto-решение системы
+        # (assumed_auto / deferred_auto в audit log).
+        auto_resolved_flag = status in {"assumed", "deferred"}
         return ClarificationRequest(
             request_id=str(uuid.uuid4()),
             project_id=candidate.project_id,
@@ -921,6 +926,7 @@ class ClarificationService:
             related_artifact_ids=candidate.related_artifact_ids,
             blocking_scope=candidate.blocking_scope,
             decision_owner_role=candidate.decision_owner_role,
+            auto_resolved=auto_resolved_flag,
             source_type=candidate.source_type,
             source_id=candidate.source_id,
             created_from_candidate_ids=(candidate.candidate_id,),

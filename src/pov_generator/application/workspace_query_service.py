@@ -529,6 +529,7 @@ class WorkspaceQueryService:
             default_assumption=request.default_assumption,
             blocking_scope=request.blocking_scope,
             decision_owner_role=request.decision_owner_role,
+            auto_resolved=request.auto_resolved,
             affected_task_ids=request.affected_task_ids,
             related_artifact_ids=request.related_artifact_ids,
             selected_option_ids=request.selected_option_ids,

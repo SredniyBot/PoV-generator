@@ -174,6 +174,7 @@ class ClarificationItemView:
     default_assumption: str | None
     blocking_scope: str
     decision_owner_role: str
+    auto_resolved: bool
     affected_task_ids: tuple[str, ...]
     related_artifact_ids: tuple[str, ...]
     selected_option_ids: tuple[str, ...]

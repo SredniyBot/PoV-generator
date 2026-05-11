@@ -79,6 +79,10 @@ class ClarificationRequest:
     related_artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     blocking_scope: ClarificationBlockingScope = "task"
     decision_owner_role: DecisionOwnerRole = "business"
+    # V1 (W6): True если первоначальная судьба request'а — авто-решение
+    # (autopilot/balanced auto-assume или auto-defer). UI рисует 🤖 badge,
+    # а инбокс — отдельный счётчик «N решено автоматически».
+    auto_resolved: bool = False
     source_type: ClarificationSourceType = "validation"
     source_id: str = ""
     created_from_candidate_ids: tuple[str, ...] = field(default_factory=tuple)

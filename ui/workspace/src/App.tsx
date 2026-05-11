@@ -853,6 +853,11 @@ function ClarificationsPage({
     assumed: view.assumed_count,
     deferred: view.items.filter((i) => i.status === "deferred").length,
     blocking: view.blocking_count,
+    // V1: «решено автоматически» = всё, что система закрыла без явного
+    // действия пользователя (assumed_auto / deferred_auto). UI'у нужно,
+    // чтобы менеджер на autopilot всё равно видел масштаб того, что
+    // система делает за него.
+    auto_resolved: view.items.filter((i) => i.auto_resolved).length,
   };
   const filtered = view.items.filter((item) => {
     if (filter === "all") return true;
@@ -865,6 +870,7 @@ function ClarificationsPage({
         <div className="clar-hero">
           <ClarCounter label="Открытых" value={counts.open} tone="active" emphasis />
           <ClarCounter label="Блокирующих" value={counts.blocking} tone={counts.blocking > 0 ? "danger" : "muted"} />
+          <ClarCounter label="🤖 Авто-решений" value={counts.auto_resolved} tone="active" />
           <ClarCounter label="Отвечено" value={counts.answered} tone="success" />
           <ClarCounter label="Допущений" value={counts.assumed} tone="muted" />
           <ClarCounter label="Отложено" value={counts.deferred} tone="warning" />
@@ -958,7 +964,7 @@ function ClarRowCard({
 }) {
   const blocking = item.blocking_scope !== "none";
   return (
-    <button type="button" className={cx("clar-row", blocking && "clar-row--blocking")} onClick={onOpen}>
+    <button type="button" className={cx("clar-row", blocking && "clar-row--blocking", item.auto_resolved && "clar-row--auto")} onClick={onOpen}>
       <div className="clar-row__head">
         <StatusPill tone={toneForClarificationPriority(item.priority)}>{prettyLabel(item.priority)}</StatusPill>
         <span className={cx("clar-role", `clar-role--${item.decision_owner_role}`)}>
@@ -967,6 +973,11 @@ function ClarRowCard({
         <span className={cx("clar-blocking", `clar-blocking--${item.blocking_scope}`)}>
           {labelForBlockingScope(item.blocking_scope)}
         </span>
+        {item.auto_resolved ? (
+          <span className="clar-auto-badge" title="Закрыто системой автоматически (autopilot/допущение)">
+            🤖 авто
+          </span>
+        ) : null}
         <span className="clar-row__mode">
           мин. режим: <strong>{labelForEngagementMode(item.min_participation_mode)}</strong>
         </span>
