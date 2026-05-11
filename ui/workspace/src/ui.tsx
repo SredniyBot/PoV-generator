@@ -1,5 +1,8 @@
 import type { CSSProperties, PropsWithChildren, ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
+
+import { api as apiClient } from "./api";
 import {
   AlertTriangle,
   ArrowRight,
@@ -497,31 +500,57 @@ export function WorkspaceHeader({
 }
 
 export function CommandBar({
-  onRunUntilBlocked,
-  pending,
+  projectId,
 }: {
-  // L6-9: убраны runtime-термины «следующий шаг» / «до блокировки» и
-  // технические selectors провайдера/модели. На уровне workspace-шапки
-  // остаётся одна кнопка «Продолжить» (= run-until-blocked). Подробные
-  // настройки выполнения — в Настройки → Технические (expert).
+  // L6-10: глобальная шапка = слой СТАТУСА, а не команд.
   //
-  // provider/model и run-next намеренно НЕ принимаются: их UI убран
-  // отсюда. Состояние provider/model хранится в WorkspaceRoute и
-  // передаётся в runUntilBlocked внутренне (см. App.tsx commandMutations).
-  onRunUntilBlocked: () => void;
-  pending: boolean;
+  // Старое поведение (вечная кнопка «Продолжить» на каждой вкладке) давало
+  // ложный сигнал «проект простаивает» и могла предлагать запуск даже когда
+  // нужно сперва ответить на вопросы. См. USERS_AND_JTBD §5B C1 (trust
+  // calibration): UI должен честно отражать состояние, а не подталкивать к
+  // действию когда оно невозможно.
+  //
+  // Теперь шапка показывает один компактный индикатор:
+  //   - "Идёт работа"           + "Приостановить" (единственная глобальная команда)
+  //   - "Готово"                 (статус, без действия)
+  //   - ""                       (idle/блокеры) — команды живут в Обзоре,
+  //                              блокеры уже показаны бейджем в шапке выше
+  projectId: string;
 }) {
+  const queryClient = useQueryClient();
+  const activeRunQuery = useQuery({
+    queryKey: [projectId, "workflow-run-active"],
+    queryFn: () => apiClient.getActiveWorkflowRun(projectId),
+    refetchInterval: 1500,
+  });
+  const pauseMutation = useMutation({
+    mutationFn: (runId: string) => apiClient.cancelWorkflow(projectId, runId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+    },
+  });
+
+  const activeRun = activeRunQuery.data ?? null;
+  const isRunning =
+    activeRun !== null && (activeRun.status === "running" || activeRun.status === "pending");
+
+  if (!isRunning) {
+    return null;
+  }
+
+  const pausing = pauseMutation.isPending || Boolean(activeRun?.cancel_requested);
   return (
-    <div className="command-bar">
-      <Button
-        className="command-bar__button"
-        tone="primary"
-        icon={<Sparkles size={16} />}
-        onClick={onRunUntilBlocked}
-        busy={pending}
+    <div className="command-bar command-bar--running">
+      <span className="command-bar__pulse" aria-hidden />
+      <span className="command-bar__status">Идёт работа</span>
+      <button
+        type="button"
+        className="command-bar__pause"
+        onClick={() => activeRun && pauseMutation.mutate(activeRun.run_id)}
+        disabled={pausing}
       >
-        Продолжить
-      </Button>
+        {pausing ? "Останавливаем…" : "Приостановить"}
+      </button>
     </div>
   );
 }

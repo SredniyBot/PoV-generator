@@ -423,6 +423,105 @@
   background: var(--danger-strong);
 }
 
+.status-card__secondary {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  padding: var(--space-1) 0;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--motion-easing);
+}
+
+.status-card__secondary:hover {
+  color: var(--text-primary);
+}
+
+.status-card__secondary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+.status-card__secondary-hint {
+  color: var(--text-disabled);
+  font-family: var(--font-family-mono);
+  margin-left: var(--space-1);
+}
+
+/* ---- Workspace-header running indicator (L6-10) ------------------- */
+
+.command-bar.command-bar--running {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-pill);
+  flex-direction: row;
+}
+
+.command-bar__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: command-bar-pulse 1200ms var(--motion-easing) infinite;
+}
+
+@keyframes command-bar-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.78);
+  }
+}
+
+.command-bar__status {
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.command-bar__pause {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing);
+}
+
+.command-bar__pause:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.command-bar__pause:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.command-bar__pause:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .status-card__row {
   display: grid;
   grid-template-columns: 1fr auto;

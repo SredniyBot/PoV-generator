@@ -457,12 +457,7 @@ function WorkspaceRoute({
         openClarificationCount={headerClarificationsQuery.data?.open_count}
         blockingClarificationCount={headerClarificationsQuery.data?.blocking_count}
         onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
-        actions={
-          <CommandBar
-            onRunUntilBlocked={commandMutations.runUntilBlocked}
-            pending={commandMutations.busy}
-          />
-        }
+        actions={<CommandBar projectId={projectId} />}
       />
       <WorkspaceTabs projectId={projectId} />
       <WorkflowRunProgressPanel projectId={projectId} />
@@ -478,6 +473,7 @@ function WorkspaceRoute({
                 navigate(`/projects/${projectId}/artifacts/${artifactId}`)
               }
               onContinue={commandMutations.runUntilBlocked}
+              onRetryTask={commandMutations.retryTask}
             />
           }
         />

@@ -32,6 +32,12 @@ interface ProjectOverviewV2Props {
    * между шагами, а engagement-режим определяет когда система спросит.
    */
   onContinue?: () => void;
+  /**
+   * Переделать конкретный шаг (= retry-task). Используется когда менеджер
+   * посмотрел результат последнего шага и хочет переделать его, не
+   * откатывая весь проект.
+   */
+  onRetryTask?: (taskId: string) => void;
 }
 
 export function ProjectOverviewV2({
@@ -40,6 +46,7 @@ export function ProjectOverviewV2({
   onOpenDecisionLog,
   onOpenArtifactFull,
   onContinue,
+  onRetryTask,
 }: ProjectOverviewV2Props) {
   const queryClient = useQueryClient();
 
@@ -75,6 +82,26 @@ export function ProjectOverviewV2({
       void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
     },
   });
+
+  // L6-10: для "Переделать последний шаг" нужен task_id последнего
+  // выполненного / выполняющегося шага. Берём из активного run или, если
+  // active нет — из последнего недавнего run.
+  const recentRunsQuery = useQuery({
+    queryKey: [projectId, "workflow-runs", "recent-1"],
+    queryFn: () => api.listWorkflowRuns(projectId, 1),
+    enabled: !activeRun,
+  });
+  const lastStep = useMemo(() => {
+    const sourceSteps =
+      activeRun?.steps ?? recentRunsQuery.data?.[0]?.steps ?? [];
+    if (sourceSteps.length === 0) return null;
+    // Берём последний step с task_id — это последняя содержательная задача.
+    for (let i = sourceSteps.length - 1; i >= 0; i--) {
+      const step = sourceSteps[i];
+      if (step && step.task_id) return step;
+    }
+    return null;
+  }, [activeRun?.steps, recentRunsQuery.data]);
 
   const overview = useQuery({
     queryKey: ["overview-v2", projectId],
@@ -118,6 +145,7 @@ export function ProjectOverviewV2({
   const assumedCount = decisionLog.data?.assumed_count ?? 0;
   const decisionsTotal = decisionLog.data?.total_count ?? 0;
 
+  const lastStepLabel = lastStep?.task_key ?? lastStep?.selected_step_id ?? null;
   const primaryCta = useMemo(
     () =>
       computePrimaryCta({
@@ -128,9 +156,12 @@ export function ProjectOverviewV2({
         sectionsDone: skeleton.data?.sections_done,
         artifactProgress: overview.data?.objective_progress,
         runError: activeRun?.error_message,
+        lastTaskId: lastStep?.task_id ?? null,
+        lastTaskLabel: lastStepLabel,
         onOpenClarifications,
         onPause: activeRun ? () => pauseMutation.mutate(activeRun.run_id) : undefined,
         onContinue,
+        onRetryTask,
         pausing: pauseMutation.isPending || Boolean(activeRun?.cancel_requested),
       }),
     [
@@ -141,8 +172,11 @@ export function ProjectOverviewV2({
       skeleton.data?.sections_done,
       overview.data?.objective_progress,
       activeRun,
+      lastStep?.task_id,
+      lastStepLabel,
       onOpenClarifications,
       onContinue,
+      onRetryTask,
       pauseMutation,
     ],
   );
@@ -227,6 +261,21 @@ export function ProjectOverviewV2({
                 disabled={primaryCta.action.disabled}
               >
                 {primaryCta.action.label}
+              </button>
+            )}
+            {primaryCta.secondary && (
+              <button
+                type="button"
+                className="status-card__secondary"
+                onClick={primaryCta.secondary.onClick}
+                title={primaryCta.secondary.hint}
+              >
+                ↻ {primaryCta.secondary.label}
+                {primaryCta.secondary.hint && (
+                  <span className="status-card__secondary-hint">
+                    · {primaryCta.secondary.hint}
+                  </span>
+                )}
               </button>
             )}
           </div>
@@ -519,10 +568,17 @@ interface CtaAction {
   tone?: "primary" | "danger";
 }
 
+interface SecondaryAction {
+  label: string;
+  hint?: string;
+  onClick?: () => void;
+}
+
 interface CtaInfo {
   headline: string;
   detail?: string;
   action?: CtaAction;
+  secondary?: SecondaryAction;
 }
 
 /**
@@ -550,12 +606,29 @@ function computePrimaryCta(input: {
   sectionsDone: number | undefined;
   artifactProgress?: ObjectiveProgressView;
   runError: string | null | undefined;
+  lastTaskId: string | null;
+  lastTaskLabel: string | null;
   onOpenClarifications?: () => void;
   onPause?: () => void;
   onContinue?: () => void;
+  onRetryTask?: (taskId: string) => void;
   pausing: boolean;
 }): CtaInfo {
-  // 1. Блокирующие вопросы — самое срочное (M-J3).
+  // L6-10: secondary "Переделать последний шаг" доступно когда есть
+  // идентифицируемый последний шаг и retry-обработчик. Появляется в
+  // состояниях, где это уместно (idle с историей, error). Не появляется
+  // в blockers (фокус на ответе) и empty (нечего переделывать).
+  const retryAction: SecondaryAction | null =
+    input.lastTaskId && input.onRetryTask
+      ? {
+          label: "Переделать последний шаг",
+          hint: input.lastTaskLabel ? humanizeStepLabel(input.lastTaskLabel) : undefined,
+          onClick: () => input.onRetryTask?.(input.lastTaskId!),
+        }
+      : null;
+
+  // 1. Блокирующие вопросы — самое срочное (M-J3). Никаких secondary —
+  // фокус: ответить.
   if (input.blockingCount > 0) {
     return {
       headline: `Ждут вашего решения: ${input.blockingCount} ${pluralizeQuestion(input.blockingCount)}`,
@@ -567,7 +640,7 @@ function computePrimaryCta(input: {
       },
     };
   }
-  // 2. Идёт работа — дать паузу.
+  // 2. Идёт работа — дать паузу. Retry появится после остановки.
   if (input.isRunning) {
     return {
       headline: "Идёт работа",
@@ -590,6 +663,7 @@ function computePrimaryCta(input: {
         onClick: input.onContinue,
         tone: "primary",
       },
+      secondary: retryAction ?? undefined,
     };
   }
   // 4. Цель достигнута — передать.
@@ -605,9 +679,10 @@ function computePrimaryCta(input: {
       detail: "Артефакты собраны и проверены. Можно передавать команде.",
       // P9 (формальная кнопка передачи) пока disabled — следующая итерация.
       action: { label: "Принять и закрыть", disabled: true, tone: "primary" },
+      secondary: retryAction ?? undefined,
     };
   }
-  // 5. Артефакт ещё пустой — старт.
+  // 5. Артефакт ещё пустой — старт. Нечего переделывать.
   if (!input.hasAnyArtifact) {
     return {
       headline: "Готов к запуску",
@@ -615,7 +690,7 @@ function computePrimaryCta(input: {
       action: { label: "Поехали", onClick: input.onContinue, tone: "primary" },
     };
   }
-  // 6. Артефакт частично готов, никто не ждёт — продолжаем.
+  // 6. Артефакт частично готов, никто не ждёт — продолжаем + опц переделать.
   const partialProgress =
     typeof input.sectionsDone === "number" && typeof input.sectionsTotal === "number"
       ? `${input.sectionsDone} из ${input.sectionsTotal} разделов`
@@ -626,7 +701,16 @@ function computePrimaryCta(input: {
       ? `Готово ${partialProgress}. Система продолжит и остановится, если что-то понадобится от вас.`
       : "Система продолжит работу и остановится, когда понадобится ваше решение.",
     action: { label: "Продолжить", onClick: input.onContinue, tone: "primary" },
+    secondary: retryAction ?? undefined,
   };
+}
+
+function humanizeStepLabel(label: string): string {
+  // task_key вида "common.requirements_spec_generation@1.0.0" → "requirements spec generation"
+  const beforeVersion = label.split("@")[0] ?? label;
+  const parts = beforeVersion.split(".");
+  const core = parts.length > 0 ? parts[parts.length - 1] : label;
+  return (core ?? label).replace(/_/g, " ");
 }
 
 function pluralizeQuestion(n: number): string {
