@@ -7,6 +7,7 @@ import type {
   HealthView,
   MethodologyPackView,
   MethodologyTraceResponse,
+  WorkflowRunView,
   ObjectiveCatalogItemView,
   ProjectCreatedView,
   ProjectClarificationsView,
@@ -73,10 +74,23 @@ export const api = {
       body: JSON.stringify({ provider, model: model || undefined }),
     }),
   runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 3) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
+    // W4.1 (R1): endpoint теперь асинхронный. Возвращает WorkflowRunView
+    // (status=pending) сразу. Прогресс читается через getActiveWorkflowRun.
+    request<WorkflowRunView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
     }),
+  cancelWorkflow: (projectId: string, runId: string) =>
+    request<{ status: string; run_id: string }>(`/api/projects/${projectId}/commands/cancel-workflow`, {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId }),
+    }),
+  getActiveWorkflowRun: (projectId: string) =>
+    request<WorkflowRunView | null>(`/api/projects/${projectId}/workflow-runs/active`),
+  getWorkflowRun: (projectId: string, runId: string) =>
+    request<WorkflowRunView>(`/api/projects/${projectId}/workflow-runs/${runId}`),
+  listWorkflowRuns: (projectId: string, limit = 20) =>
+    request<WorkflowRunView[]>(`/api/projects/${projectId}/workflow-runs?limit=${limit}`),
   retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",

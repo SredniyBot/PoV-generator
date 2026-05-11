@@ -334,6 +334,47 @@ export interface ProjectOverviewView {
 }
 
 
+// ---- Async workflow runs (W4.1 / R1) -------------------------------------
+
+export type WorkflowRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface WorkflowStepView {
+  sequence: number;
+  task_id: string | null;
+  task_key: string | null;
+  selected_step_id: string | null;
+  planning_outcome: string;
+  validation_status: string | null;
+  execution_run_id: string | null;
+  started_at: string;
+  finished_at: string;
+  error_message: string | null;
+}
+
+export interface WorkflowRunView {
+  run_id: string;
+  project_id: string;
+  status: WorkflowRunStatus;
+  provider: string | null;
+  model: string | null;
+  max_steps: number;
+  current_step: number;
+  total_steps_completed: number;
+  started_at: string;
+  finished_at: string | null;
+  last_step_summary: string;
+  stop_reason: string | null;
+  error_message: string | null;
+  cancel_requested: boolean;
+  steps: WorkflowStepView[];
+}
+
+
 // ---- Methodology pack catalog (для L2 MethodologyView) -------------------
 
 export interface MethodologyStageProducesView {

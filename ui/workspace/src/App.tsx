@@ -365,7 +365,20 @@ function WorkspaceRoute({
   const commandMutations = useMemo<WorkspaceActionApi>(
     () => ({
       runNext: () => void commandRequest(() => api.runNext(projectId, provider, model)),
-      runUntilBlocked: () => void commandRequest(() => api.runUntilBlocked(projectId, provider, model)),
+      runUntilBlocked: () => {
+        // W4.1 (R1): endpoint асинхронный, возвращает WorkflowRunView сразу.
+        // Не используем commandRequest (он ждёт CommandResultView).
+        setCommandBusy(true);
+        api.runUntilBlocked(projectId, provider, model)
+          .then((run) => {
+            notify("success", "Workflow запущен", `Шагов запланировано: ${run.max_steps}. Прогресс под вкладками.`);
+            void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+          })
+          .catch((error) => {
+            notify("danger", "Не удалось запустить workflow", error instanceof Error ? error.message : "Неизвестная ошибка");
+          })
+          .finally(() => setCommandBusy(false));
+      },
       retryTask: (taskId: string) => void commandRequest(() => api.retryTask(projectId, taskId, provider, model)),
       setGoal: (text: string) => void commandRequest(() => api.setGoal(projectId, text)),
       closeGap: (gapId: string) => void commandRequest(() => api.closeGap(projectId, gapId)),
@@ -388,6 +401,11 @@ function WorkspaceRoute({
       if (projection === "methodology") {
         void queryClient.invalidateQueries({ queryKey: ["methodology-packs"] });
       }
+      // W4.1 (R1): workflow_runs мутируются runner'ом между шагами, mtime
+      // БД меняется → realtime_token broadcasts на ВСЕ projections.
+      // Инвалидируем активный run и список — UI подхватит прогресс.
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
       setFlashProjection(projection);
       window.setTimeout(() => setFlashProjection(null), 1200);
     },
@@ -440,6 +458,7 @@ function WorkspaceRoute({
         }
       />
       <WorkspaceTabs projectId={projectId} />
+      <WorkflowRunProgressPanel projectId={projectId} />
       <Routes>
         <Route
           path="overview"
@@ -476,6 +495,155 @@ function WorkspaceRoute({
       </Routes>
     </div>
   );
+}
+
+
+// ---- W4.1 (R1): WorkflowRunProgressPanel ---------------------------------
+
+function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+  const activeQuery = useQuery({
+    queryKey: [projectId, "workflow-run-active"],
+    queryFn: () => api.getActiveWorkflowRun(projectId),
+    // Полл каждые 1.5 сек на случай если WS broadcast пропустим (например
+    // если token не сменился из-за внешнего write). Дёшево — endpoint
+    // отвечает за < 5 ms.
+    refetchInterval: 1500,
+  });
+  const recentQuery = useQuery({
+    queryKey: [projectId, "workflow-runs"],
+    queryFn: () => api.listWorkflowRuns(projectId, 5),
+    refetchInterval: 5_000,
+  });
+  const [stickyRunId, setStickyRunId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const cancelMutation = useMutation({
+    mutationFn: (runId: string) => api.cancelWorkflow(projectId, runId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+    },
+  });
+
+  const active = activeQuery.data ?? null;
+  // Когда run заканчивается, active становится null — но мы хотим
+  // показать терминал ещё немного, пока пользователь не закроет.
+  const recent = recentQuery.data ?? [];
+  const sticky = stickyRunId ? recent.find((r) => r.run_id === stickyRunId) ?? null : null;
+  const display = active ?? sticky ?? recent[0] ?? null;
+
+  // Если новый active появился — запомнить его run_id как sticky
+  // (чтобы после завершения он не пропадал моментально).
+  if (active && stickyRunId !== active.run_id) {
+    setStickyRunId(active.run_id);
+  }
+
+  if (!display) return null;
+
+  const isActive = display.status === "pending" || display.status === "running";
+  const progressPct =
+    display.max_steps > 0
+      ? Math.min(100, Math.round((display.current_step / display.max_steps) * 100))
+      : 0;
+  const statusLabel = labelForRunStatus(display.status);
+  const statusTone = toneForRunStatus(display.status);
+
+  return (
+    <div className={cx("workflow-run", `workflow-run--${display.status}`)}>
+      <div className="workflow-run__head">
+        <div className="workflow-run__title">
+          <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
+          <span className="workflow-run__summary">{display.last_step_summary || "—"}</span>
+        </div>
+        <div className="workflow-run__actions">
+          {isActive ? (
+            <Button
+              tone="secondary"
+              onClick={() => cancelMutation.mutate(display.run_id)}
+              disabled={cancelMutation.isPending || display.cancel_requested}
+            >
+              {display.cancel_requested ? "Останавливаем..." : "Прервать"}
+            </Button>
+          ) : (
+            <Button tone="secondary" onClick={() => setStickyRunId(null)}>
+              Скрыть
+            </Button>
+          )}
+          {display.steps.length > 0 && (
+            <Button tone="secondary" onClick={() => setShowHistory((v) => !v)}>
+              {showHistory ? "Свернуть" : `Шаги (${display.steps.length})`}
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="workflow-run__bar">
+        <div className="workflow-run__bar-track">
+          <div
+            className={cx(
+              "workflow-run__bar-fill",
+              isActive && "workflow-run__bar-fill--pulse",
+            )}
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+        <span className="workflow-run__counter">
+          {display.current_step}/{display.max_steps}
+          {display.stop_reason ? ` · ${labelForStopReason(display.stop_reason)}` : ""}
+        </span>
+      </div>
+      {showHistory && (
+        <ul className="workflow-run__steps">
+          {display.steps.slice().reverse().map((step) => (
+            <li key={step.sequence}>
+              <span className="workflow-run__step-seq">#{step.sequence}</span>
+              <span className="workflow-run__step-title">{step.selected_step_id || step.task_key || "(unknown)"}</span>
+              <span
+                className={cx(
+                  "workflow-run__step-status",
+                  `workflow-run__step-status--${step.validation_status ?? step.planning_outcome}`,
+                )}
+              >
+                {step.error_message || step.validation_status || step.planning_outcome}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function labelForRunStatus(status: string): string {
+  switch (status) {
+    case "pending": return "Подготовка";
+    case "running": return "Идёт workflow";
+    case "completed": return "Завершено";
+    case "failed": return "Ошибка";
+    case "cancelled": return "Прервано";
+    default: return prettyLabel(status);
+  }
+}
+
+function toneForRunStatus(status: string): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
+  switch (status) {
+    case "pending":
+    case "running": return "active";
+    case "completed": return "success";
+    case "failed": return "danger";
+    case "cancelled": return "warning";
+    default: return "neutral";
+  }
+}
+
+function labelForStopReason(reason: string): string {
+  switch (reason) {
+    case "objective_completed": return "цель достигнута";
+    case "planner_blocked": return "планировщик заблокирован";
+    case "validation_failed": return "проверка не прошла";
+    case "max_steps_reached": return "лимит шагов";
+    case "execution_error": return "ошибка исполнения";
+    case "cancelled_by_user": return "прервано пользователем";
+    default: return reason;
+  }
 }
 
 

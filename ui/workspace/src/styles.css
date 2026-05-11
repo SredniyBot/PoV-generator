@@ -2721,6 +2721,133 @@ code {
 .clar-role--data_owner { background: rgba(180, 165, 134, 0.18); color: #cbb98e; }
 .clar-role--security { background: rgba(215, 131, 131, 0.18); color: #e3a3a3; }
 
+/* ---- Workflow run progress panel (W4.1 / R1) -------------------------- */
+
+.workflow-run {
+  margin: 0.5rem 0 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface-primary, rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left-width: 3px;
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.workflow-run--running { border-left-color: rgba(120, 184, 201, 0.6); }
+.workflow-run--pending { border-left-color: rgba(180, 180, 180, 0.4); }
+.workflow-run--completed { border-left-color: rgba(140, 196, 153, 0.6); }
+.workflow-run--failed { border-left-color: rgba(215, 131, 131, 0.6); }
+.workflow-run--cancelled { border-left-color: rgba(214, 173, 89, 0.6); }
+
+.workflow-run__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.workflow-run__title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  color: var(--text-primary, #e8ecf3);
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.workflow-run__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-run__actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.workflow-run__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.workflow-run__bar-track {
+  flex: 1;
+  height: 0.4rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.workflow-run__bar-fill {
+  height: 100%;
+  background: rgba(120, 184, 201, 0.7);
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+
+.workflow-run__bar-fill--pulse {
+  animation: workflow-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes workflow-pulse {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
+}
+
+.workflow-run__counter {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workflow-run__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.workflow-run__steps li {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.3rem 0.5rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0.3rem;
+}
+
+.workflow-run__step-seq {
+  color: var(--text-secondary, #9aa4b2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.workflow-run__step-title {
+  color: var(--text-primary, #e8ecf3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-run__step-status {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.75rem;
+}
+
+.workflow-run__step-status--passed { color: rgba(140, 196, 153, 0.85); }
+.workflow-run__step-status--failed { color: rgba(215, 131, 131, 0.85); }
+.workflow-run__step-status--error { color: rgba(215, 131, 131, 0.85); }
+
+
 /* ---- L4 ProvenanceViewer ---------------------------------------------- */
 
 .provenance {

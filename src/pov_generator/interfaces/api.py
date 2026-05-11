@@ -15,6 +15,7 @@ from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
 from ..application.validation_service import ValidationService
+from ..application.workflow_runner_service import WorkflowRunnerService
 from ..application.workflow_service import WorkflowService
 from ..application.workspace_catalog import WorkspaceCatalog
 from ..application.workspace_command_service import WorkspaceCommandService
@@ -48,6 +49,9 @@ def create_app(
     execution_service = ExecutionService(runtime, context_service)
     validation_service = ValidationService(runtime, clarification_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
+    workflow_runner_service = WorkflowRunnerService(
+        runtime, registry_service, workflow_service, planning_service
+    )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
     domain_pack_selection_service = DomainPackSelectionService()
@@ -173,14 +177,47 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/commands/run-until-blocked")
     def run_until_blocked(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        return to_primitive(
-            command_service.run_until_blocked(
-                project_id,
-                provider=_optional_str(payload, "provider"),
-                model=_optional_str(payload, "model"),
-                max_steps=int(payload.get("max_steps", 20)),
-            )
+        # W4.1 (R1): запуск асинхронный. Endpoint возвращает свежесозданную
+        # WorkflowRunRecord (status=pending) сразу. UI наблюдает прогресс
+        # через GET /workflow-runs/active (polling) или WS broadcast,
+        # которое поднимается каждый раз когда runner UPDATE'ит запись.
+        workspace_ref = catalog.resolve_workspace(project_id)
+        record = workflow_runner_service.start_run_until_blocked(
+            workspace_ref.workspace,
+            project_id,
+            provider=_optional_str(payload, "provider"),
+            model=_optional_str(payload, "model"),
+            max_steps=int(payload.get("max_steps", 3)),
         )
+        return to_primitive(record)
+
+    @app.post("/api/projects/{project_id}/commands/cancel-workflow")
+    def cancel_workflow(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        run_id = _required_str(payload, "run_id")
+        cancelled = workflow_runner_service.cancel_run(workspace_ref.workspace, run_id)
+        return {"status": "accepted" if cancelled else "not_found", "run_id": run_id}
+
+    @app.get("/api/projects/{project_id}/workflow-runs/active")
+    def workflow_runs_active(project_id: str) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        record = workflow_runner_service.latest_active_run(workspace_ref.workspace, project_id)
+        return to_primitive(record) if record is not None else None
+
+    @app.get("/api/projects/{project_id}/workflow-runs")
+    def workflow_runs_list(project_id: str, limit: int = 20) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        return to_primitive(
+            workflow_runner_service.list_runs(workspace_ref.workspace, project_id=project_id, limit=limit)
+        )
+
+    @app.get("/api/projects/{project_id}/workflow-runs/{run_id}")
+    def workflow_run_detail(project_id: str, run_id: str) -> Any:
+        workspace_ref = catalog.resolve_workspace(project_id)
+        record = workflow_runner_service.get_run(workspace_ref.workspace, run_id)
+        if record is None:
+            return JSONResponse(status_code=404, content={"error": "run_not_found"})
+        return to_primitive(record)
 
     @app.post("/api/projects/{project_id}/commands/retry-task")
     def retry_task(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
