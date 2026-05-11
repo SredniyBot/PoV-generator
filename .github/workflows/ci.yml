@@ -20,8 +20,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install package + dev deps
-        run: pip install -e .[dev]
+      - name: Install package + dev deps (constrained by lockfile)
+        # requirements.lock pins transitive versions known to be compatible
+        # (regenerate via `uv pip compile pyproject.toml --extra dev -o requirements.lock`).
+        run: pip install -e .[dev] --constraint requirements.lock
       - name: pytest
         run: pytest -q
       - name: registry validate

@@ -225,9 +225,9 @@ CLI: пока нет, в roadmap.
 ## 7. Запустить с нуля (5 минут)
 
 ```powershell
-# 1. зависимости
+# 1. зависимости (constraints из lockfile дают воспроизводимость)
 py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -e .[dev]
+.\.venv\Scripts\python -m pip install -e .[dev] --constraint requirements.lock
 
 # 2. собрать UI
 cd ui\workspace; npm ci; npm run build; cd ..\..
@@ -239,6 +239,12 @@ cd ui\workspace; npm ci; npm run build; cd ..\..
 # 4. поднять API + UI
 .\.venv\Scripts\povgen-api
 # → http://127.0.0.1:8788/
+```
+
+Обновить lockfile (после правки `pyproject.toml`):
+
+```powershell
+.\.venv\Scripts\uv pip compile pyproject.toml --extra dev --output-file requirements.lock
 ```
 
 Подробнее по операционным сценариям — в [README.md](README.md).
