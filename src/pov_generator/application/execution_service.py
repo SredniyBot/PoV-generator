@@ -103,51 +103,39 @@ class ExecutionService:
                 goal=state.goal,
                 domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
             )
+            live_reasoning = None
         elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
             primary_schema = artifact_schema(artifact_role, tuple(sorted(state.active_domain_pack_records.keys())))
-            if active_methodology is not None:
-                methodology_schema = self._build_methodology_schema(active_methodology, complexity_value)
-                combined_schema = {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["primary", "reasoning"],
-                    "properties": {
-                        "primary": primary_schema,
-                        "reasoning": methodology_schema,
-                    },
-                }
-                effective_system = system_prompt + "\n\n" + self._methodology_system_section(active_methodology, complexity_value)
-            else:
-                combined_schema = primary_schema
-                effective_system = system_prompt
-            if active_provider == "openrouter":
-                full_payload = OpenRouterClient.from_env().chat_json(
-                    system_prompt=effective_system,
-                    user_prompt=user_prompt,
-                    schema=combined_schema,
-                )
-            elif active_provider == "claude_sdk":
-                full_payload = ClaudeSdkClient.from_env(model=active_model).chat_json(
-                    system_prompt=effective_system,
-                    user_prompt=user_prompt,
-                    schema=combined_schema,
+            # W3.1: выбор между single_call (один LLM-вызов на primary+reasoning)
+            # и per_stage_cot (отдельный вызов на каждую стадию + финальный
+            # на primary с накопительным контекстом). Mode читается из
+            # methodology_pack; для задач без активной методологии всегда
+            # single_call.
+            if (
+                active_methodology is not None
+                and active_methodology.stage_execution_mode == "per_stage_cot"
+            ):
+                payload, live_reasoning = self._execute_per_stage_cot(
+                    provider=active_provider,
+                    model=active_model,
+                    base_system_prompt=system_prompt,
+                    base_user_prompt=user_prompt,
+                    methodology=active_methodology,
+                    complexity=complexity_value,
+                    primary_schema=primary_schema,
                 )
             else:
-                full_payload = ClaudeSubscriptionClient.from_env(model=active_model).chat_json(
-                    system_prompt=effective_system,
-                    user_prompt=user_prompt,
-                    schema=combined_schema,
+                payload, live_reasoning = self._execute_single_call(
+                    provider=active_provider,
+                    model=active_model,
+                    base_system_prompt=system_prompt,
+                    base_user_prompt=user_prompt,
+                    methodology=active_methodology,
+                    complexity=complexity_value,
+                    primary_schema=primary_schema,
                 )
-            if active_methodology is not None:
-                payload = full_payload.get("primary", {}) or {}
-                live_reasoning = full_payload.get("reasoning")
-            else:
-                payload = full_payload
-                live_reasoning = None
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
-        if active_provider == "stub":
-            live_reasoning = None
 
         artifact_id = str(uuid.uuid4())
         artifact_record = ArtifactRecord(
@@ -247,6 +235,182 @@ class ExecutionService:
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
+
+    # ---- LLM execution dispatch ------------------------------------------
+
+    def _chat_json(
+        self,
+        *,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict,
+    ) -> dict:
+        """Единая точка вызова LLM, чтобы execute_task / per-stage / primary
+        ходили одной дорогой и не плодили switch'ей по провайдеру."""
+        if provider == "openrouter":
+            return OpenRouterClient.from_env().chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_sdk":
+            return ClaudeSdkClient.from_env(model=model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_subscription":
+            return ClaudeSubscriptionClient.from_env(model=model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        raise ConflictError(f"Неподдерживаемый provider: {provider}")
+
+    def _execute_single_call(
+        self,
+        *,
+        provider: str,
+        model: str,
+        base_system_prompt: str,
+        base_user_prompt: str,
+        methodology: MethodologyPackSpec | None,
+        complexity: str | None,
+        primary_schema: dict,
+    ) -> tuple[dict, dict | None]:
+        """`single_call` mode (default): один LLM-вызов, объединённая схема
+        `primary + reasoning` (если есть активная методология) либо просто
+        `primary` (если методология не наложена)."""
+        if methodology is not None:
+            methodology_schema = self._build_methodology_schema(methodology, complexity)
+            combined_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["primary", "reasoning"],
+                "properties": {"primary": primary_schema, "reasoning": methodology_schema},
+            }
+            effective_system = (
+                base_system_prompt
+                + "\n\n"
+                + self._methodology_system_section(methodology, complexity)
+            )
+            full_payload = self._chat_json(
+                provider=provider, model=model,
+                system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
+            )
+            return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"))
+        full_payload = self._chat_json(
+            provider=provider, model=model,
+            system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
+        )
+        return (full_payload, None)
+
+    def _execute_per_stage_cot(
+        self,
+        *,
+        provider: str,
+        model: str,
+        base_system_prompt: str,
+        base_user_prompt: str,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        primary_schema: dict,
+    ) -> tuple[dict, dict]:
+        """`per_stage_cot` mode (W3.1, vision «После MVP» точка #1): отдельный
+        LLM-вызов на каждую активную стадию методологии с накопительным
+        контекстом, плюс финальный вызов на primary с собранным reasoning.
+
+        Зачем: single_call упаковывает все стадии в одну схему и один
+        промпт — LLM подбирает их одним проходом, без фокуса. Per-stage CoT
+        даёт модели по одному вопросу за раз и накапливает структурированный
+        контекст, что особенно помогает на сложных задачах со многими
+        стадиями (например per-domain reasoning packs)."""
+        active_stages = methodology.stages_for_complexity(complexity)
+        stage_outputs: dict[str, dict] = {}
+
+        for stage in active_stages:
+            stage_schema = self._build_single_stage_schema(stage)
+            stage_system = self._stage_system_prompt(methodology, stage, complexity)
+            stage_user = self._stage_user_prompt(
+                base_user_prompt=base_user_prompt,
+                stage=stage,
+                previous_outputs=stage_outputs,
+            )
+            stage_result = self._chat_json(
+                provider=provider, model=model,
+                system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
+            )
+            stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
+
+        # Финальный вызов: primary artifact с reasoning как структурированный контекст.
+        primary_system = (
+            base_system_prompt
+            + "\n\nТы прошёл методологические стадии. Ниже их выводы — используй их как явное "
+            "рассуждение для построения основного артефакта. Не возвращай reasoning ещё раз."
+        )
+        primary_user = (
+            base_user_prompt
+            + "\n\n### Reasoning через стадии (per-stage CoT):\n"
+            + json_dumps(stage_outputs)
+        )
+        primary_payload = self._chat_json(
+            provider=provider, model=model,
+            system_prompt=primary_system, user_prompt=primary_user, schema=primary_schema,
+        )
+        return (primary_payload, stage_outputs)
+
+    def _build_single_stage_schema(self, stage) -> dict:
+        """JSON-schema для одной стадии — только её produces-поля."""
+        properties: dict = {}
+        required: list[str] = []
+        for produces in stage.produces:
+            properties[produces.field_name] = self._field_to_schema(produces)
+            if produces.required:
+                required.append(produces.field_name)
+        result: dict = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": properties,
+        }
+        if required:
+            result["required"] = required
+        return result
+
+    def _stage_system_prompt(
+        self,
+        methodology: MethodologyPackSpec,
+        stage,
+        complexity: str | None,
+    ) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        stage_index = next(
+            (idx for idx, item in enumerate(active_stages) if item.identifier == stage.identifier),
+            0,
+        )
+        return (
+            f"Ты выполняешь стадию {stage_index + 1}/{len(active_stages)} методологии "
+            f"'{methodology.title}' ({methodology.ref.as_string()}). "
+            f"Текущая стадия — '{stage.identifier}': {stage.title}. "
+            f"{stage.description.strip() if stage.description else ''} "
+            "Сфокусируйся ТОЛЬКО на этой стадии. Заполни её поля по схеме. "
+            "Не предугадывай решения следующих стадий и не дублируй уже принятые на предыдущих стадиях. "
+            "Пиши только на русском языке. Верни валидный JSON по схеме."
+        )
+
+    def _stage_user_prompt(
+        self,
+        *,
+        base_user_prompt: str,
+        stage,
+        previous_outputs: dict[str, dict],
+    ) -> str:
+        sections = [base_user_prompt]
+        if previous_outputs:
+            sections.append(
+                "### Уже зафиксированное рассуждение (предыдущие стадии методологии):\n"
+                + json_dumps(previous_outputs)
+            )
+        produces_lines = ", ".join(f"{p.field_name}:{p.field_type}" for p in stage.produces)
+        sections.append(f"### Заполни стадию '{stage.identifier}' с полями: {produces_lines}")
+        return "\n\n".join(sections)
+
+    # ---- prompt building -------------------------------------------------
 
     def _build_prompt(
         self,

@@ -270,13 +270,22 @@ cd ui\workspace; npm ci; npm run build; cd ..\..
 
 В порядке убывания важности (см. также BACKLOG.md):
 
-1. **Per-stage CoT mode** в `methodology_pack`. Сейчас только `single_call`.
-2. **Pre-selector сложности** (haiku-вызов перед leaf).
-3. **Вынос stub-фикстур** из Python (`execution_service._execute_stub`) в
-   `templates/tasks/.../examples/`.
-4. **CLI scaffold** для bootstrap новой задачи / методологии / domain.
-5. **DAG методологии** (вместо линейной последовательности стадий) — для
+1. **DAG методологии** (вместо линейной последовательности стадий) — для
    условных переходов.
+2. **CLI scaffold** для bootstrap новой задачи / методологии / domain.
+3. **Несколько активных методологий на проект** (PS10 ограничивает MVP).
+4. **Цепочки objective** (ТЗ → архитектура → реализация).
+5. **Cost tracking** токенов и денег в `ExecutionResult`.
 
-Все четыре поля в контрактах уже зарезервированы, переход не должен ломать
-существующие задачи и пакеты.
+Закрытые архитектурные шаги (для справки):
+
+- **Per-stage CoT mode** (W3.1) — methodology pack теперь поддерживает
+  `stage_execution_mode: per_stage_cot`. Каждая активная стадия — отдельный
+  LLM-вызов с накопительным контекстом, плюс финальный вызов на primary.
+- **Pre-selector сложности** (W3.2) — `complexity_selector_service`
+  активируется через `POV_COMPLEXITY_SELECTOR=on` и может переопределить
+  declared `template.complexity` по фактическому контексту.
+- **Stub → JSON фикстуры** (W3.3) — 25 статических stub-payload'ов вынесены
+  в `templates/stub_fixtures/<artifact_role>.json`. Compose-кейсы
+  (requirements_spec, review_report, solution_tradeoff_matrix) остались
+  в Python.
