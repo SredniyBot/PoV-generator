@@ -24,7 +24,10 @@ from ..infrastructure.claude_subscription_client import (
     model_for_complexity as claude_subscription_model_for_complexity,
 )
 from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
-from ..infrastructure.sqlite_runtime import SqliteRuntime
+from ..infrastructure.sqlite_runtime import (
+    SqliteRuntime,
+    _normalize_clarification_question as _normalize_clarification_question_local,
+)
 
 
 @dataclass(frozen=True)
@@ -130,19 +133,39 @@ class ClarificationService:
                 workspace,
                 candidate if candidate.created_at else self._with_created_at(candidate),
             )
+            # B3 layer 1: двухступенчатый поиск дубля.
+            # 1) Точное совпадение по (source_type, source_id, question) —
+            #    защищает от re-run одной задачи (тот же источник).
+            # 2) Cross-task fallback: ищем ЛЮБОЙ request с тем же
+            #    нормализованным текстом вопроса в проекте, даже если он
+            #    из другой задачи. Это закрывает системный случай, когда
+            #    несколько аналитических задач независимо находят один и
+            #    тот же пробел в бизнес-запросе.
             existing = self._runtime.find_clarification_by_source(
                 workspace,
                 source_type=candidate.source_type,
                 source_id=candidate.source_id,
                 question=candidate.question,
             )
+            reuse_reason = "Для этого источника уже есть уточнение."
+            if existing is None:
+                existing = self._runtime.find_clarification_in_project_by_question(
+                    workspace,
+                    project_id=candidate.project_id,
+                    question=candidate.question,
+                )
+                if existing is not None:
+                    reuse_reason = (
+                        "Такой же вопрос уже задан другой задачей — "
+                        f"переиспользуем существующее уточнение ({existing.status})."
+                    )
             if existing is not None:
                 decisions.append(
                     ClarificationDecision(
                         candidate_id=candidate.candidate_id,
                         action="reuse_existing",
                         request_id=existing.request_id,
-                        rationale="Для этого источника уже есть уточнение.",
+                        rationale=reuse_reason,
                     )
                 )
                 continue
@@ -242,7 +265,72 @@ class ClarificationService:
                 "previous_status": request.status,
             },
         )
+        # B3 layer 2: распространение ответа на дубли.
+        # Если в проекте есть другие OPEN requests с тем же вопросом —
+        # закрываем их как deferred с reason "resolved_via:{request_id}".
+        # Это предотвращает повторное появление вопроса в UI после того
+        # как пользователь уже ответил на семантически тот же вопрос в
+        # другом источнике. См. B2 жалобу пользователя.
+        self._propagate_answer_to_duplicates(
+            workspace,
+            answered_request=answered,
+            resolution_summary=summary,
+        )
         return answered
+
+    def _propagate_answer_to_duplicates(
+        self,
+        workspace: Path,
+        *,
+        answered_request: ClarificationRequest,
+        resolution_summary: str,
+    ) -> None:
+        """Закрывает все OPEN requests с тем же нормализованным вопросом
+        в проекте, помечая их как deferred с указанием источника ответа.
+        Audit event пишется для каждого закрытого дубля.
+        """
+        target_normalized = _normalize_clarification_question_local(
+            answered_request.question
+        )
+        if not target_normalized:
+            return
+        all_open = self._runtime.list_clarification_requests(
+            workspace, statuses=("open",)
+        )
+        propagation_reason = f"resolved_via:{answered_request.request_id}"
+        for other in all_open:
+            if other.request_id == answered_request.request_id:
+                continue
+            if other.project_id != answered_request.project_id:
+                continue
+            if (
+                _normalize_clarification_question_local(other.question)
+                != target_normalized
+            ):
+                continue
+            try:
+                self._runtime.defer_clarification_request(
+                    workspace,
+                    other.request_id,
+                    reason=propagation_reason,
+                )
+                self._emit_event(
+                    workspace,
+                    request_id=other.request_id,
+                    project_id=other.project_id,
+                    event_type="deferred",
+                    payload={
+                        "reason": propagation_reason,
+                        "previous_status": "open",
+                        "resolution_summary": resolution_summary,
+                        "via_request_id": answered_request.request_id,
+                        "auto": True,
+                    },
+                )
+            except Exception:
+                # Best-effort: один сбойный дубль не должен ломать ответ
+                # на основной request.
+                continue
 
     def defer_clarification(
         self,

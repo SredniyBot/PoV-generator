@@ -1013,6 +1013,52 @@ class SqliteRuntime:
             ).fetchall()
         return [_candidate_from_row(row) for row in rows]
 
+    def find_clarification_in_project_by_question(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        question: str,
+        statuses: tuple[str, ...] = ("open", "answered", "assumed"),
+    ) -> ClarificationRequest | None:
+        """B3 layer 1: cross-task dedup — ищет ЛЮБОЙ request в проекте,
+        чей нормализованный текст вопроса совпадает с заданным.
+
+        Используется как fallback в register_candidates, когда точное
+        совпадение по (source_type, source_id, question) не нашлось —
+        например, когда другая задача независимо сгенерировала тот же
+        бизнес-вопрос (классический случай: goal_hypothesis + ambiguity_gap
+        задают один и тот же вопрос про недостающий факт).
+
+        Возвращает наиболее свежий matching request. Открытые answered
+        приоритетнее (по умолчанию ищет именно их), чтобы reuse cached
+        пользовательский ответ.
+        """
+        target_normalized = _normalize_clarification_question(question)
+        if not target_normalized:
+            return None
+        # Сортируем по приоритету статусов: answered/assumed выше open,
+        # чтобы выдать "уже отвечен" а не "тоже открыт".
+        status_priority = {"answered": 0, "assumed": 1, "open": 2, "deferred": 3}
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                f"""
+                select * from clarification_requests
+                where project_id = ?
+                  and status in ({",".join("?" * len(statuses))})
+                order by created_at desc
+                """,
+                (project_id, *statuses),
+            ).fetchall()
+        matched: list = []
+        for row in rows:
+            if _normalize_clarification_question(row["question"]) == target_normalized:
+                matched.append(row)
+        if not matched:
+            return None
+        matched.sort(key=lambda r: status_priority.get(r["status"], 9))
+        return _request_from_row(matched[0])
+
     def find_clarification_by_source(
         self,
         workspace: Path,
