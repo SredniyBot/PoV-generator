@@ -459,11 +459,6 @@ function WorkspaceRoute({
         onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
         actions={
           <CommandBar
-            provider={provider}
-            model={model}
-            onProviderChange={setProvider}
-            onModelChange={setModel}
-            onRunNext={commandMutations.runNext}
             onRunUntilBlocked={commandMutations.runUntilBlocked}
             pending={commandMutations.busy}
           />
@@ -477,13 +472,12 @@ function WorkspaceRoute({
           element={
             <ProjectOverviewV2
               projectId={projectId}
-              isRunning={commandMutations.busy}
               onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
               onOpenDecisionLog={() => navigate(`/projects/${projectId}/decisions`)}
               onOpenArtifactFull={(artifactId) =>
                 navigate(`/projects/${projectId}/artifacts/${artifactId}`)
               }
-              onRunNext={commandMutations.runNext}
+              onContinue={commandMutations.runUntilBlocked}
             />
           }
         />

@@ -11,7 +11,6 @@ import {
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
-  Play,
   Plus,
   RadioTower,
   RefreshCcw,
@@ -498,59 +497,31 @@ export function WorkspaceHeader({
 }
 
 export function CommandBar({
-  provider,
-  model,
-  onProviderChange,
-  onModelChange,
-  onRunNext,
   onRunUntilBlocked,
   pending,
 }: {
-  provider: string;
-  model: string;
-  onProviderChange: (value: string) => void;
-  onModelChange: (value: string) => void;
-  onRunNext: () => void;
+  // L6-9: убраны runtime-термины «следующий шаг» / «до блокировки» и
+  // технические selectors провайдера/модели. На уровне workspace-шапки
+  // остаётся одна кнопка «Продолжить» (= run-until-blocked). Подробные
+  // настройки выполнения — в Настройки → Технические (expert).
+  //
+  // provider/model и run-next намеренно НЕ принимаются: их UI убран
+  // отсюда. Состояние provider/model хранится в WorkspaceRoute и
+  // передаётся в runUntilBlocked внутренне (см. App.tsx commandMutations).
   onRunUntilBlocked: () => void;
   pending: boolean;
 }) {
   return (
     <div className="command-bar">
-      <div className="command-bar__context">
-        <strong>Управление выполнением</strong>
-        <p>Запускайте следующий шаг или ведите проект до ближайшей осмысленной остановки.</p>
-      </div>
-      <div className="command-bar__controls">
-        <label className="field">
-          <span>Провайдер</span>
-          <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
-            <option value="stub">stub</option>
-            <option value="openrouter">openrouter</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>Модель</span>
-          <input
-            value={model}
-            onChange={(event) => onModelChange(event.target.value)}
-            placeholder="openai/gpt-4.1-mini"
-          />
-        </label>
-      </div>
-      <div className="command-bar__actions">
-        <Button className="command-bar__button" tone="secondary" icon={<Play size={16} />} onClick={onRunNext} busy={pending}>
-          Следующий шаг
-        </Button>
-        <Button
-          className="command-bar__button"
-          tone="primary"
-          icon={<Sparkles size={16} />}
-          onClick={onRunUntilBlocked}
-          busy={pending}
-        >
-          Выполнить до блокировки
-        </Button>
-      </div>
+      <Button
+        className="command-bar__button"
+        tone="primary"
+        icon={<Sparkles size={16} />}
+        onClick={onRunUntilBlocked}
+        busy={pending}
+      >
+        Продолжить
+      </Button>
     </div>
   );
 }

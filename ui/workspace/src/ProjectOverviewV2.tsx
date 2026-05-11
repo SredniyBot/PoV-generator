@@ -9,7 +9,7 @@
  * Закрывает 4 вопроса менеджера с главного экрана:
  *   состояние, что от меня, как продвинуться, когда будет.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
@@ -18,27 +18,31 @@ import type {
   ArtifactSkeletonView,
   FailurePinView,
   ObjectiveProgressView,
+  WorkflowRunView,
 } from "./types";
 
 interface ProjectOverviewV2Props {
   projectId: string;
-  isRunning?: boolean;
   onOpenClarifications?: () => void;
   onOpenDecisionLog?: () => void;
   onOpenArtifactFull?: (artifactId: string) => void;
-  onRunNext?: () => void;
-  onCancelRun?: () => void;
+  /**
+   * Команда "продолжить движение проекта до естественной остановки"
+   * (= run-until-blocked). НЕ "следующий шаг" — менеджеру нет разницы
+   * между шагами, а engagement-режим определяет когда система спросит.
+   */
+  onContinue?: () => void;
 }
 
 export function ProjectOverviewV2({
   projectId,
-  isRunning,
   onOpenClarifications,
   onOpenDecisionLog,
   onOpenArtifactFull,
-  onRunNext,
-  onCancelRun,
+  onContinue,
 }: ProjectOverviewV2Props) {
+  const queryClient = useQueryClient();
+
   // L6-4: inline drawer для раздела артефакта с P5 failure pins.
   const [openSection, setOpenSection] = useState<
     { artifactId: string; sectionId: string } | null
@@ -51,6 +55,26 @@ export function ProjectOverviewV2({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openSection]);
+
+  // L6-9: точный isRunning + cancel через активный workflow run.
+  // Не используем commandMutations.busy потому что он true для любых
+  // команд (set-goal, accept-assumption и т.д.), что даёт ложно-
+  // положительный isRunning.
+  const activeRunQuery = useQuery<WorkflowRunView | null>({
+    queryKey: [projectId, "workflow-run-active"],
+    queryFn: () => api.getActiveWorkflowRun(projectId),
+    refetchInterval: 1500,
+  });
+  const activeRun = activeRunQuery.data ?? null;
+  const isRunning =
+    activeRun !== null && (activeRun.status === "running" || activeRun.status === "pending");
+
+  const pauseMutation = useMutation({
+    mutationFn: (runId: string) => api.cancelWorkflow(projectId, runId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+    },
+  });
 
   const overview = useQuery({
     queryKey: ["overview-v2", projectId],
@@ -98,19 +122,28 @@ export function ProjectOverviewV2({
     () =>
       computePrimaryCta({
         blockingCount,
-        isRunning: Boolean(isRunning),
+        isRunning,
+        hasAnyArtifact: Boolean(primaryArtifactId),
+        sectionsTotal: skeleton.data?.sections_total,
+        sectionsDone: skeleton.data?.sections_done,
         artifactProgress: overview.data?.objective_progress,
+        runError: activeRun?.error_message,
         onOpenClarifications,
-        onCancelRun,
-        onRunNext,
+        onPause: activeRun ? () => pauseMutation.mutate(activeRun.run_id) : undefined,
+        onContinue,
+        pausing: pauseMutation.isPending || Boolean(activeRun?.cancel_requested),
       }),
     [
       blockingCount,
       isRunning,
+      primaryArtifactId,
+      skeleton.data?.sections_total,
+      skeleton.data?.sections_done,
       overview.data?.objective_progress,
+      activeRun,
       onOpenClarifications,
-      onCancelRun,
-      onRunNext,
+      onContinue,
+      pauseMutation,
     ],
   );
 
@@ -492,18 +525,41 @@ interface CtaInfo {
   action?: CtaAction;
 }
 
+/**
+ * L6-9: computePrimaryCta — единственное действие на главном экране проекта.
+ *
+ * Правила:
+ * - Никаких runtime-терминов ("шаг", "блокировка", "workflow").
+ * - Одно действие на состояние, основанное на JTBD менеджера:
+ *   - блокеры → "Ответить (N)" — снять блок (M-J3)
+ *   - идёт работа → "Приостановить" — взять контроль обратно
+ *   - есть ошибка → "Повторить попытку"
+ *   - цель достигнута → "Принять и закрыть" — передать (M-J1, P9 пока disabled)
+ *   - артефакта ещё нет → "Поехали" — стартовать работу
+ *   - иначе → "Продолжить" (= run-until-blocked)
+ *
+ * Команда execute "продолжить" → onContinue (run-until-blocked).
+ * Сколько раз система остановится — определяется engagement-режимом
+ * в шапке проекта, не пользователь вручную выбирает "по шагу" vs "до конца".
+ */
 function computePrimaryCta(input: {
   blockingCount: number;
   isRunning: boolean;
+  hasAnyArtifact: boolean;
+  sectionsTotal: number | undefined;
+  sectionsDone: number | undefined;
   artifactProgress?: ObjectiveProgressView;
+  runError: string | null | undefined;
   onOpenClarifications?: () => void;
-  onCancelRun?: () => void;
-  onRunNext?: () => void;
+  onPause?: () => void;
+  onContinue?: () => void;
+  pausing: boolean;
 }): CtaInfo {
+  // 1. Блокирующие вопросы — самое срочное (M-J3).
   if (input.blockingCount > 0) {
     return {
-      headline: `Заблокировано: ${input.blockingCount} ${pluralizeQuestion(input.blockingCount)}`,
-      detail: "Система не может продолжить без вашего решения.",
+      headline: `Ждут вашего решения: ${input.blockingCount} ${pluralizeQuestion(input.blockingCount)}`,
+      detail: "Без ответа система не может двигаться дальше.",
       action: {
         label: `Ответить на ${input.blockingCount}`,
         onClick: input.onOpenClarifications,
@@ -511,13 +567,32 @@ function computePrimaryCta(input: {
       },
     };
   }
+  // 2. Идёт работа — дать паузу.
   if (input.isRunning) {
     return {
       headline: "Идёт работа",
-      detail: "Можно подождать или остановить процесс.",
-      action: { label: "Остановить", onClick: input.onCancelRun, tone: "danger" },
+      detail: "Система движется к результату. Можно подождать или взять паузу.",
+      action: {
+        label: input.pausing ? "Останавливаем…" : "Приостановить",
+        onClick: input.onPause,
+        tone: "danger",
+        disabled: input.pausing || !input.onPause,
+      },
     };
   }
+  // 3. Ошибка предыдущего прогона — нужно решение перезапустить.
+  if (input.runError) {
+    return {
+      headline: "Что-то пошло не так",
+      detail: input.runError,
+      action: {
+        label: "Повторить попытку",
+        onClick: input.onContinue,
+        tone: "primary",
+      },
+    };
+  }
+  // 4. Цель достигнута — передать.
   const progress = input.artifactProgress;
   if (
     progress &&
@@ -526,15 +601,31 @@ function computePrimaryCta(input: {
     progress.gates_passed >= progress.gates_required
   ) {
     return {
-      headline: "Цель достигнута",
+      headline: "Готово",
       detail: "Артефакты собраны и проверены. Можно передавать команде.",
-      action: { label: "Передать команде", disabled: true, tone: "primary" },
+      // P9 (формальная кнопка передачи) пока disabled — следующая итерация.
+      action: { label: "Принять и закрыть", disabled: true, tone: "primary" },
     };
   }
+  // 5. Артефакт ещё пустой — старт.
+  if (!input.hasAnyArtifact) {
+    return {
+      headline: "Готов к запуску",
+      detail: "Система разберёт ваш материал и начнёт собирать результат.",
+      action: { label: "Поехали", onClick: input.onContinue, tone: "primary" },
+    };
+  }
+  // 6. Артефакт частично готов, никто не ждёт — продолжаем.
+  const partialProgress =
+    typeof input.sectionsDone === "number" && typeof input.sectionsTotal === "number"
+      ? `${input.sectionsDone} из ${input.sectionsTotal} разделов`
+      : null;
   return {
-    headline: "Нет срочных задач",
-    detail: "Система готова к следующему шагу — продолжит работу по нажатию.",
-    action: { label: "Запустить следующий шаг", onClick: input.onRunNext, tone: "primary" },
+    headline: "Можно двигаться дальше",
+    detail: partialProgress
+      ? `Готово ${partialProgress}. Система продолжит и остановится, если что-то понадобится от вас.`
+      : "Система продолжит работу и остановится, когда понадобится ваше решение.",
+    action: { label: "Продолжить", onClick: input.onContinue, tone: "primary" },
   };
 }
 
