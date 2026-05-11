@@ -10,12 +10,13 @@
  *   состояние, что от меня, как продвинуться, когда будет.
  */
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
 import type {
   ArtifactSectionStatus,
   ArtifactSkeletonView,
+  FailurePinView,
   ObjectiveProgressView,
 } from "./types";
 
@@ -24,7 +25,7 @@ interface ProjectOverviewV2Props {
   isRunning?: boolean;
   onOpenClarifications?: () => void;
   onOpenDecisionLog?: () => void;
-  onOpenArtifactSection?: (artifactId: string, sectionId: string) => void;
+  onOpenArtifactFull?: (artifactId: string) => void;
   onRunNext?: () => void;
   onCancelRun?: () => void;
 }
@@ -34,10 +35,23 @@ export function ProjectOverviewV2({
   isRunning,
   onOpenClarifications,
   onOpenDecisionLog,
-  onOpenArtifactSection,
+  onOpenArtifactFull,
   onRunNext,
   onCancelRun,
 }: ProjectOverviewV2Props) {
+  // L6-4: inline drawer для раздела артефакта с P5 failure pins.
+  const [openSection, setOpenSection] = useState<
+    { artifactId: string; sectionId: string } | null
+  >(null);
+  useEffect(() => {
+    if (!openSection) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenSection(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openSection]);
+
   const overview = useQuery({
     queryKey: ["overview-v2", projectId],
     queryFn: () => api.getOverview(projectId),
@@ -60,6 +74,20 @@ export function ProjectOverviewV2({
     queryFn: () => api.getArtifactSkeleton(projectId, primaryArtifactId!),
     enabled: Boolean(primaryArtifactId),
   });
+
+  const versionsQuery = useQuery({
+    queryKey: ["artifact-versions", projectId],
+    queryFn: () => api.getArtifactVersions(projectId),
+  });
+
+  // Цепочка версий, в которой живёт primaryArtifactId.
+  const versionChain = useMemo(() => {
+    if (!versionsQuery.data || !primaryArtifactId) return null;
+    for (const chain of versionsQuery.data.chains) {
+      if (chain.some((v) => v.artifact_id === primaryArtifactId)) return chain;
+    }
+    return null;
+  }, [versionsQuery.data, primaryArtifactId]);
 
   const blockingCount = clarifications.data?.blocking_count ?? 0;
   const openCount = clarifications.data?.open_count ?? 0;
@@ -101,14 +129,23 @@ export function ProjectOverviewV2({
                   "Артефакт ещё формируется"}
               </h1>
             </div>
-            {skeleton.data && (
-              <span className="overview-mc__artifact-progress">
-                <strong>
-                  {skeleton.data.sections_done}/{skeleton.data.sections_total}
-                </strong>
-                <span>разделов</span>
-              </span>
-            )}
+            <div className="overview-mc__artifact-meta">
+              {versionChain && versionChain.length > 1 && (
+                <VersionDropdown
+                  chain={versionChain}
+                  currentId={primaryArtifactId!}
+                  onOpenVersion={(artifactId) => onOpenArtifactFull?.(artifactId)}
+                />
+              )}
+              {skeleton.data && (
+                <span className="overview-mc__artifact-progress">
+                  <strong>
+                    {skeleton.data.sections_done}/{skeleton.data.sections_total}
+                  </strong>
+                  <span>разделов</span>
+                </span>
+              )}
+            </div>
           </header>
 
           {skeleton.isLoading && primaryArtifactId ? (
@@ -123,7 +160,10 @@ export function ProjectOverviewV2({
                   section={section}
                   onClick={() =>
                     primaryArtifactId &&
-                    onOpenArtifactSection?.(primaryArtifactId, section.section_id)
+                    setOpenSection({
+                      artifactId: primaryArtifactId,
+                      sectionId: section.section_id,
+                    })
                   }
                 />
               ))}
@@ -211,8 +251,230 @@ export function ProjectOverviewV2({
           )}
         </aside>
       </div>
+
+      {openSection && (
+        <SectionDrawer
+          projectId={projectId}
+          artifactId={openSection.artifactId}
+          sectionId={openSection.sectionId}
+          onClose={() => setOpenSection(null)}
+          onOpenFull={() => {
+            onOpenArtifactFull?.(openSection.artifactId);
+            setOpenSection(null);
+          }}
+        />
+      )}
     </section>
   );
+}
+
+// ---- Section drawer (L6-4) -------------------------------------------------
+
+interface SectionDrawerProps {
+  projectId: string;
+  artifactId: string;
+  sectionId: string;
+  onClose: () => void;
+  onOpenFull: () => void;
+}
+
+function SectionDrawer({
+  projectId,
+  artifactId,
+  sectionId,
+  onClose,
+  onOpenFull,
+}: SectionDrawerProps) {
+  const artifact = useQuery({
+    queryKey: ["artifact-detail-drawer", projectId, artifactId],
+    queryFn: () => api.getArtifactDetail(projectId, artifactId),
+  });
+  const pinsQuery = useQuery({
+    queryKey: ["pins-drawer", projectId, artifactId],
+    queryFn: () => api.getFailurePins(projectId, artifactId),
+  });
+
+  const sectionData = useMemo(() => {
+    if (!artifact.data?.json_content) return null;
+    try {
+      const parsed = JSON.parse(artifact.data.json_content) as unknown;
+      return findSection(parsed, sectionId);
+    } catch {
+      return null;
+    }
+  }, [artifact.data?.json_content, sectionId]);
+
+  const sectionPins = useMemo<FailurePinView[]>(() => {
+    if (!pinsQuery.data) return [];
+    return pinsQuery.data.pins.filter(
+      (pin) => !pin.section_id || pin.section_id === sectionId,
+    );
+  }, [pinsQuery.data, sectionId]);
+
+  return (
+    <div
+      className="section-drawer-backdrop"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <aside
+        className="section-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="section-drawer-title"
+      >
+        <header className="section-drawer__header">
+          <div>
+            <p className="section-drawer__eyebrow">Раздел артефакта</p>
+            <h2 id="section-drawer-title" className="section-drawer__title">
+              {humanize(sectionId)}
+            </h2>
+          </div>
+          <button
+            type="button"
+            className="section-drawer__close"
+            onClick={onClose}
+            aria-label="Закрыть"
+          >
+            ✕
+          </button>
+        </header>
+
+        {sectionPins.length > 0 && (
+          <section className="section-drawer__pins" aria-label="Подозрительные места">
+            <h3 className="section-drawer__pins-title">
+              ⚠ Стоит проверить ({sectionPins.length})
+            </h3>
+            <ul className="section-drawer__pins-list" role="list">
+              {sectionPins.map((pin) => (
+                <li
+                  key={pin.pin_id}
+                  className={`section-drawer__pin section-drawer__pin--${pin.severity}`}
+                >
+                  <span className="section-drawer__pin-kind">{pinKindLabel(pin.kind)}</span>
+                  <span className="section-drawer__pin-message">{pin.message}</span>
+                  {pin.confidence_without_user !== null && (
+                    <span className="section-drawer__pin-confidence">
+                      уверенность: {Math.round(pin.confidence_without_user * 100)}%
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section className="section-drawer__body" aria-label="Содержимое раздела">
+          <h3 className="section-drawer__body-title">Содержимое</h3>
+          {artifact.isLoading ? (
+            <p className="section-drawer__hint">Загрузка…</p>
+          ) : sectionData !== null ? (
+            <SectionContentRenderer value={sectionData} />
+          ) : (
+            <p className="section-drawer__hint">
+              Раздел ещё не сгенерирован. Когда система до него дойдёт — здесь
+              появится текст.
+            </p>
+          )}
+        </section>
+
+        <footer className="section-drawer__footer">
+          <button
+            type="button"
+            className="section-drawer__action"
+            onClick={onOpenFull}
+          >
+            Открыть полностью →
+          </button>
+        </footer>
+      </aside>
+    </div>
+  );
+}
+
+function SectionContentRenderer({ value }: { value: unknown }) {
+  if (value === null || value === undefined) {
+    return <p className="section-drawer__hint">Раздел пустой.</p>;
+  }
+  if (typeof value === "string") {
+    return <p className="section-drawer__text">{value}</p>;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return <p className="section-drawer__text">{String(value)}</p>;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <p className="section-drawer__hint">Список пустой.</p>;
+    return (
+      <ul className="section-drawer__list">
+        {value.map((item, idx) => (
+          <li key={idx}>
+            {typeof item === "string" ? (
+              item
+            ) : (
+              <pre className="section-drawer__json">{JSON.stringify(item, null, 2)}</pre>
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (typeof value === "object") {
+    return <pre className="section-drawer__json">{JSON.stringify(value, null, 2)}</pre>;
+  }
+  return <p className="section-drawer__text">{String(value)}</p>;
+}
+
+function findSection(data: unknown, sectionId: string): unknown | null {
+  if (data === null || data === undefined) return null;
+  if (typeof data === "object" && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    // 1. explicit sections array
+    if (Array.isArray(obj.sections)) {
+      const found = obj.sections.find((s) => {
+        if (typeof s !== "object" || s === null) return false;
+        const sec = s as Record<string, unknown>;
+        return String(sec.id) === sectionId;
+      });
+      if (found && typeof found === "object") {
+        return (found as Record<string, unknown>).content ?? found;
+      }
+    }
+    // 2. top-level key
+    if (sectionId in obj) {
+      return obj[sectionId];
+    }
+  }
+  // 3. list index "item_N"
+  if (Array.isArray(data) && sectionId.startsWith("item_")) {
+    const idx = Number.parseInt(sectionId.slice("item_".length), 10);
+    if (!Number.isNaN(idx) && idx >= 1 && idx <= data.length) {
+      return data[idx - 1];
+    }
+  }
+  return null;
+}
+
+function humanize(key: string): string {
+  return key
+    .replace(/[_-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function pinKindLabel(kind: FailurePinView["kind"]): string {
+  switch (kind) {
+    case "candidate_open":
+      return "Открытый вопрос";
+    case "assumption":
+      return "Допущение";
+    case "validation_finding":
+      return "Замечание валидации";
+    default:
+      return kind;
+  }
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -368,6 +630,80 @@ function statusLabel(status: ArtifactSectionStatus): string {
     default:
       return "ожидание";
   }
+}
+
+// ---- Version dropdown (L6-6 P8) -------------------------------------------
+
+interface VersionDropdownProps {
+  chain: Array<{
+    artifact_id: string;
+    label: string;
+    is_current: boolean;
+    created_at: string;
+  }>;
+  currentId: string;
+  onOpenVersion: (artifactId: string) => void;
+}
+
+function VersionDropdown({ chain, currentId, onOpenVersion }: VersionDropdownProps) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".version-dropdown")) setOpen(false);
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [open]);
+
+  const currentVersion = chain.find((v) => v.artifact_id === currentId);
+  const label = currentVersion?.label ?? "версия";
+
+  return (
+    <div className={`version-dropdown${open ? " version-dropdown--open" : ""}`}>
+      <button
+        type="button"
+        className="version-dropdown__trigger"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span>{label}</span>
+        <span className="version-dropdown__caret" aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <ul className="version-dropdown__menu" role="listbox">
+          {[...chain].reverse().map((version) => {
+            const isCurrent = version.artifact_id === currentId;
+            return (
+              <li key={version.artifact_id} role="option" aria-selected={isCurrent}>
+                <button
+                  type="button"
+                  className={`version-dropdown__item${isCurrent ? " version-dropdown__item--current" : ""}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(false);
+                    if (!isCurrent) onOpenVersion(version.artifact_id);
+                  }}
+                >
+                  <span className="version-dropdown__item-label">{version.label}</span>
+                  {isCurrent && (
+                    <span className="version-dropdown__item-current">текущая</span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function humanizeArtifactRole(role: string | undefined): string {

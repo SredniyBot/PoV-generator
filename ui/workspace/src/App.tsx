@@ -31,8 +31,10 @@ import {
 import { marked } from "marked";
 
 import { api } from "./api";
+import { DecisionLogPage } from "./DecisionLogPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
+import { SettingsPage } from "./SettingsPage";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ActionDescriptor,
@@ -478,7 +480,7 @@ function WorkspaceRoute({
               isRunning={commandMutations.busy}
               onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
               onOpenDecisionLog={() => navigate(`/projects/${projectId}/decisions`)}
-              onOpenArtifactSection={(artifactId) =>
+              onOpenArtifactFull={(artifactId) =>
                 navigate(`/projects/${projectId}/artifacts/${artifactId}`)
               }
               onRunNext={commandMutations.runNext}
@@ -514,13 +516,25 @@ function WorkspaceRoute({
           path="clarifications"
           element={<ClarificationsPage projectId={projectId} commands={commandMutations} />}
         />
+        <Route path="decisions" element={<DecisionLogPage projectId={projectId} />} />
         <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
-        <Route path="state" element={<StatePage projectId={projectId} actions={commandMutations} />} />
-        <Route path="review" element={<ReviewPage projectId={projectId} />} />
         <Route
-          path="debug"
-          element={<DebugPage projectId={projectId} onRetryTask={commandMutations.retryTask} />}
+          path="settings"
+          element={
+            <SettingsPage
+              projectId={projectId}
+              panels={{
+                state: <StatePage projectId={projectId} actions={commandMutations} />,
+                review: <ReviewPage projectId={projectId} />,
+                debug: <DebugPage projectId={projectId} onRetryTask={commandMutations.retryTask} />,
+              }}
+            />
+          }
         />
+        {/* Legacy aliases — старые закладки переживут редизайн */}
+        <Route path="state" element={<Navigate to={`/projects/${projectId}/settings?tab=state`} replace />} />
+        <Route path="review" element={<Navigate to={`/projects/${projectId}/settings?tab=review`} replace />} />
+        <Route path="debug" element={<Navigate to={`/projects/${projectId}/settings?tab=debug`} replace />} />
         <Route path="*" element={<Navigate to="overview" replace />} />
       </Routes>
     </div>
