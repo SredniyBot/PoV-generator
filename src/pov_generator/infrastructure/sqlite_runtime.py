@@ -25,6 +25,7 @@ from ..domain.problem_state import (
 )
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
+from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
 
 
 @dataclass(frozen=True)
@@ -768,6 +769,180 @@ class SqliteRuntime:
             )
             connection.commit()
 
+    # ---- workflow runs (W4.1 R1: async run-until-blocked) ----------------
+
+    def create_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into workflow_runs(
+                  run_id, project_id, status, provider, model, max_steps,
+                  current_step, total_steps_completed,
+                  started_at, finished_at, last_step_summary, stop_reason, error_message,
+                  cancel_requested, steps_json
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.run_id,
+                    run.project_id,
+                    run.status,
+                    run.provider,
+                    run.model,
+                    int(run.max_steps),
+                    int(run.current_step),
+                    int(run.total_steps_completed),
+                    run.started_at,
+                    run.finished_at,
+                    run.last_step_summary,
+                    run.stop_reason,
+                    run.error_message,
+                    int(run.cancel_requested),
+                    json_dumps([self._step_to_dict(s) for s in run.steps]),
+                ),
+            )
+            connection.commit()
+        return run
+
+    def update_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update workflow_runs set
+                  status = ?,
+                  current_step = ?,
+                  total_steps_completed = ?,
+                  finished_at = ?,
+                  last_step_summary = ?,
+                  stop_reason = ?,
+                  error_message = ?,
+                  cancel_requested = ?,
+                  steps_json = ?
+                where run_id = ?
+                """,
+                (
+                    run.status,
+                    int(run.current_step),
+                    int(run.total_steps_completed),
+                    run.finished_at,
+                    run.last_step_summary,
+                    run.stop_reason,
+                    run.error_message,
+                    int(run.cancel_requested),
+                    json_dumps([self._step_to_dict(s) for s in run.steps]),
+                    run.run_id,
+                ),
+            )
+            connection.commit()
+        return run
+
+    def request_workflow_cancel(self, workspace: Path, run_id: str) -> bool:
+        """Идемпотентно ставит cancel_requested=1. Возвращает True, если
+        строка с таким run_id существует."""
+        with self._connect(workspace) as connection:
+            cursor = connection.execute(
+                "update workflow_runs set cancel_requested = 1 where run_id = ?",
+                (run_id,),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+
+    def get_workflow_run(self, workspace: Path, run_id: str) -> WorkflowRunRecord | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from workflow_runs where run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._workflow_run_from_row(row)
+
+    def list_workflow_runs(
+        self,
+        workspace: Path,
+        *,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> list[WorkflowRunRecord]:
+        query = "select * from workflow_runs"
+        params: tuple[object, ...] = ()
+        if project_id is not None:
+            query += " where project_id = ?"
+            params = (project_id,)
+        query += " order by started_at desc limit ?"
+        params = (*params, int(limit))
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._workflow_run_from_row(row) for row in rows]
+
+    def latest_active_workflow_run(self, workspace: Path, project_id: str) -> WorkflowRunRecord | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select * from workflow_runs
+                where project_id = ? and status in ('pending', 'running')
+                order by started_at desc limit 1
+                """,
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._workflow_run_from_row(row)
+
+    @staticmethod
+    def _step_to_dict(step: WorkflowStepRecord) -> dict:
+        return {
+            "sequence": step.sequence,
+            "task_id": step.task_id,
+            "task_key": step.task_key,
+            "selected_step_id": step.selected_step_id,
+            "planning_outcome": step.planning_outcome,
+            "validation_status": step.validation_status,
+            "execution_run_id": step.execution_run_id,
+            "started_at": step.started_at,
+            "finished_at": step.finished_at,
+            "error_message": step.error_message,
+        }
+
+    @staticmethod
+    def _workflow_run_from_row(row: sqlite3.Row) -> WorkflowRunRecord:
+        from ..common.serialization import json_loads as _json_loads
+
+        steps_raw = _json_loads(row["steps_json"]) if row["steps_json"] else []
+        steps = tuple(
+            WorkflowStepRecord(
+                sequence=int(item.get("sequence", 0)),
+                task_id=item.get("task_id"),
+                task_key=item.get("task_key"),
+                selected_step_id=item.get("selected_step_id"),
+                planning_outcome=str(item.get("planning_outcome", "")),
+                validation_status=item.get("validation_status"),
+                execution_run_id=item.get("execution_run_id"),
+                started_at=str(item.get("started_at", "")),
+                finished_at=str(item.get("finished_at", "")),
+                error_message=item.get("error_message"),
+            )
+            for item in steps_raw
+            if isinstance(item, dict)
+        )
+        status: WorkflowRunStatus = row["status"]
+        return WorkflowRunRecord(
+            run_id=row["run_id"],
+            project_id=row["project_id"],
+            status=status,
+            provider=row["provider"],
+            model=row["model"],
+            max_steps=int(row["max_steps"]),
+            current_step=int(row["current_step"]),
+            total_steps_completed=int(row["total_steps_completed"]),
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            last_step_summary=row["last_step_summary"] or "",
+            stop_reason=row["stop_reason"],
+            error_message=row["error_message"],
+            cancel_requested=bool(row["cancel_requested"]),
+            steps=steps,
+        )
+
     def list_escalations(self, workspace: Path) -> list[EscalationTicket]:
         with self._connect(workspace) as connection:
             rows = connection.execute("select * from escalation_tickets order by created_at, escalation_ticket_id").fetchall()
@@ -1190,6 +1365,30 @@ class SqliteRuntime:
             "clarification_requests",
             "decision_owner_role",
             "text not null default 'business'",
+        )
+        # W4.1 (R1): async workflow runs.
+        connection.executescript(
+            """
+            create table if not exists workflow_runs (
+              run_id text primary key,
+              project_id text not null,
+              status text not null,
+              provider text,
+              model text,
+              max_steps integer not null,
+              current_step integer not null default 0,
+              total_steps_completed integer not null default 0,
+              started_at text not null,
+              finished_at text,
+              last_step_summary text not null default '',
+              stop_reason text,
+              error_message text,
+              cancel_requested integer not null default 0,
+              steps_json text not null default '[]'
+            );
+            create index if not exists workflow_runs_project_idx
+                on workflow_runs(project_id, started_at);
+            """
         )
 
     def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, ddl: str) -> None:
