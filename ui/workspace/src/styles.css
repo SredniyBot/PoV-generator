@@ -1,36 +1,14 @@
 @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import "./tokens.css";
+
+/*
+  Canonical design tokens live in tokens.css.
+  Component overrides may live here, but no new tokens without
+  recording them in tokens.css first.
+*/
 
 :root {
   color-scheme: dark;
-  --bg-app: #111315;
-  --bg-app-radial: rgba(120, 184, 201, 0.08);
-  --surface-primary: #181b1f;
-  --surface-secondary: #1f2328;
-  --surface-tertiary: #262b31;
-  --surface-elevated: #20252b;
-  --surface-accent: rgba(95, 167, 184, 0.1);
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.12);
-  --text-primary: #f5f7f8;
-  --text-secondary: #d7dde3;
-  --text-tertiary: #8a96a4;
-  --text-muted: #667180;
-  --accent-400: #78b8c9;
-  --accent-500: #5fa7b8;
-  --success-400: #72c190;
-  --success-500: #58a976;
-  --warning-400: #d6ad59;
-  --warning-500: #bc9544;
-  --danger-400: #d78383;
-  --danger-500: #bb6868;
-  --shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.24);
-  --shadow-elevated: 0 22px 58px rgba(0, 0, 0, 0.36);
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 18px;
-  --radius-xl: 24px;
-  --focus-ring: 0 0 0 4px rgba(120, 184, 201, 0.18);
-  --container-width: 1600px;
 }
 
 * {
@@ -1891,8 +1869,8 @@ code {
 .modal,
 .drawer {
   border: 1px solid var(--border-strong);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 18%), var(--surface-elevated);
-  box-shadow: var(--shadow-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 18%), var(--surface-overlay);
+  box-shadow: var(--shadow-overlay);
 }
 
 .modal {

@@ -1,0 +1,220 @@
+/* ============================================================
+   Design Tokens — PoV Generator UI
+
+   Это канонический файл дизайн-системы. Здесь живут все значения
+   шрифтов, цветов, расстояний, скруглений, теней, движения и сетки.
+
+   Правила:
+   - Любое числовое значение в CSS компонентах должно ссылаться на
+     токен из этого файла. Захардкоженные px/rem/hex — баг.
+   - Этот файл подгружается ПЕРВЫМ (см. `styles.css` @import).
+   - При редизайне меняем здесь — эффект распространяется на всё.
+
+   Обоснование значений: см. UI_DESIGN_BRIEF.md §5 и USERS_AND_JTBD.md.
+
+   Структура секций:
+   1. Typography  — семейство, размеры, веса, line-height
+   2. Spacing     — кратно 4
+   3. Color       — surface, text, semantic, role
+   4. Border      — линии и фокусные кольца
+   5. Radius      — скругления
+   6. Shadow      — тени и elevation
+   7. Motion      — длительности и easing
+   8. Layout      — ширины контейнеров, sidebar
+   9. Legacy aliases — для постепенной миграции (D2..D11)
+   ============================================================ */
+
+:root {
+  /* ------------------------------------------------------------
+     1. TYPOGRAPHY
+     Жёстко: 4 размера + 2 веса. См. UI_DESIGN_BRIEF.md §5.1.
+     Размер выбираем по семантической роли элемента, НЕ "потому что"
+     ему нужен особый размер.
+     ------------------------------------------------------------ */
+
+  --font-family-sans: "Manrope", "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-family-mono: "IBM Plex Mono", "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+
+  /* Display: только заголовок L1 hero / project name */
+  --font-size-display: 24px;
+  --line-height-display: 1.2;
+
+  /* Title: section titles, карточные заголовки */
+  --font-size-title: 18px;
+  --line-height-title: 1.4;
+
+  /* Body: всё default содержимое */
+  --font-size-body: 14px;
+  --line-height-body: 1.5;
+
+  /* Meta: даты, refs, второстепенные подписи, badges */
+  --font-size-meta: 12px;
+  --line-height-meta: 1.4;
+
+  /* Mono: код и технические refs (только в expert mode) */
+  --font-size-mono: 13px;
+
+  /* Веса: только regular и medium. Никакого bold для строк. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 600;
+  --font-weight-bold: 700;   /* только для brand wordmark, не для UI */
+
+  /* ------------------------------------------------------------
+     2. SPACING
+     Кратно 4. Между секциями — --space-6 (32). Внутри карточки
+     между блоками — --space-3 или --space-4.
+     ------------------------------------------------------------ */
+
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* ------------------------------------------------------------
+     3. COLOR
+     Тёмно-серая графитовая палитра с минимумом цвета.
+     Цвет = сигнал, не декор. См. P4 в UI_DESIGN_BRIEF.md §4.
+     ------------------------------------------------------------ */
+
+  /* Surfaces: 4 tier поверхностей (база → карточка → активный → hover) */
+  --surface-base: #0e1217;            /* page background */
+  --surface-elevated: #161b22;        /* card / panel */
+  --surface-elevated-strong: #1c222b; /* nested card / hover */
+  --surface-overlay: #20252b;         /* modal / drawer */
+  --surface-accent: rgba(120, 184, 201, 0.10);   /* tint for selected */
+
+  /* Радиальный градиент фона (приглушённый, заметнее в углах) */
+  --bg-app-radial: rgba(120, 184, 201, 0.08);
+
+  /* Text: 4 tier контраста */
+  --text-primary: #e8ecf3;
+  --text-secondary: #9aa4b2;
+  --text-disabled: #5a6470;
+  --text-on-accent: #0a0c10;          /* для текста на primary CTA */
+
+  /* Semantic */
+  --accent: #78b8c9;                  /* primary CTA, active state */
+  --accent-strong: #5fa7b8;           /* hover/pressed */
+  --accent-soft: rgba(120, 184, 201, 0.18);
+
+  --success: #8cc499;                 /* completed, passed */
+  --success-strong: #58a976;
+  --success-soft: rgba(140, 196, 153, 0.15);
+
+  --warning: #d6ad59;                 /* attention, deferred */
+  --warning-strong: #bc9544;
+  --warning-soft: rgba(214, 173, 89, 0.15);
+
+  --danger: #d78383;                  /* error, blocking, failed */
+  --danger-strong: #bb6868;
+  --danger-soft: rgba(215, 131, 131, 0.18);
+
+  --info: #a884c6;                    /* secondary tags, hints */
+  --info-soft: rgba(168, 132, 198, 0.18);
+
+  /* Role chips (decision_owner_role) — фон tag-а для роли */
+  --role-business: rgba(120, 184, 201, 0.18);
+  --role-client: rgba(168, 132, 198, 0.18);
+  --role-methodologist: rgba(214, 173, 89, 0.16);
+  --role-architect: rgba(140, 196, 153, 0.15);
+  --role-data: rgba(180, 165, 134, 0.18);
+  --role-security: rgba(215, 131, 131, 0.18);
+
+  /* ------------------------------------------------------------
+     4. BORDER & FOCUS
+     Тонкие линии. Focus ring всегда заметен.
+     ------------------------------------------------------------ */
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-accent: rgba(120, 184, 201, 0.32);
+
+  --focus-ring: 0 0 0 3px rgba(120, 184, 201, 0.32);
+
+  /* ------------------------------------------------------------
+     5. RADIUS
+     Острее чем было (14 → 8). Профессиональный, не "bubbly".
+     ------------------------------------------------------------ */
+
+  --radius-sm: 4px;     /* chip, inline tag */
+  --radius-md: 8px;     /* card, button, input */
+  --radius-lg: 12px;    /* hero card, modal */
+  --radius-xl: 16px;    /* большие панели (редко) */
+  --radius-pill: 999px; /* counters, pills */
+
+  /* ------------------------------------------------------------
+     6. SHADOW
+     Лёгкие, минималистичные. Heavy floating cards убраны.
+     ------------------------------------------------------------ */
+
+  --shadow-soft:
+    0 1px 0 rgba(255, 255, 255, 0.02),
+    0 2px 8px rgba(0, 0, 0, 0.30);
+
+  --shadow-elevated:
+    0 4px 16px rgba(0, 0, 0, 0.50);
+
+  --shadow-overlay:
+    0 12px 32px rgba(0, 0, 0, 0.60);
+
+  /* ------------------------------------------------------------
+     7. MOTION
+     Только важные события. Easing — slight ease-out.
+     ------------------------------------------------------------ */
+
+  --motion-fast: 120ms;     /* hover, focus, micro */
+  --motion-medium: 220ms;   /* drawer, modal, slide-in */
+  --motion-slow: 420ms;     /* page transitions, rare */
+  --motion-easing: cubic-bezier(0.2, 0.0, 0.0, 1.0);
+  --motion-easing-soft: cubic-bezier(0.4, 0.0, 0.2, 1.0);
+
+  /* ------------------------------------------------------------
+     8. LAYOUT
+     Ширина контента, sidebar, drawer.
+     ------------------------------------------------------------ */
+
+  --container-width: 1280px;           /* max content width на десктопе */
+  --container-width-wide: 1600px;      /* для graph canvas */
+  --container-gutter: 32px;            /* боковой отступ ≥1024 */
+  --container-gutter-mobile: 16px;
+
+  --sidebar-width: 280px;              /* expanded */
+  --sidebar-width-collapsed: 56px;     /* collapsed */
+
+  --drawer-width: 480px;               /* L3 right drawer */
+  --modal-width: 720px;                /* default modal */
+  --modal-width-wide: 960px;           /* wide modal */
+
+  /* L2 lists: max-width на читаемость */
+  --content-max-readable: 800px;
+
+  /* ============================================================
+     9. LEGACY ALIASES
+     Старые имена → новые токены. Используется существующим CSS
+     до миграции в D2..D11. При редизайне компонента меняем на
+     новые имена и удаляем алиас.
+     ============================================================ */
+
+  --bg-app: var(--surface-base);
+  --surface-primary: var(--surface-elevated);
+  --surface-secondary: var(--surface-elevated-strong);
+  --surface-tertiary: var(--surface-overlay);
+  /* surface-accent уже определён выше */
+
+  --text-tertiary: var(--text-secondary);
+  --text-muted: var(--text-disabled);
+
+  --accent-400: var(--accent);
+  --accent-500: var(--accent-strong);
+  --success-400: var(--success);
+  --success-500: var(--success-strong);
+  --warning-400: var(--warning);
+  --warning-500: var(--warning-strong);
+  --danger-400: var(--danger);
+  --danger-500: var(--danger-strong);
+}
