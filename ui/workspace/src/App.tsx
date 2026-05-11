@@ -436,6 +436,16 @@ function WorkspaceRoute({
         <Route
           path="overview"
           element={
+            <MissionControlPage
+              projectId={projectId}
+              flashProjection={flashProjection}
+              commands={commandMutations}
+            />
+          }
+        />
+        <Route
+          path="activity"
+          element={
             <OverviewPage
               projectId={projectId}
               flashProjection={flashProjection}
@@ -460,44 +470,171 @@ function WorkspaceRoute({
 }
 
 
-function MethodologyOverviewSection({ projectId }: { projectId: string }) {
+function MissionControlPage({
+  projectId,
+  flashProjection,
+  commands,
+}: {
+  projectId: string;
+  flashProjection: ProjectionName | null;
+  commands: WorkspaceActionApi;
+}) {
+  const navigate = useNavigate();
   const overviewQuery = useQuery({
     queryKey: ["overview", projectId],
     queryFn: () => api.getOverview(projectId),
     refetchInterval: 30_000,
   });
+
   if (overviewQuery.isLoading) {
-    return <SectionCard title="Обзор проекта"><LoadingPanel label="Загружаем обзор..." /></SectionCard>;
+    return <LoadingPanel title="Загружаем mission control…" />;
   }
-  if (overviewQuery.isError) {
-    return <SectionCard title="Обзор проекта"><EmptyState title="Не удалось загрузить обзор" description={String((overviewQuery.error as Error)?.message ?? "")} /></SectionCard>;
+  if (overviewQuery.isError || !overviewQuery.data) {
+    return (
+      <SectionCard title="Mission Control недоступен" tone="danger">
+        <EmptyState
+          title="Не удалось загрузить агрегированный обзор"
+          description={String((overviewQuery.error as Error)?.message ?? "Повторите обновление страницы.")}
+        />
+      </SectionCard>
+    );
   }
-  const overview = overviewQuery.data as ProjectOverviewView | undefined;
-  if (!overview) return null;
+
+  const overview = overviewQuery.data;
+  const progress = overview.objective_progress;
+  const hasArtifactGoal = progress.artifacts_required > 0;
+  const hasGateGoal = progress.gates_required > 0;
+  const artifactsPct = hasArtifactGoal
+    ? Math.min(100, Math.round((progress.artifacts_ready / progress.artifacts_required) * 100))
+    : 0;
+  const gatesPct = hasGateGoal
+    ? Math.min(100, Math.round((progress.gates_passed / progress.gates_required) * 100))
+    : 0;
+  const flashOverview = flashProjection === "situation" || flashProjection === "clarifications";
+
   return (
-    <SectionCard title="Обзор проекта">
-      <div style={{ display: "grid", gap: "0.5rem", fontSize: "0.95rem" }}>
-        <div><strong>Стадия:</strong> {overview.stage_summary}</div>
-        <div><strong>Сейчас:</strong> {overview.current_activity}</div>
-        <div>
-          <strong>Прогресс:</strong> артефактов {overview.objective_progress.artifacts_ready}/{overview.objective_progress.artifacts_required},
-          gates {overview.objective_progress.gates_passed}/{overview.objective_progress.gates_required}
-        </div>
-        <div>
-          <strong>Активная методология:</strong> {overview.active_methodology ?? "не назначена"}
-        </div>
-        {overview.critical_clarifications.length > 0 && (
-          <div>
-            <strong>Критичные уточнения ({overview.critical_clarifications.length}):</strong>
-            <ul>
-              {overview.critical_clarifications.map((c) => (
-                <li key={c.clarification_id}>{c.title} — {c.priority} ({c.source_type})</li>
-              ))}
-            </ul>
+    <div className={cx("mission-control", flashOverview && "mission-control--flash")}>
+      <SectionCard title="Где мы сейчас">
+        <div className="mc-stage">
+          <div className="mc-stage__row">
+            <span className="mc-stage__label">Стадия</span>
+            <span className="mc-stage__value">{overview.stage_summary || "не определена"}</span>
           </div>
-        )}
+          <div className="mc-stage__row">
+            <span className="mc-stage__label">Сейчас</span>
+            <span className="mc-stage__value">{overview.current_activity || "система ожидает следующего шага"}</span>
+          </div>
+          <div className="mc-stage__row">
+            <span className="mc-stage__label">Режим участия</span>
+            <span className="mc-stage__value">{prettyLabel(overview.clarification_mode)}</span>
+          </div>
+        </div>
+      </SectionCard>
+
+      {(hasArtifactGoal || hasGateGoal) && (
+        <SectionCard title="Прогресс по цели">
+          <div className="mc-progress">
+            {hasArtifactGoal && (
+              <div className="mc-progress__row">
+                <div className="mc-progress__label">
+                  <span>Артефакты</span>
+                  <span>
+                    {progress.artifacts_ready}/{progress.artifacts_required}
+                  </span>
+                </div>
+                <div className="mc-progress__bar">
+                  <div className="mc-progress__bar-fill" style={{ width: `${artifactsPct}%` }} />
+                </div>
+              </div>
+            )}
+            {hasGateGoal && (
+              <div className="mc-progress__row">
+                <div className="mc-progress__label">
+                  <span>Gates</span>
+                  <span>
+                    {progress.gates_passed}/{progress.gates_required}
+                  </span>
+                </div>
+                <div className="mc-progress__bar">
+                  <div className="mc-progress__bar-fill" style={{ width: `${gatesPct}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      )}
+
+      {overview.critical_clarifications.length > 0 && (
+        <SectionCard title={`Критичные уточнения (${overview.critical_clarifications.length})`} tone="warning">
+          <ul className="mc-list">
+            {overview.critical_clarifications.slice(0, 5).map((item) => (
+              <li key={item.clarification_id} className="mc-list__row">
+                <button
+                  type="button"
+                  className="mc-list__link"
+                  onClick={() => navigate(`/projects/${projectId}/activity?clarification=${item.clarification_id}`)}
+                >
+                  <span className="mc-list__title">{item.title}</span>
+                  <span className={cx("mc-pill", `mc-pill--${item.priority}`)}>{item.priority}</span>
+                  <span className="mc-list__meta">
+                    {prettyLabel(item.source_type)} · {prettyLabel(item.blocking_scope)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      )}
+
+      {overview.key_artifacts.length > 0 && (
+        <SectionCard title="Ключевые артефакты">
+          <ul className="mc-list">
+            {overview.key_artifacts.slice(0, 5).map((item) => (
+              <li key={item.artifact_id} className="mc-list__row">
+                <Link
+                  to={`/projects/${projectId}/artifacts/${item.artifact_id}`}
+                  className="mc-list__link"
+                >
+                  <span className="mc-list__title">{item.title}</span>
+                  <span className="mc-list__meta">{prettyLabel(item.artifact_role)}</span>
+                  <span className="mc-list__meta">{formatDateTime(item.created_at)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      )}
+
+      <SectionCard title="Контекст рассуждения">
+        <div className="mc-stage">
+          <div className="mc-stage__row">
+            <span className="mc-stage__label">Методология</span>
+            <span className="mc-stage__value">
+              {overview.active_methodology ? (
+                <Link to={`/projects/${projectId}/methodology`}>{overview.active_methodology}</Link>
+              ) : (
+                "не назначена"
+              )}
+            </span>
+          </div>
+          <div className="mc-stage__row">
+            <span className="mc-stage__label">Domain packs</span>
+            <span className="mc-stage__value">
+              {overview.active_domain_packs.length > 0 ? overview.active_domain_packs.join(", ") : "нет активных"}
+            </span>
+          </div>
+        </div>
+      </SectionCard>
+
+      <div className="mc-footer">
+        <Button tone="secondary" onClick={commands.runNext} disabled={commands.busy}>
+          Запустить следующий шаг
+        </Button>
+        <Link to={`/projects/${projectId}/activity`} className="mc-footer__link">
+          Полный экран активности →
+        </Link>
       </div>
-    </SectionCard>
+    </div>
   );
 }
 
@@ -1262,7 +1399,6 @@ function ClarificationDetailPanel({
 }) {
   return (
     <div className="detail-stack clarification-detail">
-        <MethodologyOverviewSection projectId={projectId} />
       <div className="detail-callout">
         <StatusPill tone={toneForClarificationPriority(clarification.priority)}>
           {clarification.status === "open" ? "Нужно решение" : prettyLabel(clarification.status)}
