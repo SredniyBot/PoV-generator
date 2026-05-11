@@ -5,6 +5,8 @@ import type {
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
+  MethodologyPackView,
+  MethodologyTraceResponse,
   ObjectiveCatalogItemView,
   ProjectCreatedView,
   ProjectClarificationsView,
@@ -51,7 +53,7 @@ export const api = {
     }),
   listObjectives: () => request<ObjectiveCatalogItemView[]>("/api/registry/objectives"),
   listDomainPacks: () => request<DomainPackCatalogItemView[]>("/api/registry/domain-packs"),
-  listMethodologyPacks: () => request<unknown[]>("/api/registry/methodology-packs"),
+  listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
   getShell: (projectId: string) => request<ProjectShellView>(`/api/projects/${projectId}/shell`),
   getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
@@ -129,7 +131,7 @@ export const api = {
   getOverview: (projectId: string) =>
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
   getMethodologyTrace: (projectId: string, taskId: string) =>
-    request<{ task_id: string; trace: unknown; reasoning: unknown; trace_artifact_id?: string; reasoning_artifact_id?: string | null; message?: string }>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
+    request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

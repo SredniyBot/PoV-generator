@@ -153,6 +153,7 @@ export interface ClarificationItemView {
   min_participation_mode: string;
   default_assumption: string | null;
   blocking_scope: string;
+  decision_owner_role: string;
   affected_task_ids: string[];
   related_artifact_ids: string[];
   selected_option_ids: string[];
@@ -328,4 +329,86 @@ export interface ProjectOverviewView {
   active_domain_packs: string[];
   clarification_mode: string;
   updated_at: string;
+}
+
+
+// ---- Methodology pack catalog (для L2 MethodologyView) -------------------
+
+export interface MethodologyStageProducesView {
+  field: string;
+  type: string;
+  required: boolean;
+}
+
+export interface MethodologyStageRuleView {
+  id: string;
+  if: string | null;
+}
+
+export interface MethodologyStageView {
+  id: string;
+  title: string;
+  description: string;
+  produces: MethodologyStageProducesView[];
+  rules: MethodologyStageRuleView[];
+}
+
+export interface MethodologyPackView {
+  pack_ref: string;
+  title: string;
+  description: string;
+  status: string;
+  stage_execution_mode: string;
+  stages: MethodologyStageView[];
+  required_stages: string[];
+  optional_stages: string[];
+}
+
+
+// ---- Methodology trace для L3 ReasoningPanel + L4 Provenance -------------
+
+export interface MethodologyReasoningStageView {
+  stage_id: string;
+  title: string;
+  outputs: Record<string, unknown>;
+  _source?: Record<string, unknown> | null;
+}
+
+export interface MethodologyReasoningPayload {
+  methodology_pack_ref: string;
+  stages: MethodologyReasoningStageView[];
+  complexity: string | null;
+}
+
+export interface MethodologyTraceRuleOutcome {
+  stage_id: string;
+  rule_id: string;
+  fired: boolean;
+  candidate_id?: string;
+}
+
+export interface MethodologyTraceCandidate {
+  candidate_id: string;
+  source_id: string;
+  severity: string;
+  blocking_scope: string;
+}
+
+export interface MethodologyTracePayload {
+  methodology_pack_ref: string;
+  stage_execution_mode: string;
+  complexity: string | null;
+  stages_executed: string[];
+  stage_outputs: Record<string, Record<string, unknown>>;
+  rules_evaluated: MethodologyTraceRuleOutcome[];
+  candidates_emitted: MethodologyTraceCandidate[];
+}
+
+export interface MethodologyTraceResponse {
+  task_id: string;
+  trace: MethodologyTracePayload | null;
+  reasoning: MethodologyReasoningPayload | null;
+  trace_artifact_id?: string;
+  reasoning_artifact_id?: string | null;
+  message?: string;
 }

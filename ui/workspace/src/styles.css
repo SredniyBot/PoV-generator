@@ -2473,3 +2473,252 @@ code {
   color: var(--accent, #9ed3df);
 }
 
+/* ---- L2 Methodology ---------------------------------------------------- */
+
+.methodology-page {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.methodology-page__active {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.methodology-page__active--empty {
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.methodology-pack {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.methodology-pack__meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.methodology-pack__stages {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.methodology-stage {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 0.5rem;
+}
+
+.methodology-stage__header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.methodology-stage__title {
+  font-weight: 600;
+  color: var(--text-primary, #e8ecf3);
+}
+
+.methodology-stage__id {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #9aa4b2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.methodology-stage__description {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #9aa4b2);
+  line-height: 1.4;
+}
+
+.methodology-stage__produces,
+.methodology-stage__rules {
+  font-size: 0.85rem;
+}
+
+.methodology-stage__label {
+  display: inline-block;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  color: var(--text-secondary, #9aa4b2);
+  margin-bottom: 0.25rem;
+}
+
+.methodology-stage__produces ul,
+.methodology-stage__rules ul {
+  padding-left: 1.25rem;
+  margin: 0;
+}
+
+.methodology-stage__expr {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+}
+
+/* ---- L3 Reasoning panel ----------------------------------------------- */
+
+.reasoning-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.reasoning-stage {
+  border-left: 3px solid rgba(120, 184, 201, 0.4);
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 0.4rem 0.4rem 0;
+}
+
+.reasoning-stage__header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.reasoning-stage__title {
+  font-weight: 600;
+  color: var(--text-primary, #e8ecf3);
+}
+
+.reasoning-stage__id {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #9aa4b2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.reasoning-stage__empty {
+  color: var(--text-secondary, #9aa4b2);
+  font-style: italic;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.reasoning-stage__null {
+  color: var(--text-secondary, #9aa4b2);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.reasoning-stage__fields {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.reasoning-stage__field {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.reasoning-stage__field dt {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.reasoning-stage__field dd {
+  margin: 0;
+  color: var(--text-primary, #e8ecf3);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.reasoning-stage__json {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.5rem;
+  border-radius: 0.4rem;
+  font-size: 0.78rem;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.reasoning-stage__fired {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: rgba(214, 173, 89, 0.85);
+}
+
+.reasoning-stage__rule code {
+  background: rgba(214, 173, 89, 0.1);
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+}
+
+.reasoning-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.reasoning-option {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.reasoning-option__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.reasoning-option__confidence {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.reasoning-option__tradeoffs {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.8rem;
+  margin: 0.2rem 0 0;
+}
+
+/* ---- decision_owner_role chip ----------------------------------------- */
+
+.clar-role {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.clar-role--business { background: rgba(120, 184, 201, 0.18); color: #9ed3df; }
+.clar-role--client { background: rgba(168, 132, 198, 0.18); color: #c4a4dd; }
+.clar-role--methodologist { background: rgba(214, 173, 89, 0.16); color: #e0c179; }
+.clar-role--architect { background: rgba(140, 196, 153, 0.15); color: #b5d6bd; }
+.clar-role--data_owner { background: rgba(180, 165, 134, 0.18); color: #cbb98e; }
+.clar-role--security { background: rgba(215, 131, 131, 0.18); color: #e3a3a3; }
+
+

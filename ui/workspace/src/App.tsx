@@ -457,6 +457,7 @@ function WorkspaceRoute({
         <Route path="artifacts" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="artifacts/:artifactId" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="task-graph" element={<TaskGraphPage projectId={projectId} />} />
+        <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
         <Route path="state" element={<StatePage projectId={projectId} actions={commandMutations} />} />
         <Route path="review" element={<ReviewPage projectId={projectId} />} />
         <Route
@@ -638,6 +639,294 @@ function MissionControlPage({
   );
 }
 
+
+// ---- L2 MethodologyPage --------------------------------------------------
+
+function MethodologyPage({ projectId }: { projectId: string }) {
+  const packsQuery = useQuery({
+    queryKey: ["methodology-packs"],
+    queryFn: () => api.listMethodologyPacks(),
+    staleTime: 60_000,
+  });
+  const overviewQuery = useQuery({
+    queryKey: ["overview", projectId],
+    queryFn: () => api.getOverview(projectId),
+  });
+  const queryClient = useQueryClient();
+  const setMethodologyMutation = useMutation({
+    mutationFn: (packRef: string) => api.setMethodology(projectId, packRef),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["overview", projectId] });
+    },
+  });
+
+  if (packsQuery.isLoading || overviewQuery.isLoading) {
+    return <LoadingPanel title="Загружаем карту методологий…" />;
+  }
+  if (packsQuery.isError || !packsQuery.data) {
+    return (
+      <SectionCard title="Методология недоступна" tone="danger">
+        <EmptyState
+          title="Не удалось получить список methodology packs"
+          description={String((packsQuery.error as Error)?.message ?? "")}
+        />
+      </SectionCard>
+    );
+  }
+
+  const packs = packsQuery.data;
+  const activeRef = overviewQuery.data?.active_methodology ?? null;
+
+  return (
+    <div className="methodology-page">
+      <SectionCard title="Активная методология">
+        {activeRef ? (
+          <p className="methodology-page__active">
+            Сейчас на проект наложен пакет <strong>{activeRef}</strong>. Стадии ниже применяются ко всем
+            leaf-задачам через runtime wrapper.
+          </p>
+        ) : (
+          <p className="methodology-page__active methodology-page__active--empty">
+            На проект не наложен ни один methodology pack.
+          </p>
+        )}
+      </SectionCard>
+
+      {packs.map((pack) => (
+        <MethodologyPackCard
+          key={pack.pack_ref}
+          pack={pack}
+          isActive={pack.pack_ref === activeRef}
+          canSwitch={packs.length > 1 || pack.pack_ref !== activeRef}
+          pending={setMethodologyMutation.isPending}
+          onSwitch={() => setMethodologyMutation.mutate(pack.pack_ref)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MethodologyPackCard({
+  pack,
+  isActive,
+  canSwitch,
+  pending,
+  onSwitch,
+}: {
+  pack: import("./types").MethodologyPackView;
+  isActive: boolean;
+  canSwitch: boolean;
+  pending: boolean;
+  onSwitch: () => void;
+}) {
+  const requiredSet = new Set(pack.required_stages);
+  return (
+    <SectionCard
+      title={`${pack.title} — ${pack.pack_ref}`}
+      subtitle={pack.description}
+      tone={isActive ? "accent" : undefined}
+      actions={
+        canSwitch && !isActive ? (
+          <Button tone="secondary" onClick={onSwitch} disabled={pending}>
+            Сделать активной
+          </Button>
+        ) : isActive ? (
+          <StatusPill tone="success">Активна</StatusPill>
+        ) : null
+      }
+    >
+      <div className="methodology-pack">
+        <div className="methodology-pack__meta">
+          <span>Режим: <strong>{pack.stage_execution_mode}</strong></span>
+          <span>Статус: <strong>{pack.status}</strong></span>
+        </div>
+        <ol className="methodology-pack__stages">
+          {pack.stages.map((stage) => {
+            const required = requiredSet.has(stage.id);
+            return (
+              <li key={stage.id} className="methodology-stage">
+                <div className="methodology-stage__header">
+                  <span className="methodology-stage__title">{stage.title}</span>
+                  <StatusPill tone={required ? "active" : "muted"}>
+                    {required ? "required" : "optional"}
+                  </StatusPill>
+                  <span className="methodology-stage__id">{stage.id}</span>
+                </div>
+                {stage.description ? (
+                  <p className="methodology-stage__description">{stage.description}</p>
+                ) : null}
+                {stage.produces.length > 0 && (
+                  <div className="methodology-stage__produces">
+                    <span className="methodology-stage__label">Поля:</span>
+                    <ul>
+                      {stage.produces.map((p) => (
+                        <li key={p.field}>
+                          <code>{p.field}</code> : <em>{p.type}</em>{p.required ? " *" : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {stage.rules.length > 0 && (
+                  <div className="methodology-stage__rules">
+                    <span className="methodology-stage__label">Правила:</span>
+                    <ul>
+                      {stage.rules.map((r) => (
+                        <li key={r.id}>
+                          <code>{r.id}</code>
+                          {r.if ? <> : <code className="methodology-stage__expr">{r.if}</code></> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </SectionCard>
+  );
+}
+
+
+// ---- L3 ReasoningPanel (показ reasoning_artifact для задачи) -------------
+
+function ReasoningPanel({
+  projectId,
+  taskId,
+}: {
+  projectId: string;
+  taskId: string;
+}) {
+  const traceQuery = useQuery({
+    queryKey: [projectId, "methodology-trace", taskId],
+    queryFn: () => api.getMethodologyTrace(projectId, taskId),
+  });
+
+  if (traceQuery.isLoading) {
+    return <SectionCard title="Рассуждение"><LoadingPanel title="Грузим reasoning…" /></SectionCard>;
+  }
+  if (traceQuery.isError || !traceQuery.data) {
+    return null;
+  }
+  const data = traceQuery.data;
+  if (!data.reasoning || !data.reasoning.stages || data.reasoning.stages.length === 0) {
+    return (
+      <SectionCard title="Рассуждение" subtitle={data.message ?? undefined}>
+        <EmptyState
+          title="Для этой задачи нет reasoning_artifact"
+          description="Возможно, задача выполнена до подключения активной методологии или wrapper'у не хватило входов."
+        />
+      </SectionCard>
+    );
+  }
+  const trace = data.trace;
+  const firedByStage: Record<string, import("./types").MethodologyTraceRuleOutcome[]> = {};
+  for (const rule of trace?.rules_evaluated ?? []) {
+    if (!rule.fired) continue;
+    (firedByStage[rule.stage_id] ??= []).push(rule);
+  }
+
+  return (
+    <SectionCard
+      title="Рассуждение"
+      subtitle={`Методология ${data.reasoning.methodology_pack_ref}${data.reasoning.complexity ? ` · сложность ${data.reasoning.complexity}` : ""}`}
+    >
+      <div className="reasoning-panel">
+        {data.reasoning.stages.map((stage) => (
+          <ReasoningStageCard
+            key={stage.stage_id}
+            stage={stage}
+            firedRules={firedByStage[stage.stage_id] ?? []}
+          />
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+function ReasoningStageCard({
+  stage,
+  firedRules,
+}: {
+  stage: import("./types").MethodologyReasoningStageView;
+  firedRules: import("./types").MethodologyTraceRuleOutcome[];
+}) {
+  return (
+    <div className="reasoning-stage">
+      <div className="reasoning-stage__header">
+        <span className="reasoning-stage__title">{stage.title || prettyLabel(stage.stage_id)}</span>
+        <span className="reasoning-stage__id">{stage.stage_id}</span>
+      </div>
+      <ReasoningStageBody outputs={stage.outputs} />
+      {firedRules.length > 0 && (
+        <div className="reasoning-stage__fired">
+          {firedRules.map((rule) => (
+            <span key={rule.rule_id} className="reasoning-stage__rule">
+              ⚡ правило <code>{rule.rule_id}</code> сработало
+              {rule.candidate_id ? <> → уточнение <code>{rule.candidate_id.slice(0, 8)}</code></> : null}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReasoningStageBody({ outputs }: { outputs: Record<string, unknown> }) {
+  const entries = Object.entries(outputs ?? {}).filter(([key]) => !key.startsWith("_"));
+  if (entries.length === 0) {
+    return <p className="reasoning-stage__empty">Стадия ничего не зафиксировала.</p>;
+  }
+  return (
+    <dl className="reasoning-stage__fields">
+      {entries.map(([key, value]) => (
+        <div key={key} className="reasoning-stage__field">
+          <dt>{prettyLabel(key)}</dt>
+          <dd>
+            <ReasoningValue field={key} value={value} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function ReasoningValue({ field, value }: { field: string; value: unknown }) {
+  if (value === null || value === undefined) {
+    return <span className="reasoning-stage__null">не зафиксировано</span>;
+  }
+  if (field === "options" && Array.isArray(value)) {
+    return (
+      <ul className="reasoning-options">
+        {value.map((opt, idx) => {
+          const item = (opt ?? {}) as Record<string, unknown>;
+          return (
+            <li key={idx} className="reasoning-option">
+              <div className="reasoning-option__header">
+                <strong>{String(item.label ?? `Вариант ${idx + 1}`)}</strong>
+                {typeof item.confidence === "number" ? (
+                  <span className="reasoning-option__confidence">
+                    confidence {item.confidence.toFixed(2)}
+                  </span>
+                ) : null}
+              </div>
+              {typeof item.rationale === "string" ? <p>{item.rationale}</p> : null}
+              {typeof item.tradeoffs === "string" ? <p className="reasoning-option__tradeoffs">{item.tradeoffs}</p> : null}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return <span>{String(value)}</span>;
+  }
+  return <pre className="reasoning-stage__json">{JSON.stringify(value, null, 2)}</pre>;
+}
+
+
 function OverviewPage({
   projectId,
   flashProjection,
@@ -814,7 +1103,7 @@ function OverviewPage({
         </Drawer>
 
         <Drawer open={Boolean(selectedTask)} title={selectedTask?.title ?? "Задача"} onClose={() => setSelectedTask(null)}>
-          {selectedTask ? <TaskNodeDetail task={selectedTask} onRetryTask={commands.retryTask} /> : null}
+          {selectedTask ? <TaskNodeDetail task={selectedTask} onRetryTask={commands.retryTask} projectId={projectId} /> : null}
         </Drawer>
 
         <Modal
@@ -1244,6 +1533,27 @@ function toneForClarificationPriority(priority: string): "neutral" | "active" | 
   }
 }
 
+function prettyDecisionOwnerRole(role: string): string {
+  // Человекочитаемый ярлык владельца решения (W1.2). Должен умещаться в одном
+  // слове, чтобы аккуратно сидеть в chip'е рядом с приоритетом.
+  switch (role) {
+    case "business":
+      return "Бизнес";
+    case "client":
+      return "Заказчик";
+    case "methodologist":
+      return "Методология";
+    case "architect":
+      return "Архитектура";
+    case "data_owner":
+      return "Данные";
+    case "security":
+      return "ИБ";
+    default:
+      return prettyLabel(role);
+  }
+}
+
 function clarificationModeLabel(mode: string): string {
   const labels: Record<string, string> = {
     autopilot: "Автопилот",
@@ -1359,6 +1669,9 @@ function ClarificationCenter({
                 </StatusPill>
               </div>
               <div className="clarification-card__meta">
+                <span className={cx("clar-role", `clar-role--${item.decision_owner_role}`)}>
+                  {prettyDecisionOwnerRole(item.decision_owner_role)}
+                </span>
                 <span>{item.blocking_scope === "none" ? "Не блокирует работу" : "Может влиять на дальнейшие шаги"}</span>
                 <span>{formatDateTime(item.updated_at)}</span>
               </div>
@@ -1403,6 +1716,9 @@ function ClarificationDetailPanel({
         <StatusPill tone={toneForClarificationPriority(clarification.priority)}>
           {clarification.status === "open" ? "Нужно решение" : prettyLabel(clarification.status)}
         </StatusPill>
+        <span className={cx("clar-role", `clar-role--${clarification.decision_owner_role}`)}>
+          {prettyDecisionOwnerRole(clarification.decision_owner_role)}
+        </span>
         <span>{formatDateTime(clarification.updated_at)}</span>
       </div>
       <div className="clarification-detail__question">
@@ -1628,9 +1944,11 @@ function TimelineEventDetail({
 function TaskNodeDetail({
   task,
   onRetryTask,
+  projectId,
 }: {
   task: TaskNodeView;
   onRetryTask: (taskId: string) => void;
+  projectId?: string;
 }) {
   return (
     <div className="detail-stack">
@@ -1675,6 +1993,9 @@ function TaskNodeDetail({
               Повторить шаг
             </Button>
           </div>
+        ) : null}
+        {projectId && task.template_type === "leaf" && task.status === "completed" ? (
+          <ReasoningPanel projectId={projectId} taskId={task.task_id} />
         ) : null}
       </div>
     );

@@ -347,6 +347,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
     { to: `/projects/${projectId}/activity`, label: "Активность" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
     { to: `/projects/${projectId}/task-graph`, label: "Граф задач" },
+    { to: `/projects/${projectId}/methodology`, label: "Методология" },
     { to: `/projects/${projectId}/state`, label: "Состояние" },
     { to: `/projects/${projectId}/review`, label: "Замечания" },
     { to: `/projects/${projectId}/debug`, label: "Технические детали" },
