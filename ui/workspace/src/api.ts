@@ -171,6 +171,23 @@ export const api = {
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
+  // L6 design extensions
+  getArtifactSkeleton: (projectId: string, artifactId: string) =>
+    request<import("./types").ArtifactSkeletonView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/skeleton`,
+    ),
+  getDecisionLog: (projectId: string) =>
+    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decisions`),
+  getArtifactVersions: (projectId: string) =>
+    request<import("./types").ProjectArtifactVersionsView>(
+      `/api/projects/${projectId}/artifact-versions`,
+    ),
+  getFailurePins: (projectId: string, artifactId?: string) => {
+    const qs = artifactId ? `?artifact_id=${encodeURIComponent(artifactId)}` : "";
+    return request<import("./types").ProjectFailurePinsView>(
+      `/api/projects/${projectId}/failure-pins${qs}`,
+    );
+  },
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

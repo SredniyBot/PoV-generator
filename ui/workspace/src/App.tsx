@@ -31,6 +31,7 @@ import {
 import { marked } from "marked";
 
 import { api } from "./api";
+import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ActionDescriptor,
@@ -466,6 +467,22 @@ function WorkspaceRoute({
       <Routes>
         <Route
           path="overview"
+          element={
+            <ProjectOverviewV2
+              projectId={projectId}
+              isRunning={commandMutations.busy}
+              onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
+              onOpenDecisionLog={() => navigate(`/projects/${projectId}/decisions`)}
+              onOpenArtifactSection={(artifactId) =>
+                navigate(`/projects/${projectId}/artifacts/${artifactId}`)
+              }
+              onRunNext={commandMutations.runNext}
+            />
+          }
+        />
+        {/* Legacy «mission control» / «активность» оставлены до L6-8 как fallback */}
+        <Route
+          path="mission"
           element={
             <MissionControlPage
               projectId={projectId}

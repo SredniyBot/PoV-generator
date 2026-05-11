@@ -466,3 +466,101 @@ export interface MethodologyTraceResponse {
   execution?: MethodologyExecutionSummary | null;
   message?: string;
 }
+
+
+// ---- L6 design extensions (P3v2 skeleton, P5 pins, P7 decisions, P8 versions) ----
+
+export type ArtifactSectionStatus = "done" | "in_progress" | "pending" | "needs_review";
+
+export interface ArtifactSectionView {
+  section_id: string;
+  title: string;
+  status: ArtifactSectionStatus;
+  summary: string | null;
+  has_pins: boolean;
+  pin_count: number;
+}
+
+export interface ArtifactSkeletonView {
+  project_id: string;
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  sections: ArtifactSectionView[];
+  sections_done: number;
+  sections_total: number;
+  has_markdown: boolean;
+  created_at: string;
+}
+
+export type DecisionKind = "answered" | "assumed";
+
+export interface DecisionLogEntryView {
+  decision_id: string;
+  kind: DecisionKind;
+  title: string;
+  question: string;
+  resolution_summary: string | null;
+  selected_option_ids: string[];
+  free_text: string | null;
+  rationale: string;
+  impact: string;
+  blocking_scope: string;
+  decision_owner_role: string;
+  source_type: string;
+  source_id: string | null;
+  affected_task_ids: string[];
+  related_artifact_ids: string[];
+  alternatives: ClarificationOptionView[];
+  auto_resolved: boolean;
+  decided_at: string;
+  created_at: string;
+}
+
+export interface ProjectDecisionLogView {
+  project_id: string;
+  entries: DecisionLogEntryView[];
+  total_count: number;
+  answered_count: number;
+  assumed_count: number;
+}
+
+export interface ArtifactVersionItemView {
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  label: string;
+  is_current: boolean;
+  created_at: string;
+  created_by_task_id: string | null;
+  parent_artifact_id: string | null;
+  description: string;
+}
+
+export interface ProjectArtifactVersionsView {
+  project_id: string;
+  chains: ArtifactVersionItemView[][];
+}
+
+export type FailurePinKind = "candidate_open" | "assumption" | "validation_finding";
+export type FailurePinSeverity = "high" | "medium" | "low";
+
+export interface FailurePinView {
+  pin_id: string;
+  artifact_id: string;
+  section_id: string | null;
+  severity: FailurePinSeverity;
+  kind: FailurePinKind;
+  message: string;
+  source_type: string;
+  source_id: string | null;
+  confidence_without_user: number | null;
+  related_clarification_id: string | null;
+}
+
+export interface ProjectFailurePinsView {
+  project_id: string;
+  artifact_id: string | null;
+  pins: FailurePinView[];
+  total_count: number;
+}
