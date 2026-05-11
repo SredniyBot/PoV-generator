@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..common.serialization import utc_now_iso
 from ..domain.problem_state import CloseGapPatch, SetGoalPatch, UpsertReadinessPatch
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .execution_service import ExecutionBundle, ExecutionService

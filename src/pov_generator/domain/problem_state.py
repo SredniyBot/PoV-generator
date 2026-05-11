@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .clarifications import ClarificationMode
 from ..common.errors import ConflictError, NotFoundError
 from ..common.serialization import utc_now_iso
-
+from .clarifications import ClarificationMode
 
 ReadinessStatus = Literal["missing", "partial", "ready", "waived"]
 GapSeverity = Literal["low", "medium", "high", "critical"]

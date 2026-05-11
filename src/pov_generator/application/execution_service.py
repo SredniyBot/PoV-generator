@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import json
 import os
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
@@ -14,6 +14,8 @@ from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient, model_for_complexity
 from ..infrastructure.claude_subscription_client import (
     ClaudeSubscriptionClient,
+)
+from ..infrastructure.claude_subscription_client import (
     model_for_complexity as model_for_complexity_subscription,
 )
 from ..infrastructure.openrouter_client import OpenRouterClient

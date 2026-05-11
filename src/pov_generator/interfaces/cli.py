@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from ..application.context_service import ContextService
 from ..application.domain_pack_selection_service import DomainPackSelectionService

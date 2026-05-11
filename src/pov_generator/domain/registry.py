@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from ..common.errors import NotFoundError, ValidationError
 
-
 TemplateType = Literal["composite", "leaf"]
 ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system"]
 ComplexityLevel = Literal["trivial", "standard", "complex"]

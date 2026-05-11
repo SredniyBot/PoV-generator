@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import uuid
+from pathlib import Path
 
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.problem_state import SetRootTaskPatch
-from ..domain.registry import ObjectRef, RegistrySnapshot, TemplateSpec
+from ..domain.registry import RegistrySnapshot, TemplateSpec
 from ..domain.tasks import TaskRecord, initial_task_status
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 

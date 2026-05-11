@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ClarificationStatus = Literal["open", "answered", "assumed", "deferred", "cancelled"]
 ClarificationPriority = Literal["low", "medium", "high", "critical"]
 ClarificationSourceType = Literal["task", "validation", "planning", "domain_pack", "methodology_pack", "quality_gate"]

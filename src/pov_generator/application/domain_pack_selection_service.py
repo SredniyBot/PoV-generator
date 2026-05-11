@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import re
-from typing import Any
+from dataclasses import dataclass
 
 from ..common.errors import ConflictError
 from ..domain.registry import DomainPackSpec, ObjectRef, RegistrySnapshot

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import shutil
 import uuid
+from pathlib import Path
 
 import yaml
 
@@ -22,7 +22,6 @@ from pov_generator.domain.execution import ExecutionOutput, ExecutionRequest, Ex
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"

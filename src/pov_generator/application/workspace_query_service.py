@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-import json
 
 from ..common.errors import ConflictError
 from ..common.serialization import to_primitive
@@ -19,17 +19,17 @@ from ..domain.workspace_views import (
     ContextManifestSummaryView,
     DomainPackCatalogItemView,
     ObjectiveCatalogItemView,
+    ObjectiveProgressView,
+    OverviewArtifactItem,
+    OverviewClarificationItem,
     ProjectClarificationsView,
     ProjectDebugView,
     ProjectListItemView,
+    ProjectOverviewView,
     ProjectReviewView,
     ProjectShellView,
     ProjectSituationView,
     ProjectStateView,
-    ProjectOverviewView,
-    OverviewClarificationItem,
-    OverviewArtifactItem,
-    ObjectiveProgressView,
     ProjectTaskGraphView,
     ProjectTimelineView,
     ReviewIssueView,
@@ -41,7 +41,6 @@ from ..infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
 from .planning_service import PlanningService
 from .registry_service import RegistryService
 from .workspace_catalog import WorkspaceCatalog, WorkspaceRef
-
 
 ProjectionName = str
 

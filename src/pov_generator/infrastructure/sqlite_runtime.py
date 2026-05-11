@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-import sqlite3
 
 from ..common.errors import NotFoundError
 from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -21,7 +21,6 @@ from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 from pov_generator.interfaces.api import create_app
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"

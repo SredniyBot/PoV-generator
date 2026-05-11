@@ -5,7 +5,6 @@ from typing import Literal
 
 from .clarifications import ClarificationCandidate
 
-
 ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
 ExecutionStatus = Literal["succeeded", "failed", "cancelled"]
 

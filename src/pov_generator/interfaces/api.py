@@ -9,11 +9,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
+from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
-from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.validation_service import ValidationService
 from ..application.workflow_service import WorkflowService
 from ..application.workspace_catalog import WorkspaceCatalog

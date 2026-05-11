@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import yaml
 
@@ -11,7 +11,6 @@ from pov_generator.application.registry_service import RegistryService
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
@@ -204,13 +203,13 @@ def test_execution_emits_reasoning_and_methodology_trace_artifacts(tmp_path: Pat
 
 
 def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> None:
+    from pov_generator.application.clarification_service import ClarificationService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
     from pov_generator.application.workflow_service import WorkflowService
-    from pov_generator.application.clarification_service import ClarificationService
-    from pov_generator.application.workspace_query_service import WorkspaceQueryService
     from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
 
     workspace, snapshot, runtime, project_service, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)
@@ -236,13 +235,13 @@ def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_pat
     """W2.3: methodology-trace должен возвращать execution_run_id /
     provider / model / context_manifest_id, чтобы UI L4 ProvenanceViewer
     мог показать «откуда это» без отдельного запроса к /debug."""
+    from pov_generator.application.clarification_service import ClarificationService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
     from pov_generator.application.workflow_service import WorkflowService
-    from pov_generator.application.clarification_service import ClarificationService
-    from pov_generator.application.workspace_query_service import WorkspaceQueryService
     from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
 
     workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)
@@ -269,13 +268,13 @@ def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_pat
 
 
 def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> None:
+    from pov_generator.application.clarification_service import ClarificationService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
     from pov_generator.application.workflow_service import WorkflowService
-    from pov_generator.application.clarification_service import ClarificationService
-    from pov_generator.application.workspace_query_service import WorkspaceQueryService
     from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
 
     workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)

@@ -21,7 +21,6 @@ from pov_generator.application.validation_service import ValidationService
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 METHODOLOGY_REF = "process.lean_jtbd@1.0.0"
 
@@ -143,7 +142,7 @@ def test_methodology_trace_artifact_records_real_rule_outcomes(tmp_path: Path) -
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.domain.registry import ObjectRef
-    from tests.test_foundation import REPO_ROOT, build_services, OBJECTIVE_REF
+    from tests.test_foundation import OBJECTIVE_REF, build_services
 
     registry_service, runtime, project_service, planning_service = build_services()
     snapshot, report = registry_service.validate()

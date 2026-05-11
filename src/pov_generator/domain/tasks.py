@@ -7,7 +7,6 @@ from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
 from .registry import ObjectRef
 
-
 TaskStatus = Literal[
     "candidate",
     "ready",

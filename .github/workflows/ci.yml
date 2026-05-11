@@ -24,6 +24,8 @@ jobs:
         # requirements.lock pins transitive versions known to be compatible
         # (regenerate via `uv pip compile pyproject.toml --extra dev -o requirements.lock`).
         run: pip install -e .[dev] --constraint requirements.lock
+      - name: ruff lint
+        run: ruff check src tests
       - name: pytest
         run: pytest -q
       - name: registry validate

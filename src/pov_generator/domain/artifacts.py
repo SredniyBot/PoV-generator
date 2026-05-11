@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ArtifactFormat = Literal["json", "markdown", "text"]
 ArtifactKind = Literal["primary", "reasoning", "trace", "derived"]
 ContextItemType = Literal["problem_field", "artifact", "instruction"]

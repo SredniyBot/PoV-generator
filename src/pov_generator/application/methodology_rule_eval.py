@@ -34,7 +34,6 @@ import ast
 import re
 from typing import Any, Callable
 
-
 _STAR_PROJECTION_RE = re.compile(r"\[\*\]")
 _SPECIAL_LITERALS: dict[str, Any] = {"null": None, "true": True, "false": False}
 

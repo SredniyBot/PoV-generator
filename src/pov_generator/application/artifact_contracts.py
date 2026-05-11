@@ -4,7 +4,6 @@ from typing import Any
 
 from ..common.errors import ValidationError
 
-
 JSONSchema = dict[str, Any]
 
 

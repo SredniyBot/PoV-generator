@@ -24,6 +24,8 @@ dependencies = [
 dev = [
   "pytest>=8.3.5,<9.0",
   "httpx>=0.28.0,<1.0",
+  "ruff>=0.15,<1.0",
+  "uv>=0.11,<1.0",
 ]
 
 [project.scripts]
@@ -38,3 +40,23 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# Минимальный набор: ошибки pyflakes (F), unused imports/vars,
+# обычные стилистические (E) и import order (I).
+# Стиль существующего кода не правим — этот конфиг ловит только
+# действительно мусорные вещи.
+select = ["F", "E", "W", "I"]
+ignore = [
+  "E501",  # длинные строки — у нас уже много кириллических комментариев
+  "E731",  # lambda — иногда удобнее именованного def
+  "E402",  # module level import not at top — для тестовых заглушек
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731", "E402"]
+"src/pov_generator/application/execution_service.py" = ["E501"]

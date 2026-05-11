@@ -21,7 +21,6 @@ from pov_generator.application.methodology_rules import evaluate_methodology_rul
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

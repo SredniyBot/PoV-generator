@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-import uuid
 
 from ..common.serialization import to_primitive, utc_now_iso
 from ..domain.problem_state import (
