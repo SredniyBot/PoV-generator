@@ -134,7 +134,7 @@ def _dispatch(
             planning_service.expand_graph(Path(args.workspace), snapshot)
             project_service.add_fact(
                 Path(args.workspace),
-                fact_id="domain_pack_selection",
+                identifier="domain_pack_selection",
                 statement=(
                     "Автоматический selector domain pack выбрал: "
                     f"{', '.join(enabled_pack_refs) if enabled_pack_refs else 'ничего'}. "
@@ -142,13 +142,18 @@ def _dispatch(
                     if selection_payload["mode"] == "auto"
                     else "Использован явный ручной выбор domain pack."
                 ),
-                source="domain_pack_selector" if selection_payload["mode"] == "auto" else "manual_override",
+                source="system" if selection_payload["mode"] == "auto" else "user",
+                taken_by_label=(
+                    "domain_pack_selector"
+                    if selection_payload["mode"] == "auto"
+                    else "operator"
+                ),
             )
             print(
                 json_dumps(
                     {
                         "manifest": bootstrap.manifest,
-                        "state": project_service.load_problem_state(Path(args.workspace)),
+                        "state": project_service.load_project_state(Path(args.workspace)),
                         "domain_pack_selection": selection_payload,
                     }
                 )
@@ -161,10 +166,10 @@ def _dispatch(
     if args.entity == "problem":
         workspace = Path(args.workspace)
         if args.action == "show":
-            print(json_dumps(project_service.load_problem_state(workspace)))
+            print(json_dumps(project_service.load_project_state(workspace)))
             return
         if args.action == "history":
-            print(json_dumps(project_service.problem_history(workspace)))
+            print(json_dumps(project_service.state_history(workspace)))
             return
         if args.action == "goal-set":
             print(json_dumps(project_service.set_goal(workspace, args.text)))
@@ -200,7 +205,16 @@ def _dispatch(
             )
             return
         if args.action == "fact-add":
-            print(json_dumps(project_service.add_fact(workspace, args.fact_id, args.statement, args.source)))
+            print(
+                json_dumps(
+                    project_service.add_fact(
+                        workspace,
+                        identifier=args.fact_id,
+                        statement=args.statement,
+                        taken_by_label=args.source,
+                    )
+                )
+            )
             return
         if args.action == "domain-pack-enable":
             snapshot, report = registry_service.validate()

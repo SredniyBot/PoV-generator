@@ -28,12 +28,15 @@ def _make_state(
     business_request: str = "Простой PoC.",
     goal: str | None = None,
 ) -> SimpleNamespace:
-    """Минимальный shim ProblemState — selector читает только эти 4 поля."""
+    """Минимальный shim ProjectState — selector читает только эти поля
+    через .manifest, .knowledge, .process."""
     return SimpleNamespace(
-        business_request=business_request,
-        goal=goal,
-        active_domain_pack_records={ref: object() for ref in domain_packs},
-        active_gaps={},
+        manifest=SimpleNamespace(business_request=business_request),
+        knowledge=SimpleNamespace(goal_statement=lambda: goal),
+        process=SimpleNamespace(
+            active_domain_pack_records={ref: object() for ref in domain_packs},
+            active_gaps={},
+        ),
     )
 
 

@@ -1,16 +1,13 @@
-"""Тесты для ortho-оси `decision_owner_role` (W1.2).
+"""Тесты для ortho-оси `decision_owner_role` (Этап 3).
 
-Engagement-level менеджера управляется двумя осями:
-- `clarification_mode` (autopilot / balanced / control / expert) — частота;
-- `decision_owner_role` (business / client / methodologist / architect /
-  data_owner / security) — кому адресован вопрос.
+После Этапа 3 `decision_owner_role` — **информационная** ось (UI-группировка,
+CE11 LLM-driver), а не часть алгоритма ask/assume/defer. Тот axis теперь —
+:class:`VisibilityLevel`. Эти тесты покрывают:
 
-Этот файл проверяет, что:
-1. Сорсы кандидатов проставляют корректную роль (methodology → methodologist,
-   gate с approver_role=client → client).
-2. ClarificationService._decide_action учитывает «role floor»: вопрос с
-   ролью methodologist на autopilot/balanced принимается допущением, а на
-   control/expert — показывается.
+1. Источники кандидатов проставляют корректную роль и visibility.
+2. ClarificationService._decide_action соблюдает алинейку visibility ↔ mode
+   из таблицы ``_PROACTIVE_ASK_LEVELS`` (см. test_visibility_engagement.py
+   для полной матрицы; здесь — методологический и бизнес-сценарии).
 3. Поле `decision_owner_role` доходит до `ClarificationRequest` и до
    проекции (`ClarificationItemView`) — UI сможет группировать.
 """
@@ -22,18 +19,12 @@ from pathlib import Path
 import pytest
 
 from pov_generator.application.clarification_service import ClarificationService
-from pov_generator.application.context_service import ContextService
-from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.methodology_rules import evaluate_methodology_rules
 from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
-from pov_generator.application.validation_service import (
-    ValidationService,
-    _normalize_decision_owner_role,
-)
-from pov_generator.application.workflow_service import WorkflowService
-from pov_generator.domain.problem_state import SetClarificationModePatch
+from pov_generator.application.validation_service import _normalize_decision_owner_role
+from pov_generator.domain.process_state import SetClarificationModePatch
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -146,20 +137,25 @@ def _make_runtime_with_workspace(tmp_path: Path) -> tuple[SqliteRuntime, Path]:
 @pytest.mark.parametrize(
     "mode, expected_action",
     [
-        ("autopilot", "assume"),  # methodologist floor=control, mode<floor → assume (есть default)
-        ("balanced", "assume"),
-        ("control", "ask"),  # mode достиг floor → surface
+        # Этап 3: методологические кандидаты получают visibility=architectural.
+        # autopilot не выводит architectural проактивно → есть default_assumption → assume.
+        ("autopilot", "assume"),
+        # balanced/control/expert выводят architectural → ask.
+        ("balanced", "ask"),
+        ("control", "ask"),
         ("expert", "ask"),
     ],
 )
-def test_methodologist_role_floor_filters_by_engagement(
+def test_methodologist_visibility_filters_by_engagement(
     tmp_path: Path, mode: str, expected_action: str
 ) -> None:
-    """Менеджер на autopilot/balanced не должен получать методологические
-    развилки — coordinator принимает default_assumption тихо. На
-    control/expert вопрос показывается."""
+    """Методологические кандидаты имеют visibility=architectural.
+
+    autopilot их автоматически принимает как допущения (вне proactive set);
+    balanced и выше — выносят пользователю.
+    """
     runtime, workspace = _make_runtime_with_workspace(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace,
         SetClarificationModePatch(mode=mode),  # type: ignore[arg-type]
         actor="test",
@@ -177,24 +173,22 @@ def test_methodologist_role_floor_filters_by_engagement(
         task_id="task-1",
     ).candidates
     assert candidates
+    assert all(c.visibility == "architectural" for c in candidates)
 
     decisions = service.register_candidates(workspace, candidates)
     assert all(d.action == expected_action for d in decisions)
 
 
-def test_business_role_surfaces_at_engagement_at_or_above_min_mode(tmp_path: Path) -> None:
-    """Бизнес-вопрос с `min_participation_mode=balanced` показывается на
-    `balanced`/`control`/`expert`, но НЕ на `autopilot`.
+def test_business_question_visibility_defaults_to_principal_and_surfaces_on_autopilot(
+    tmp_path: Path,
+) -> None:
+    """Этап 3: бизнес-вопросы по дефолту получают visibility=principal.
 
-    Раньше тест ожидал что на autopilot бизнес-вопрос будет surface'нут
-    «потому что роль business всегда видна менеджеру». После W6/B1 это
-    больше не так: autopilot — «не беспокоить»; вопрос без
-    default_assumption и без objective-scope откладывается (defer) —
-    менеджер увидит его на /clarifications в фильтре «Отложено», но
-    workflow не блокируется. См. жалобу W6 #1.
+    Principal-уровень видим даже на autopilot — этим контракт engagement-
+    режима: «не дёргать по мелочам, но principal — всегда».
     """
     runtime, workspace = _make_runtime_with_workspace(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace,
         SetClarificationModePatch(mode="autopilot"),
         actor="test",
@@ -213,16 +207,12 @@ def test_business_role_surfaces_at_engagement_at_or_above_min_mode(tmp_path: Pat
         confidence_without_user=0.2,
         decision_owner_role="business",
     )
-    decisions = service.register_candidates(workspace, (candidate,))
-    # На autopilot без default_assumption — defer (мягкий skip).
-    assert decisions[0].action == "defer"
+    # Дефолт по роли: business → principal.
+    assert candidate.visibility == "principal"
 
-    # Если переключиться в balanced — re-eval должен сюрфейснуть.
-    summary = service.set_mode(workspace, "balanced")
-    # Re-eval работает только на open. Мы только что defer'нули, так что
-    # автоматически не пере-открываем. Это OK — менеджер может пере-открыть
-    # вопрос через UI reopen. Проверим что summary не обнулил состояние.
-    assert summary.mode == "balanced"
+    decisions = service.register_candidates(workspace, (candidate,))
+    # Principal на autopilot — proactive ask, даже без default_assumption.
+    assert decisions[0].action == "ask"
 
 
 def test_decision_owner_role_persists_to_request_and_view(tmp_path: Path) -> None:
@@ -262,36 +252,8 @@ def test_decision_owner_role_persists_to_request_and_view(tmp_path: Path) -> Non
     assert any(item.decision_owner_role == "client" for item in view.items)
 
 
-def test_human_approval_gate_candidate_inherits_role_from_approver(tmp_path: Path) -> None:
-    """gate `client.requirements_signoff` имеет approver_role=client →
-    candidate должен получить `decision_owner_role=client`. Это позволяет
-    UI выделить sign-off как «внешнее согласование», а не как методологию."""
-    registry_service = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates"))
-    runtime = SqliteRuntime()
-    project_service = ProjectService(runtime)
-    planning_service = PlanningService(runtime)
-    context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service)
-    clarification_service = ClarificationService(runtime, provider="stub")
-    validation_service = ValidationService(runtime, clarification_service)
-    workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
-
-    snapshot, _ = registry_service.validate()
-    workspace = tmp_path / "case"
-    project_service.init_project(
-        workspace=workspace,
-        name="signoff role",
-        objective_ref=ObjectRef.parse(OBJECTIVE_REF),
-        request_text="role smoke",
-        domain_packs=(),
-    )
-    planning_service.expand_graph(workspace, snapshot)
-    workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
-
-    signoff = next(
-        req
-        for req in runtime.list_clarification_requests(workspace)
-        if req.source_type == "quality_gate"
-        and req.source_id == "client.requirements_signoff@1.0.0"
-    )
-    assert signoff.decision_owner_role == "client"
+# NOTE: «role inherited from gate.approver_role» — покрыто:
+# - unit-уровень: test_normalize_decision_owner_role_maps_gate_approvers (выше);
+# - end-to-end: test_human_approval_gate_blocks_objective_until_approved
+#   (в test_human_approval_gate.py) проверяет тот же signoff request.
+# Дублирующий full-workflow тест убран ради скорости.

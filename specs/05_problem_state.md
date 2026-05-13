@@ -1,194 +1,264 @@
 # Состояние проектного понимания
 
-> **Статус:** v2.1 · черновик · 2026-05-09
+> **Статус:** v3.0 · черновик · 2026-05-13. Заменяет однородный
+> `ProblemState` из v2.* двумя слоями: знания и процесс.
 
-`ProblemState` хранит текущее понимание проекта. Он не хранит структуру графа задач и не задает порядок выполнения.
+Состояние проекта разделено на **два независимых слоя** с разной природой
+изменений и разной аудиторией:
+
+- **Слой A — Знания о проекте** (`ProjectKnowledge`): то, что **известно
+  или принято** про проект. Однородная коллекция «положений»: фактов,
+  допущений, решений, ограничений, рисков. Артефакты опираются на этот
+  слой.
+- **Слой B — Состояние процесса** (`ProcessState`): то, что описывает
+  **где сейчас работа**. Пробелы, готовность, активные пакеты, режим
+  вовлечённости пользователя.
+
+Композитный снимок состояния проекта — `ProjectState`:
+
+```python
+class ProjectState(BaseModel):
+    manifest: ProjectManifest         # иммутабельный seed проекта
+    knowledge: ProjectKnowledge       # Layer A
+    process: ProcessState             # Layer B
+```
+
+Состав `ProjectManifest` (иммутабельные данные проекта, хранится в
+`project.json`):
+
+```python
+class ProjectManifest(BaseModel):
+    project_id: UUID
+    name: str
+    objective_ref: str
+    business_request: str
+    created_at: datetime
+```
 
 ---
 
-## Содержимое
+## Слой A — Знания о проекте
+
+Однородная коллекция положений. У каждого положения одна и та же
+операционная форма; роль определяется полем `type`.
 
 ```python
-class ProblemState(BaseModel):
-    project_id: UUID
-    objective_ref: str
+class ProjectKnowledge(BaseModel):
+    positions: dict[str, Position]   # по identifier'у
+    version: int
+    updated_at: datetime
+```
+
+### Положение проекта
+
+```python
+class Position(BaseModel):
+    identifier: str
+    type: Literal["fact", "assumption", "decision", "constraint", "risk"]
+    statement: str                                  # формулировка простым языком
+    visibility: Literal["principal", "architectural", "technical"]
+    scope: Literal["global", "domain", "local"]
+    source: Literal["input", "user", "system", "clarification", "artifact"]
+    taken_by: str                                   # actor (user_id, "system", "clarification:<id>", ...)
+    taken_at: datetime
+    confidence: float                               # 0.0 .. 1.0
+    tags: tuple[str, ...]
+    alternatives: tuple[PositionAlternative, ...]   # рассматривавшиеся варианты
+    related_position_ids: tuple[str, ...]
+    status: Literal["active", "superseded", "rejected"]
+    supersedes: str | None
+    superseded_at: datetime | None
+    rejection_reason: str | None
+```
+
+Типы положений:
+
+- **fact** — что-то истинное (извлечено из входа или подтверждено).
+- **assumption** — выведено системой, не подтверждено пользователем.
+- **decision** — выбрано между альтернативами.
+- **constraint** — жёсткая граница (бюджет, срок, регуляторика).
+- **risk** — известная опасность.
+
+Тип — роль положения в понимании проекта, не подкласс. Операционная
+форма одна на все типы; это даёт однородные проекции и одинаковое UI.
+
+### Уровни видимости
+
+- `principal` — бизнес-цель, главное ограничение, целевой пользователь.
+- `architectural` — выбор подхода, контур решения, способ интеграции.
+- `technical` — деталь схемы данных, библиотека, тонкости поведения.
+
+Уровень видимости влияет на:
+
+- **UI:** principal-положения в журнале всегда сверху, technical —
+  свёрнуты по умолчанию.
+- **Engagement-алинейка:** см. `12_clarification_escalation.md`. Чем
+  ниже уровень, тем выше engagement требуется для проактивного вопроса.
+
+Право видеть и оспорить положение **не зависит** от engagement-режима.
+
+### Цель проекта как положение
+
+Цель проекта живёт в Слое A с стабильным идентификатором
+`project.goal`, типом `fact`, видимостью `principal`, scope `global`.
+Это не отдельное поле в state — это положение в общей коллекции.
+
+Удобный аксессор `ProjectKnowledge.goal_statement() -> str | None`
+возвращает формулировку цели или `None`, если не задана.
+
+### Патчи слоя A
+
+```text
+UpsertPositionPatch        # добавить или заменить по identifier'у
+SupersedePositionPatch     # заменить с историей: старое → superseded
+RejectPositionPatch        # явно отвергнуть (без замены)
+ElevateVisibilityPatch     # поднять уровень видимости при оспаривании
+```
+
+Применяются через `apply_knowledge_patch(knowledge, patch) -> ProjectKnowledge`.
+
+---
+
+## Слой B — Состояние процесса
+
+Динамическое состояние работы. Не содержит знаний о проекте.
+
+```python
+class ProcessState(BaseModel):
     root_task_id: UUID | None
-    business_request: str
-    goal: str | None
-    facts: dict[str, FactRecord]
-    assumptions: dict[str, AssumptionRecord]
-    constraints: dict[str, ConstraintRecord]
-    risks: dict[str, RiskRecord]
-    gaps: dict[str, GapRecord]
-    decisions: dict[str, DecisionRecord]
+    active_gaps: dict[str, GapRecord]
     readiness: dict[str, ReadinessRecord]
     domain_signals: dict[str, DomainSignalRecord]
     active_domain_packs: dict[str, ActiveDomainPackRecord]
     active_methodology_packs: dict[str, ActiveMethodologyPackRecord]
     clarification_mode: Literal["autopilot", "balanced", "control", "expert"]
-    clarification_requests: dict[str, ClarificationRequestRecord]
     version: int
+    updated_at: datetime
 ```
 
----
-
-## Ключевые записи
-
-Gap:
+### Ключевые записи
 
 ```python
 class GapRecord(BaseModel):
-    id: str
+    identifier: str
     title: str
     description: str
     severity: Literal["low", "medium", "high", "critical"]
     blocking: bool
-    related_task_ids: list[UUID]
-    related_artifact_ids: list[UUID]
-```
+    opened_at: datetime
+    closed_at: datetime | None
 
-Readiness:
-
-```python
 class ReadinessRecord(BaseModel):
-    id: str
+    dimension: str
     status: Literal["missing", "partial", "ready", "waived"]
     blocking: bool
     confidence: float
-    evidence_refs: list[str]
-```
+    evidence: tuple[str, ...]
+    updated_at: datetime
 
-Активный доменный пакет:
-
-```python
 class ActiveDomainPackRecord(BaseModel):
     ref: str
+    domain: str
     status: Literal["candidate", "active", "disabled"]
-    source: Literal["llm_detector", "operator", "artifact", "system"]
+    source: Literal["llm_detector", "operator", "artifact", "system", "bootstrap"]
     rationale: str
     confidence: float
-```
+    activated_at: datetime
 
-Активный методологический пакет:
-
-```python
 class ActiveMethodologyPackRecord(BaseModel):
     ref: str
     status: Literal["active", "disabled"]
-    source: Literal["operator", "objective_default", "system"]
+    source: Literal["operator", "objective_default", "system", "bootstrap"]
     rationale: str
     activated_at: datetime
 ```
 
-В MVP активным может быть не более одного методологического пакета. Множественная активация — расширение после MVP.
+В MVP активным может быть не более одного `methodology_pack` на проект
+(PS10).
 
-Уточнение:
+### Алинейка engagement-видимости
+
+`ProcessState.should_ask_user_for(visibility: VisibilityLevel) -> bool`
+возвращает, надо ли проактивно выносить положение этого уровня на
+пользователя:
+
+| Режим | Проактивно спрашиваются уровни |
+|---|---|
+| `autopilot` | `principal` |
+| `balanced` | `principal`, `architectural` |
+| `control` | `principal`, `architectural` |
+| `expert` | `principal`, `architectural`, `technical` |
+
+Право пользователя посмотреть и оспорить любое положение —
+**универсально** и не регулируется engagement-режимом.
+
+### Патчи слоя B
+
+```text
+SetRootTaskPatch
+UpsertGapPatch / CloseGapPatch
+UpsertReadinessPatch
+DetectDomainSignalPatch
+ActivateDomainPackPatch / DisableDomainPackPatch
+ActivateMethodologyPackPatch / DisableMethodologyPackPatch
+SetClarificationModePatch
+```
+
+Применяются через `apply_process_patch(state, patch) -> ProcessState`.
+
+---
+
+## События состояния
+
+История изменений обоих слоёв — единый журнал `StateEvent`:
 
 ```python
-class ClarificationRequestRecord(BaseModel):
-    id: str
-    status: Literal["open", "answered", "assumed", "deferred", "cancelled"]
-    priority: Literal["low", "medium", "high", "critical"]
-    question: str
+class StateEvent(BaseModel):
+    layer: Literal["knowledge", "process"]
+    version: int
+    patch_type: str
+    payload: dict[str, object]
+    actor: str
     reason: str
-    impact: str
-    blocking_scope: Literal["none", "task", "subtree", "objective"]
-    related_task_ids: list[UUID]
-    related_artifact_refs: list[str]
-    selected_answer: str | None
-    accepted_assumption: str | None
+    created_at: datetime
 ```
 
----
-
-## Модель изменений
-
-`ProblemState` изменяется только через события.
-
-Разрешенные операции:
-
-```text
-set_goal
-add_fact
-upsert_assumption
-upsert_constraint
-upsert_risk
-open_gap
-close_gap
-upsert_decision
-upsert_readiness
-detect_domain_signal
-activate_domain_pack
-disable_domain_pack
-activate_methodology_pack
-disable_methodology_pack
-set_root_task
-set_clarification_mode
-open_clarification
-answer_clarification
-accept_clarification_assumption
-close_clarification
-```
-
-Исполнитель не применяет изменение напрямую. Он может только предложить изменения, которые слой управления процессом применит после валидации.
-
----
-
-## Активация доменов
-
-```text
-найден доменный сигнал
-  -> кандидатный доменный пакет
-  -> решение об активации
-  -> активный доменный пакет в ProblemState
-  -> раскрытие графа применяет доменные расширения
-```
-
-Доменный сигнал сам по себе не обязан автоматически активировать доменный пакет, если политика требует подтверждения.
+Хронологический обход позволяет восстановить любое состояние на любой
+момент времени. Поле `layer` различает, к какому слою относилось
+изменение.
 
 ---
 
 ## Что читает планировщик
 
-Планировщик использует:
+Из Слоя A:
 
-- исходный бизнес-запрос;
-- факты, ограничения и риски;
+- цель проекта (через `goal_statement()`);
+- активные положения для admission'а (через тип/scope/tags по нужде).
+
+Из Слоя B:
+
 - открытые блокирующие пробелы;
-- решения;
-- готовность;
-- активные доменные пакеты;
-- доменные сигналы.
-- открытые блокирующие уточнения.
+- активные domain/methodology packs;
+- readiness для каждого измерения;
+- открытые блокирующие уточнения (через runtime).
 
-Планировщик не использует `ProblemState` как хранилище маршрута.
+Из manifest'a:
+
+- `business_request` для шаблонов задач, требующих исходный текст.
+
+Планировщик не использует ни один из слоёв как хранилище маршрута.
 
 ---
 
-## Уточнения и допущения
+## Что хранит, чего не хранит
 
-`ProblemState` хранит не сырой диалог, а нормализованное состояние уточнений:
-
-- какие вопросы сейчас открыты;
-- какие ответы уже получены;
-- какие допущения приняты системой;
-- какие задачи или артефакты затронуты;
-- какой режим участия пользователя выбран.
-
-Сырые кандидаты уточнений и технические трассы хранятся в журнале уточнений и событий. В `ProblemState` попадает только то, что влияет на понимание проекта и планирование.
-
-Ответ пользователя может быть применен к `ProblemState` только через проверенные эффекты:
-
-- факт;
-- ограничение;
-- решение;
-- риск;
-- пробел;
-- готовность;
-- доменный сигнал или активный доменный пакет;
-- допущение.
-
-Открытый блокирующий вопрос считается управляемым пробелом. Он блокирует только указанную область графа, а не весь проект автоматически.
+| Слой | Хранит | Не хранит |
+|---|---|---|
+| `ProjectManifest` | identity-данные (id, имя, objective, исходный запрос, время создания) | состояние работы; знание |
+| `ProjectKnowledge` | положения проекта (факты/допущения/решения/ограничения/риски) | граф задач; маршрут; ход работы |
+| `ProcessState` | пробелы/готовность/активные паки/режим | конкретные факты; формулировку цели |
+| Event log | хронологию патчей со ссылками на actor/reason | финальный снимок (он в snapshot-таблицах) |
 
 ---
 
@@ -196,13 +266,17 @@ close_clarification
 
 | ID | Правило |
 |---|---|
-| PS1 | Все изменения добавляются через события, без перезаписи истории. |
+| PS1 | Все изменения проходят через патчи; прямая мутация запрещена. |
 | PS2 | Готовность `ready` требует подтверждающих свидетельств. |
-| PS3 | Блокирующий пробел влияет на допуск к запуску. |
-| PS4 | Активный доменный пакет должен существовать в реестре. |
-| PS5 | `ProblemState` не хранит граф задач. |
-| PS6 | `ProblemState` не хранит линейный маршрут выполнения. |
-| PS7 | Ответ пользователя применяется как проверенный эффект, а не как произвольная мутация состояния. |
-| PS8 | Открытое уточнение должно иметь связанную область влияния. |
-| PS9 | Активный `methodology_pack` должен существовать в реестре. |
-| PS10 | В MVP — не более одного активного `methodology_pack` на проект. |
+| PS3 | Блокирующий пробел влияет на admission к запуску. |
+| PS4 | Активный domain pack должен существовать в реестре. |
+| PS5 | `ProjectState` не хранит граф задач. |
+| PS6 | `ProjectState` не хранит линейный маршрут выполнения. |
+| PS7 | Ответ пользователя применяется как разрешённое изменение слоя A (положение). |
+| PS8 | Положение со `status='superseded'` имеет `superseded_at`. |
+| PS9 | Активный methodology pack должен существовать в реестре. |
+| PS10 | В MVP — не более одного активного methodology pack на проект. |
+| PS11 | Артефакты ссылаются на использованные положения слоя A через их identifier'ы. |
+| PS12 | Слои A и B имеют независимые версии и независимые event-потоки. |
+| PS13 | Цель проекта живёт в слое A как положение с identifier'ом `project.goal`. |
+| PS14 | Уровень видимости положения не может быть понижен (только повышен через `ElevateVisibilityPatch`). |

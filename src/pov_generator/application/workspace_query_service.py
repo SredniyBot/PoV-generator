@@ -45,7 +45,8 @@ from ..domain.workspace_views import (
     TaskNodeView,
     TimelineEntryView,
 )
-from ..infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
+from ..domain.project_state import ProjectManifest, ProjectState
+from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
 from .registry_service import RegistryService
 from .workspace_catalog import WorkspaceCatalog, WorkspaceRef
@@ -58,7 +59,7 @@ class ProjectContext:
     workspace_ref: WorkspaceRef
     workspace: Path
     manifest: ProjectManifest
-    state: object
+    state: ProjectState
     snapshot: RegistrySnapshot
 
 
@@ -99,7 +100,7 @@ class WorkspaceQueryService:
                     project_id=context.manifest.project_id,
                     name=context.manifest.name,
                     status_label=situation.status_label,
-                    updated_at=context.state.updated_at,
+                    updated_at=context.state.process.updated_at,
                     has_blockers=situation.blocking,
                     current_step_title=current_title,
                 )
@@ -188,12 +189,12 @@ class WorkspaceQueryService:
         return ProjectShellView(
             project_id=context.manifest.project_id,
             name=context.manifest.name,
-            business_request=context.state.business_request,
+            business_request=context.state.manifest.business_request,
             objective_ref=context.manifest.objective_ref,
-            active_domain_packs=tuple(sorted(context.state.active_domain_pack_records.keys())),
-            goal=context.state.goal,
+            active_domain_packs=tuple(sorted(context.state.process.active_domain_pack_records.keys())),
+            goal=context.state.knowledge.goal_statement(),
             status_label=situation.status_label,
-            updated_at=context.state.updated_at,
+            updated_at=context.state.process.updated_at,
         )
 
     def project_task_graph(self, project_id: str) -> ProjectTaskGraphView:
@@ -230,7 +231,7 @@ class WorkspaceQueryService:
         )
         return ProjectClarificationsView(
             project_id=context.manifest.project_id,
-            mode=context.state.clarification_mode,
+            mode=context.state.process.clarification_mode,
             open_count=sum(1 for item in items if item.status == "open"),
             answered_count=sum(1 for item in items if item.status == "answered"),
             assumed_count=sum(1 for item in items if item.status == "assumed"),
@@ -267,10 +268,22 @@ class WorkspaceQueryService:
             description=artifact.description,
             created_at=artifact.created_at,
             created_by_task_id=artifact.created_by_task_id,
-            template_ref=str(artifact.metadata.get("template_ref")) if artifact.metadata.get("template_ref") else None,
+            template_ref=artifact.metadata.template_ref,
             json_content=self._runtime.load_artifact_content(context.workspace, artifact.artifact_id),
             markdown_content=markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else None,
             validations=self._artifact_validations(context.workspace, artifact.artifact_id),
+            # Metadata Этапов 1 + 5 (раньше не выводилась в UI).
+            artifact_kind=artifact.artifact_kind,
+            provider=artifact.metadata.provider,
+            model=artifact.metadata.model,
+            complexity=artifact.metadata.complexity,
+            methodology_pack_ref=artifact.metadata.methodology_pack_ref,
+            merge_strategy=artifact.metadata.merge_strategy,
+            used_position_ids=artifact.metadata.used_position_ids,
+            input_artifact_ids=artifact.relations.input_artifact_ids,
+            parent_artifact_id=artifact.relations.parent_artifact_id,
+            is_superseded=artifact.is_superseded,
+            overall_confidence=artifact.metadata.overall_confidence,
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:
@@ -317,21 +330,61 @@ class WorkspaceQueryService:
         requests = list(self._runtime.list_clarification_requests(context.workspace))
         gates_required = len(objective.done_gate_refs)
         gates_passed = 0
+        # Артефакты по ролям — нужны для проверки прохождения automated-gate'ов.
+        artifacts_by_role: dict[str, list] = {}
+        for art in self._runtime.list_artifacts(context.workspace):
+            artifacts_by_role.setdefault(art.artifact_role, []).append(art)
+
         for gate_ref in objective.done_gate_refs:
             try:
                 gate = snapshot.resolve_quality_gate(gate_ref)
             except Exception:
                 continue
-            if gate.check_type != "human_approval":
-                gates_passed += 1
+
+            if gate.check_type == "human_approval":
+                # Засчитывается только если есть approved-clarification на этот gate.
+                if any(
+                    r.source_type == "quality_gate"
+                    and r.source_id == gate.ref.as_string()
+                    and r.status == "answered"
+                    and "approved" in r.selected_option_ids
+                    for r in requests
+                ):
+                    gates_passed += 1
                 continue
-            if any(
-                r.source_type == "quality_gate"
-                and r.source_id == gate.ref.as_string()
-                and r.status == "answered"
-                and "approved" in r.selected_option_ids
-                for r in requests
-            ):
+
+            # Не-human gate'ы — automated_review и потенциальные другие.
+            # Раньше засчитывались UNCONDITIONALLY, из-за чего проект стартовал
+            # с «1/2 проверок» ещё до того как что-то реально выполнилось.
+            # Теперь проверяем фактическое прохождение:
+            #   1) все required-артефакты gate'а должны существовать в проекте;
+            #   2) если артефакт — review_report, его overall_status должен быть
+            #      "passed" / "passed_with_remarks" (не "failed").
+            required_roles = list(gate.required_artifact_roles) if hasattr(gate, "required_artifact_roles") else []
+            all_present = all(role in artifacts_by_role for role in required_roles) if required_roles else False
+            if not all_present:
+                continue
+
+            # Дополнительная семантическая проверка для gate'ов, привязанных к review_report.
+            review_ok = True
+            if "review_report" in required_roles:
+                review_records = artifacts_by_role.get("review_report") or []
+                if not review_records:
+                    review_ok = False
+                else:
+                    latest_review = max(review_records, key=lambda a: a.created_at)
+                    try:
+                        import json as _json
+                        payload = _json.loads(
+                            self._runtime.load_artifact_content(
+                                context.workspace, latest_review.artifact_id,
+                            )
+                        )
+                        status = str(payload.get("overall_status", "")).lower()
+                        review_ok = status in {"passed", "passed_with_remarks"}
+                    except Exception:
+                        review_ok = False
+            if review_ok:
                 gates_passed += 1
 
         # Критичные открытые уточнения
@@ -369,7 +422,7 @@ class WorkspaceQueryService:
             for a in primary_artifacts
         )
 
-        active_methodology = next(iter(state.active_methodology_pack_records.keys()), None)
+        active_methodology = next(iter(state.process.active_methodology_pack_records.keys()), None)
 
         # Stage summary — простое описание
         if artifacts_ready == 0:
@@ -402,27 +455,64 @@ class WorkspaceQueryService:
             critical_clarifications=critical_items,
             key_artifacts=key_artifacts,
             active_methodology=active_methodology,
-            active_domain_packs=tuple(sorted(state.active_domain_pack_records.keys())),
-            clarification_mode=state.clarification_mode,
-            updated_at=state.updated_at,
+            active_domain_packs=tuple(sorted(state.process.active_domain_pack_records.keys())),
+            clarification_mode=state.process.clarification_mode,
+            updated_at=state.process.updated_at,
         )
 
     def project_state(self, project_id: str) -> ProjectStateView:
         context = self._load_context(project_id)
         state = context.state
+        process = state.process
+        knowledge = state.knowledge
         return ProjectStateView(
-            project_id=state.project_id,
-            goal=state.goal,
-            active_gaps=tuple(sorted((to_primitive(item) for item in state.active_gaps.values()), key=lambda item: item["identifier"])),
-            assumptions=tuple(sorted((to_primitive(item) for item in state.assumptions.values()), key=lambda item: item["identifier"])),
-            decisions=tuple(sorted((to_primitive(item) for item in state.decisions.values()), key=lambda item: item["identifier"])),
-            readiness=tuple(sorted((to_primitive(item) for item in state.readiness.values()), key=lambda item: item["dimension"])),
-            known_facts=tuple(sorted((to_primitive(item) for item in state.known_facts.values()), key=lambda item: item["identifier"])),
-            active_domain_packs=tuple(sorted((to_primitive(item) for item in state.active_domain_pack_records.values()), key=lambda item: item["ref"])),
-            active_methodology_packs=tuple(sorted((to_primitive(item) for item in state.active_methodology_pack_records.values()), key=lambda item: item["ref"])),
-            clarification_mode=state.clarification_mode,
-            root_task_id=state.root_task_id,
-            updated_at=state.updated_at,
+            project_id=state.manifest.project_id,
+            goal=knowledge.goal_statement(),
+            active_gaps=tuple(
+                sorted(
+                    (to_primitive(item) for item in process.active_gaps.values()),
+                    key=lambda item: item["identifier"],
+                )
+            ),
+            assumptions=tuple(
+                sorted(
+                    (to_primitive(item) for item in knowledge.by_type("assumption")),
+                    key=lambda item: item["identifier"],
+                )
+            ),
+            decisions=tuple(
+                sorted(
+                    (to_primitive(item) for item in knowledge.by_type("decision")),
+                    key=lambda item: item["identifier"],
+                )
+            ),
+            readiness=tuple(
+                sorted(
+                    (to_primitive(item) for item in process.readiness.values()),
+                    key=lambda item: item["dimension"],
+                )
+            ),
+            known_facts=tuple(
+                sorted(
+                    (to_primitive(item) for item in knowledge.by_type("fact")),
+                    key=lambda item: item["identifier"],
+                )
+            ),
+            active_domain_packs=tuple(
+                sorted(
+                    (to_primitive(item) for item in process.active_domain_pack_records.values()),
+                    key=lambda item: item["ref"],
+                )
+            ),
+            active_methodology_packs=tuple(
+                sorted(
+                    (to_primitive(item) for item in process.active_methodology_pack_records.values()),
+                    key=lambda item: item["ref"],
+                )
+            ),
+            clarification_mode=process.clarification_mode,
+            root_task_id=process.root_task_id,
+            updated_at=process.updated_at,
         )
 
     def project_debug(self, project_id: str) -> ProjectDebugView:
@@ -574,7 +664,7 @@ class WorkspaceQueryService:
                     is_current=(idx == latest_idx),
                     created_at=a.created_at,
                     created_by_task_id=a.created_by_task_id,
-                    parent_artifact_id=a.parent_artifact_id,
+                    parent_artifact_id=a.relations.parent_artifact_id,
                     description=a.description,
                 )
                 for idx, a in enumerate(group)
@@ -868,7 +958,7 @@ class WorkspaceQueryService:
             workspace_ref=workspace_ref,
             workspace=workspace,
             manifest=workspace_ref.manifest,
-            state=self._runtime.load_problem_state(workspace),
+            state=self._runtime.load_project_state(workspace),
             snapshot=snapshot,
         )
 
@@ -894,7 +984,7 @@ class WorkspaceQueryService:
                 for option in request.options
             ),
             recommended_option_id=request.recommended_option_id,
-            min_participation_mode=request.min_participation_mode,
+            visibility=request.visibility,
             default_assumption=request.default_assumption,
             blocking_scope=request.blocking_scope,
             decision_owner_role=request.decision_owner_role,
@@ -935,6 +1025,7 @@ class WorkspaceQueryService:
                 retryable=task.status == "failed",
                 is_current=task.task_id == current_task_id,
                 blocking_clarification_count=clarification_counts.get(task.task_id, 0),
+                updated_at=task.updated_at,
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
             )
 
@@ -957,7 +1048,7 @@ class WorkspaceQueryService:
                     related_id=task.task_id,
                 )
             )
-        for gap in context.state.active_gaps.values():
+        for gap in context.state.process.active_gaps.values():
             if not gap.blocking:
                 continue
             blockers.append(
@@ -1075,25 +1166,30 @@ class WorkspaceQueryService:
                 ),
             )
         )
-        for event in self._runtime.list_problem_events(context.workspace):
-            if event.patch_type == "SetGoalPatch":
-                entries.append(
-                    (
-                        (event.created_at, 1),
-                        TimelineEntryView(
-                            sequence=0,
-                            kind="goal_updated",
-                            title="Цель проекта уточнена",
-                            summary=str(event.payload.get("text", "Цель обновлена.")),
-                            status="success",
-                            created_at=event.created_at,
-                            detail_view="state",
-                            entity_type="problem_state",
-                            entity_id=context.manifest.project_id,
-                        ),
+        for event in self._runtime.list_state_events(context.workspace):
+            # B5: goal теперь — положение Layer A с фиксированным id; ловим
+            # UpsertPositionPatch именно для GOAL_POSITION_ID.
+            if event.layer == "knowledge" and event.patch_type == "UpsertPositionPatch":
+                position_payload = event.payload.get("position") or {}
+                if isinstance(position_payload, dict) and position_payload.get("identifier") == "project.goal":
+                    entries.append(
+                        (
+                            (event.created_at, 1),
+                            TimelineEntryView(
+                                sequence=0,
+                                kind="goal_updated",
+                                title="Цель проекта уточнена",
+                                summary=str(position_payload.get("statement", "Цель обновлена.")),
+                                status="success",
+                                created_at=event.created_at,
+                                detail_view="state",
+                                entity_type="project_knowledge",
+                                entity_id=context.manifest.project_id,
+                            ),
+                        )
                     )
-                )
-            elif event.patch_type == "ActivateDomainPackPatch":
+                continue
+            if event.patch_type == "ActivateDomainPackPatch":
                 pack_ref = str(event.payload.get("pack_ref", ""))
                 entries.append(
                     (
@@ -1312,33 +1408,35 @@ class WorkspaceQueryService:
         return sha256(normalized.encode("utf-8")).hexdigest()
 
     def task_methodology_trace(self, project_id: str, task_id: str) -> dict:
+        """Reasoning + methodology trace задачи.
+
+        Этап 1.1: reasoning и methodology_trace больше не отдельные
+        артефакты, они живут в ``ArtifactMetadata`` primary артефакта,
+        созданного задачей. Возвращаем их оттуда.
+        """
         context = self._load_context(project_id)
         artifacts = list(self._runtime.list_artifacts(context.workspace))
-        trace_artifact = None
+        primary_artifact = None
         for artifact in artifacts:
-            if artifact.created_by_task_id == task_id and artifact.artifact_kind == "trace":
-                trace_artifact = artifact
+            if (
+                artifact.created_by_task_id == task_id
+                and artifact.artifact_kind == "primary"
+                and not artifact.is_superseded
+            ):
+                primary_artifact = artifact
                 break
-        if trace_artifact is None:
+        if primary_artifact is None:
             return {
                 "task_id": task_id,
                 "trace": None,
                 "reasoning": None,
-                "message": "Для задачи не найден methodology_trace.",
+                "message": "Для задачи не найден primary артефакт с методологическим reasoning.",
             }
-        import json as _json
-        trace_payload = _json.loads(self._runtime.load_artifact_content(context.workspace, trace_artifact.artifact_id))
-        reasoning_artifact = None
-        for artifact in artifacts:
-            if artifact.created_by_task_id == task_id and artifact.artifact_kind == "reasoning":
-                reasoning_artifact = artifact
-                break
-        reasoning_payload = None
-        if reasoning_artifact is not None:
-            reasoning_payload = _json.loads(self._runtime.load_artifact_content(context.workspace, reasoning_artifact.artifact_id))
+        trace_payload = dict(primary_artifact.metadata.methodology_trace) or None
+        reasoning_payload = dict(primary_artifact.metadata.reasoning) or None
         # Найдём execution_run, в котором эта задача была исполнена. На один
         # taskId может прийтись несколько runs (ретраи) — берём последний
-        # (по created_at, list_execution_runs уже сортирует ASC).
+        # (list_execution_runs сортирует по created_at ASC).
         execution_summary: dict | None = None
         for run in self._runtime.list_execution_runs(context.workspace):
             if run.get("task_id") == task_id:
@@ -1354,7 +1452,6 @@ class WorkspaceQueryService:
             "task_id": task_id,
             "trace": trace_payload,
             "reasoning": reasoning_payload,
-            "trace_artifact_id": trace_artifact.artifact_id,
-            "reasoning_artifact_id": reasoning_artifact.artifact_id if reasoning_artifact else None,
+            "primary_artifact_id": primary_artifact.artifact_id,
             "execution": execution_summary,
         }

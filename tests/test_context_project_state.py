@@ -30,11 +30,9 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.domain.artifacts import ArtifactRecord
 from pov_generator.domain.clarifications import ClarificationOption
-from pov_generator.domain.problem_state import (
-    AddFactPatch,
-    UpsertAssumptionPatch,
-    UpsertGapPatch,
-)
+from pov_generator.domain.positions import Position
+from pov_generator.domain.process_state import UpsertGapPatch
+from pov_generator.domain.project_knowledge import UpsertPositionPatch
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -125,7 +123,7 @@ def test_context_includes_decisions_from_clarifications(tmp_path: Path) -> None:
             ClarificationOption(option_id="node", label="Node.js + Express"),
         ),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     decisions = clar_service.register_candidates(workspace, (candidate,))
     request_id = decisions[0].request_id
@@ -179,7 +177,7 @@ def test_context_filters_irrelevant_decisions_into_global_summary(tmp_path: Path
         confidence_without_user=0.4,
         options=(ClarificationOption(option_id="opt", label="Все"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [decision] = clar_service.register_candidates(workspace, (candidate,))
     clar_service.answer_clarification(
@@ -207,17 +205,24 @@ def test_context_includes_assumptions_and_gaps(tmp_path: Path) -> None:
     ctx = ContextService(runtime)
     task = _first_leaf_task(runtime, workspace, reg)
 
-    runtime.apply_problem_patch(
+    runtime.apply_knowledge_patch(
         workspace,
-        UpsertAssumptionPatch(
-            assumption_id="a1",
-            statement="Используется один центральный Postgres.",
-            source="system",
+        UpsertPositionPatch(
+            position=Position(
+                identifier="a1",
+                type="assumption",
+                statement="Используется один центральный Postgres.",
+                visibility="architectural",
+                scope="global",
+                source="system",
+                taken_by="test",
+                taken_at="2026-05-13T10:00:00+00:00",
+            )
         ),
         actor="test",
         reason="add assumption",
     )
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace,
         UpsertGapPatch(
             gap_id="g1",
@@ -280,7 +285,7 @@ def test_answer_triggers_auto_retry_of_failed_task(tmp_path: Path) -> None:
         confidence_without_user=0.3,
         options=(ClarificationOption(option_id="opt", label="3 млн"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [decision] = clar_service.register_candidates(workspace, (candidate,))
     clar_service.answer_clarification(
@@ -315,7 +320,7 @@ def test_answer_does_not_retry_completed_task(tmp_path: Path) -> None:
         confidence_without_user=0.3,
         options=(ClarificationOption(option_id="opt", label="3 млн"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [decision] = clar_service.register_candidates(workspace, (candidate,))
     clar_service.answer_clarification(
@@ -343,8 +348,6 @@ def test_creating_second_artifact_same_role_supersedes_first(tmp_path: Path) -> 
         artifact_format="json",
         artifact_kind="primary",
         created_by_task_id=task.task_id,
-        parent_artifact_id=None,
-        metadata={},
         storage_path="artifacts/art-v1.json",
         created_at="2026-05-11T10:00:00+00:00",
     )

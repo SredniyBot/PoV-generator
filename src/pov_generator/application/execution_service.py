@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
-from ..domain.artifacts import ArtifactRecord
+from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient, model_for_complexity
@@ -23,6 +23,7 @@ from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
 from .complexity_selector_service import select_complexity
 from .context_service import ContextService
+from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
 
@@ -54,8 +55,8 @@ class ExecutionService:
         provider: str | None = None,
         model: str | None = None,
     ) -> ExecutionBundle:
-        manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
+        state = self._runtime.load_project_state(workspace)
+        manifest = state.manifest
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
         context_result = self._context_service.build_for_task(workspace, snapshot, task_id)
@@ -79,33 +80,49 @@ class ExecutionService:
         else:
             active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
         active_methodology: MethodologyPackSpec | None = None
-        for ref in state.active_methodology_pack_records.keys():
+        for ref in state.process.active_methodology_pack_records.keys():
             try:
                 active_methodology = snapshot.resolve_methodology_pack(ref)
                 break
             except Exception:
                 continue
+        active_domain_refs = tuple(sorted(state.process.active_domain_pack_records.keys()))
 
         system_prompt, user_prompt = self._build_prompt(
             template_name=template.name,
             task_summary=template.summary,
             artifact_role=artifact_role,
-            domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
+            domain_pack_refs=active_domain_refs,
             current_step_title=task.title,
             context_manifest=context_manifest,
         )
 
-        if active_provider == "stub":
+        # Этап 5: если шаблон помечен как merge-задача со strategy=structural,
+        # обходим LLM/stub и собираем результат детерминированно из входных
+        # артефактов. Strategy=synthetic идёт обычным LLM-путём; metadata
+        # отметит, что это была merge-операция. Strategy=hybrid зарезервирована.
+        if template.merge is not None and template.merge.strategy == "structural":
+            payload = self._execute_structural_merge(
+                workspace=workspace,
+                context_manifest=context_manifest,
+                merge_config=template.merge,
+            )
+            live_reasoning = None
+        elif template.merge is not None and template.merge.strategy == "hybrid":
+            raise ConflictError(
+                f"merge.strategy=hybrid не реализован в MVP (template={template.ref.as_string()})"
+            )
+        elif active_provider == "stub":
             payload = self._execute_stub(
                 artifact_role=artifact_role,
                 context_manifest=context_manifest,
-                business_request=state.business_request,
-                goal=state.goal,
-                domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
+                business_request=state.manifest.business_request,
+                goal=state.knowledge.goal_statement(),
+                domain_pack_refs=active_domain_refs,
             )
             live_reasoning = None
         elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
-            primary_schema = artifact_schema(artifact_role, tuple(sorted(state.active_domain_pack_records.keys())))
+            primary_schema = artifact_schema(artifact_role, active_domain_refs)
             # W3.1: выбор между single_call (один LLM-вызов на primary+reasoning)
             # и per_stage_cot (отдельный вызов на каждую стадию + финальный
             # на primary с накопительным контекстом). Mode читается из
@@ -137,6 +154,39 @@ class ExecutionService:
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
 
+        # Этап 1.1: reasoning и methodology trace больше не отдельные
+        # артефакты — они становятся метаинформацией primary артефакта.
+        # Этап 1.4: input_artifact_ids выводим из context_manifest items
+        # типа "artifact"; used_position_ids — placeholder, полностью
+        # подключается в Этапе 2 (выборка положений).
+        execution_run_id = str(uuid.uuid4())
+        reasoning_payload: dict[str, object] = {}
+        methodology_trace_payload: dict[str, object] = {}
+        methodology_candidates: tuple = ()
+        if active_methodology is not None:
+            reasoning_payload = self._build_reasoning_payload(
+                workspace=workspace,
+                task=task,
+                methodology=active_methodology,
+                complexity=complexity_value,
+                live_reasoning=live_reasoning,
+            )
+            evaluation = evaluate_methodology_rules(
+                methodology=active_methodology,
+                complexity=complexity_value,
+                reasoning=reasoning_payload,
+                project_id=manifest.project_id,
+                task_id=task.task_id,
+            )
+            methodology_trace_payload = self._build_methodology_trace_payload(
+                methodology=active_methodology,
+                complexity=complexity_value,
+                evaluation=evaluation,
+            )
+            methodology_candidates = evaluation.candidates
+
+        input_artifact_ids = self._extract_input_artifact_ids(context_manifest)
+
         artifact_id = str(uuid.uuid4())
         # B4: при retry или повторном создании артефакта того же role
         # текущей задачи — связываем версии через parent_artifact_id и
@@ -152,15 +202,36 @@ class ExecutionService:
             artifact_id=artifact_id,
             project_id=manifest.project_id,
             artifact_role=artifact_role,
-            title=f"{template.name} ({artifact_role})",
+            # Раньше склеивали `<template.name> (<role_id>)` — техническое id
+            # роли в скобках захламляло список артефактов в UI и не несло
+            # информации для пользователя. Теперь title = чистое название
+            # шаблона задачи; роль артефакта показывается отдельной мета-меткой
+            # в карточке.
+            title=template.name,
             description=f"Артефакт, созданный задачей {task.task_key}",
             artifact_format="json",
             artifact_kind="primary",
             created_by_task_id=task.task_id,
-            parent_artifact_id=previous_active.artifact_id if previous_active else None,
-            metadata={"template_ref": template.ref.as_string()},
             storage_path=f"artifacts/{artifact_id}.json",
             created_at=utc_now_iso(),
+            relations=ArtifactRelations(
+                parent_artifact_id=previous_active.artifact_id if previous_active else None,
+                input_artifact_ids=input_artifact_ids,
+            ),
+            metadata=ArtifactMetadata(
+                template_ref=template.ref.as_string(),
+                provider=active_provider,
+                model=active_model,
+                complexity=complexity_value,
+                methodology_pack_ref=(
+                    active_methodology.ref.as_string() if active_methodology else None
+                ),
+                execution_run_id=execution_run_id,
+                merge_strategy=(template.merge.strategy if template.merge else None),
+                reasoning=reasoning_payload,
+                methodology_trace=methodology_trace_payload,
+                used_position_ids=context_manifest.used_position_ids,
+            ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
@@ -169,7 +240,22 @@ class ExecutionService:
             # не нужна (worst case — оба current, query вернёт latest по
             # created_at). После этого UI и view-методы видят только новый.
             self._runtime.mark_artifact_superseded(workspace, previous_active.artifact_id)
-        markdown_render = render_markdown(artifact_role, payload)
+        # Markdown-render может ругаться на неполный payload (часто такое
+        # бывает при структурных merge'ах и тестовых сценариях). JSON
+        # артефакта валидируется отдельно — поэтому фатально валить
+        # задачу из-за визуального рендеринга не стоит. Fallback —
+        # минимальный markdown с заголовком и JSON-снимком.
+        try:
+            markdown_render = render_markdown(artifact_role, payload)
+        except (KeyError, TypeError):
+            markdown_render = (
+                f"# {artifact_role}\n\n"
+                "_Минимальный рендер: расширенный шаблон не смог отрендерить "
+                "содержимое артефакта (вероятно, не все ожидаемые поля "
+                "заполнены). См. JSON-версию артефакта для полного содержимого._\n"
+            )
+        if markdown_render is None:
+            markdown_render = f"# {artifact_role}\n"
         (workspace / markdown_path).parent.mkdir(parents=True, exist_ok=True)
         (workspace / markdown_path).write_text(markdown_render, encoding="utf-8")
 
@@ -199,7 +285,7 @@ class ExecutionService:
             ),
         )
         request = ExecutionRequest(
-            execution_run_id=str(uuid.uuid4()),
+            execution_run_id=execution_run_id,
             project_id=manifest.project_id,
             task_id=task.task_id,
             template_ref=template.ref.as_string(),
@@ -210,46 +296,77 @@ class ExecutionService:
             complexity=complexity_value,
             methodology_pack_ref=active_methodology.ref.as_string() if active_methodology else None,
         )
-        outputs: list[ExecutionOutput] = [ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role)]
-        methodology_candidates: tuple = ()
-        if active_methodology is not None:
-            reasoning_id, reasoning_payload = self._attach_reasoning_artifact(
-                workspace=workspace,
-                manifest_project_id=manifest.project_id,
-                task=task,
-                methodology=active_methodology,
-                complexity=complexity_value,
-                primary_payload=payload,
-                live_reasoning=live_reasoning,
-            )
-            evaluation = evaluate_methodology_rules(
-                methodology=active_methodology,
-                complexity=complexity_value,
-                reasoning=reasoning_payload,
-                project_id=manifest.project_id,
-                task_id=task.task_id,
-            )
-            trace_id = self._attach_methodology_trace(
-                workspace=workspace,
-                manifest_project_id=manifest.project_id,
-                task=task,
-                methodology=active_methodology,
-                complexity=complexity_value,
-                evaluation=evaluation,
-            )
-            outputs.append(ExecutionOutput(artifact_id=reasoning_id, artifact_role="reasoning_artifact", kind="reasoning"))
-            outputs.append(ExecutionOutput(artifact_id=trace_id, artifact_role="methodology_trace", kind="trace"))
-            methodology_candidates = evaluation.candidates
+        outputs: tuple[ExecutionOutput, ...] = (
+            ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role),
+        )
         result = ExecutionResult(
             execution_run_id=request.execution_run_id,
             status="succeeded",
-            outputs=tuple(outputs),
+            outputs=outputs,
             trace_ids=tuple(trace.trace_id for trace in traces),
             proposed_goal=proposed_goal,
             methodology_candidates=methodology_candidates,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
+
+    def _execute_structural_merge(
+        self,
+        *,
+        workspace: Path,
+        context_manifest,
+        merge_config,
+    ) -> dict:
+        """Структурная merge-стратегия (Этап 5.1, structural).
+
+        Загружает содержимое каждого input-артефакта из ``context_manifest``
+        (items типа ``artifact``) и объединяет их в один dict через
+        :func:`structural_merge` по политике конфликтов из ``merge_config``.
+
+        Без LLM, детерминированно. Результат должен валидно соответствовать
+        контракту выходного артефакта — это проверяет validation-слой.
+        """
+        prefix = "artifact:"
+        inputs: list[dict] = []
+        for item in context_manifest.items:
+            if item.item_type != "artifact" or not item.source_ref.startswith(prefix):
+                continue
+            artifact_id = item.source_ref[len(prefix):]
+            try:
+                content = self._runtime.load_artifact_content(workspace, artifact_id)
+            except Exception:
+                continue
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                inputs.append(payload)
+        return structural_merge(inputs, conflict_policy=merge_config.conflict_policy)
+
+    @staticmethod
+    def _extract_input_artifact_ids(context_manifest) -> tuple[str, ...]:
+        """Вытащить input_artifact_ids из context_manifest для relations.
+
+        Опирается на конвенцию `context_service`: items типа ``artifact``
+        имеют ``source_ref`` вида ``artifact:<artifact_id>``.
+        """
+        ids: list[str] = []
+        prefix = "artifact:"
+        for item in context_manifest.items:
+            if item.item_type != "artifact":
+                continue
+            if item.source_ref.startswith(prefix):
+                ids.append(item.source_ref[len(prefix):])
+        # Уникальные значения в порядке появления.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for artifact_id in ids:
+            if artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            unique.append(artifact_id)
+        return tuple(unique)
 
     # ---- LLM execution dispatch ------------------------------------------
 
@@ -444,32 +561,74 @@ class ExecutionService:
         # рабочие, FACTS — база, GAPS — не утверждать, UPSTREAM — пересмотрим
         # если противоречит decision.
         system_prompt = (
-            "Ты работаешь как дисциплинированный системный аналитик. "
-            "Пиши только на русском языке. "
-            "Не придумывай факты, которых нет во входах. "
-            "Большинство шагов ты должен выполнять максимально добросовестно на основе имеющейся информации. "
-            "Если информации недостаточно для уверенного вывода, не останавливайся сразу: "
-            "сделай максимально ответственный анализ, но явно снижай поле `confidence` и заполняй `blocking_questions`. "
-            "Эскалация к человеку допустима только если без ответа нельзя продолжать добросовестно. "
-            "\n\n"
-            "ВАЖНО — ИЕРАРХИЯ ИСТОЧНИКОВ ЗНАНИЯ.\n"
-            "В блоке «Контекст проекта» источники маркированы значками. Уважай иерархию:\n"
-            "🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ (USER DECISIONS) — обязательные ограничения. "
-            "Они зафиксированы пользователем и НЕ ПОДЛЕЖАТ пересмотру тобой. "
-            "Если твой вывод противоречит решению — перепиши вывод. "
-            "Если без нарушения решения задачу не выполнить — добавь конкретный пункт в blocking_questions, не молчи.\n"
-            "🟡 ДОПУЩЕНИЯ СИСТЕМЫ (ASSUMPTIONS) — рабочие предположения. "
-            "Используй, но при конфликте с решением пользователя выбирай решение, а допущение явно отмечай как устаревшее в reasoning.\n"
-            "🔵 ИЗВЕСТНЫЕ ФАКТЫ — извлечены из исходного запроса, можно использовать как базу.\n"
-            "⚫ ОТКРЫТЫЕ ПРОБЕЛЫ (GAPS) — это области, где данных нет. "
-            "НЕ УТВЕРЖДАЙ ничего в этих областях; либо опирайся на default, либо явно укажи нехватку в blocking_questions.\n"
-            "🔻 АРТЕФАКТЫ ПРЕДЫДУЩИХ ШАГОВ — выводы других задач. Опирайся, но при конфликте с решением пользователя — решение важнее.\n"
-            "\n"
-            "Не задавай в `blocking_questions` то, на что УЖЕ есть ответ в «Решениях пользователя». "
-            "Если в схеме твоего ответа есть `reasoning_steps` или поле для логики решения — "
-            "явно отмечай какие решения пользователя ты учёл (по их формулировке).\n"
-            "\n"
-            "Верни только валидный JSON без пояснений вне JSON."
+            "Ты — опытный консультант, который готовит проектную документацию для "
+            "коммерческого PoV/PoC-проекта. Пиши только на русском языке.\n\n"
+            "Ты пишешь раздел РЕАЛЬНОГО проектного документа, который пойдёт "
+            "заказчику. Не учебная работа, не методичка про процесс — рабочий текст, "
+            "по которому через 6-10 недель команда будет реализовывать решение и по "
+            "которому будет приёмка. Это значит:\n\n"
+            "• СОДЕРЖАНИЕ ИЗ БИЗНЕС-ЗАПРОСА, А НЕ ИЗ ВОЗДУХА. Каждая строка опирается "
+            "на бизнес-запрос или на ранее принятые решения. Не нужно придумывать "
+            "контекст: всё необходимое уже есть в разделе «Исходный бизнес-запрос» — "
+            "извлекай оттуда конкретику (имена систем, числа, ограничения, роли) и "
+            "переноси её в свой ответ дословно или с минимальной редактурой.\n\n"
+            "• КОНКРЕТНО, А НЕ АБСТРАКТНО. «Решение принимает выгрузки в формате "
+            "CSV от системы-источника заказчика раз в неделю» — хорошо. «Система "
+            "должна обеспечивать получение данных» — плохо. Если в бизнес-запросе "
+            "нет конкретного числа или имени — лучше зафиксировать в открытых "
+            "вопросах, чем подменить общими словами.\n\n"
+            "• УВАЖАЙ РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ (🟢). Они приоритетнее твоих гипотез и "
+            "артефактов предыдущих шагов. Если твой вывод противоречит решению — "
+            "переписывай вывод; решение не оспариваешь.\n\n"
+            "• ПРОФЕССИОНАЛЬНЫЙ ТОН. Без канцелярита, без «может быть» и «вероятно "
+            "следует» там, где у тебя есть позиция. Эксперт фиксирует "
+            "неопределённость явно: либо как ассампшен в reasoning, либо как пункт "
+            "в blocking_questions, либо как открытый вопрос в самом артефакте.\n\n"
+            "ИЕРАРХИЯ ИСТОЧНИКОВ ЗНАНИЯ в разделе «Контекст проекта»:\n"
+            "🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ — обязательные ограничения; не оспаривай.\n"
+            "🟡 ДОПУЩЕНИЯ — рабочие; при конфликте с решением — решение выше.\n"
+            "🔵 ФАКТЫ — извлечены из бизнес-запроса, опирайся как на базу.\n"
+            "⚫ GAPS — пустые области; не утверждай, фиксируй как открытый вопрос.\n"
+            "🔻 АРТЕФАКТЫ ПРЕДЫДУЩИХ ШАГОВ — выводы коллег по проекту; решение "
+            "пользователя важнее.\n\n"
+            "ДВА КАНАЛА ДЛЯ НЕОПРЕДЕЛЁННОСТИ — НЕ ПУТАЙ ИХ:\n\n"
+            "1) `open_questions` ВНУТРИ АРТЕФАКТА (если такое поле есть в схеме) "
+            "— это нормальный, ожидаемый раздел документа. Сюда идёт всё, что "
+            "«в детальном дизайне будет уточнено», «требует согласования с "
+            "владельцем процесса», «зависит от выбора инструмента». Реальное ТЗ "
+            "ВСЕГДА содержит такие пункты — это часть профессионального "
+            "консалтингового документа, а не его дефект. Заполнять этот раздел "
+            "СВОБОДНО.\n\n"
+            "2) `blocking_questions` НА УРОВНЕ МЕТАДАННЫХ — это «СТОП-сигнал»: "
+            "«без ответа я не могу произвести этот артефакт вообще». Используй "
+            "ТОЛЬКО когда:\n"
+            "   • бизнес-цель или скоуп проекта фундаментально неоднозначны и "
+            "тебе нужно решение «делать A или B», прежде чем что-либо писать;\n"
+            "   • данные в контексте противоречат друг другу и без выбора "
+            "версии артефакт будет вредить.\n"
+            "Детали реализации, конкретные алгоритмы, выбор инструментов, "
+            "форматы интеграций, конкретные пороги метрик — НЕ blocking_questions. "
+            "Это `open_questions` или зафиксированные ассампшены в reasoning.\n\n"
+            "Пустой `blocking_questions` — НОРМАЛЬНОЕ И ЖЕЛАЕМОЕ состояние "
+            "качественного артефакта. Хороший консультант выдаёт ТЗ с разделом "
+            "«открытые вопросы», а не отказывается писать ТЗ потому что у "
+            "заказчика не определён вендор LLM.\n\n"
+            "НЕ ПЕРЕСПРАШИВАЙ то, на что уже есть ответ в 🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ.\n\n"
+            "ЗАПРЕЩЁННЫЕ ПАТТЕРНЫ:\n"
+            "• Мета-формулировки про сам процесс ТЗ: «Система должна формировать "
+            "структурированное ТЗ» — это про процесс, а не про продукт. Пиши про "
+            "продукт.\n"
+            "• Размытые «возможно», «при необходимости», «по усмотрению» — признак "
+            "уклонения от позиции. Если есть позиция — формулируй; если нет — явно "
+            "выводи в открытые вопросы.\n"
+            "• Generic-placeholder вроде «современный фреймворк», «безопасное "
+            "хранение», «достаточная производительность» — конкретизируй из "
+            "бизнес-запроса или убирай.\n"
+            "• Подгон под чужой кейс. Не вставляй имена систем, законы, метрики "
+            "или числа, которых нет в этом конкретном бизнес-запросе. Если в "
+            "запросе нет «ML», «BI», «1С» — не пиши про них.\n\n"
+            "ФОРМАТ. Верни только валидный JSON по схеме, без markdown-вставок и "
+            "комментариев вне JSON."
         )
         context_sections = []
         for item in context_manifest.items:
@@ -847,17 +1006,21 @@ class ExecutionService:
                 lines.append(f"  {stage.description.strip()}")
         return "\n".join(lines)
 
-    def _attach_reasoning_artifact(
+    def _build_reasoning_payload(
         self,
         *,
         workspace,
-        manifest_project_id: str,
         task,
         methodology: MethodologyPackSpec,
         complexity: str | None,
-        primary_payload: dict,
         live_reasoning: dict | None = None,
-    ) -> tuple[str, dict]:
+    ) -> dict[str, object]:
+        """Собрать reasoning payload для метаинформации primary артефакта.
+
+        Этап 1.1: ранее этот payload писался как отдельный артефакт
+        ``reasoning_artifact``. Теперь возвращается как данные для
+        :attr:`ArtifactMetadata.reasoning` основного артефакта.
+        """
         active_stages = methodology.stages_for_complexity(complexity)
         if isinstance(live_reasoning, dict) and live_reasoning:
             stages_payload = []
@@ -912,57 +1075,27 @@ class ExecutionService:
         # ничего знать про id'ы — мы их матчим сами по state.decisions
         # и affected_task_ids источника).
         applied_decisions = self._collect_applied_decisions(workspace, task.task_id)
-        reasoning_payload = {
+        return {
             "methodology_pack_ref": methodology.ref.as_string(),
             "stages": stages_payload,
             "complexity": complexity,
             "applied_decisions": applied_decisions,
         }
-        artifact_id = str(uuid.uuid4())
-        # B4: при retry задачи прошлый reasoning_artifact помечается
-        # superseded, и новый ссылается на него через parent_artifact_id.
-        # Это даёт чистую историю reasoning per attempt.
-        previous_reasoning = self._runtime.latest_active_artifact_by_role_and_task(
-            workspace,
-            artifact_role="reasoning_artifact",
-            created_by_task_id=task.task_id,
-        )
-        record = ArtifactRecord(
-            artifact_id=artifact_id,
-            project_id=manifest_project_id,
-            artifact_role="reasoning_artifact",
-            title=f"Reasoning ({task.task_key})",
-            description=f"Reasoning artifact задачи {task.task_key} по методологии {methodology.ref.as_string()}",
-            artifact_format="json",
-            artifact_kind="reasoning",
-            created_by_task_id=task.task_id,
-            parent_artifact_id=previous_reasoning.artifact_id if previous_reasoning else None,
-            metadata={
-                "methodology_pack_ref": methodology.ref.as_string(),
-                "complexity": complexity,
-            },
-            storage_path=f"artifacts/{artifact_id}.json",
-            created_at=utc_now_iso(),
-        )
-        self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(reasoning_payload))
-        if previous_reasoning is not None:
-            self._runtime.mark_artifact_superseded(workspace, previous_reasoning.artifact_id)
-        return artifact_id, reasoning_payload
 
-    def _attach_methodology_trace(
-        self,
+    @staticmethod
+    def _build_methodology_trace_payload(
         *,
-        workspace,
-        manifest_project_id: str,
-        task,
         methodology: MethodologyPackSpec,
         complexity: str | None,
         evaluation: MethodologyEvaluation,
-    ) -> str:
+    ) -> dict[str, object]:
+        """Собрать methodology trace payload для метаинформации primary артефакта.
+
+        Этап 1.1: ранее писался отдельным артефактом ``methodology_trace``.
+        Теперь возвращается как данные для
+        :attr:`ArtifactMetadata.methodology_trace`.
+        """
         active_stages = methodology.stages_for_complexity(complexity)
-        # Список правил по стадиям из методологии — нужен, чтобы не потерять
-        # записи о правилах для стадий, которые не попали в evaluation
-        # (на случай рассинхрона). evaluation.rule_outcomes — основной источник.
         rules_evaluated = [
             {
                 "stage_id": outcome.stage_id,
@@ -981,7 +1114,7 @@ class ExecutionService:
             }
             for candidate in evaluation.candidates
         ]
-        trace_payload = {
+        return {
             "methodology_pack_ref": methodology.ref.as_string(),
             "stage_execution_mode": methodology.stage_execution_mode,
             "complexity": complexity,
@@ -990,35 +1123,6 @@ class ExecutionService:
             "rules_evaluated": rules_evaluated,
             "candidates_emitted": candidates_emitted,
         }
-        artifact_id = str(uuid.uuid4())
-        # B4: при retry задачи прошлый methodology_trace помечается
-        # superseded; новый ссылается на него через parent_artifact_id.
-        previous_trace = self._runtime.latest_active_artifact_by_role_and_task(
-            workspace,
-            artifact_role="methodology_trace",
-            created_by_task_id=task.task_id,
-        )
-        record = ArtifactRecord(
-            artifact_id=artifact_id,
-            project_id=manifest_project_id,
-            artifact_role="methodology_trace",
-            title=f"Methodology trace ({task.task_key})",
-            description=f"Трасса исполнения методологии {methodology.ref.as_string()}",
-            artifact_format="json",
-            artifact_kind="trace",
-            created_by_task_id=task.task_id,
-            parent_artifact_id=previous_trace.artifact_id if previous_trace else None,
-            metadata={
-                "methodology_pack_ref": methodology.ref.as_string(),
-                "complexity": complexity,
-            },
-            storage_path=f"artifacts/{artifact_id}.json",
-            created_at=utc_now_iso(),
-        )
-        self._runtime.store_artifact(workspace, artifact=record, content=json_dumps(trace_payload))
-        if previous_trace is not None:
-            self._runtime.mark_artifact_superseded(workspace, previous_trace.artifact_id)
-        return artifact_id
 
     def _collect_applied_decisions(
         self, workspace: Path, task_id: str
@@ -1033,16 +1137,19 @@ class ExecutionService:
         видит «вот эти ответы повлияли на этот reasoning». Closes M-J6.
         """
         try:
-            state = self._runtime.load_problem_state(workspace)
+            knowledge = self._runtime.load_knowledge(workspace)
         except Exception:
             return []
         result: list[dict[str, object]] = []
-        for decision_id, fact in state.decisions.items():
-            source = (fact.source or "").strip()
+        clarification_prefix = "clarification."
+        for position in knowledge.by_type("decision"):
             relevant = True
             request_id: str | None = None
-            if source.startswith("clarification:"):
-                request_id = source.split(":", 1)[1]
+            if (
+                position.source == "clarification"
+                and position.identifier.startswith(clarification_prefix)
+            ):
+                request_id = position.identifier[len(clarification_prefix):]
                 try:
                     request = self._runtime.get_clarification_request(
                         workspace, request_id
@@ -1057,9 +1164,9 @@ class ExecutionService:
                 continue
             result.append(
                 {
-                    "decision_id": decision_id,
-                    "statement": fact.statement,
-                    "source": source,
+                    "decision_id": position.identifier,
+                    "statement": position.statement,
+                    "source": position.source,
                     "via_clarification_id": request_id,
                 }
             )

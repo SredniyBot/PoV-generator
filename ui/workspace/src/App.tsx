@@ -115,6 +115,7 @@ interface WorkspaceActionApi {
   answerClarification: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
   acceptAssumption: (clarificationId: string) => void;
   setClarificationMode: (mode: string) => void;
+  notify: (tone: ToastTone, title: string, description: string) => void;
   busy: boolean;
 }
 
@@ -396,8 +397,10 @@ function WorkspaceRoute({
       answerClarification: (payload) => void commandRequest(() => api.answerClarification(projectId, payload)),
       acceptAssumption: (clarificationId: string) => void commandRequest(() => api.acceptAssumption(projectId, clarificationId)),
       setClarificationMode: (mode: string) => void commandRequest(() => api.setClarificationMode(projectId, mode)),
+      notify,
       busy: commandBusy,
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [commandBusy, model, projectId, provider],
   );
 
@@ -459,8 +462,10 @@ function WorkspaceRoute({
         onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
         actions={<CommandBar projectId={projectId} />}
       />
-      <WorkspaceTabs projectId={projectId} />
+      {/* Workflow-блок выше табов: пользователь сразу видит, что идёт
+          по проекту, не переключаясь между вкладками. */}
       <WorkflowRunProgressPanel projectId={projectId} />
+      <WorkspaceTabs projectId={projectId} />
       <Routes>
         <Route
           path="overview"
@@ -535,7 +540,6 @@ function WorkspaceRoute({
 // ---- W4.1 (R1): WorkflowRunProgressPanel ---------------------------------
 
 function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
-  const queryClient = useQueryClient();
   const activeQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
@@ -549,14 +553,16 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
     queryFn: () => api.listWorkflowRuns(projectId, 5),
     refetchInterval: 5_000,
   });
-  const [stickyRunId, setStickyRunId] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const cancelMutation = useMutation({
-    mutationFn: (runId: string) => api.cancelWorkflow(projectId, runId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
-    },
+  // Граф задач — нужен, чтобы показать «сейчас выполняется» (status=in_progress).
+  // Запись о шаге в `run.steps` появляется только ПОСЛЕ завершения; поэтому
+  // в active-режиме без графа мы не увидим, какая задача крутится прямо сейчас.
+  const taskGraphQuery = useQuery({
+    queryKey: projectionKey(projectId, "task_graph"),
+    queryFn: () => api.getTaskGraph(projectId),
+    refetchInterval: 2500,
   });
+  const [stickyRunId, setStickyRunId] = useState<string | null>(null);
+  const [logCollapsed, setLogCollapsed] = useState(false);
 
   const active = activeQuery.data ?? null;
   // Когда run заканчивается, active становится null — но мы хотим
@@ -574,82 +580,192 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
   if (!display) return null;
 
   const isActive = display.status === "pending" || display.status === "running";
-  const progressPct =
-    display.max_steps > 0
-      ? Math.min(100, Math.round((display.current_step / display.max_steps) * 100))
-      : 0;
   const statusLabel = labelForRunStatus(display.status);
   const statusTone = toneForRunStatus(display.status);
+
+  // Считаем выполненные задачи именно из шагов с successful validation,
+  // а не из `total_steps_completed` — это поле в БД включает ретраи и
+  // шаги планировщика, что менеджеру не интересно.
+  const successfulSteps = display.steps.filter((s) => s.validation_status === "passed");
+  const failedSteps = display.steps.filter(
+    (s) => s.validation_status === "failed" || (s.error_message && s.validation_status !== "passed"),
+  );
+
+  // Сейчас в работе: leaf-задачи проекта со статусом in_progress. Список
+  // расплющиваем из графа задач рекурсивно. Когда runner запустил задачу
+  // (`transition_task("start")`), её status в БД становится in_progress;
+  // запись в `run.steps` появится только после завершения. Поэтому без
+  // task_graph узнать «что крутится прямо сейчас» нельзя.
+  const inProgressTasks = (() => {
+    const taskGraph = taskGraphQuery.data;
+    if (!taskGraph) return [] as TaskNodeView[];
+    const out: TaskNodeView[] = [];
+    const walk = (nodes: TaskNodeView[]) => {
+      for (const n of nodes) {
+        if (n.status === "in_progress") out.push(n);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    walk(taskGraph.nodes);
+    return out;
+  })();
 
   return (
     <div className={cx("workflow-run", `workflow-run--${display.status}`)}>
       <div className="workflow-run__head">
         <div className="workflow-run__title">
           <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
-          <span className="workflow-run__summary">{display.last_step_summary || "—"}</span>
+          <span className="workflow-run__summary">{cleanStepSummary(display.last_step_summary) || "—"}</span>
         </div>
         <div className="workflow-run__actions">
-          {isActive ? (
-            <Button
-              tone="secondary"
-              onClick={() => cancelMutation.mutate(display.run_id)}
-              disabled={cancelMutation.isPending || display.cancel_requested}
-            >
-              {display.cancel_requested ? "Останавливаем..." : "Прервать"}
+          {display.steps.length > 0 || inProgressTasks.length > 0 ? (
+            <Button tone="secondary" onClick={() => setLogCollapsed((v) => !v)}>
+              {logCollapsed ? "Показать" : "Скрыть"}
             </Button>
-          ) : (
-            <Button tone="secondary" onClick={() => setStickyRunId(null)}>
-              Скрыть
-            </Button>
-          )}
-          {display.steps.length > 0 && (
-            <Button tone="secondary" onClick={() => setShowHistory((v) => !v)}>
-              {showHistory ? "Свернуть" : `Шаги (${display.steps.length})`}
-            </Button>
-          )}
+          ) : null}
         </div>
       </div>
-      <div className="workflow-run__bar">
-        <div className="workflow-run__bar-track">
-          <div
-            className={cx(
-              "workflow-run__bar-fill",
-              isActive && "workflow-run__bar-fill--pulse",
-            )}
-            style={{ width: `${progressPct}%` }}
-          />
+
+      {/* Счётчики выполнения + stop reason. Без прогресс-бара и без «N/M». */}
+      <div className="workflow-run__counters">
+        <div className="workflow-run__counter-item workflow-run__counter-item--success">
+          <span className="workflow-run__counter-value">{successfulSteps.length}</span>
+          <span className="workflow-run__counter-label">Задач выполнено</span>
         </div>
-        <span className="workflow-run__counter">
-          {display.current_step}/{display.max_steps}
-          {display.stop_reason ? ` · ${labelForStopReason(display.stop_reason)}` : ""}
-        </span>
+        {failedSteps.length > 0 ? (
+          <div className="workflow-run__counter-item workflow-run__counter-item--danger">
+            <span className="workflow-run__counter-value">{failedSteps.length}</span>
+            <span className="workflow-run__counter-label">С ошибкой</span>
+          </div>
+        ) : null}
+        {inProgressTasks.length > 0 ? (
+          <div className="workflow-run__counter-item workflow-run__counter-item--active">
+            <span className="workflow-run__counter-value">{inProgressTasks.length}</span>
+            <span className="workflow-run__counter-label">Сейчас в работе</span>
+          </div>
+        ) : null}
+        {display.stop_reason ? (
+          <div className="workflow-run__counter-item">
+            <span className="workflow-run__counter-stop">
+              {labelForStopReason(display.stop_reason)}
+            </span>
+          </div>
+        ) : null}
       </div>
-      {showHistory && (
-        <ul className="workflow-run__steps">
-          {display.steps.slice().reverse().map((step) => (
-            <li key={step.sequence}>
-              <span className="workflow-run__step-seq">#{step.sequence}</span>
-              <span className="workflow-run__step-title">{step.selected_step_id || step.task_key || "(unknown)"}</span>
-              <span
-                className={cx(
-                  "workflow-run__step-status",
-                  `workflow-run__step-status--${step.validation_status ?? step.planning_outcome}`,
-                )}
-              >
-                {step.error_message || step.validation_status || step.planning_outcome}
-              </span>
-            </li>
-          ))}
-        </ul>
+
+      {logCollapsed ? null : (
+        <>
+          {/* Прямо сейчас выполняются: имя задачи + real-time секундомер
+              (обновляется каждую секунду через nowTick). */}
+          {inProgressTasks.length > 0 ? (
+            <ul className="workflow-run__inprogress">
+              {inProgressTasks.map((t) => (
+                <li key={t.task_id} className="workflow-run__inprogress-item">
+                  <span className="workflow-run__inprogress-dot" />
+                  <span className="workflow-run__inprogress-title">{t.title}</span>
+                  <InProgressTimer startedAtIso={t.updated_at} />
+                  <span className="workflow-run__inprogress-template">{t.template_ref}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {/* Лог завершённых шагов. Свежие сверху. */}
+          {display.steps.length > 0 ? (
+            <ul className="workflow-run__steps">
+              {display.steps.slice().reverse().map((step) => {
+                const durationSec = step.finished_at && step.started_at
+                  ? Math.max(0, Math.round(
+                      (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
+                    ))
+                  : null;
+                const statusKey = step.validation_status ?? step.planning_outcome;
+                return (
+                  <li
+                    key={step.sequence}
+                    className={cx(
+                      "workflow-run__step",
+                      `workflow-run__step--${statusKey}`,
+                    )}
+                  >
+                    <span className="workflow-run__step-seq">#{step.sequence}</span>
+                    <span className="workflow-run__step-title">
+                      {step.selected_step_id || step.task_key || "(неизвестная задача)"}
+                    </span>
+                    <span
+                      className={cx(
+                        "workflow-run__step-status",
+                        `workflow-run__step-status--${statusKey}`,
+                      )}
+                    >
+                      {labelForStepStatus(step.validation_status, step.planning_outcome)}
+                    </span>
+                    {durationSec !== null ? (
+                      <span className="workflow-run__step-duration">{durationSec}с</span>
+                    ) : null}
+                    {step.error_message ? (
+                      <span className="workflow-run__step-error" title={step.error_message}>
+                        {step.error_message.length > 100
+                          ? step.error_message.slice(0, 100) + "…"
+                          : step.error_message}
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : isActive && inProgressTasks.length === 0 ? (
+            <div className="workflow-run__empty">Ожидаем первый шаг…</div>
+          ) : null}
+        </>
       )}
     </div>
   );
 }
 
+// Чистим «Шаг N/M:» префикс, который backend кладёт в last_step_summary.
+// В UI индикатор N/M теперь не показываем; для пользователя важна суть
+// сообщения, а не его порядковый номер.
+function cleanStepSummary(summary: string): string {
+  if (!summary) return summary;
+  return summary.replace(/^Шаг\s*\d+\s*\/\s*\d+\s*:\s*/i, "");
+}
+
+// Real-time секундомер для in-progress задачи. Обновляется раз в секунду
+// через requestAnimationFrame-таймер; считает время от updated_at задачи
+// (= момент перехода в in_progress) до текущей минуты.
+function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, []);
+  if (!startedAtIso) return null;
+  const startMs = new Date(startedAtIso).getTime();
+  if (Number.isNaN(startMs)) return null;
+  const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
+  const mm = Math.floor(elapsedSec / 60);
+  const ss = elapsedSec % 60;
+  const label = mm > 0 ? `${mm}м ${String(ss).padStart(2, "0")}с` : `${ss}с`;
+  return <span className="workflow-run__inprogress-timer">{label}</span>;
+}
+
+function labelForStepStatus(
+  validationStatus: string | null,
+  planningOutcome: string,
+): string {
+  if (validationStatus === "passed") return "успех";
+  if (validationStatus === "failed") return "ошибка валидации";
+  if (planningOutcome === "selected" || planningOutcome === "retried") return "идёт";
+  if (planningOutcome === "objective_completed") return "цель достигнута";
+  if (planningOutcome === "blocked") return "заблокирована";
+  return planningOutcome;
+}
+
 function labelForRunStatus(status: string): string {
   switch (status) {
     case "pending": return "Подготовка";
-    case "running": return "Идёт workflow";
+    case "running": return "workflow";
     case "completed": return "Завершено";
     case "failed": return "Ошибка";
     case "cancelled": return "Прервано";
@@ -922,7 +1038,10 @@ function ClarificationsPage({
                 if (firstOpen) setWizardId(firstOpen.clarification_id);
               }}
             >
-              Пройти все по очереди ({counts.open})
+              {/* После каждого ответа модалка закрывается. Кнопка открывает
+                  первый открытый вопрос; пользователь возвращается в список
+                  и кликает на следующий, когда сам готов. */}
+              Открыть первый открытый ({counts.open})
             </Button>
           ) : null}
         </div>
@@ -1091,41 +1210,85 @@ function ClarificationWizardModal({
     queryFn: () => api.getClarificationEvents(projectId, currentId),
     enabled: Boolean(currentId) && historyVisible,
   });
+
+  // После любого успешного действия (ответ/допущение/отложить):
+  // 1) инвалидируем список вопросов и сводку проекта,
+  // 2) показываем toast с обратной связью + сколько ещё осталось,
+  // 3) ЕСЛИ это был последний открытый вопрос — авто-запускаем workflow,
+  //    чтобы пользователь не нажимал «Run» вручную,
+  // 4) закрываем модалку, возвращая пользователя в инбокс.
+  //
+  // Раньше Save переключал на следующий вопрос внутри модалки. Это
+  // мешало пользователю «выдохнуть» между ответами и приводило к
+  // ощущению, что система не реагирует на действие. Теперь Save =
+  // явное действие с явным закрытием.
+  const closeAfterAction = async (kind: "answered" | "assumed" | "deferred" | "reopened") => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") }),
+      queryClient.invalidateQueries({ queryKey: [projectId, "clarification-detail", currentId] }),
+      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "situation") }),
+      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "overview") }),
+    ]);
+    if (kind === "reopened") {
+      // Пере-ответ: модалку оставляем открытой — пользователь хочет
+      // дать новый ответ прямо сейчас.
+      commands.notify("warning", "Вопрос открыт заново", "Можно дать новый ответ.");
+      return;
+    }
+    const next = await api.getNextOpenClarification(projectId, currentId);
+    const remaining = next ? "ещё есть открытые вопросы" : "открытых вопросов больше нет";
+    const titleByKind = {
+      answered: "Ответ сохранён",
+      assumed: "Допущение принято",
+      deferred: "Вопрос отложен",
+    } as const;
+    commands.notify("success", titleByKind[kind], remaining);
+    if (!next) {
+      // Все открытые вопросы закрыты — продолжаем workflow автоматически.
+      commands.runUntilBlocked();
+    }
+    onClose();
+  };
+
   const deferMutation = useMutation({
     mutationFn: (reason: string | undefined) => api.deferClarification(projectId, currentId, reason),
-    onSuccess: () => advanceOrClose(),
+    onSuccess: () => closeAfterAction("deferred"),
+    onError: (error) =>
+      commands.notify("danger", "Не удалось отложить", error instanceof Error ? error.message : "Неизвестная ошибка"),
   });
   const reopenMutation = useMutation({
     mutationFn: () => api.reopenClarification(projectId, currentId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [projectId, "clarification-detail", currentId] });
-      await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") });
-    },
+    onSuccess: () => closeAfterAction("reopened"),
+    onError: (error) =>
+      commands.notify("danger", "Не удалось пере-открыть", error instanceof Error ? error.message : "Неизвестная ошибка"),
   });
   const answerMutation = useMutation({
     mutationFn: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) =>
       api.answerClarification(projectId, payload),
-    onSuccess: () => advanceOrClose(),
+    onSuccess: () => closeAfterAction("answered"),
+    onError: (error) =>
+      commands.notify("danger", "Не удалось сохранить ответ", error instanceof Error ? error.message : "Неизвестная ошибка"),
   });
   const acceptMutation = useMutation({
     mutationFn: () => api.acceptAssumption(projectId, currentId),
-    onSuccess: () => advanceOrClose(),
+    onSuccess: () => closeAfterAction("assumed"),
+    onError: (error) =>
+      commands.notify("danger", "Не удалось принять допущение", error instanceof Error ? error.message : "Неизвестная ошибка"),
   });
 
-  const advanceOrClose = async () => {
-    await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") });
-    const next = await api.getNextOpenClarification(projectId, currentId);
-    if (next) {
-      setCurrentId(next.clarification_id);
-      setHistoryVisible(false);
-    } else {
-      onClose();
-    }
-  };
+  // ESC закрывает модалку. Раньше это был только клик по overlay'у — это
+  // не очевидно и не работало с клавиатуры.
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
 
   if (detailQuery.isLoading || !detailQuery.data) {
     return (
-      <Modal open onClose={onClose} title="Вопрос">
+      <Modal open onClose={onClose} title="Загружаем вопрос…">
         <LoadingPanel title="Загружаем вопрос…" />
       </Modal>
     );
@@ -1141,8 +1304,21 @@ function ClarificationWizardModal({
     deferMutation.isPending ||
     reopenMutation.isPending;
 
+  // Заголовок модалки отражает реальный статус вопроса. Раньше всегда
+  // показывалось одинаковое «Вопрос к менеджеру», что вводило в
+  // заблуждение, когда юзер открывал уже отвеченный вопрос.
+  const modalTitle = isOpen
+    ? "Вопрос требует решения"
+    : detail.status === "answered"
+    ? "Уже отвечено"
+    : detail.status === "assumed"
+    ? "Принято допущение"
+    : isDeferred
+    ? "Вопрос отложен"
+    : "Вопрос";
+
   return (
-    <Modal open onClose={onClose} title="Вопрос к менеджеру">
+    <Modal open onClose={onClose} title={modalTitle}>
       <div className="clar-wizard">
         <div className="clar-wizard__chips">
           <StatusPill tone={toneForClarificationPriority(detail.priority)}>
@@ -1185,6 +1361,7 @@ function ClarificationWizardModal({
               tone="secondary"
               onClick={() => deferMutation.mutate("Пропущено пользователем.")}
               disabled={busy}
+              busy={deferMutation.isPending}
             >
               Отложить
             </Button>
@@ -1194,6 +1371,7 @@ function ClarificationWizardModal({
               tone="secondary"
               onClick={() => reopenMutation.mutate()}
               disabled={busy}
+              busy={reopenMutation.isPending}
             >
               Переответить
             </Button>
@@ -1201,20 +1379,33 @@ function ClarificationWizardModal({
           <Button
             tone="secondary"
             onClick={() => setHistoryVisible((v) => !v)}
+            disabled={busy}
           >
             {historyVisible ? "Скрыть историю" : "История"}
           </Button>
           <div className="clar-wizard__nav">
-            <Button
-              tone="secondary"
-              onClick={async () => {
-                const next = await api.getNextOpenClarification(projectId, currentId);
-                if (next) setCurrentId(next.clarification_id);
-                else onClose();
-              }}
-              disabled={busy}
-            >
-              Дальше →
+            {/* «Дальше» для уже-закрытых вопросов — навигация по журналу.
+                Для open-вопроса навигации нет: пользователь либо отвечает,
+                либо откладывает, либо закрывает модалку (ESC / клик мимо). */}
+            {!isOpen ? (
+              <Button
+                tone="secondary"
+                onClick={async () => {
+                  const next = await api.getNextOpenClarification(projectId, currentId);
+                  if (next) {
+                    setCurrentId(next.clarification_id);
+                    setHistoryVisible(false);
+                  } else {
+                    commands.notify("success", "Открытых вопросов больше нет", "Можно закрыть окно.");
+                  }
+                }}
+                disabled={busy}
+              >
+                Следующий открытый →
+              </Button>
+            ) : null}
+            <Button tone="secondary" onClick={onClose} disabled={busy}>
+              Закрыть
             </Button>
           </div>
         </div>
@@ -1608,77 +1799,110 @@ function ReasoningStageCard({
   stage: import("./types").MethodologyReasoningStageView;
   firedRules: import("./types").MethodologyTraceRuleOutcome[];
 }) {
+  // Упрощённый вид reasoning-стадии: заголовок одной строкой, поля без
+  // dl/dt/dd-таблиц, options как простой нумерованный список с обоснованием.
+  // Правила-«молнии» убраны как визуальный шум — методологические outcomes
+  // видны в Decision Log и Provenance, дублировать в reasoning не нужно.
+  const entries = Object.entries(stage.outputs ?? {}).filter(([key]) => !key.startsWith("_"));
   return (
-    <div className="reasoning-stage">
-      <div className="reasoning-stage__header">
-        <span className="reasoning-stage__title">{stage.title || prettyLabel(stage.stage_id)}</span>
-        <span className="reasoning-stage__id">{stage.stage_id}</span>
-      </div>
-      <ReasoningStageBody outputs={stage.outputs} />
-      {firedRules.length > 0 && (
-        <div className="reasoning-stage__fired">
-          {firedRules.map((rule) => (
-            <span key={rule.rule_id} className="reasoning-stage__rule">
-              ⚡ правило <code>{rule.rule_id}</code> сработало
-              {rule.candidate_id ? <> → уточнение <code>{rule.candidate_id.slice(0, 8)}</code></> : null}
-            </span>
+    <section className="reasoning-stage">
+      <h4 className="reasoning-stage__title">{stage.title || prettyLabel(stage.stage_id)}</h4>
+      {entries.length === 0 ? (
+        <p className="reasoning-stage__empty">Стадия ничего не зафиксировала.</p>
+      ) : (
+        <div className="reasoning-stage__body">
+          {entries.map(([key, value]) => (
+            <ReasoningField key={key} field={key} value={value} />
           ))}
         </div>
       )}
-    </div>
+      {firedRules.length > 0 ? (
+        <p className="reasoning-stage__rules">
+          Сработали правила: {firedRules.map((r) => r.rule_id).join(", ")}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
-function ReasoningStageBody({ outputs }: { outputs: Record<string, unknown> }) {
-  const entries = Object.entries(outputs ?? {}).filter(([key]) => !key.startsWith("_"));
-  if (entries.length === 0) {
-    return <p className="reasoning-stage__empty">Стадия ничего не зафиксировала.</p>;
-  }
-  return (
-    <dl className="reasoning-stage__fields">
-      {entries.map(([key, value]) => (
-        <div key={key} className="reasoning-stage__field">
-          <dt>{prettyLabel(key)}</dt>
-          <dd>
-            <ReasoningValue field={key} value={value} />
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function ReasoningValue({ field, value }: { field: string; value: unknown }) {
-  if (value === null || value === undefined) {
-    return <span className="reasoning-stage__null">не зафиксировано</span>;
-  }
+function ReasoningField({ field, value }: { field: string; value: unknown }) {
+  // options — частый и важный кейс; рендерим как нумерованный список с
+  // rationale/tradeoffs прозой, без отдельных классов на каждый элемент.
   if (field === "options" && Array.isArray(value)) {
     return (
-      <ul className="reasoning-options">
-        {value.map((opt, idx) => {
-          const item = (opt ?? {}) as Record<string, unknown>;
-          return (
-            <li key={idx} className="reasoning-option">
-              <div className="reasoning-option__header">
+      <div className="reasoning-stage__field">
+        <span className="reasoning-stage__label">Варианты</span>
+        <ol className="reasoning-stage__options">
+          {value.map((opt, idx) => {
+            const item = (opt ?? {}) as Record<string, unknown>;
+            const confidence = typeof item.confidence === "number"
+              ? ` (уверенность ${(item.confidence as number).toFixed(2)})`
+              : "";
+            return (
+              <li key={idx}>
                 <strong>{String(item.label ?? `Вариант ${idx + 1}`)}</strong>
-                {typeof item.confidence === "number" ? (
-                  <span className="reasoning-option__confidence">
-                    confidence {item.confidence.toFixed(2)}
-                  </span>
+                {confidence}
+                {typeof item.rationale === "string" && item.rationale.trim() ? (
+                  <span> — {item.rationale}</span>
                 ) : null}
-              </div>
-              {typeof item.rationale === "string" ? <p>{item.rationale}</p> : null}
-              {typeof item.tradeoffs === "string" ? <p className="reasoning-option__tradeoffs">{item.tradeoffs}</p> : null}
-            </li>
-          );
-        })}
-      </ul>
+                {typeof item.tradeoffs === "string" && item.tradeoffs.trim() ? (
+                  <span className="reasoning-stage__tradeoffs"> Компромисс: {item.tradeoffs}.</span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    );
+  }
+  // jtbd_focus — частый объект { when, want, so_that }; разворачиваем
+  // как один абзац с привычной структурой.
+  if (
+    field === "jtbd_focus"
+    && value
+    && typeof value === "object"
+    && !Array.isArray(value)
+  ) {
+    const obj = value as Record<string, unknown>;
+    const when = typeof obj.when === "string" ? obj.when : "";
+    const want = typeof obj.want === "string" ? obj.want : "";
+    const so_that = typeof obj.so_that === "string" ? obj.so_that : "";
+    if (when || want || so_that) {
+      return (
+        <div className="reasoning-stage__field">
+          <span className="reasoning-stage__label">JTBD</span>
+          <p className="reasoning-stage__value">
+            <em>Когда</em> {when || "—"}, <em>хочу</em> {want || "—"}, <em>чтобы</em> {so_that || "—"}.
+          </p>
+        </div>
+      );
+    }
+  }
+  // Простые скалярные значения — одной строкой.
+  if (value === null || value === undefined || value === "") {
+    return (
+      <div className="reasoning-stage__field">
+        <span className="reasoning-stage__label">{prettyLabel(field)}</span>
+        <p className="reasoning-stage__value reasoning-stage__value--muted">не зафиксировано</p>
+      </div>
     );
   }
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return <span>{String(value)}</span>;
+    return (
+      <div className="reasoning-stage__field">
+        <span className="reasoning-stage__label">{prettyLabel(field)}</span>
+        <p className="reasoning-stage__value">{String(value)}</p>
+      </div>
+    );
   }
-  return <pre className="reasoning-stage__json">{JSON.stringify(value, null, 2)}</pre>;
+  // Сложные структуры — компактно сериализуем; в большинстве случаев
+  // дополнительный JSON-блок излишен, но оставляем фоллбек.
+  return (
+    <details className="reasoning-stage__field reasoning-stage__field--json">
+      <summary>{prettyLabel(field)}</summary>
+      <pre>{JSON.stringify(value, null, 2)}</pre>
+    </details>
+  );
 }
 
 
@@ -2705,6 +2929,31 @@ function TaskNodeDetail({
   onRetryTask: (taskId: string) => void;
   projectId?: string;
 }) {
+  const navigate = useNavigate();
+
+  // Список открытых уточнений, привязанных к этой задаче. Нужен, чтобы
+  // выделить случай «задача failed, но есть нерешённые вопросы» — даже
+  // если они не блокирующие (методологические advisory). Для пользователя
+  // это всё равно сигнал «здесь нужно твоё внимание».
+  const clarificationsQuery = useQuery({
+    queryKey: projectId ? projectionKey(projectId, "clarifications") : ["__noop__"],
+    queryFn: () => api.getClarifications(projectId!),
+    enabled: Boolean(projectId),
+  });
+  const affectingOpen = (clarificationsQuery.data?.items ?? []).filter(
+    (c) => c.status === "open" && c.affected_task_ids?.includes(task.task_id),
+  );
+  const blockingOpen = affectingOpen.filter((c) => c.blocking_scope !== "none");
+
+  // Главная цель блока: ответить на вопрос «почему задача упала и что мне
+  // делать?». Раньше показывался только status-pill и тех. описание шаблона.
+  // Теперь — если failed/blocked с открытыми вопросами, явный CTA «открой
+  // инбокс и ответь», иначе — кнопка retry (если применимо).
+  const showOpenQuestionsBanner =
+    (task.status === "failed" || task.status === "blocked") && affectingOpen.length > 0;
+  const showStuckBanner =
+    task.status === "failed" && affectingOpen.length === 0 && Boolean(projectId);
+
   return (
     <div className="detail-stack">
       <div className="detail-callout">
@@ -2723,8 +2972,54 @@ function TaskNodeDetail({
         </StatusPill>
         <span>{prettyLabel(task.template_type)}</span>
       </div>
+
+      {showOpenQuestionsBanner && projectId ? (
+        <div className="task-open-questions-banner">
+          <div className="task-open-questions-banner__head">
+            <strong>
+              {blockingOpen.length > 0
+                ? `Задача ждёт ваших ответов: ${blockingOpen.length} блокирующих вопроса`
+                : `Задаче нужно ваше внимание: ${affectingOpen.length} открытых вопроса`}
+            </strong>
+            <p>
+              {blockingOpen.length > 0
+                ? "Без ответов задача не сможет завершиться. После ответа она автоматически перезапустится."
+                : "Вопросы не блокирующие, но возникли в этой задаче — стоит просмотреть и при желании ответить."}
+            </p>
+          </div>
+          <ul className="task-open-questions-banner__list">
+            {affectingOpen.slice(0, 5).map((c) => (
+              <li key={c.clarification_id}>
+                <span className={cx("clar-blocking", `clar-blocking--${c.blocking_scope}`)}>
+                  {labelForBlockingScope(c.blocking_scope)}
+                </span>
+                <span>{c.title || c.question}</span>
+              </li>
+            ))}
+            {affectingOpen.length > 5 ? <li>… и ещё {affectingOpen.length - 5}</li> : null}
+          </ul>
+          <div className="inline-actions">
+            <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/clarifications`)}>
+              Открыть вопросы ({affectingOpen.length})
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showStuckBanner ? (
+        <div className="task-open-questions-banner task-open-questions-banner--muted">
+          <strong>Задача упала без открытых вопросов</strong>
+          <p>
+            На уровне уточнений ничего не висит. Возможные причины: ошибка LLM-вызова,
+            сбой валидации или гонка состояний. Нажмите «Повторить шаг» — задача
+            переподнимется с актуальным контекстом.
+          </p>
+        </div>
+      ) : null}
+
       {task.status_summary ? <p>{task.status_summary}</p> : null}
-        <div className="detail-meta-list">
+
+      <div className="detail-meta-list">
         <div>
           <span>Шаблон</span>
           <strong>{task.template_ref}</strong>
@@ -2733,28 +3028,30 @@ function TaskNodeDetail({
           <span>Источник</span>
           <strong>{labelForSourceKind(task.origin_kind)}</strong>
         </div>
-          <div>
-            <span>Ref источника</span>
-            <strong>{task.origin_ref}</strong>
-          </div>
-          <div>
-            <span>Слот</span>
-            <strong>{task.slot_id ?? "—"}</strong>
-          </div>
+        <div>
+          <span>Ref источника</span>
+          <strong>{task.origin_ref}</strong>
         </div>
-        {task.retryable ? (
-          <div className="inline-actions">
-            <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(task.task_id)}>
-              Повторить шаг
-            </Button>
-          </div>
-        ) : null}
-        {projectId && task.template_type === "leaf" && task.status === "completed" ? (
-          <ReasoningPanel projectId={projectId} taskId={task.task_id} />
-        ) : null}
+        <div>
+          <span>Слот</span>
+          <strong>{task.slot_id ?? "—"}</strong>
+        </div>
       </div>
-    );
-  }
+
+      {task.retryable ? (
+        <div className="inline-actions">
+          <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(task.task_id)}>
+            Повторить шаг
+          </Button>
+        </div>
+      ) : null}
+
+      {projectId && task.template_type === "leaf" && task.status === "completed" ? (
+        <ReasoningPanel projectId={projectId} taskId={task.task_id} />
+      ) : null}
+    </div>
+  );
+}
 
 function ArtifactsPage({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
@@ -2773,7 +3070,12 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     return <LoadingPanel title="Загрузка артефактов…" />;
   }
 
-  const artifacts = artifactsQuery.data ?? [];
+  // Артефакты от backend идут в порядке создания (старые сверху). В UI
+  // менеджеру интереснее ВЕРХНИЙ артефакт = последний/финальный (например,
+  // готовое ТЗ или review_report). Поэтому переворачиваем порядок.
+  const artifacts = [...(artifactsQuery.data ?? [])].sort(
+    (a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+  );
 
   return (
     <div className={cx("artifacts-layout", artifactId && "artifacts-layout--focused")}>
@@ -2789,12 +3091,13 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
                 className={cx("artifact-list__item", artifactId === artifact.artifact_id && "artifact-list__item--active")}
                 onClick={() => navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`)}
               >
-                <div>
-                  <strong>{artifact.title}</strong>
+                <div className="artifact-list__title">
+                  <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
                   <p>{prettyLabel(artifact.artifact_role)}</p>
                 </div>
                 <div className="artifact-list__meta">
-                  <span>{formatDateTime(artifact.created_at)}</span>
+                  <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
+                  <span className="artifact-list__time">{formatTimeOnly(artifact.created_at)}</span>
                   <ChevronRight size={14} />
                 </div>
               </button>
@@ -2804,7 +3107,11 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
       </SectionCard>
 
       <SectionCard
-        title={artifactDetailQuery.data?.title ?? "Выберите артефакт"}
+        title={
+          artifactDetailQuery.data
+            ? stripRoleSuffix(artifactDetailQuery.data.title, artifactDetailQuery.data.artifact_role)
+            : "Выберите артефакт"
+        }
         subtitle={artifactDetailQuery.data?.description ?? "Читабельный документ и структурированные данные"}
       >
         {!artifactId ? (
@@ -2830,7 +3137,7 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
 }
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
-  const [mode, setMode] = useState<"doc" | "json" | "validations">("doc");
+  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const html = useMemo(
     () => (detail.markdown_content ? marked.parse(detail.markdown_content) : "<p>Markdown-представление отсутствует.</p>"),
@@ -2848,6 +3155,18 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         <button className={cx("segmented__item", mode === "doc" && "segmented__item--active")} onClick={() => setMode("doc")} type="button">
           Документ
         </button>
+        {/* Reasoning / CoT: рассуждение методологии, которое привело к
+            этому артефакту. Полезно для проверки, ПОЧЕМУ артефакт именно
+            такой. Доступно только если артефакт привязан к задаче-производителю. */}
+        {detail.created_by_task_id ? (
+          <button
+            className={cx("segmented__item", mode === "reasoning" && "segmented__item--active")}
+            onClick={() => setMode("reasoning")}
+            type="button"
+          >
+            Рассуждение
+          </button>
+        ) : null}
         <button className={cx("segmented__item", mode === "json" && "segmented__item--active")} onClick={() => setMode("json")} type="button">
           JSON
         </button>
@@ -2869,20 +3188,94 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           </button>
         ) : null}
       </div>
-      <div className="detail-meta-list detail-meta-list--artifact">
-        <div>
-          <span>Роль</span>
-          <strong>{prettyLabel(detail.artifact_role)}</strong>
-        </div>
-        <div>
-          <span>Создан</span>
-          <strong>{formatDateTime(detail.created_at)}</strong>
-        </div>
-        <div>
-          <span>Задача</span>
-          <strong>{detail.created_by_task_id ?? "—"}</strong>
-        </div>
+      {/* Компактная одна строка с самой важной мета-инфой.
+          Раньше была плитка из 11 «label/value» — занимала пол-экрана.
+          Теперь главное: роль, дата, провайдер/модель, уверенность —
+          одной строкой. Остальное — в развороте через <details>. */}
+      <div className="artifact-meta-strip">
+        <span className="artifact-meta-strip__pill">{prettyLabel(detail.artifact_role)}</span>
+        <span className="artifact-meta-strip__sep">·</span>
+        <span title={detail.created_at}>{formatDateTime(detail.created_at)}</span>
+        {detail.provider || detail.model ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span className="artifact-meta-strip__provider">
+              {detail.provider ?? "—"}
+              {detail.model ? ` · ${detail.model}` : ""}
+            </span>
+          </>
+        ) : null}
+        {detail.overall_confidence !== null && detail.overall_confidence !== undefined ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span className="artifact-meta-strip__confidence">
+              confidence {(detail.overall_confidence * 100).toFixed(0)}%
+            </span>
+          </>
+        ) : null}
+        {detail.is_superseded ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <StatusPill tone="warning">устарел</StatusPill>
+          </>
+        ) : null}
       </div>
+      <details className="artifact-meta-extra">
+        <summary>Подробные параметры артефакта</summary>
+        <div className="artifact-meta-extra__grid">
+          <div>
+            <span>Тип</span>
+            <strong>{prettyLabel(detail.artifact_kind)}</strong>
+          </div>
+          <div>
+            <span>Задача-производитель</span>
+            <strong>{detail.created_by_task_id ?? "—"}</strong>
+          </div>
+          {detail.complexity ? (
+            <div>
+              <span>Сложность</span>
+              <strong>{prettyLabel(detail.complexity)}</strong>
+            </div>
+          ) : null}
+          {detail.merge_strategy ? (
+            <div>
+              <span>Стратегия слияния</span>
+              <strong>{prettyLabel(detail.merge_strategy)}</strong>
+            </div>
+          ) : null}
+          {detail.methodology_pack_ref ? (
+            <div>
+              <span>Методология</span>
+              <strong>{detail.methodology_pack_ref}</strong>
+            </div>
+          ) : null}
+          {detail.parent_artifact_id ? (
+            <div>
+              <span>Предыдущая версия</span>
+              <strong>
+                <Link to={`/projects/${projectId}/artifacts/${detail.parent_artifact_id}`}>
+                  v{detail.parent_artifact_id.slice(0, 8)}
+                </Link>
+              </strong>
+            </div>
+          ) : null}
+          {detail.input_artifact_ids.length > 0 ? (
+            <div>
+              <span>Входные артефакты</span>
+              <strong>{detail.input_artifact_ids.length}</strong>
+            </div>
+          ) : null}
+          {detail.used_position_ids.length > 0 ? (
+            <div>
+              <span>Использованные положения</span>
+              <strong>{detail.used_position_ids.length}</strong>
+            </div>
+          ) : null}
+        </div>
+      </details>
+      {/* Блок «Развернуть provenance-ссылки» удалён: эти ссылки уже доступны
+          в Provenance-модалке (segmented кнопка), а на самой страничке
+          артефакта они только захламляли документ. */}
       <Modal open={provenanceOpen} onClose={() => setProvenanceOpen(false)} title="Provenance / откуда это">
         {traceQuery.isLoading ? (
           <LoadingPanel title="Грузим provenance…" />
@@ -2894,6 +3287,9 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       </Modal>
       {mode === "doc" ? (
         <article className="document-surface" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : null}
+      {mode === "reasoning" && detail.created_by_task_id ? (
+        <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />
       ) : null}
       {mode === "json" ? <pre className="code-block">{detail.json_content}</pre> : null}
       {mode === "validations" ? (
@@ -2919,6 +3315,55 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       ) : null}
     </div>
   );
+}
+
+// Дата и время отдельно — для двухстрочного отображения в meta-колонке
+// списка артефактов в развёрнутом режиме.
+function formatDateOnly(iso: string): string {
+  if (!iso) return "";
+  try {
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return "";
+    return dt.toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function formatTimeOnly(iso: string): string {
+  if (!iso) return "";
+  try {
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return "";
+    return dt.toLocaleTimeString("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+// Чистит "(integration_operating_model)"-суффикс в названии артефакта.
+// Backend новые артефакты так не маркирует, но в старых записях БД
+// техническое имя роли всё ещё внутри title.
+function stripRoleSuffix(title: string, role: string): string {
+  if (!title || !role) return title;
+  const trimmed = title.trim();
+  const suffix = ` (${role})`;
+  if (trimmed.toLowerCase().endsWith(suffix.toLowerCase())) {
+    return trimmed.slice(0, -suffix.length).trim();
+  }
+  // На случай если в скобках лежит роль с другим регистром.
+  return trimmed.replace(/\s*\([^()]+\)\s*$/u, (match) => {
+    const inside = match.replace(/[\s()]+/g, "");
+    if (inside.toLowerCase() === role.toLowerCase()) return "";
+    return match;
+  }).trim();
 }
 
 function flattenTaskNodes(nodes: TaskNodeView[]): TaskNodeView[] {
@@ -2983,14 +3428,6 @@ function StatePage({
     queryKey: ["registry", "domain-packs"],
     queryFn: api.listDomainPacks,
   });
-  const [goalDraft, setGoalDraft] = useState("");
-
-  useEffect(() => {
-    if (stateQuery.data?.goal) {
-      setGoalDraft(stateQuery.data.goal);
-    }
-  }, [stateQuery.data?.goal]);
-
   if (stateQuery.isLoading || !stateQuery.data) {
     return <LoadingPanel title="Загрузка состояния проекта…" />;
   }
@@ -3003,24 +3440,10 @@ function StatePage({
 
   return (
     <div className="state-layout">
-      <SectionCard title="Цель и ключевое состояние" subtitle="Ручные действия оператора по состоянию проекта">
-        <div className="field-stack">
-          <label className="field field--stacked">
-            <span>Цель проекта</span>
-            <textarea
-              rows={4}
-              value={goalDraft}
-              onChange={(event) => setGoalDraft(event.target.value)}
-              placeholder="Зафиксируйте цель проекта на понятном языке."
-            />
-          </label>
-          <div className="inline-actions">
-            <Button tone="primary" icon={<PencilLine size={16} />} onClick={() => actions.setGoal(goalDraft)}>
-              Сохранить цель
-            </Button>
-          </div>
-        </div>
-      </SectionCard>
+      {/* Блок «Цель и ключевое состояние» был ручной формой задания цели —
+          в текущей архитектуре цель формируется leaf-задачей goal_hypothesis
+          и попадает в Layer A автоматически. Ручной ввод тут только дублировал
+          результат пайплайна и путал пользователя. */}
 
       <SectionCard
         title="Уточнения, допущения и решения"

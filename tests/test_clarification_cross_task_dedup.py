@@ -70,7 +70,7 @@ def _make_candidate(
         ),
         decision_owner_role="business",
         # balanced — режим по умолчанию в bootstrap, _decide_action даст "ask".
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
 
 
@@ -196,7 +196,7 @@ def test_answer_propagates_to_open_duplicates(tmp_path: Path) -> None:
             ClarificationOption(option_id="opt_a", label="A", description="", effect_preview="", confidence=0.5),
         ),
         recommended_option_id=None,
-        min_participation_mode="balanced",
+        visibility="architectural",
         default_assumption=None,
         affected_task_ids=("task-BBB",),
         related_artifact_ids=(),

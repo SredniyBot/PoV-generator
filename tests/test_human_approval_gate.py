@@ -67,15 +67,16 @@ def _find_signoff_request(runtime: SqliteRuntime, workspace: Path):
     )
 
 
-def test_human_approval_gate_blocks_objective_until_approved(tmp_path: Path) -> None:
-    """Полный цикл (BACKLOG #8 acceptance):
+def test_human_approval_gate_blocks_then_approves(tmp_path: Path) -> None:
+    """Полный цикл human_approval gate в одном тесте:
 
-    1. Прогоняем workflow до конца — review_report готов.
-    2. Objective ещё не завершён, потому что висит `human_approval` gate.
-    3. Появилось `ClarificationRequest` от gate с правильным
-       `source_id`, `blocking_scope=objective` и опцией `approved`.
-    4. Отвечаем `selected_option_ids=("approved",)`.
-    5. Objective становится завершённым.
+    1. Workflow открывает gate; objective не завершён.
+    2. ClarificationRequest от gate имеет правильную структуру.
+    3. Ответ ``rejected`` не закрывает objective.
+    4. Перезаписанный ответ ``approved`` закрывает objective.
+
+    Раньше эти проверки жили в двух отдельных тестах с одинаковым setup —
+    объединены ради скорости.
     """
     (
         workspace,
@@ -89,51 +90,33 @@ def test_human_approval_gate_blocks_objective_until_approved(tmp_path: Path) -> 
     # 1. Workflow доходит до открытия gate.
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
     assert result.stopped_reason == "planner_blocked"
-
-    # 2. Objective ещё не закрыт.
     assert planning_service._objective_completed(workspace, snapshot) is False
 
-    # 3. Уточнение от gate существует и имеет правильную структуру.
+    # 2. Уточнение от gate существует и имеет правильную структуру.
     signoff = _find_signoff_request(runtime, workspace)
     assert signoff.source_type == "quality_gate"
     assert signoff.source_id == SIGNOFF_GATE_REF
     assert signoff.blocking_scope == "objective"
     assert signoff.status == "open"
+    assert signoff.decision_owner_role == "client"
     option_ids = {option.option_id for option in signoff.options}
     assert "approved" in option_ids
     assert {"approved_with_comments", "rejected"}.issubset(option_ids)
 
-    # 4. Заказчик согласовывает.
-    clarification_service.answer_clarification(
-        workspace, request_id=signoff.request_id, selected_option_ids=("approved",)
-    )
-
-    # 5. Objective закрылся.
-    assert planning_service._objective_completed(workspace, snapshot) is True
-    next_run = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
-    assert next_run.stopped_reason == "objective_completed"
-
-
-def test_human_approval_gate_stays_blocking_when_answered_with_rejected(tmp_path: Path) -> None:
-    """Если заказчик ответил `rejected`, objective всё ещё не считается
-    завершённым — нужно либо `approved`, либо отдельная задача исправления."""
-    (
-        workspace,
-        snapshot,
-        runtime,
-        planning_service,
-        workflow_service,
-        clarification_service,
-    ) = _bootstrap(tmp_path)
-
-    workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
-    signoff = _find_signoff_request(runtime, workspace)
-
+    # 3. Reject не закрывает objective.
     clarification_service.answer_clarification(
         workspace, request_id=signoff.request_id, selected_option_ids=("rejected",)
     )
-
     assert planning_service._objective_completed(workspace, snapshot) is False
+
+    # 4. Reopen + approve закрывает objective.
+    clarification_service.reopen_clarification(workspace, request_id=signoff.request_id)
+    clarification_service.answer_clarification(
+        workspace, request_id=signoff.request_id, selected_option_ids=("approved",)
+    )
+    assert planning_service._objective_completed(workspace, snapshot) is True
+    next_run = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
+    assert next_run.stopped_reason == "objective_completed"
 
 
 def test_human_approval_gate_idempotent_request_creation(tmp_path: Path) -> None:

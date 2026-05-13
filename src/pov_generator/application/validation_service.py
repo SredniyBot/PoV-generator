@@ -61,11 +61,12 @@ class ValidationService:
         execution_bundle: ExecutionBundle,
     ) -> ValidationRun:
         manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
+        process = self._runtime.load_process_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
         findings: list[ValidationFinding] = []
         clarification_candidate_ids: list[str] = []
+        active_domain_refs = tuple(sorted(process.active_domain_pack_records.keys()))
 
         if execution_bundle.result.status != "succeeded":
             findings.append(
@@ -86,7 +87,7 @@ class ValidationService:
                 artifact = self._runtime.load_artifact(workspace, output.artifact_id)
                 try:
                     payload = json.loads(self._runtime.load_artifact_content(workspace, artifact.artifact_id))
-                    validate_json_schema(payload, artifact_schema(output.artifact_role, tuple(sorted(state.active_domain_pack_records.keys()))))
+                    validate_json_schema(payload, artifact_schema(output.artifact_role, active_domain_refs))
                 except (json.JSONDecodeError, ValidationError) as exc:
                     findings.append(
                         ValidationFinding(
@@ -104,14 +105,27 @@ class ValidationService:
                         artifact_role=output.artifact_role,
                         payload=payload,
                         template_ref=template.ref.as_string(),
-                        active_domain_pack_refs=tuple(sorted(state.active_domain_pack_records.keys())),
+                        active_domain_pack_refs=tuple(sorted(process.active_domain_pack_records.keys())),
                         artifact_id=artifact.artifact_id,
                         project_id=manifest.project_id,
                         task_id=task_id,
                     )
-                findings.extend(semantic_findings)
                 decisions = self._clarification_service.register_candidates(workspace, tuple(candidates))
                 clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+                # Семантический gate `needs_user_input` создаётся в
+                # `_semantic_analysis` сырым — на основе непустого
+                # `blocking_questions` из LLM. Но если после регистрации
+                # кандидатов оказалось, что ВСЕ они дедуплицировались на
+                # answered/assumed/deferred (никаких реально открытых
+                # вопросов не появилось) — задача не блокирует pipeline.
+                # Это решает кейс security_constraints_assessment, где LLM
+                # эмитил 7 вопросов, все 7 нашли матчинг в системе, ни
+                # одного нового open-request, но задача всё равно падала.
+                if not self._has_open_blocking_outcome(workspace, decisions):
+                    semantic_findings = tuple(
+                        f for f in semantic_findings if f.finding_type != "needs_user_input"
+                    )
+                findings.extend(semantic_findings)
 
                 if output.artifact_role == "review_report":
                     if payload.get("overall_status") != "passed":
@@ -143,7 +157,7 @@ class ValidationService:
                 if (
                     output.artifact_role == "requirements_spec"
                     and template.ref.as_string() != "common.requirements_spec_generation@2.0.0"
-                    and self._has_pack(tuple(sorted(state.active_domain_pack_records.keys())), "frontend.web_workspace", "frontend.web_app_requirements")
+                    and self._has_pack(tuple(sorted(process.active_domain_pack_records.keys())), "frontend.web_workspace", "frontend.web_app_requirements")
                     and not payload.get("frontend_requirements")
                 ):
                     findings.append(
@@ -201,6 +215,40 @@ class ValidationService:
 
         return validation_run
 
+    def _has_open_blocking_outcome(self, workspace: Path, decisions) -> bool:
+        """True если регистрация кандидатов реально породила хотя бы один
+        open-request, блокирующий задачу.
+
+        ВАЖНО: всегда перечитываем актуальный статус request'а из БД, потому
+        что пока шла регистрация (включая LLM-enrichment description+options
+        для каждого кандидата — это секунды каждый), пользователь мог уже
+        ответить на параллельно созданные вопросы. Если на момент финала
+        валидации все blocking-вопросы УЖЕ закрыты — finding `needs_user_input`
+        не нужен.
+
+        Логика для каждого decision:
+        - action == "assume"/"defer" → закрытое автоматически, не блокирует.
+        - action в {"ask", "reuse_existing"} с request_id → читаем актуальный
+          статус из БД:
+            * status == "open" + blocking_scope != "none" → блокирует
+            * любой другой статус (answered/assumed/deferred) → не блокирует
+        - Без request_id (нестандартный сценарий) → не блокирует.
+        """
+        for decision in decisions:
+            if decision.action in {"assume", "defer"}:
+                continue
+            if not decision.request_id:
+                continue
+            try:
+                existing = self._runtime.get_clarification_request(workspace, decision.request_id)
+            except Exception:
+                # Запросить не удалось — считаем блокирующим (безопасный
+                # дефолт, чтобы не пропустить реальную блокировку).
+                return True
+            if existing.status == "open" and existing.blocking_scope != "none":
+                return True
+        return False
+
     def _semantic_analysis(
         self,
         *,
@@ -249,16 +297,50 @@ class ValidationService:
 
         blocking_questions = payload.get("blocking_questions")
         if isinstance(blocking_questions, list) and blocking_questions:
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="needs_user_input",
-                    severity="error",
-                    blocking=True,
-                    message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
-                    related_artifact_ids=(artifact_id,),
-                )
+            # АРХИТЕКТУРНОЕ РЕШЕНИЕ: blocking_questions от LLM трактуются как
+            # **advisory follow-ups**, а не как стоп-сигнал.
+            #
+            # Причина: LLM с высокой уверенностью (confidence >= 0.45) сам
+            # производит качественный артефакт со всеми разделами + ДОПОЛНИТЕЛЬНО
+            # заполняет blocking_questions деталями, которые «было бы хорошо
+            # уточнить». В реальной консалтинговой работе это нормально:
+            # ТЗ всегда содержит секцию «открытые вопросы» / «допущения»,
+            # это не блокер для поставки документа.
+            #
+            # Старая логика валила задачу на любой непустой blocking_questions,
+            # что приводило к бесконечному циклу:
+            #   task → LLM выдаёт хороший артефакт + 5 вопросов → task failed
+            #   → user отвечает 5 вопросов → retry → LLM выдаёт хороший артефакт
+            #   + 5 новых вопросов → ...
+            #
+            # Новая логика:
+            # • Если confidence < 0.45 (низкая уверенность зафиксирована выше)
+            #   — задача УЖЕ помечена `low_confidence` finding'ом (blocking=True).
+            #   В этом случае blocking_questions ДЕЙСТВИТЕЛЬНО блокируют:
+            #   candidates создаются с blocking_scope="task", а finding
+            #   needs_user_input явно добавляется для прозрачности.
+            # • Если confidence >= 0.45 — артефакт валиден.
+            #   blocking_questions становятся advisory-кандидатами
+            #   (blocking_scope="none"). Они появляются в инбоксе как
+            #   «follow-up для уточнения», но НЕ блокируют admission задачи
+            #   и НЕ создают `needs_user_input` finding.
+            is_low_confidence = (
+                isinstance(confidence, (int, float))
+                and not isinstance(confidence, bool)
+                and confidence < 0.45
             )
+            advisory_scope = "task" if is_low_confidence else "none"
+            if is_low_confidence:
+                findings.append(
+                    ValidationFinding(
+                        finding_id=str(uuid.uuid4()),
+                        finding_type="needs_user_input",
+                        severity="error",
+                        blocking=True,
+                        message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
+                        related_artifact_ids=(artifact_id,),
+                    )
+                )
             for question in blocking_questions:
                 normalized_question = str(question).strip()
                 if not normalized_question:
@@ -278,8 +360,9 @@ class ValidationService:
                         question=normalized_question,
                         affected_task_ids=(task_id,),
                         related_artifact_ids=(artifact_id,),
-                        severity="high",
+                        severity="high" if is_low_confidence else "medium",
                         confidence_without_user=0.2,
+                        blocking_scope=advisory_scope,
                     )
                 )
 
@@ -482,7 +565,9 @@ class ValidationService:
                     impact="Без согласования цель проекта не закрывается.",
                     severity="high",
                     confidence_without_user=0.0,
-                    min_participation_mode="balanced",
+                    # Этап 3.1: внешнее согласование (sign-off) — это
+                    # principal-уровень: всплывает в любом engagement-режиме.
+                    visibility="principal",
                     default_assumption=None,
                     recommended_answer=None,
                     answer_mode="single",

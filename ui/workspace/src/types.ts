@@ -72,6 +72,7 @@ export interface TaskNodeView {
   retryable: boolean;
   is_current: boolean;
   blocking_clarification_count: number;
+  updated_at: string;
   children: TaskNodeView[];
 }
 
@@ -203,6 +204,18 @@ export interface ArtifactDetailView {
   json_content: string;
   markdown_content: string | null;
   validations: ArtifactValidationView[];
+  // Metadata Этапов 1 + 5.
+  artifact_kind: string;
+  provider: string | null;
+  model: string | null;
+  complexity: string | null;
+  methodology_pack_ref: string | null;
+  merge_strategy: string | null;
+  used_position_ids: string[];
+  input_artifact_ids: string[];
+  parent_artifact_id: string | null;
+  is_superseded: boolean;
+  overall_confidence: number | null;
 }
 
 export interface ReviewIssueView {

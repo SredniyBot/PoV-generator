@@ -82,12 +82,22 @@ class TaskSlotSpec:
 
 @dataclass(frozen=True)
 class TemplateInputs:
+    """Что задача требует на вход для исполнения.
+
+    Этап 7.3 добавил декларативный auto-collect:
+    ``collect_optional_from_active_domain_packs`` — если ``True``, контекст
+    задачи автоматически дополняется всеми артефактами, созданными
+    задачами активных доменных паков. Это **снимает** необходимость
+    руками перечислять `optional: [...]` для каждого нового домена.
+    """
+
     required_problem_fields: tuple[str, ...] = ()
     required_artifact_roles: tuple[str, ...] = ()
     optional_artifact_roles: tuple[str, ...] = ()
     required_readiness: tuple[str, ...] = ()
     forbidden_open_gaps: tuple[str, ...] = ()
     required_domain_packs: tuple[str, ...] = ()
+    collect_optional_from_active_domain_packs: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +135,42 @@ class TemplateValidationPolicy:
     min_confidence: float | None = None
 
 
+MergeStrategy = Literal["structural", "synthetic", "hybrid"]
+"""Стратегия объединения артефактов merge-задачей (Этап 5 roadmap).
+
+- ``structural`` — детерминированное объединение по правилам контракта,
+  без LLM. Для непересекающихся доменов (доменные секции, fan-out
+  результаты, сводные индексы).
+- ``synthetic`` — интеграция через LLM по объединённому промпту. Для
+  пересекающихся артефактов, требующих связного нарратива
+  (например, финальный requirements_spec).
+- ``hybrid`` — комбинация: скелет детерминирован, отдельные секции
+  LLM-заполнены. Зарезервировано на будущее (не реализовано в MVP).
+"""
+
+ConflictPolicy = Literal["union", "first_wins", "last_wins", "fail_on_conflict"]
+"""Политика разрешения конфликтов при структурном merge.
+
+- ``union`` — для массивов: объединение с дедупликацией.
+- ``first_wins`` — берётся значение из первого входного артефакта.
+- ``last_wins`` — берётся значение из последнего входного артефакта.
+- ``fail_on_conflict`` — поднимается :class:`ConflictError`,
+  если входы несогласованы.
+"""
+
+
+@dataclass(frozen=True)
+class MergeConfig:
+    """Конфигурация merge-задачи.
+
+    Если задано в шаблоне — execution-слой использует merge-исполнителя
+    вместо обычного LLM/stub. См. ``execution_service``.
+    """
+
+    strategy: MergeStrategy
+    conflict_policy: ConflictPolicy = "union"
+
+
 @dataclass(frozen=True)
 class TemplateSpec:
     identifier: str
@@ -150,6 +196,9 @@ class TemplateSpec:
     # живёт в methodology_pack (R8/TS9), а это поле — task-specific
     # инструкция. Переименовано в W2.cleanup (C2).
     summary: str = ""
+    # Этап 5: если задано, leaf-задача — merge-операция. Execution-слой
+    # объединяет входные артефакты по стратегии вместо обычного исполнения.
+    merge: MergeConfig | None = None
     source_path: Path = Path("")
 
     @property
@@ -163,11 +212,24 @@ class TemplateSpec:
 
 @dataclass(frozen=True)
 class ArtifactContractSpec:
+    """Контракт артефакта — описание формы результата задачи.
+
+    Этап 7.5: ``unstructured=True`` помечает «честно нет схемы» —
+    контракт существует как реф для artifact_role, но не валидирует
+    содержимое. Это лучше, чем псевдо-контракт с
+    ``additionalProperties: true`` и пустыми полями, который создаёт
+    ложное ощущение защищённости.
+
+    Когда контракт становится реальным (описаны ``required`` + поля),
+    флаг ``unstructured`` снимается; валидация начинает реально работать.
+    """
+
     identifier: str
     version: str
     title: str
     schema: dict[str, Any]
     source_path: Path
+    unstructured: bool = False
 
     @property
     def ref(self) -> ObjectRef:
@@ -538,6 +600,28 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             )
         complexity_value = complexity_raw  # type: ignore[assignment]
 
+    merge_raw = raw.get("merge")
+    merge_config: MergeConfig | None = None
+    if merge_raw is not None:
+        if not isinstance(merge_raw, dict):
+            raise ValidationError(
+                f"Поле merge в {owner} должно быть mapping со strategy/conflict_policy"
+            )
+        strategy = merge_raw.get("strategy")
+        if strategy not in {"structural", "synthetic", "hybrid"}:
+            raise ValidationError(
+                f"merge.strategy в {owner} должно быть structural|synthetic|hybrid"
+            )
+        conflict_policy = merge_raw.get("conflict_policy", "union")
+        if conflict_policy not in {"union", "first_wins", "last_wins", "fail_on_conflict"}:
+            raise ValidationError(
+                f"merge.conflict_policy в {owner} должно быть union|first_wins|last_wins|fail_on_conflict"
+            )
+        merge_config = MergeConfig(
+            strategy=strategy,  # type: ignore[arg-type]
+            conflict_policy=conflict_policy,  # type: ignore[arg-type]
+        )
+
     return TemplateSpec(
         identifier=require_str(raw, "id", owner),
         version=version,
@@ -556,6 +640,11 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             required_readiness=tuple(str(item) for item in require_list(requires, "readiness", owner)),
             forbidden_open_gaps=tuple(str(item) for item in require_list(requires, "forbidden_open_gaps", owner)),
             required_domain_packs=tuple(str(item) for item in require_list(requires, "domain_packs", owner)),
+            collect_optional_from_active_domain_packs=bool(
+                (required_artifacts.get("collect_optional") or {}).get(
+                    "from_active_domain_packs", False
+                )
+            ),
         ),
         outputs=TemplateOutputs(
             artifact_roles=(artifact_role_from_ref(artifact_ref),) if artifact_ref else (),
@@ -576,6 +665,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         ),
         instruction=optional_str(raw, "instruction"),
         summary=optional_str(raw, "summary") or "",
+        merge=merge_config,
         source_path=source_path,
     )
 
@@ -590,6 +680,7 @@ def parse_artifact_contract(raw: dict[str, Any], source_path: Path) -> ArtifactC
         title=require_str(raw, "title", owner),
         schema=require_mapping(raw, "schema", owner),
         source_path=source_path,
+        unstructured=bool(raw.get("unstructured", False)),
     )
 
 

@@ -16,14 +16,69 @@ from ..domain.clarifications import (
     ClarificationRequest,
     DecisionOwnerRole,
 )
-from ..domain.problem_state import (
-    ProblemState,
-    RemoveAssumptionPatch,
-    RemoveDecisionPatch,
-    SetClarificationModePatch,
-    UpsertAssumptionPatch,
-    UpsertDecisionPatch,
+from ..domain.positions import Position, PositionType, VisibilityLevel
+from ..domain.process_state import SetClarificationModePatch, proactive_ask_levels
+from ..domain.project_knowledge import (
+    RejectPositionPatch,
+    UpsertPositionPatch,
 )
+from ..domain.project_state import ProjectState
+
+
+# --- помощники привязки уточнений к Layer A ---------------------------------
+
+
+def _clarification_position_id(request_id: str) -> str:
+    """Стабильный идентификатор положения, ассоциированного с уточнением.
+
+    Одно положение на одно уточнение: тип меняется по жизненному циклу
+    (auto-assume → assumption; user answer → decision); identifier один,
+    история переходов сохраняется в event log.
+    """
+    return f"clarification.{request_id}"
+
+
+# Этап 3.1: дефолтная visibility, если эмиттер не указал явно. Карта
+# отражает естественный «вес» вопросов соответствующей роли в проекте:
+# бизнес/клиент/безопасность — principal (всегда заметные), методолог
+# и владелец данных — architectural (контур и интеграция), архитектор —
+# technical (детали реализации).
+_ROLE_DEFAULT_VISIBILITY: dict[DecisionOwnerRole, VisibilityLevel] = {
+    "business": "principal",
+    "client": "principal",
+    "security": "principal",
+    "data_owner": "architectural",
+    "methodologist": "architectural",
+    "architect": "technical",
+}
+
+
+def default_visibility_for_role(role: DecisionOwnerRole) -> VisibilityLevel:
+    """Дефолтная :class:`VisibilityLevel` для роли владельца решения."""
+    return _ROLE_DEFAULT_VISIBILITY.get(role, "architectural")
+
+
+def _build_clarification_position(
+    *,
+    request_id: str,
+    position_type: PositionType,
+    statement: str,
+    visibility: VisibilityLevel,
+    actor: str,
+    now: str,
+) -> Position:
+    """Собрать положение для записи в Layer A по результату уточнения."""
+    return Position(
+        identifier=_clarification_position_id(request_id),
+        type=position_type,
+        statement=statement,
+        visibility=visibility,
+        scope="global",
+        source="clarification",
+        taken_by=actor,
+        taken_at=now,
+        tags=("clarification",),
+    )
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient
 from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
 from ..infrastructure.claude_subscription_client import ClaudeSubscriptionClient
@@ -62,7 +117,7 @@ class ClarificationDraft:
     answer_mode: str
     options: tuple[ClarificationOption, ...]
     recommended_option_id: str | None
-    min_participation_mode: ClarificationMode
+    visibility: VisibilityLevel
     decision_owner_role: DecisionOwnerRole = "business"
 
 
@@ -75,42 +130,6 @@ class ClarificationDraftProvider(Protocol):
         fallback: ClarificationDraft,
     ) -> ClarificationDraft:
         ...
-
-
-_MODE_RANK: dict[ClarificationMode, int] = {
-    "autopilot": 0,
-    "balanced": 1,
-    "control": 2,
-    "expert": 3,
-}
-
-
-# Минимальный режим участия пользователя, начиная с которого вопрос данной роли
-# имеет право показаться. Менеджер — бизнес-роль; всё, что не `business/client`,
-# по умолчанию ниже его «уровня вовлечённости» и должно быть погашено
-# допущением, пока он явно не повысит engagement.
-#
-# Значение поднимает effective `min_participation_mode` кандидата до пола
-# роли (max по `_MODE_RANK`). Существующая логика `_decide_action` дальше
-# работает без изменений.
-_ROLE_FLOOR: dict[DecisionOwnerRole, ClarificationMode] = {
-    "business": "autopilot",
-    "client": "autopilot",
-    "security": "balanced",
-    "methodologist": "control",
-    "data_owner": "control",
-    "architect": "expert",
-}
-
-
-def _effective_min_mode(
-    candidate_min_mode: ClarificationMode,
-    role: DecisionOwnerRole,
-) -> ClarificationMode:
-    floor = _ROLE_FLOOR.get(role, "balanced")
-    if _MODE_RANK[floor] > _MODE_RANK[candidate_min_mode]:
-        return floor
-    return candidate_min_mode
 
 
 class ClarificationService:
@@ -133,7 +152,7 @@ class ClarificationService:
         candidates: tuple[ClarificationCandidate, ...],
     ) -> tuple[ClarificationDecision, ...]:
         decisions: list[ClarificationDecision] = []
-        state = self._runtime.load_problem_state(workspace)
+        state = self._runtime.load_project_state(workspace)
         for candidate in candidates:
             candidate = self._enrich_candidate(workspace, candidate, state)
             candidate = self._runtime.record_clarification_candidate(
@@ -177,7 +196,7 @@ class ClarificationService:
                 )
                 continue
 
-            action = self._decide_action(candidate, state.clarification_mode)
+            action = self._decide_action(candidate, state.process.clarification_mode)
             initial_status: str
             if action == "assume":
                 initial_status = "assumed"
@@ -188,12 +207,17 @@ class ClarificationService:
             request = self._request_from_candidate(candidate, status=initial_status)
             created = self._runtime.create_clarification_request(workspace, request)
             if action == "assume" and candidate.default_assumption:
-                self._runtime.apply_problem_patch(
+                self._runtime.apply_knowledge_patch(
                     workspace,
-                    UpsertAssumptionPatch(
-                        assumption_id=f"clarification_{created.request_id}",
-                        statement=candidate.default_assumption,
-                        source=f"clarification:{created.request_id}",
+                    UpsertPositionPatch(
+                        position=_build_clarification_position(
+                            request_id=created.request_id,
+                            position_type="assumption",
+                            statement=candidate.default_assumption,
+                            visibility=candidate.visibility,
+                            actor="clarification_coordinator",
+                            now=utc_now_iso(),
+                        )
                     ),
                     actor="clarification_coordinator",
                     reason="safe assumption accepted automatically",
@@ -212,7 +236,7 @@ class ClarificationService:
                     "source_type": candidate.source_type,
                     "source_id": candidate.source_id,
                     "decision_owner_role": candidate.decision_owner_role,
-                    "min_participation_mode": candidate.min_participation_mode,
+                    "visibility": candidate.visibility,
                     "default_assumption": candidate.default_assumption,
                 },
                 actor="clarification_coordinator",
@@ -250,12 +274,17 @@ class ClarificationService:
             free_text=free_text.strip() if free_text else None,
             resolution_summary=summary,
         )
-        self._runtime.apply_problem_patch(
+        self._runtime.apply_knowledge_patch(
             workspace,
-            UpsertDecisionPatch(
-                decision_id=f"clarification_{request_id}",
-                statement=f"{request.question} Ответ: {summary}",
-                source=f"clarification:{request_id}",
+            UpsertPositionPatch(
+                position=_build_clarification_position(
+                    request_id=request_id,
+                    position_type="decision",
+                    statement=f"{request.question} Ответ: {summary}",
+                    visibility=request.visibility,
+                    actor="operator",
+                    now=utc_now_iso(),
+                )
             ),
             actor="operator",
             reason="clarification answered",
@@ -382,10 +411,14 @@ class ClarificationService:
                 # чтобы не противоречила свежему decision пользователя.
                 if previous_status == "assumed":
                     try:
-                        self._runtime.apply_problem_patch(
+                        self._runtime.apply_knowledge_patch(
                             workspace,
-                            RemoveAssumptionPatch(
-                                assumption_id=f"clarification_{other.request_id}",
+                            RejectPositionPatch(
+                                position_id=_clarification_position_id(other.request_id),
+                                reason=(
+                                    f"assumption replaced by user answer "
+                                    f"on request {answered_request.request_id}"
+                                ),
                             ),
                             actor="clarification_coordinator",
                             reason=(
@@ -459,25 +492,20 @@ class ClarificationService:
         # созданную этим request'ом. Иначе при будущем ответе в state
         # окажутся ДВЕ записи: старая (от прошлого ответа) и новая (от
         # текущего). LLM увидит конфликт.
-        if request.status == "answered":
+        if request.status in {"answered", "assumed"}:
             try:
-                self._runtime.apply_problem_patch(
+                self._runtime.apply_knowledge_patch(
                     workspace,
-                    RemoveDecisionPatch(decision_id=f"clarification_{request_id}"),
-                    actor="operator",
-                    reason="clarification reopened — old decision removed",
-                )
-            except Exception:
-                pass
-        elif request.status == "assumed":
-            try:
-                self._runtime.apply_problem_patch(
-                    workspace,
-                    RemoveAssumptionPatch(
-                        assumption_id=f"clarification_{request_id}"
+                    RejectPositionPatch(
+                        position_id=_clarification_position_id(request_id),
+                        reason="clarification reopened by user",
                     ),
                     actor="operator",
-                    reason="clarification reopened — old assumption removed",
+                    reason=(
+                        "clarification reopened — previous "
+                        f"{'decision' if request.status == 'answered' else 'assumption'} "
+                        "rejected"
+                    ),
                 )
             except Exception:
                 pass
@@ -529,12 +557,17 @@ class ClarificationService:
             request_id,
             resolution_summary=request.default_assumption,
         )
-        self._runtime.apply_problem_patch(
+        self._runtime.apply_knowledge_patch(
             workspace,
-            UpsertAssumptionPatch(
-                assumption_id=f"clarification_{request_id}",
-                statement=request.default_assumption,
-                source=f"clarification:{request_id}",
+            UpsertPositionPatch(
+                position=_build_clarification_position(
+                    request_id=request_id,
+                    position_type="assumption",
+                    statement=request.default_assumption,
+                    visibility=request.visibility,
+                    actor="operator",
+                    now=utc_now_iso(),
+                )
             ),
             actor="operator",
             reason="clarification assumption accepted",
@@ -571,8 +604,8 @@ class ClarificationService:
         Возвращает summary, сколько каких переходов было — UI показывает
         toast «Автоматически закрыто N вопросов, отложено M».
         """
-        # 1. Применяем patch к ProblemState.
-        self._runtime.apply_problem_patch(
+        # 1. Применяем patch к Layer B (process).
+        self._runtime.apply_process_patch(
             workspace,
             SetClarificationModePatch(mode=mode),
             actor="operator",
@@ -635,7 +668,7 @@ class ClarificationService:
             impact=request.impact,
             severity=request.priority,
             confidence_without_user=0.0,  # фиктивное, не используется в _decide_action
-            min_participation_mode=request.min_participation_mode,
+            visibility=request.visibility,
             default_assumption=request.default_assumption,
             recommended_answer=None,
             answer_mode=request.answer_mode,
@@ -664,15 +697,25 @@ class ClarificationService:
         impact: str = "Ответ повлияет на дальнейшую формализацию требований и проверку результата.",
         answer_mode: str = "single",
         options: tuple[ClarificationOption, ...] | None = None,
-        min_participation_mode: ClarificationMode | None = None,
+        visibility: VisibilityLevel | None = None,
         decision_owner_role: DecisionOwnerRole = "business",
+        blocking_scope: str = "task",
     ) -> ClarificationCandidate:
+        """Сконструировать :class:`ClarificationCandidate` из «сырого» вопроса.
+
+        Если ``visibility`` не указана явно — берётся по умолчанию из роли
+        (см. :data:`_ROLE_DEFAULT_VISIBILITY`).
+
+        ``blocking_scope``: по умолчанию ``"task"`` (вопрос блокирует задачу-
+        эмитент). Для advisory-вопросов от высокоуверенных задач передавать
+        ``"none"`` — вопрос попадёт в инбокс, но не заблокирует pipeline.
+        """
+        if blocking_scope not in {"none", "task", "subtree", "objective"}:
+            blocking_scope = "task"
         normalized_options = options or ()
         normalized_mode = "single" if answer_mode == "free_text" and normalized_options else answer_mode
-        normalized_min_mode = min_participation_mode or self._min_mode_for_candidate(
-            severity=severity,
-            confidence_without_user=confidence_without_user,
-            default_assumption=default_assumption,
+        effective_visibility: VisibilityLevel = (
+            visibility if visibility is not None else default_visibility_for_role(decision_owner_role)
         )
         return ClarificationCandidate(
             candidate_id=str(uuid.uuid4()),
@@ -686,14 +729,14 @@ class ClarificationService:
             impact=impact,
             severity=severity,  # type: ignore[arg-type]
             confidence_without_user=confidence_without_user,
-            min_participation_mode=normalized_min_mode,
+            visibility=effective_visibility,
             default_assumption=default_assumption,
             recommended_answer=None,
             answer_mode=normalized_mode,  # type: ignore[arg-type]
             options=normalized_options,
             affected_task_ids=affected_task_ids,
             related_artifact_ids=related_artifact_ids,
-            blocking_scope="task",
+            blocking_scope=blocking_scope,  # type: ignore[arg-type]
             decision_owner_role=decision_owner_role,
             created_at=utc_now_iso(),
         )
@@ -702,7 +745,7 @@ class ClarificationService:
         self,
         workspace: Path,
         candidate: ClarificationCandidate,
-        state: ProblemState,
+        state: ProjectState,
     ) -> ClarificationCandidate:
         if not self._needs_llm_draft(candidate):
             return candidate
@@ -718,7 +761,7 @@ class ClarificationService:
             answer_mode="single" if candidate.answer_mode == "free_text" else candidate.answer_mode,
             options=candidate.options or self._default_options_for_candidate(default_assumption=candidate.default_assumption),
             recommended_option_id=self._recommended_option_id(candidate.options, candidate.recommended_answer),
-            min_participation_mode=candidate.min_participation_mode,
+            visibility=candidate.visibility,
             decision_owner_role=candidate.decision_owner_role,
         )
         context = self._clarification_context(workspace, candidate, state)
@@ -730,7 +773,7 @@ class ClarificationService:
                 "answer_mode": draft.answer_mode,
                 "options": draft.options,
                 "recommended_answer": draft.recommended_option_id,
-                "min_participation_mode": draft.min_participation_mode,
+                "visibility": draft.visibility,
                 "decision_owner_role": draft.decision_owner_role,
             }
         )
@@ -831,7 +874,7 @@ class ClarificationService:
         self,
         workspace: Path,
         candidate: ClarificationCandidate,
-        state: ProblemState,
+        state: ProjectState,
     ) -> dict[str, object]:
         tasks: list[dict[str, object]] = []
         for task_id in candidate.affected_task_ids[:5]:
@@ -865,12 +908,18 @@ class ClarificationService:
             )
 
         return {
-            "business_request": state.business_request,
-            "goal": state.goal,
-            "active_domain_packs": tuple(sorted(state.active_domain_pack_records.keys())),
-            "known_facts": tuple(item.statement for item in state.known_facts.values())[:12],
-            "assumptions": tuple(item.statement for item in state.assumptions.values())[:12],
-            "active_gaps": tuple(item.description for item in state.active_gaps.values())[:12],
+            "business_request": state.manifest.business_request,
+            "goal": state.knowledge.goal_statement(),
+            "active_domain_packs": tuple(sorted(state.process.active_domain_pack_records.keys())),
+            "known_facts": tuple(
+                position.statement for position in state.knowledge.by_type("fact")
+            )[:12],
+            "assumptions": tuple(
+                position.statement for position in state.knowledge.by_type("assumption")
+            )[:12],
+            "active_gaps": tuple(
+                item.description for item in state.process.active_gaps.values()
+            )[:12],
             "affected_tasks": tasks,
             "related_artifacts": artifacts,
         }
@@ -886,9 +935,13 @@ class ClarificationService:
             "Запрещено добавлять вариант 'другое', 'свой ответ' или аналогичный: свободный ответ всегда есть отдельно в интерфейсе. "
             "Если одновременно может быть верно несколько вариантов, используй answer_mode='multiple'. "
             "confidence у варианта — это уверенность системы, что этот вариант вероятно подойдет на основе доступного контекста. "
-            "min_participation_mode выбирай как минимальный режим участия пользователя, начиная с которого вопрос нужно показывать: "
-            "autopilot — только критично и небезопасно продолжать без ответа; balanced — блокирует или сильно влияет; "
-            "control — важное, но есть безопасное допущение; expert — спорное или низковлияющее. "
+            "visibility описывает уровень важности вопроса для проекта: "
+            "principal — бизнес-цель, главное ограничение, целевой пользователь, критическое согласование "
+            "(такие положения видны на autopilot); "
+            "architectural — выбор подхода, контур решения, способ интеграции, методологический выбор "
+            "(видны с balanced); "
+            "technical — детали реализации, конкретные библиотеки, тонкости поведения "
+            "(видны только на expert). "
             "decision_owner_role описывает, в чьей зоне ответственности находится решение: "
             "business — вопрос про бизнес-цели/KPI/границы проекта (бизнес-менеджер); "
             "client — вопрос требует согласования внешнего заказчика (sign-off, приёмка); "
@@ -896,7 +949,7 @@ class ClarificationService:
             "architect — архитектурные/технологические развилки реализации; "
             "data_owner — модель данных, источники, качество, владельцы данных; "
             "security — ИБ, приватность, регуляторные ограничения, контур размещения. "
-            "Эта классификация управляет показом вопроса бизнес-менеджеру в зависимости от его уровня вовлечённости. "
+            "Role — информационная ось для группировки в UI; решение «показать или нет» делает visibility. "
             "Верни только валидный JSON."
         )
 
@@ -921,13 +974,13 @@ class ClarificationService:
             "fallback_do_not_copy_verbatim": {
                 "description": fallback.description,
                 "options": [option.label for option in fallback.options],
-                "min_participation_mode": fallback.min_participation_mode,
+                "visibility": fallback.visibility,
             },
         }
         return (
             "Подготовь запрос на уточнение для пользователя по следующему кандидату. "
             "Основной вопрос уже задан в поле question; не превращай его в длинный текст. "
-            "Сформируй description, answer_mode, options, recommended_option_id и min_participation_mode.\n\n"
+            "Сформируй description, answer_mode, options, recommended_option_id, visibility и decision_owner_role.\n\n"
             f"{json_dumps(payload)}"
         )
 
@@ -939,7 +992,7 @@ class ClarificationService:
                 "answer_mode",
                 "options",
                 "recommended_option_id",
-                "min_participation_mode",
+                "visibility",
                 "decision_owner_role",
             ],
             "additionalProperties": False,
@@ -964,7 +1017,10 @@ class ClarificationService:
                     },
                 },
                 "recommended_option_id": {"type": "string"},
-                "min_participation_mode": {"type": "string", "enum": ["autopilot", "balanced", "control", "expert"]},
+                "visibility": {
+                    "type": "string",
+                    "enum": ["principal", "architectural", "technical"],
+                },
                 "decision_owner_role": {
                     "type": "string",
                     "enum": ["business", "client", "methodologist", "architect", "data_owner", "security"],
@@ -1025,12 +1081,16 @@ class ClarificationService:
         if recommended_option_id and recommended_option_id not in {option.option_id for option in options}:
             recommended_option_id = max(options, key=lambda option: option.confidence or 0).option_id if options else None
 
-        min_mode = str(payload.get("min_participation_mode") or fallback.min_participation_mode)
-        if min_mode not in _MODE_RANK:
-            min_mode = fallback.min_participation_mode
+        valid_visibilities: frozenset[VisibilityLevel] = frozenset(
+            {"principal", "architectural", "technical"}
+        )
+        visibility_raw = str(payload.get("visibility") or fallback.visibility)
+        visibility: VisibilityLevel = (
+            visibility_raw if visibility_raw in valid_visibilities else fallback.visibility
+        )  # type: ignore[assignment]
 
         decision_owner_role = str(payload.get("decision_owner_role") or fallback.decision_owner_role)
-        if decision_owner_role not in _ROLE_FLOOR:
+        if decision_owner_role not in _ROLE_DEFAULT_VISIBILITY:
             decision_owner_role = fallback.decision_owner_role
 
         return ClarificationDraft(
@@ -1038,7 +1098,7 @@ class ClarificationService:
             answer_mode=answer_mode,
             options=tuple(options),
             recommended_option_id=recommended_option_id,
-            min_participation_mode=min_mode,  # type: ignore[arg-type]
+            visibility=visibility,
             decision_owner_role=decision_owner_role,  # type: ignore[arg-type]
         )
 
@@ -1064,38 +1124,29 @@ class ClarificationService:
         )
 
     def _decide_action(self, candidate: ClarificationCandidate, mode: ClarificationMode) -> str:
-        # Роль-владелец решения поднимает effective min mode: бизнес-менеджеру
-        # на autopilot/balanced нечего делать с архитектурной развилкой, даже
-        # если по уверенности она формально подходит.
-        effective_min_mode = _effective_min_mode(
-            candidate.min_participation_mode, candidate.decision_owner_role
-        )
-        surface_allowed = self._mode_allows(mode, effective_min_mode)
+        """Решить ask/assume/defer на основе visibility и engagement-режима.
 
-        # 1. Высокая уверенность системы + есть допущение → тихо принять,
-        # не показывать пользователю даже на expert (это «и так очевидно»).
-        if candidate.default_assumption and candidate.confidence_without_user >= 0.72:
-            return "assume"
+        Этап 3.1: единственная авторитетная ось — :attr:`ClarificationCandidate.visibility`.
+        Сверяется с таблицей :func:`proactive_ask_levels`:
 
-        # 2. Mode + role позволяют показать — показываем.
-        if surface_allowed:
+        * visibility ∈ proactive set для mode → ``ask`` (mode требует
+          проактивно выносить такие положения).
+        * иначе если есть ``default_assumption`` → ``assume`` (безопасный
+          путь автоматического решения).
+        * иначе если ``blocking_scope == 'objective'`` → ``ask`` (страховка
+          для gate-signoff'ов: они должны всплыть даже если эмиттер
+          неправильно проставил visibility).
+        * иначе ``defer`` (мягкий skip — менеджер увидит в «Отложено»).
+
+        Confidence не участвует в принятии решения; эмиттер сам решает,
+        прикреплять ли ``default_assumption`` на основе своей уверенности.
+        """
+        if candidate.visibility in proactive_ask_levels(mode):
             return "ask"
-
-        # 3. Mode/role не позволяют показ — есть варианты:
-        #   3a. Есть безопасное допущение → принять его.
         if candidate.default_assumption:
             return "assume"
-        #   3b. Нет допущения, но scope=objective (блокирует ВЕСЬ проект:
-        #       human_approval gate'ы и подобное) — придётся показать.
-        #       Менеджер на autopilot всё равно не сможет согласовать клиентскую
-        #       подпись автоматически: это явный сигнал «нужно решение».
         if candidate.blocking_scope == "objective":
             return "ask"
-        #   3c. Нет допущения и scope меньше objective — это не блокирующий
-        #       вопрос. Откладываем (defer): planner идёт дальше, менеджер
-        #       видит вопрос на /clarifications во вкладке «Отложенные».
-        #       Раньше эта ветка возвращала "ask" — отсюда жалоба, что
-        #       autopilot всё равно блокирует.
         return "defer"
 
     def _request_from_candidate(self, candidate: ClarificationCandidate, *, status: str) -> ClarificationRequest:
@@ -1118,7 +1169,7 @@ class ClarificationService:
             answer_mode=answer_mode,
             options=options,
             recommended_option_id=recommended_option_id,
-            min_participation_mode=candidate.min_participation_mode,
+            visibility=candidate.visibility,
             default_assumption=candidate.default_assumption,
             affected_task_ids=candidate.affected_task_ids,
             related_artifact_ids=candidate.related_artifact_ids,
@@ -1176,24 +1227,6 @@ class ClarificationService:
         if default_assumption:
             parts.append(f"Если пользователь не будет вовлечен, безопасным рабочим допущением считается: {default_assumption}")
         return " ".join(part for part in parts if part)
-
-    def _min_mode_for_candidate(
-        self,
-        *,
-        severity: str,
-        confidence_without_user: float,
-        default_assumption: str | None,
-    ) -> ClarificationMode:
-        if severity == "critical":
-            return "autopilot"
-        if severity == "high" and (confidence_without_user < 0.75 or not default_assumption):
-            return "balanced"
-        if severity in {"high", "medium"}:
-            return "control"
-        return "expert"
-
-    def _mode_allows(self, current_mode: ClarificationMode, min_mode: ClarificationMode) -> bool:
-        return _MODE_RANK[current_mode] >= _MODE_RANK[min_mode]
 
     def _title_from_question(self, question: str) -> str:
         normalized = question.strip().rstrip("?!.")

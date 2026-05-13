@@ -52,7 +52,7 @@
       ├─ ROLE FLOOR × clarification_mode → ask | assume | defer
       └─ persists ClarificationRequest
 
-   Patches → ProblemState (event-sourced)
+   Patches → ProjectKnowledge (Layer A) / ProcessState (Layer B), event-sourced
 
    Planner → следующая leaf-задача или blocking
 ```
@@ -88,7 +88,10 @@ src/pov_generator/
 │   ├── clarifications.py       ─ ClarificationCandidate, DecisionOwnerRole
 │   ├── execution.py            ─ ExecutionRequest, ExecutionResult, ExecutionOutput
 │   ├── tasks.py                ─ TaskRecord, статусы
-│   ├── problem_state.py        ─ ProblemState и его patches
+│   ├── positions.py            ─ Position (единая форма) + visibility levels
+│   ├── project_knowledge.py    ─ Layer A: положения + KnowledgePatch
+│   ├── process_state.py        ─ Layer B: пробелы/готовность/паки + ProcessPatch
+│   ├── project_state.py        ─ ProjectManifest + ProjectState (композиция) + StateEvent
 │   ├── validation.py           ─ ValidationRun, ValidationFinding
 │   └── workspace_views.py      ─ DTO для UI
 │

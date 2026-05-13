@@ -61,7 +61,7 @@ class WorkspaceCommandService:
         *,
         provider: str | None = None,
         model: str | None = None,
-        max_steps: int = 20,
+        max_steps: int = 1000,
     ) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
         snapshot = self._validated_snapshot()
@@ -298,9 +298,10 @@ class WorkspaceCommandService:
         )
         self._project_service.add_fact(
             workspace,
-            fact_id="domain_pack_selection",
+            identifier="domain_pack_selection",
             statement=selection_summary,
-            source="domain_pack_selector",
+            source="system",
+            taken_by_label="domain_pack_selector",
         )
         self._planning_service.expand_graph(workspace, snapshot)
         return ProjectCreatedView(

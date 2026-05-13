@@ -82,6 +82,10 @@ class TaskNodeView:
     retryable: bool
     is_current: bool
     blocking_clarification_count: int = 0
+    # Время последней смены статуса. Для status=in_progress это время старта
+    # текущего LLM-вызова — UI отображает в виджете workflow реальный
+    # секундомер «задача X работает T сек.».
+    updated_at: str = ""
     children: tuple["TaskNodeView", ...] = ()
 
 
@@ -170,7 +174,7 @@ class ClarificationItemView:
     answer_mode: str
     options: tuple[ClarificationOptionView, ...]
     recommended_option_id: str | None
-    min_participation_mode: str
+    visibility: str
     default_assumption: str | None
     blocking_scope: str
     decision_owner_role: str
@@ -225,6 +229,19 @@ class ArtifactDetailView:
     json_content: str
     markdown_content: str | None
     validations: tuple[ArtifactValidationView, ...] = ()
+    # Метаинформация артефакта (Этапы 1 + 5). Раньше показывалась только
+    # через provenance-модалку; теперь публикуется в карточке артефакта.
+    artifact_kind: str = "primary"
+    provider: str | None = None
+    model: str | None = None
+    complexity: str | None = None
+    methodology_pack_ref: str | None = None
+    merge_strategy: str | None = None
+    used_position_ids: tuple[str, ...] = ()
+    input_artifact_ids: tuple[str, ...] = ()
+    parent_artifact_id: str | None = None
+    is_superseded: bool = False
+    overall_confidence: float | None = None
 
 
 @dataclass(frozen=True)

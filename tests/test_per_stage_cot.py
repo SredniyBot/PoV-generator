@@ -169,8 +169,11 @@ def test_per_stage_cot_writes_stage_outputs_to_reasoning_artifact(tmp_path: Path
             workspace, snapshot, decision.selected_task_id, provider="claude_sdk"
         )
 
-    reasoning_output = next(o for o in bundle.result.outputs if o.kind == "reasoning")
-    payload = json.loads(runtime.load_artifact_content(workspace, reasoning_output.artifact_id))
+    # Этап 1.1: reasoning живёт в ArtifactMetadata primary артефакта,
+    # не как отдельный артефакт.
+    primary_output = next(o for o in bundle.result.outputs if o.kind == "primary")
+    primary = runtime.load_artifact(workspace, primary_output.artifact_id)
+    payload = primary.metadata.reasoning
     stage_ids = {block["stage_id"] for block in payload["stages"]}
     # При standard complexity активны 4 стадии.
     assert stage_ids == {"goal_framing", "jtbd_anchor", "option_generation", "decision"}

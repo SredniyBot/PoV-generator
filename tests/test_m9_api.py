@@ -60,7 +60,7 @@ class FakeClarificationDraftProvider:
                 ),
             ),
             recommended_option_id="strict_poc",
-            min_participation_mode="control",
+            visibility="architectural",
         )
 
 
@@ -358,7 +358,7 @@ def test_api_exposes_and_answers_clarification_requests(tmp_path: Path) -> None:
         "Нужно подготовить техническое задание для сервиса, который помогает HR оценивать риски.",
     )
     runtime = SqliteRuntime()
-    state = runtime.load_problem_state(workspace)
+    state = runtime.load_process_state(workspace)
     assert state.root_task_id is not None
     candidate = ClarificationCandidate(
         candidate_id=str(uuid.uuid4()),
@@ -376,7 +376,7 @@ def test_api_exposes_and_answers_clarification_requests(tmp_path: Path) -> None:
         impact="Ответ попадет в решения проекта и будет учитываться следующими задачами.",
         severity="high",
         confidence_without_user=0.2,
-        min_participation_mode="balanced",
+        visibility="architectural",
         default_assumption=None,
         recommended_answer="speed",
         answer_mode="single",
@@ -413,7 +413,7 @@ def test_api_exposes_and_answers_clarification_requests(tmp_path: Path) -> None:
     request_id = clarifications_payload["items"][0]["clarification_id"]
     assert clarifications_payload["items"][0]["recommended_option_id"] == "speed"
     assert clarifications_payload["items"][0]["description"].startswith("Система готовит ТЗ")
-    assert clarifications_payload["items"][0]["min_participation_mode"] == "balanced"
+    assert clarifications_payload["items"][0]["visibility"] == "architectural"
     assert clarifications_payload["items"][0]["options"][0]["confidence"] == 0.64
 
     task_graph = client.get(f"/api/projects/{project_id}/task-graph")
@@ -449,7 +449,7 @@ def test_clarification_candidates_created_from_questions_have_answer_options(tmp
     )
     runtime = SqliteRuntime()
     service = ClarificationService(runtime, provider="stub")
-    state = runtime.load_problem_state(workspace)
+    state = runtime.load_process_state(workspace)
     assert state.root_task_id is not None
 
     candidate = service.candidate_from_question(
@@ -466,7 +466,8 @@ def test_clarification_candidates_created_from_questions_have_answer_options(tmp
     request = runtime.get_clarification_request(workspace, decisions[0].request_id)
     assert request.answer_mode == "single"
     assert len(request.description.split(". ")) >= 3
-    assert request.min_participation_mode == "balanced"
+    # candidate_from_question default role = business → visibility = principal.
+    assert request.visibility == "principal"
     assert len(request.options) >= 2
     assert {option.option_id for option in request.options} >= {
         "include_in_current_project",
@@ -490,7 +491,7 @@ def test_clarification_candidates_created_from_questions_have_answer_options(tmp
         impact="Ответ будет учтен при дальнейшей детализации требований.",
         severity="high",
         confidence_without_user=0.1,
-        min_participation_mode="balanced",
+        visibility="architectural",
         default_assumption=None,
         recommended_answer=None,
         answer_mode="free_text",
@@ -518,7 +519,7 @@ def test_clarification_request_details_are_generated_by_provider(tmp_path: Path)
     )
     runtime = SqliteRuntime()
     service = ClarificationService(runtime, draft_provider=FakeClarificationDraftProvider())
-    state = runtime.load_problem_state(workspace)
+    state = runtime.load_process_state(workspace)
     assert state.root_task_id is not None
 
     candidate = service.candidate_from_question(
@@ -536,6 +537,7 @@ def test_clarification_request_details_are_generated_by_provider(tmp_path: Path)
     assert request.description.startswith("Система анализирует проектный запрос")
     assert request.answer_mode == "multiple"
     assert request.recommended_option_id == "strict_poc"
-    assert request.min_participation_mode == "control"
+    # FakeClarificationDraftProvider returns visibility=architectural now.
+    assert request.visibility == "architectural"
     assert [option.option_id for option in request.options] == ["strict_poc", "future_scale"]
     assert request.options[0].confidence == 0.68

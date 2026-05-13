@@ -7,56 +7,118 @@ from pathlib import Path
 
 from ..common.errors import NotFoundError
 from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
-from ..domain.artifacts import ArtifactRecord, ContextBudget, ContextItem, ContextManifest
+from ..domain.artifacts import (
+    ArtifactMetadata,
+    ArtifactRecord,
+    ArtifactRelations,
+    ContextBudget,
+    ContextItem,
+    ContextManifest,
+)
 from ..domain.clarifications import ClarificationCandidate, ClarificationOption, ClarificationRequest
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
-from ..domain.problem_state import (
+from ..domain.positions import Position, PositionAlternative
+from ..domain.process_state import (
     ActiveDomainPackRecord,
     ActiveMethodologyPackRecord,
     DomainSignalRecord,
-    FactRecord,
     GapRecord,
-    ProblemEvent,
-    ProblemPatch,
-    ProblemState,
+    ProcessPatch,
+    ProcessState,
     ReadinessRecord,
-    apply_problem_patch,
+    apply_process_patch,
 )
+from ..domain.project_knowledge import (
+    KnowledgePatch,
+    ProjectKnowledge,
+    apply_knowledge_patch,
+)
+from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, StateLayer
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
 
 
-@dataclass(frozen=True)
-class ProjectManifest:
-    project_id: str
-    name: str
-    objective_ref: str
-    created_at: str
+# --- сериализация Layer A (знания) -------------------------------------------
 
 
-def _problem_state_to_dict(state: ProblemState) -> dict[str, object]:
+def _position_to_dict(position: Position) -> dict[str, object]:
+    return to_primitive(position)
+
+
+def _position_from_dict(payload: dict) -> Position:
+    alternatives = tuple(
+        PositionAlternative(**alt) for alt in payload.get("alternatives", ())
+    )
+    return Position(
+        identifier=payload["identifier"],
+        type=payload["type"],
+        statement=payload["statement"],
+        visibility=payload["visibility"],
+        scope=payload["scope"],
+        source=payload["source"],
+        taken_by=payload["taken_by"],
+        taken_at=payload["taken_at"],
+        confidence=float(payload.get("confidence", 1.0)),
+        tags=tuple(payload.get("tags", ())),
+        alternatives=alternatives,
+        related_position_ids=tuple(payload.get("related_position_ids", ())),
+        status=payload.get("status", "active"),
+        supersedes=payload.get("supersedes"),
+        superseded_at=payload.get("superseded_at"),
+        rejection_reason=payload.get("rejection_reason"),
+    )
+
+
+def _knowledge_to_dict(knowledge: ProjectKnowledge) -> dict[str, object]:
+    return {
+        "positions": {
+            identifier: _position_to_dict(position)
+            for identifier, position in knowledge.positions.items()
+        },
+        "version": knowledge.version,
+        "updated_at": knowledge.updated_at,
+    }
+
+
+def _knowledge_from_dict(payload: dict) -> ProjectKnowledge:
+    positions = {
+        identifier: _position_from_dict(value)
+        for identifier, value in payload.get("positions", {}).items()
+    }
+    return ProjectKnowledge(
+        positions=positions,
+        version=int(payload.get("version", 0)),
+        updated_at=payload.get("updated_at", utc_now_iso()),
+    )
+
+
+# --- сериализация Layer B (процесс) ------------------------------------------
+
+
+def _process_to_dict(state: ProcessState) -> dict[str, object]:
     return to_primitive(state)
 
 
-def _problem_state_from_dict(payload: dict) -> ProblemState:
-    return ProblemState(
-        project_id=payload["project_id"],
-        objective_ref=payload["objective_ref"],
+def _process_from_dict(payload: dict) -> ProcessState:
+    return ProcessState(
         root_task_id=payload.get("root_task_id"),
-        business_request=payload["business_request"],
-        goal=payload.get("goal"),
-        known_facts={key: FactRecord(**value) for key, value in payload.get("known_facts", {}).items()},
-        assumptions={key: FactRecord(**value) for key, value in payload.get("assumptions", {}).items()},
-        constraints={key: FactRecord(**value) for key, value in payload.get("constraints", {}).items()},
-        risks={key: FactRecord(**value) for key, value in payload.get("risks", {}).items()},
-        active_gaps={key: GapRecord(**value) for key, value in payload.get("active_gaps", {}).items()},
-        decisions={key: FactRecord(**value) for key, value in payload.get("decisions", {}).items()},
-        readiness={key: ReadinessRecord(**value) for key, value in payload.get("readiness", {}).items()},
-        domain_signals={key: DomainSignalRecord(**value) for key, value in payload.get("domain_signals", {}).items()},
+        active_gaps={
+            key: GapRecord(**value)
+            for key, value in payload.get("active_gaps", {}).items()
+        },
+        readiness={
+            key: ReadinessRecord(**value)
+            for key, value in payload.get("readiness", {}).items()
+        },
+        domain_signals={
+            key: DomainSignalRecord(**value)
+            for key, value in payload.get("domain_signals", {}).items()
+        },
         active_domain_packs={
-            key: ActiveDomainPackRecord(**value) for key, value in payload.get("active_domain_packs", {}).items()
+            key: ActiveDomainPackRecord(**value)
+            for key, value in payload.get("active_domain_packs", {}).items()
         },
         active_methodology_packs={
             key: ActiveMethodologyPackRecord(**value)
@@ -90,13 +152,109 @@ def _task_from_row(row: sqlite3.Row) -> TaskRecord:
     )
 
 
+def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
+    """Восстановить :class:`ArtifactMetadata` из JSON-payload'а.
+
+    Совместимо с старыми payload'ами, где metadata был свободным dict'ом —
+    неизвестные поля попадают в :attr:`ArtifactMetadata.extras`.
+    """
+    if not payload:
+        return ArtifactMetadata()
+    known = {
+        "template_ref",
+        "provider",
+        "model",
+        "complexity",
+        "methodology_pack_ref",
+        "execution_run_id",
+        "merge_strategy",
+        "reasoning",
+        "methodology_trace",
+        "overall_confidence",
+        "field_confidence",
+        "used_position_ids",
+        "extras",
+    }
+    extras = {key: value for key, value in payload.items() if key not in known}
+    declared_extras = payload.get("extras") or {}
+    if isinstance(declared_extras, dict):
+        extras = {**declared_extras, **extras}
+    return ArtifactMetadata(
+        template_ref=payload.get("template_ref"),
+        provider=payload.get("provider"),
+        model=payload.get("model"),
+        complexity=payload.get("complexity"),
+        methodology_pack_ref=payload.get("methodology_pack_ref"),
+        execution_run_id=payload.get("execution_run_id"),
+        merge_strategy=payload.get("merge_strategy"),
+        reasoning=dict(payload.get("reasoning") or {}),
+        methodology_trace=dict(payload.get("methodology_trace") or {}),
+        overall_confidence=payload.get("overall_confidence"),
+        field_confidence=dict(payload.get("field_confidence") or {}),
+        used_position_ids=tuple(payload.get("used_position_ids") or ()),
+        extras=extras,
+    )
+
+
+def _artifact_metadata_to_payload(metadata: ArtifactMetadata) -> dict[str, object]:
+    """Сериализовать :class:`ArtifactMetadata` в плоский JSON-payload."""
+    payload: dict[str, object] = {}
+    if metadata.template_ref is not None:
+        payload["template_ref"] = metadata.template_ref
+    if metadata.provider is not None:
+        payload["provider"] = metadata.provider
+    if metadata.model is not None:
+        payload["model"] = metadata.model
+    if metadata.complexity is not None:
+        payload["complexity"] = metadata.complexity
+    if metadata.methodology_pack_ref is not None:
+        payload["methodology_pack_ref"] = metadata.methodology_pack_ref
+    if metadata.execution_run_id is not None:
+        payload["execution_run_id"] = metadata.execution_run_id
+    if metadata.merge_strategy is not None:
+        payload["merge_strategy"] = metadata.merge_strategy
+    if metadata.reasoning:
+        payload["reasoning"] = dict(metadata.reasoning)
+    if metadata.methodology_trace:
+        payload["methodology_trace"] = dict(metadata.methodology_trace)
+    if metadata.overall_confidence is not None:
+        payload["overall_confidence"] = metadata.overall_confidence
+    if metadata.field_confidence:
+        payload["field_confidence"] = dict(metadata.field_confidence)
+    if metadata.used_position_ids:
+        payload["used_position_ids"] = list(metadata.used_position_ids)
+    if metadata.extras:
+        payload["extras"] = dict(metadata.extras)
+    return payload
+
+
+def _artifact_relations_from_row(row: sqlite3.Row) -> ArtifactRelations:
+    """Восстановить :class:`ArtifactRelations` из строки таблицы artifacts."""
+    parent_id = row["parent_artifact_id"]
+    try:
+        inputs_json = row["input_artifact_ids_json"]
+    except (KeyError, IndexError):
+        inputs_json = None
+    try:
+        children_json = row["child_artifact_ids_json"]
+    except (KeyError, IndexError):
+        children_json = None
+    inputs = tuple(json_loads(inputs_json)) if inputs_json else ()
+    children = tuple(json_loads(children_json)) if children_json else ()
+    return ArtifactRelations(
+        parent_artifact_id=parent_id,
+        input_artifact_ids=inputs,
+        child_artifact_ids=children,
+    )
+
+
 def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
-    # B4: is_superseded — мигрированное поле; для старых БД где колонки нет
-    # sqlite вернёт KeyError, тогда дефолтим в False (артефакт current).
     try:
         is_superseded_value = row["is_superseded"]
     except (KeyError, IndexError):
         is_superseded_value = 0
+    metadata = _artifact_metadata_from_payload(json_loads(row["metadata_json"]))
+    relations = _artifact_relations_from_row(row)
     return ArtifactRecord(
         artifact_id=row["artifact_id"],
         project_id=row["project_id"],
@@ -106,10 +264,10 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         artifact_format=row["artifact_format"],
         artifact_kind=row["artifact_kind"],
         created_by_task_id=row["created_by_task_id"],
-        parent_artifact_id=row["parent_artifact_id"],
-        metadata=json_loads(row["metadata_json"]),
         storage_path=row["storage_path"],
         created_at=row["created_at"],
+        relations=relations,
+        metadata=metadata,
         is_superseded=bool(is_superseded_value),
     )
 
@@ -180,7 +338,7 @@ def _candidate_from_row(row: sqlite3.Row) -> ClarificationCandidate:
         impact=payload["impact"],
         severity=payload["severity"],
         confidence_without_user=float(payload["confidence_without_user"]),
-        min_participation_mode=payload.get("min_participation_mode", "balanced"),
+        visibility=payload.get("visibility", "architectural"),
         default_assumption=payload.get("default_assumption"),
         recommended_answer=payload.get("recommended_answer"),
         answer_mode=payload["answer_mode"],
@@ -207,6 +365,9 @@ def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
         if "auto_resolved" in row.keys()
         else False
     )
+    visibility = (
+        row["visibility"] if "visibility" in row.keys() else "architectural"
+    )
     return ClarificationRequest(
         request_id=row["request_id"],
         project_id=row["project_id"],
@@ -222,7 +383,7 @@ def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
         answer_mode=row["answer_mode"],
         options=tuple(_option_from_dict(item) for item in json_loads(row["options_json"])),
         recommended_option_id=row["recommended_option_id"],
-        min_participation_mode=row["min_participation_mode"],
+        visibility=visibility or "architectural",
         default_assumption=row["default_assumption"],
         affected_task_ids=tuple(json_loads(row["affected_task_ids_json"])),
         related_artifact_ids=tuple(json_loads(row["related_artifact_ids_json"])),
@@ -244,43 +405,73 @@ class SqliteRuntime:
     DB_FILENAME = "runtime.db"
     MANIFEST_FILENAME = "project.json"
 
+    def __init__(self) -> None:
+        # Кэш «схема проверена» — schema идемпотентна, повторно проверять
+        # на каждом ``_connect`` не нужно. Один раз на workspace.
+        self._schema_ensured: set[Path] = set()
+
     def create_workspace(
         self,
         workspace: Path,
         manifest: ProjectManifest,
-        initial_state: ProblemState,
-        bootstrap_event: ProblemEvent,
+        initial_state: ProjectState,
+        bootstrap_events: tuple[StateEvent, ...] = (),
     ) -> None:
+        """Создать workspace проекта.
+
+        Записывает:
+            * ``project.json`` — manifest (читаемый из файловой системы);
+            * snapshot слоя знаний — :class:`ProjectKnowledge`;
+            * snapshot слоя процесса — :class:`ProcessState`;
+            * bootstrap-события (если переданы) — для аудита создания.
+        """
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / self.MANIFEST_FILENAME).write_text(json_dumps(manifest), encoding="utf-8")
         with self._connect(workspace) as connection:
             connection.execute(
                 """
-                insert into problem_snapshots(project_id, state_json, version, updated_at)
+                insert into knowledge_snapshots(project_id, state_json, version, updated_at)
                 values (?, ?, ?, ?)
                 """,
                 (
                     manifest.project_id,
-                    json_dumps(_problem_state_to_dict(initial_state)),
-                    initial_state.version,
-                    initial_state.updated_at,
+                    json_dumps(_knowledge_to_dict(initial_state.knowledge)),
+                    initial_state.knowledge.version,
+                    initial_state.knowledge.updated_at,
                 ),
             )
             connection.execute(
                 """
-                insert into problem_events(project_id, version, patch_type, payload_json, actor, reason, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into process_snapshots(project_id, state_json, version, updated_at)
+                values (?, ?, ?, ?)
                 """,
                 (
                     manifest.project_id,
-                    bootstrap_event.version,
-                    bootstrap_event.patch_type,
-                    json_dumps(bootstrap_event.payload),
-                    bootstrap_event.actor,
-                    bootstrap_event.reason,
-                    bootstrap_event.created_at,
+                    json_dumps(_process_to_dict(initial_state.process)),
+                    initial_state.process.version,
+                    initial_state.process.updated_at,
                 ),
             )
+            for event in bootstrap_events:
+                connection.execute(
+                    """
+                    insert into state_events(
+                      project_id, layer, version, patch_type, payload_json,
+                      actor, reason, created_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        manifest.project_id,
+                        event.layer,
+                        event.version,
+                        event.patch_type,
+                        json_dumps(event.payload),
+                        event.actor,
+                        event.reason,
+                        event.created_at,
+                    ),
+                )
             connection.commit()
 
     def load_manifest(self, workspace: Path) -> ProjectManifest:
@@ -289,24 +480,53 @@ class SqliteRuntime:
             raise NotFoundError(f"Workspace manifest not found: {manifest_path}")
         return ProjectManifest(**json_loads(manifest_path.read_text(encoding="utf-8")))
 
-    def load_problem_state(self, workspace: Path) -> ProblemState:
+    def load_knowledge(self, workspace: Path) -> ProjectKnowledge:
         with self._connect(workspace) as connection:
-            row = connection.execute("select state_json from problem_snapshots limit 1").fetchone()
+            row = connection.execute(
+                "select state_json from knowledge_snapshots limit 1"
+            ).fetchone()
         if row is None:
-            raise NotFoundError("Problem snapshot not found.")
-        return _problem_state_from_dict(json_loads(row["state_json"]))
+            raise NotFoundError("Knowledge snapshot not found.")
+        return _knowledge_from_dict(json_loads(row["state_json"]))
 
-    def list_problem_events(self, workspace: Path) -> list[ProblemEvent]:
+    def load_process_state(self, workspace: Path) -> ProcessState:
         with self._connect(workspace) as connection:
-            rows = connection.execute(
-                """
-                select version, patch_type, payload_json, actor, reason, created_at
-                from problem_events
-                order by version
-                """
-            ).fetchall()
+            row = connection.execute(
+                "select state_json from process_snapshots limit 1"
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("Process snapshot not found.")
+        return _process_from_dict(json_loads(row["state_json"]))
+
+    def load_project_state(self, workspace: Path) -> ProjectState:
+        """Композитный снимок: manifest + knowledge + process."""
+        return ProjectState(
+            manifest=self.load_manifest(workspace),
+            knowledge=self.load_knowledge(workspace),
+            process=self.load_process_state(workspace),
+        )
+
+    def list_state_events(
+        self,
+        workspace: Path,
+        *,
+        layer: StateLayer | None = None,
+    ) -> list[StateEvent]:
+        """История событий изменения состояния, опционально по слою."""
+        query = (
+            "select layer, version, patch_type, payload_json, actor, reason, created_at "
+            "from state_events"
+        )
+        params: tuple = ()
+        if layer is not None:
+            query += " where layer = ?"
+            params = (layer,)
+        query += " order by id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
         return [
-            ProblemEvent(
+            StateEvent(
+                layer=row["layer"],
                 version=row["version"],
                 patch_type=row["patch_type"],
                 payload=json_loads(row["payload_json"]),
@@ -317,29 +537,87 @@ class SqliteRuntime:
             for row in rows
         ]
 
-    def apply_problem_patch(self, workspace: Path, patch: ProblemPatch, actor: str, reason: str) -> ProblemState:
-        state = self.load_problem_state(workspace)
-        next_state = apply_problem_patch(state, patch)
+    def apply_knowledge_patch(
+        self,
+        workspace: Path,
+        patch: KnowledgePatch,
+        actor: str,
+        reason: str,
+    ) -> ProjectKnowledge:
+        """Применить патч к слою знаний; обновить snapshot и записать событие."""
+        knowledge = self.load_knowledge(workspace)
+        next_knowledge = apply_knowledge_patch(knowledge, patch)
+        manifest = self.load_manifest(workspace)
         with self._connect(workspace) as connection:
             connection.execute(
                 """
-                update problem_snapshots set state_json = ?, version = ?, updated_at = ?
+                update knowledge_snapshots set state_json = ?, version = ?, updated_at = ?
                 where project_id = ?
                 """,
                 (
-                    json_dumps(_problem_state_to_dict(next_state)),
-                    next_state.version,
-                    next_state.updated_at,
-                    next_state.project_id,
+                    json_dumps(_knowledge_to_dict(next_knowledge)),
+                    next_knowledge.version,
+                    next_knowledge.updated_at,
+                    manifest.project_id,
                 ),
             )
             connection.execute(
                 """
-                insert into problem_events(project_id, version, patch_type, payload_json, actor, reason, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into state_events(
+                  project_id, layer, version, patch_type, payload_json,
+                  actor, reason, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    next_state.project_id,
+                    manifest.project_id,
+                    "knowledge",
+                    next_knowledge.version,
+                    type(patch).__name__,
+                    json_dumps(to_primitive(patch)),
+                    actor,
+                    reason,
+                    next_knowledge.updated_at,
+                ),
+            )
+            connection.commit()
+        return next_knowledge
+
+    def apply_process_patch(
+        self,
+        workspace: Path,
+        patch: ProcessPatch,
+        actor: str,
+        reason: str,
+    ) -> ProcessState:
+        """Применить патч к слою процесса; обновить snapshot и записать событие."""
+        state = self.load_process_state(workspace)
+        next_state = apply_process_patch(state, patch)
+        manifest = self.load_manifest(workspace)
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update process_snapshots set state_json = ?, version = ?, updated_at = ?
+                where project_id = ?
+                """,
+                (
+                    json_dumps(_process_to_dict(next_state)),
+                    next_state.version,
+                    next_state.updated_at,
+                    manifest.project_id,
+                ),
+            )
+            connection.execute(
+                """
+                insert into state_events(
+                  project_id, layer, version, patch_type, payload_json,
+                  actor, reason, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    manifest.project_id,
+                    "process",
                     next_state.version,
                     type(patch).__name__,
                     json_dumps(to_primitive(patch)),
@@ -515,9 +793,10 @@ class SqliteRuntime:
                 """
                 insert into artifacts(
                   artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
-                  created_by_task_id, parent_artifact_id, metadata_json, storage_path, created_at, is_superseded
+                  created_by_task_id, parent_artifact_id, input_artifact_ids_json, child_artifact_ids_json,
+                  metadata_json, storage_path, created_at, is_superseded
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
@@ -528,8 +807,10 @@ class SqliteRuntime:
                     artifact.artifact_format,
                     artifact.artifact_kind,
                     artifact.created_by_task_id,
-                    artifact.parent_artifact_id,
-                    json_dumps(artifact.metadata),
+                    artifact.relations.parent_artifact_id,
+                    json_dumps(list(artifact.relations.input_artifact_ids)),
+                    json_dumps(list(artifact.relations.child_artifact_ids)),
+                    json_dumps(_artifact_metadata_to_payload(artifact.metadata)),
                     artifact.storage_path,
                     artifact.created_at,
                     1 if artifact.is_superseded else 0,
@@ -613,15 +894,92 @@ class SqliteRuntime:
             ).fetchone()
         return None if row is None else _artifact_from_row(row)
 
+    # --- Этап 1.3: graph traversal ------------------------------------------
+
+    def downstream_artifacts(
+        self, workspace: Path, artifact_id: str
+    ) -> list[ArtifactRecord]:
+        """Все артефакты, прямо или транзитивно использовавшие данный.
+
+        Обход вниз по графу через ``input_artifact_ids_json``. Возвращает
+        артефакты в порядке обнаружения; цикла быть не должно (artifacts
+        immutable + parent/inputs указывают только на ранее созданные),
+        но защита от него на всякий случай.
+        """
+        visited: set[str] = set()
+        result: list[ArtifactRecord] = []
+        frontier: list[str] = [artifact_id]
+        artifacts = self.list_artifacts(workspace)
+        index = {a.artifact_id: a for a in artifacts}
+        # Обратный индекс: input → набор downstream
+        downstream_index: dict[str, list[str]] = {}
+        for artifact in artifacts:
+            for input_id in artifact.relations.input_artifact_ids:
+                downstream_index.setdefault(input_id, []).append(artifact.artifact_id)
+        while frontier:
+            current = frontier.pop()
+            for child_id in downstream_index.get(current, ()):
+                if child_id in visited:
+                    continue
+                visited.add(child_id)
+                child = index.get(child_id)
+                if child is not None:
+                    result.append(child)
+                    frontier.append(child_id)
+        return result
+
+    def upstream_artifacts(
+        self, workspace: Path, artifact_id: str
+    ) -> list[ArtifactRecord]:
+        """Все артефакты, прямо или транзитивно использованные как входы.
+
+        Обход вверх по графу через ``input_artifact_ids``.
+        """
+        visited: set[str] = set()
+        result: list[ArtifactRecord] = []
+        artifacts = self.list_artifacts(workspace)
+        index = {a.artifact_id: a for a in artifacts}
+        start = index.get(artifact_id)
+        if start is None:
+            return []
+        frontier: list[str] = list(start.relations.input_artifact_ids)
+        while frontier:
+            current = frontier.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            artifact = index.get(current)
+            if artifact is None:
+                continue
+            result.append(artifact)
+            frontier.extend(artifact.relations.input_artifact_ids)
+        return result
+
+    def artifacts_using_position(
+        self, workspace: Path, position_id: str
+    ) -> list[ArtifactRecord]:
+        """Артефакты, явно использовавшие данное положение Layer A.
+
+        Опирается на ``ArtifactMetadata.used_position_ids``. Возвращает
+        активные артефакты (не superseded) по умолчанию — это они
+        затрагиваются при оспаривании положения.
+        """
+        return [
+            artifact
+            for artifact in self.list_artifacts(workspace)
+            if position_id in artifact.metadata.used_position_ids
+            and not artifact.is_superseded
+        ]
+
     def record_context_manifest(self, workspace: Path, manifest: ContextManifest) -> ContextManifest:
         with self._connect(workspace) as connection:
             connection.execute(
                 """
                 insert into context_manifests(
                   manifest_id, project_id, task_id, template_ref, problem_state_version, budget_json,
-                  excluded_items_json, input_fingerprint, created_at
+                  excluded_items_json, input_fingerprint, created_at, used_position_ids_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     manifest.manifest_id,
@@ -633,6 +991,7 @@ class SqliteRuntime:
                     json_dumps(list(manifest.excluded_items)),
                     manifest.input_fingerprint,
                     manifest.created_at,
+                    json_dumps(list(manifest.used_position_ids)),
                 ),
             )
             for item in manifest.items:
@@ -672,6 +1031,11 @@ class SqliteRuntime:
                 """,
                 (manifest_id,),
             ).fetchall()
+        try:
+            used_positions_json = manifest_row["used_position_ids_json"]
+        except (KeyError, IndexError):
+            used_positions_json = None
+        used_position_ids = tuple(json_loads(used_positions_json)) if used_positions_json else ()
         return ContextManifest(
             manifest_id=manifest_row["manifest_id"],
             project_id=manifest_row["project_id"],
@@ -683,6 +1047,7 @@ class SqliteRuntime:
             excluded_items=tuple(json_loads(manifest_row["excluded_items_json"])),
             input_fingerprint=manifest_row["input_fingerprint"],
             created_at=manifest_row["created_at"],
+            used_position_ids=used_position_ids,
         )
 
     def list_context_manifests(self, workspace: Path) -> list[ContextManifest]:
@@ -692,21 +1057,31 @@ class SqliteRuntime:
         items_by_manifest: dict[str, list[ContextItem]] = {}
         for row in item_rows:
             items_by_manifest.setdefault(row["manifest_id"], []).append(_context_item_from_row(row))
-        return [
-            ContextManifest(
-                manifest_id=row["manifest_id"],
-                project_id=row["project_id"],
-                task_id=row["task_id"],
-                template_ref=row["template_ref"],
-                problem_state_version=row["problem_state_version"],
-                budget=ContextBudget(**json_loads(row["budget_json"])),
-                items=tuple(items_by_manifest.get(row["manifest_id"], [])),
-                excluded_items=tuple(json_loads(row["excluded_items_json"])),
-                input_fingerprint=row["input_fingerprint"],
-                created_at=row["created_at"],
+        result: list[ContextManifest] = []
+        for row in manifest_rows:
+            try:
+                used_positions_json = row["used_position_ids_json"]
+            except (KeyError, IndexError):
+                used_positions_json = None
+            used_position_ids = (
+                tuple(json_loads(used_positions_json)) if used_positions_json else ()
             )
-            for row in manifest_rows
-        ]
+            result.append(
+                ContextManifest(
+                    manifest_id=row["manifest_id"],
+                    project_id=row["project_id"],
+                    task_id=row["task_id"],
+                    template_ref=row["template_ref"],
+                    problem_state_version=row["problem_state_version"],
+                    budget=ContextBudget(**json_loads(row["budget_json"])),
+                    items=tuple(items_by_manifest.get(row["manifest_id"], [])),
+                    excluded_items=tuple(json_loads(row["excluded_items_json"])),
+                    input_fingerprint=row["input_fingerprint"],
+                    created_at=row["created_at"],
+                    used_position_ids=used_position_ids,
+                )
+            )
+        return result
 
     def record_execution_run(
         self,
@@ -1143,7 +1518,7 @@ class SqliteRuntime:
                 """
                 insert into clarification_requests(
                   request_id, project_id, status, priority, title, question, description, reason, impact,
-                  answer_mode, options_json, recommended_option_id, min_participation_mode, default_assumption,
+                  answer_mode, options_json, recommended_option_id, visibility, default_assumption,
                   affected_task_ids_json, related_artifact_ids_json, blocking_scope, decision_owner_role,
                   auto_resolved, source_type, source_id, created_from_candidate_ids_json,
                   selected_option_ids_json, free_text, resolution_summary, created_at, updated_at
@@ -1163,7 +1538,7 @@ class SqliteRuntime:
                     request.answer_mode,
                     json_dumps(request.options),
                     request.recommended_option_id,
-                    request.min_participation_mode,
+                    request.visibility,
                     request.default_assumption,
                     json_dumps(request.affected_task_ids),
                     json_dumps(request.related_artifact_ids),
@@ -1402,8 +1777,18 @@ class SqliteRuntime:
         workspace.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(workspace / self.DB_FILENAME)
         connection.row_factory = sqlite3.Row
+        # Pragma'ы: writes без fsync и журнал в памяти. Это single-process
+        # SQLite (один процесс на workspace), потеря данных при крахе
+        # допустима в dev-сценарии — а ускорение для test-suite и live
+        # workflow'а ~5–10×.
+        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA synchronous = OFF")
+        connection.execute("PRAGMA temp_store = MEMORY")
         try:
-            self._ensure_schema(connection)
+            # Schema идемпотентна; проверяем один раз на workspace.
+            if workspace not in self._schema_ensured:
+                self._ensure_schema(connection)
+                self._schema_ensured.add(workspace)
             yield connection
         finally:
             connection.close()
@@ -1411,16 +1796,24 @@ class SqliteRuntime:
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript(
             """
-            create table if not exists problem_snapshots (
+            create table if not exists knowledge_snapshots (
               project_id text primary key,
               state_json text not null,
               version integer not null,
               updated_at text not null
             );
 
-            create table if not exists problem_events (
+            create table if not exists process_snapshots (
+              project_id text primary key,
+              state_json text not null,
+              version integer not null,
+              updated_at text not null
+            );
+
+            create table if not exists state_events (
               id integer primary key autoincrement,
               project_id text not null,
+              layer text not null,
               version integer not null,
               patch_type text not null,
               payload_json text not null,
@@ -1477,9 +1870,12 @@ class SqliteRuntime:
               artifact_kind text not null,
               created_by_task_id text,
               parent_artifact_id text,
+              input_artifact_ids_json text not null default '[]',
+              child_artifact_ids_json text not null default '[]',
               metadata_json text not null,
               storage_path text not null,
-              created_at text not null
+              created_at text not null,
+              is_superseded integer not null default 0
             );
 
             create table if not exists context_manifests (
@@ -1491,7 +1887,8 @@ class SqliteRuntime:
               budget_json text not null,
               excluded_items_json text not null,
               input_fingerprint text not null,
-              created_at text not null
+              created_at text not null,
+              used_position_ids_json text not null default '[]'
             );
 
             create table if not exists context_manifest_items (
@@ -1577,7 +1974,7 @@ class SqliteRuntime:
               answer_mode text not null,
               options_json text not null,
               recommended_option_id text,
-              min_participation_mode text not null default 'balanced',
+              visibility text not null default 'architectural',
               default_assumption text,
               affected_task_ids_json text not null,
               related_artifact_ids_json text not null,
@@ -1605,11 +2002,13 @@ class SqliteRuntime:
             "description",
             "text not null default ''",
         )
+        # Этап 3.1: visibility — единая ось «когда задавать пользователю».
+        # Заменяет старую колонку min_participation_mode (Этап 0/W1.2).
         self._ensure_column(
             connection,
             "clarification_requests",
-            "min_participation_mode",
-            "text not null default 'balanced'",
+            "visibility",
+            "text not null default 'architectural'",
         )
         self._ensure_column(
             connection,
@@ -1636,6 +2035,30 @@ class SqliteRuntime:
             "artifacts",
             "is_superseded",
             "integer not null default 0",
+        )
+        # Этап 1.3: связи артефактов в графе вынесены в отдельные колонки —
+        # input_artifact_ids (lineage по контексту), child_artifact_ids
+        # (для synthesized композитных). Старые БД мигрируются дефолтом '[]'.
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "input_artifact_ids_json",
+            "text not null default '[]'",
+        )
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "child_artifact_ids_json",
+            "text not null default '[]'",
+        )
+        # Этап 1.4: context_manifests хранит идентификаторы положений
+        # Layer A, использованных при сборке контекста — это «вход» для
+        # ArtifactMetadata.used_position_ids.
+        self._ensure_column(
+            connection,
+            "context_manifests",
+            "used_position_ids_json",
+            "text not null default '[]'",
         )
         # W5.1: audit log событий уточнений.
         connection.executescript(

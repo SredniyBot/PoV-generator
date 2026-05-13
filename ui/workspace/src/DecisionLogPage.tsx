@@ -1,15 +1,13 @@
 /**
- * L6-5: Decision log page (P7 first-class journal из §5B/§5C).
- *
- * Закрывает M-J5 «поддерживать живой проект после передачи» и
- * M-J6 «защитить ход решений при оспаривании»: каждая запись фиксирует
- * что решили, на основании чего, какие альтернативы рассматривались.
+ * L6-5: Decision log page (P7 first-class journal).
+ * Унифицирован под общий стиль workspace: SectionCard + segmented + StatusPill.
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "./api";
 import type { DecisionLogEntryView } from "./types";
+import { SectionCard, StatusPill, EmptyState, cx } from "./ui";
 
 type FilterKind = "all" | "answered" | "assumed" | "auto";
 
@@ -30,68 +28,65 @@ export function DecisionLogPage({ projectId }: DecisionLogPageProps) {
     [entries, filter],
   );
 
+  const counts = {
+    all: entries.length,
+    answered: entries.filter((e) => e.kind === "answered").length,
+    assumed: entries.filter((e) => e.kind === "assumed").length,
+    auto: entries.filter((e) => e.auto_resolved).length,
+  };
+
   return (
-    <section className="decision-log">
-      <header className="decision-log__header">
-        <div>
-          <p className="decision-log__eyebrow">Журнал решений</p>
-          <h1 className="decision-log__title">
-            {log.data?.total_count ?? 0} принятых решений
-          </h1>
+    <div className="decision-log-page">
+      <SectionCard
+        title="Журнал решений"
+        subtitle={`Всего ${log.data?.total_count ?? 0} принятых решений по проекту`}
+      >
+        <div className="clar-hero">
+          <DecisionCounter label="Всего" value={counts.all} tone="active" emphasis />
+          <DecisionCounter label="Ответили вы" value={counts.answered} tone="success" />
+          <DecisionCounter label="Допущения" value={counts.assumed} tone="muted" />
+          <DecisionCounter label="🤖 Авто" value={counts.auto} tone="active" />
         </div>
-        <div className="decision-log__counters">
-          <Counter
-            label="Ответили вы"
-            value={log.data?.answered_count ?? 0}
-            tone="accent"
-          />
-          <Counter
-            label="Авто-решения"
-            value={log.data?.assumed_count ?? 0}
-            tone="info"
-            icon="🤖"
-          />
-        </div>
-      </header>
 
-      <nav className="decision-log__filters" aria-label="Фильтры">
-        <FilterButton current={filter} value="all" onChange={setFilter}>
-          Все
-        </FilterButton>
-        <FilterButton current={filter} value="answered" onChange={setFilter}>
-          Ответили
-        </FilterButton>
-        <FilterButton current={filter} value="assumed" onChange={setFilter}>
-          Допущения
-        </FilterButton>
-        <FilterButton current={filter} value="auto" onChange={setFilter}>
-          🤖 Авто
-        </FilterButton>
-      </nav>
-
-      {log.isLoading ? (
-        <p className="decision-log__hint">Загрузка журнала…</p>
-      ) : filteredEntries.length === 0 ? (
-        <div className="decision-log__empty">
-          <p className="decision-log__empty-title">
-            {entries.length === 0
-              ? "Решений пока нет"
-              : "Ничего не подходит под фильтр"}
-          </p>
-          <p className="decision-log__hint">
-            {entries.length === 0
-              ? "Когда система задаст вопрос и получит ответ — он появится здесь."
-              : "Попробуйте другой фильтр или вкладку «Все»."}
-          </p>
+        <div className="clar-toolbar">
+          <div className="segmented">
+            {(["all", "answered", "assumed", "auto"] as FilterKind[]).map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={cx("segmented__item", filter === f && "segmented__item--active")}
+                onClick={() => setFilter(f)}
+              >
+                {filterLabel(f)} ({counts[f]})
+              </button>
+            ))}
+          </div>
         </div>
-      ) : (
-        <ul className="decision-log__list" role="list">
-          {filteredEntries.map((entry) => (
-            <DecisionItem key={entry.decision_id} entry={entry} />
-          ))}
-        </ul>
-      )}
-    </section>
+
+        {log.isLoading ? (
+          <p className="decision-log__hint">Загрузка журнала…</p>
+        ) : filteredEntries.length === 0 ? (
+          <EmptyState
+            title={
+              entries.length === 0
+                ? "Решений пока нет"
+                : "Ничего не подходит под фильтр"
+            }
+            description={
+              entries.length === 0
+                ? "Когда система задаст вопрос и получит ответ — он появится здесь."
+                : "Попробуйте другой фильтр или вкладку «Все»."
+            }
+          />
+        ) : (
+          <ul className="decision-list">
+            {filteredEntries.map((entry) => (
+              <DecisionItem key={entry.decision_id} entry={entry} />
+            ))}
+          </ul>
+        )}
+      </SectionCard>
+    </div>
   );
 }
 
@@ -113,42 +108,28 @@ function applyFilter(
   }
 }
 
-interface CounterProps {
+function filterLabel(f: FilterKind): string {
+  switch (f) {
+    case "all": return "Все";
+    case "answered": return "Ответы";
+    case "assumed": return "Допущения";
+    case "auto": return "🤖 Авто";
+  }
+}
+
+interface DecisionCounterProps {
   label: string;
   value: number;
-  tone: "accent" | "info" | "muted";
-  icon?: string;
+  tone: "active" | "success" | "warning" | "danger" | "muted";
+  emphasis?: boolean;
 }
 
-function Counter({ label, value, tone, icon }: CounterProps) {
+function DecisionCounter({ label, value, tone, emphasis }: DecisionCounterProps) {
   return (
-    <div className={`decision-log__counter decision-log__counter--${tone}`}>
-      <span className="decision-log__counter-value">
-        {icon && <span aria-hidden>{icon} </span>}
-        {value}
-      </span>
-      <span className="decision-log__counter-label">{label}</span>
+    <div className={cx("clar-counter", `clar-counter--${tone}`, emphasis && "clar-counter--emphasis")}>
+      <span className="clar-counter__value">{value}</span>
+      <span className="clar-counter__label">{label}</span>
     </div>
-  );
-}
-
-interface FilterButtonProps {
-  current: FilterKind;
-  value: FilterKind;
-  onChange: (value: FilterKind) => void;
-  children: React.ReactNode;
-}
-
-function FilterButton({ current, value, onChange, children }: FilterButtonProps) {
-  return (
-    <button
-      type="button"
-      className={`decision-log__filter${current === value ? " decision-log__filter--active" : ""}`}
-      onClick={() => onChange(value)}
-      aria-pressed={current === value}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -162,79 +143,66 @@ function DecisionItem({ entry }: DecisionItemProps) {
   const resolution = formatResolution(entry);
 
   return (
-    <li className={`decision-card decision-card--${entry.kind}`}>
-      <header className="decision-card__head">
-        <div className="decision-card__head-left">
-          <span className={`decision-card__kind decision-card__kind--${entry.kind}`}>
-            {kindLabel(entry.kind)}
-          </span>
-          {entry.auto_resolved && (
-            <span className="decision-card__auto" title="Авто-решение системы">
-              🤖 авто
-            </span>
-          )}
-          <span className="decision-card__role">{ownerRoleLabel(entry.decision_owner_role)}</span>
-        </div>
-        <time className="decision-card__time" dateTime={entry.decided_at}>
-          {formatTimestamp(entry.decided_at)}
-        </time>
-      </header>
-
-      <h3 className="decision-card__title">{entry.title}</h3>
-
-      {entry.question && (
-        <p className="decision-card__question">
-          <span className="decision-card__eyebrow">Вопрос:</span> {entry.question}
-        </p>
-      )}
-
-      <div className="decision-card__resolution">
-        <span className="decision-card__eyebrow">Решение:</span> {resolution}
+    <li className={cx("decision-row", `decision-row--${entry.kind}`)}>
+      <div className="decision-row__head">
+        <StatusPill tone={entry.kind === "answered" ? "success" : "muted"}>
+          {kindLabel(entry.kind)}
+        </StatusPill>
+        {entry.auto_resolved ? (
+          <span className="clar-auto-badge" title="Авто-решение системы">🤖 авто</span>
+        ) : null}
+        <span className={cx("clar-role", `clar-role--${entry.decision_owner_role}`)}>
+          {ownerRoleLabel(entry.decision_owner_role)}
+        </span>
+        <span className="decision-row__time">{formatTimestamp(entry.decided_at)}</span>
       </div>
 
-      {entry.rationale && (
-        <p className="decision-card__rationale">
-          <span className="decision-card__eyebrow">Почему:</span> {entry.rationale}
-        </p>
-      )}
+      <div className="decision-row__title">{entry.title}</div>
 
-      {hasAlternatives && (
-        <div className="decision-card__alternatives">
-          <button
-            type="button"
-            className="decision-card__alternatives-toggle"
-            onClick={() => setShowAlternatives((v) => !v)}
-            aria-expanded={showAlternatives}
-          >
-            {showAlternatives ? "▾" : "▸"} Рассматривались альтернативы (
-            {entry.alternatives.length})
-          </button>
-          {showAlternatives && (
-            <ul className="decision-card__alternatives-list" role="list">
-              {entry.alternatives.map((alt) => (
-                <li key={alt.option_id}>
-                  <strong>{alt.label}</strong>
-                  {alt.description && (
-                    <span className="decision-card__alt-desc"> — {alt.description}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+      {entry.question ? (
+        <div className="decision-row__field">
+          <span className="decision-row__field-label">Вопрос</span>
+          <span>{entry.question}</span>
         </div>
-      )}
+      ) : null}
 
-      <footer className="decision-card__footer">
-        <span className="decision-card__source">
-          Источник: {sourceLabel(entry.source_type)}
-          {entry.source_id ? ` · ${entry.source_id}` : ""}
-        </span>
-        {entry.related_artifact_ids.length > 0 && (
-          <span className="decision-card__related">
-            Связано: {entry.related_artifact_ids.length} артефакт(ов)
-          </span>
-        )}
-      </footer>
+      <div className="decision-row__field decision-row__field--resolution">
+        <span className="decision-row__field-label">Решение</span>
+        <span>{resolution}</span>
+      </div>
+
+      {entry.rationale ? (
+        <div className="decision-row__field">
+          <span className="decision-row__field-label">Почему</span>
+          <span>{entry.rationale}</span>
+        </div>
+      ) : null}
+
+      {hasAlternatives ? (
+        <details
+          className="decision-row__alternatives"
+          open={showAlternatives}
+          onToggle={(e) => setShowAlternatives((e.target as HTMLDetailsElement).open)}
+        >
+          <summary>Альтернативы ({entry.alternatives.length})</summary>
+          <ul>
+            {entry.alternatives.map((alt) => (
+              <li key={alt.option_id}>
+                <strong>{alt.label}</strong>
+                {alt.description ? <span> — {alt.description}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      <div className="decision-row__footer">
+        <span>Источник: {sourceLabel(entry.source_type)}</span>
+        {entry.source_id ? <span className="decision-row__source-id">{entry.source_id}</span> : null}
+        {entry.related_artifact_ids.length > 0 ? (
+          <span>· {entry.related_artifact_ids.length} связанных артефакт(а/ов)</span>
+        ) : null}
+      </div>
     </li>
   );
 }

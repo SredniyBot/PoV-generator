@@ -76,12 +76,12 @@ def test_problem_state_patches_persist_and_history(tmp_path: Path) -> None:
     project_service.set_readiness(workspace, "request_normalized", "ready", blocking=False, confidence=0.95)
     project_service.add_gap(workspace, "missing_kpi", "Нет KPI", "Не указан измеримый эффект.", "medium", True)
     project_service.close_gap(workspace, "missing_kpi")
-    state = project_service.load_problem_state(workspace)
-    history = project_service.problem_history(workspace)
+    state = project_service.load_project_state(workspace)
+    history = project_service.state_history(workspace)
 
-    assert state.goal == "Подготовить качественное ТЗ."
-    assert state.readiness["request_normalized"].status == "ready"
-    assert "missing_kpi" not in state.active_gaps
+    assert state.knowledge.goal_statement() == "Подготовить качественное ТЗ."
+    assert state.process.readiness["request_normalized"].status == "ready"
+    assert "missing_kpi" not in state.process.active_gaps
     assert len(history) >= 5
 
 
@@ -89,10 +89,10 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     workspace, snapshot, runtime, project_service, planning_service = init_workspace(tmp_path)
 
     planning_service.expand_graph(workspace, snapshot)
-    state = project_service.load_problem_state(workspace)
+    state = project_service.load_project_state(workspace)
     tasks = runtime.list_tasks(workspace)
 
-    assert state.root_task_id is not None
+    assert state.process.root_task_id is not None
     assert len(tasks) == 16
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
@@ -167,19 +167,26 @@ def test_quality_gate_normalizes_legacy_check_type() -> None:
 
 def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> None:
     workspace, _, _, project_service, _ = init_workspace(tmp_path)
-    state = project_service.load_problem_state(workspace)
-    active = state.active_methodology_pack_records
+    state = project_service.load_project_state(workspace)
+    active = state.process.active_methodology_pack_records
     assert "process.lean_jtbd@1.0.0" in active
     assert active["process.lean_jtbd@1.0.0"].source == "bootstrap"
 
 
 def test_set_methodology_keeps_active_pack(tmp_path: Path) -> None:
     workspace, _, _, project_service, _ = init_workspace(tmp_path)
-    state = project_service.set_methodology(workspace, "process.lean_jtbd@1.0.0")
-    assert "process.lean_jtbd@1.0.0" in state.active_methodology_pack_records
+    process = project_service.set_methodology(workspace, "process.lean_jtbd@1.0.0")
+    assert "process.lean_jtbd@1.0.0" in process.active_methodology_pack_records
 
 
-def test_execution_emits_reasoning_and_methodology_trace_artifacts(tmp_path: Path) -> None:
+def test_execution_emits_primary_artifact_with_reasoning_and_trace_metadata(
+    tmp_path: Path,
+) -> None:
+    """Этап 1.1: на одно исполнение leaf-задачи — один primary артефакт.
+
+    Reasoning и methodology trace живут в его :class:`ArtifactMetadata`,
+    а не как отдельные ``ArtifactRecord`` объекты.
+    """
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
 
@@ -193,13 +200,21 @@ def test_execution_emits_reasoning_and_methodology_trace_artifacts(tmp_path: Pat
     execution_service = ExecutionService(runtime, context_service)
     bundle = execution_service.execute_task(workspace, snapshot, task_id, provider="stub")
 
+    # Только один output — primary артефакт.
     output_kinds = {output.kind for output in bundle.result.outputs}
-    assert output_kinds == {"primary", "reasoning", "trace"}
+    assert output_kinds == {"primary"}
     assert bundle.request.methodology_pack_ref == "process.lean_jtbd@1.0.0"
 
+    # И только primary артефакт в реестре, без отдельных reasoning/trace.
     artifacts = list(runtime.list_artifacts(workspace))
     kinds = {artifact.artifact_kind for artifact in artifacts}
-    assert {"primary", "reasoning", "trace"}.issubset(kinds)
+    assert kinds == {"primary"}
+
+    # Reasoning и trace доступны через метаинформацию primary артефакта.
+    primary = next(a for a in artifacts if a.created_by_task_id == task_id)
+    assert primary.metadata.methodology_pack_ref == "process.lean_jtbd@1.0.0"
+    assert "stages" in primary.metadata.reasoning
+    assert "stages_executed" in primary.metadata.methodology_trace
 
 
 def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> None:

@@ -5,10 +5,30 @@ from pathlib import Path
 
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
-from ..domain.problem_state import SetRootTaskPatch
+from ..domain.process_state import SetRootTaskPatch
+from ..domain.project_state import ProjectState
 from ..domain.registry import RegistrySnapshot, TemplateSpec
 from ..domain.tasks import TaskRecord, initial_task_status
 from ..infrastructure.sqlite_runtime import SqliteRuntime
+
+
+def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
+    """Получить значение требуемого «поля состояния» из нового двухслойного state.
+
+    Шаблоны декларируют ``requires.state: [...]`` со старыми именами полей.
+    Здесь мы транслируем эти имена в актуальные источники:
+
+    - ``business_request`` — иммутабельное поле manifest;
+    - ``goal`` — формулировка положения ``project.goal`` в Layer A.
+
+    Возвращает ``None`` или пустую строку, если значения нет — это сигнал
+    admission'у заблокировать задачу.
+    """
+    if field_name == "business_request":
+        return state.manifest.business_request
+    if field_name == "goal":
+        return state.knowledge.goal_statement()
+    return None
 
 
 class PlanningService:
@@ -34,7 +54,7 @@ class PlanningService:
                 depth=0,
                 slot_id=None,
             )
-            self._runtime.apply_problem_patch(
+            self._runtime.apply_process_patch(
                 workspace,
                 SetRootTaskPatch(task_id=root.task_id),
                 actor="planner",
@@ -150,8 +170,8 @@ class PlanningService:
         changed = True
         while changed:
             changed = False
-            state = self._runtime.load_problem_state(workspace)
-            active_pack_refs = tuple(sorted(state.active_domain_pack_records.keys()))
+            process = self._runtime.load_process_state(workspace)
+            active_pack_refs = tuple(sorted(process.active_domain_pack_records.keys()))
             tasks = self._runtime.list_tasks(workspace)
             by_id = {task.task_id: task for task in tasks}
             for task in tasks:
@@ -246,7 +266,8 @@ class PlanningService:
         snapshot: RegistrySnapshot,
         tasks: list[TaskRecord],
     ) -> tuple[CandidateEvaluation, ...]:
-        state = self._runtime.load_problem_state(workspace)
+        state = self._runtime.load_project_state(workspace)
+        process = state.process
         candidates: list[CandidateEvaluation] = []
         completed_artifact_roles = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
@@ -261,7 +282,7 @@ class PlanningService:
             missing_fields = [
                 field_name
                 for field_name in template.inputs.required_problem_fields
-                if getattr(state, field_name, None) in (None, "")
+                if _resolve_state_field(state, field_name) in (None, "")
             ]
             checks.append(
                 AdmissionCheck(
@@ -289,7 +310,8 @@ class PlanningService:
             missing_readiness = [
                 dimension
                 for dimension in template.inputs.required_readiness
-                if state.readiness.get(dimension) is None or state.readiness[dimension].status not in {"ready", "waived"}
+                if process.readiness.get(dimension) is None
+                or process.readiness[dimension].status not in {"ready", "waived"}
             ]
             checks.append(
                 AdmissionCheck(
@@ -301,7 +323,11 @@ class PlanningService:
                 )
             )
 
-            forbidden_gaps = [gap_id for gap_id in template.inputs.forbidden_open_gaps if gap_id in state.active_gaps]
+            forbidden_gaps = [
+                gap_id
+                for gap_id in template.inputs.forbidden_open_gaps
+                if gap_id in process.active_gaps
+            ]
             checks.append(
                 AdmissionCheck(
                     "forbidden_open_gaps",
@@ -313,7 +339,9 @@ class PlanningService:
             )
 
             missing_domain_packs = [
-                pack_ref for pack_ref in template.inputs.required_domain_packs if pack_ref not in state.active_domain_pack_records
+                pack_ref
+                for pack_ref in template.inputs.required_domain_packs
+                if pack_ref not in process.active_domain_pack_records
             ]
             checks.append(
                 AdmissionCheck(

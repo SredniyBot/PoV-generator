@@ -24,7 +24,7 @@ from pov_generator.application.clarification_service import ClarificationService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.domain.clarifications import ClarificationCandidate, ClarificationOption
-from pov_generator.domain.problem_state import SetClarificationModePatch
+from pov_generator.domain.process_state import SetClarificationModePatch
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -76,7 +76,7 @@ def _make_candidate(
         ),
         decision_owner_role="business",
         # форсируем minimum=balanced так autopilot НЕ allows
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     # candidate_from_question по умолчанию blocking_scope=task; для теста
     # objective создаём вручную.
@@ -91,7 +91,7 @@ def test_autopilot_defers_task_scope_candidate_without_assumption(tmp_path: Path
     """В autopilot, blocking_scope=task, нет default_assumption →
     раньше "ask" (блокировал planner), теперь "defer" (мягкий skip)."""
     workspace, project_id, runtime, service = _bootstrap(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace, SetClarificationModePatch(mode="autopilot"),
         actor="test", reason="switch to autopilot",
     )
@@ -112,7 +112,7 @@ def test_autopilot_still_asks_objective_scope_candidate(tmp_path: Path) -> None:
     """Для blocking_scope=objective (гейт human_approval) autopilot НЕ
     auto-resolve: клиентское согласование требует явного решения."""
     workspace, project_id, runtime, service = _bootstrap(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace, SetClarificationModePatch(mode="autopilot"),
         actor="test", reason="switch to autopilot",
     )
@@ -130,7 +130,7 @@ def test_autopilot_still_asks_objective_scope_candidate(tmp_path: Path) -> None:
 def test_autopilot_assumes_when_default_assumption_provided(tmp_path: Path) -> None:
     """С default_assumption autopilot тихо принимает допущение."""
     workspace, project_id, runtime, service = _bootstrap(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace, SetClarificationModePatch(mode="autopilot"),
         actor="test", reason="switch to autopilot",
     )
@@ -218,7 +218,7 @@ def test_set_mode_keeps_objective_scope_open_on_autopilot(tmp_path: Path) -> Non
 def test_audit_log_records_deferred_auto_event(tmp_path: Path) -> None:
     """Авто-defer при создании пишет event_type='deferred_auto'."""
     workspace, project_id, runtime, service = _bootstrap(tmp_path)
-    runtime.apply_problem_patch(
+    runtime.apply_process_patch(
         workspace, SetClarificationModePatch(mode="autopilot"),
         actor="test", reason="switch to autopilot",
     )

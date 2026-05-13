@@ -35,7 +35,7 @@ from typing import Literal
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps
-from ..domain.problem_state import ProblemState
+from ..domain.project_state import ProjectState
 from ..domain.registry import TemplateSpec
 from ..infrastructure.claude_sdk_client import ClaudeSdkClient
 from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
@@ -69,7 +69,7 @@ class ComplexitySelectorContext:
 def select_complexity(
     *,
     template: TemplateSpec,
-    state: ProblemState,
+    state: ProjectState,
     open_clarification_count: int = 0,
 ) -> ComplexitySelection:
     """Главная точка входа. Решает, нужно ли вообще звать selector,
@@ -84,10 +84,10 @@ def select_complexity(
         )
 
     selector_context = ComplexitySelectorContext(
-        business_request=state.business_request or "",
-        goal=state.goal,
-        active_domain_packs=tuple(sorted(state.active_domain_pack_records.keys())),
-        active_gap_count=len(state.active_gaps),
+        business_request=state.manifest.business_request or "",
+        goal=state.knowledge.goal_statement(),
+        active_domain_packs=tuple(sorted(state.process.active_domain_pack_records.keys())),
+        active_gap_count=len(state.process.active_gaps),
         open_clarification_count=open_clarification_count,
     )
 

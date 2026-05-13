@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..domain.problem_state import CloseGapPatch, SetGoalPatch, UpsertReadinessPatch
+from ..common.serialization import utc_now_iso
+from ..domain.positions import Position
+from ..domain.process_state import CloseGapPatch, UpsertReadinessPatch
+from ..domain.project_knowledge import GOAL_POSITION_ID, UpsertPositionPatch
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .execution_service import ExecutionBundle, ExecutionService
 from .planning_service import PlanningService
@@ -209,21 +212,34 @@ class WorkflowService:
     def _apply_success_effects(self, workspace: Path, snapshot, task_id: str, execution_bundle: ExecutionBundle) -> list[str]:
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
-        state = self._runtime.load_problem_state(workspace)
+        process = self._runtime.load_process_state(workspace)
         applied: list[str] = []
 
+        # Цель проекта — положение Layer A; обновляем через UpsertPositionPatch.
         if execution_bundle.result.proposed_goal:
-            self._runtime.apply_problem_patch(
+            now = utc_now_iso()
+            goal_position = Position(
+                identifier=GOAL_POSITION_ID,
+                type="fact",
+                statement=execution_bundle.result.proposed_goal,
+                visibility="principal",
+                scope="global",
+                source="artifact",
+                taken_by=f"task:{task.task_key}",
+                taken_at=now,
+                tags=("project", "goal"),
+            )
+            self._runtime.apply_knowledge_patch(
                 workspace,
-                SetGoalPatch(text=execution_bundle.result.proposed_goal),
+                UpsertPositionPatch(position=goal_position),
                 actor="workflow",
                 reason=f"goal extracted from {task.task_key}",
             )
-            applied.append("SetGoalPatch")
+            applied.append("UpsertPositionPatch:project.goal")
 
         for gap_id in template.effects.closes_gaps:
-            if gap_id in state.active_gaps:
-                self._runtime.apply_problem_patch(
+            if gap_id in process.active_gaps:
+                self._runtime.apply_process_patch(
                     workspace,
                     CloseGapPatch(gap_id=gap_id),
                     actor="workflow",
@@ -231,11 +247,11 @@ class WorkflowService:
                 )
                 applied.append(f"CloseGapPatch:{gap_id}")
 
-        latest_state = self._runtime.load_problem_state(workspace)
+        latest_process = self._runtime.load_process_state(workspace)
         for readiness_raise in template.effects.raises_readiness:
-            current = latest_state.readiness.get(readiness_raise.dimension)
+            current = latest_process.readiness.get(readiness_raise.dimension)
             blocking = current.blocking if current is not None else False
-            self._runtime.apply_problem_patch(
+            self._runtime.apply_process_patch(
                 workspace,
                 UpsertReadinessPatch(
                     dimension=readiness_raise.dimension,

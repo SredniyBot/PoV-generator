@@ -73,9 +73,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined }),
     }),
-  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 3) =>
-    // W4.1 (R1): endpoint теперь асинхронный. Возвращает WorkflowRunView
-    // (status=pending) сразу. Прогресс читается через getActiveWorkflowRun.
+  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 1000) =>
+    // W4.1 (R1): endpoint асинхронный, возвращает WorkflowRunView (status=pending)
+    // сразу. Прогресс читается через getActiveWorkflowRun.
+    //
+    // maxSteps=1000 — эффективно «без лимита» (sanity ceiling против бесконечной
+    // петли планировщика). Раньше дефолт был 3, что в реальной работе превращалось
+    // в «нажми Run 5+ раз чтобы пройти весь pipeline». Реальный проект — 15-25
+    // leaf-задач × до 2-3 ретраев = ~50-75 шагов максимум.
     request<WorkflowRunView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),

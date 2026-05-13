@@ -9,7 +9,11 @@
 .overview-mc {
   display: block;
   width: 100%;
-  padding: var(--space-5) var(--space-4);
+  /* Раньше тут было `padding: var(--space-5) var(--space-4)`, и в сумме с
+     `.overview-mc__artifact` (своя `padding: var(--space-5)` + card) выходил
+     двойной отступ — содержимое было утоплено в layout сильнее, чем на
+     остальных вкладках (clarifications/artifacts/tasks). Внутренние карточки
+     уже несут padding сами; внешний враппер их не дублирует. */
 }
 
 .overview-mc__layout {

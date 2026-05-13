@@ -163,9 +163,11 @@ def test_methodology_trace_artifact_records_real_rule_outcomes(tmp_path: Path) -
         workspace, snapshot, decision.selected_task_id, provider="stub"
     )
 
-    trace_output = next(o for o in bundle.result.outputs if o.kind == "trace")
-    raw = runtime.load_artifact_content(workspace, trace_output.artifact_id)
-    payload = json.loads(raw)
+    # Этап 1.1: trace живёт в ArtifactMetadata primary артефакта,
+    # не как отдельный артефакт.
+    primary_output = next(o for o in bundle.result.outputs if o.kind == "primary")
+    primary = runtime.load_artifact(workspace, primary_output.artifact_id)
+    payload = primary.metadata.methodology_trace
 
     methodology = snapshot.resolve_methodology_pack(bundle.request.methodology_pack_ref)
     expected_rules = {
@@ -343,7 +345,7 @@ def _valid_draft_payload() -> dict[str, Any]:
             },
         ],
         "recommended_option_id": "monthly",
-        "min_participation_mode": "balanced",
+        "visibility": "architectural",
     }
 
 
@@ -384,7 +386,7 @@ def test_clarification_draft_uses_selected_claude_provider(
         answer_mode="single",
         options=(),
         recommended_option_id=None,
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
 
     fake_instance = MagicMock()

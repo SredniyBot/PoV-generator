@@ -149,6 +149,12 @@ requires:
   artifacts:
     optional:
       - common.request_facts@1.0.0
+    # Этап 7.3: декларативный auto-collect. Когда задаче нужно «всё, что
+    # вышло из активных доменных паков», вместо hand-coded списка
+    # optional-ролей используется флаг ниже. Финальная merge-задача
+    # (`requirements_spec_generation`) использует именно этот путь.
+    collect_optional:
+      from_active_domain_packs: true
 
 produces:
   artifact: common.data_sources@1.0.0   # только основной артефакт
@@ -170,6 +176,12 @@ clarification_policy:                 # опционально, только с�
   ask_when:
     - missing_critical_input
   default_blocking_scope: task
+
+# Этап 5: опционально для leaf-задач, объединяющих N артефактов.
+# Подробно — в 04_task_template_semantics.md § «Merge как класс leaf-задач».
+merge:
+  strategy: structural   # structural | synthetic | hybrid
+  conflict_policy: union # union | first_wins | last_wins | fail_on_conflict
 ```
 
 **Что не объявляется в шаблоне:**
@@ -186,11 +198,21 @@ clarification_policy:                 # опционально, только с�
 
 Контракт артефакта описывает структуру результата.
 
+> **Этап 7.5 (честные контракты).** Если YAML-схема контракта пустая
+> или сводится к `additionalProperties: true` без обязательных полей,
+> контракт обязан явно указать `unstructured: true`. Псевдо-контракт
+> хуже отсутствующего: он создаёт ложное ощущение защищённости и
+> молча пропускает невалидные артефакты. Декларация `unstructured: true`
+> делает истину явной: «схема здесь декларативна, реальную форму
+> результата валидирует исполнительный слой».
+
 ```yaml
 kind: artifact_contract
 id: common.data_sources
 version: 1.0.0
 title: Источники данных
+
+# unstructured: true   # ← поднять, если схема пустая / additionalProperties: true.
 
 schema:
   type: object
@@ -463,3 +485,5 @@ on_comments: rerun_via_clarifications
 | R9 | `methodology_pack` не зависит от конкретных шаблонов задач. |
 | R10 | `methodology_pack` и `domain_pack` — независимые оси расширения; конфликт по полю `reasoning_artifact` запрещён. |
 | R11 | `quality_gate` — точка внешнего согласования или формальной проверки, не источник методологии. |
+| R12 | `artifact_contract` с пустой/permissive схемой обязан декларировать `unstructured: true` (Этап 7.5). |
+| R13 | Финальная merge-задача не перечисляет руками optional доменных артефактов: вместо этого использует `collect_optional.from_active_domain_packs: true` (Этап 7.3). |

@@ -17,7 +17,7 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
-from pov_generator.domain.artifacts import ArtifactRecord
+from pov_generator.domain.artifacts import ArtifactMetadata, ArtifactRecord
 from pov_generator.domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
@@ -182,8 +182,8 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
         "review_report",
     }.issubset(artifact_roles)
     assert all(run.status == "passed" for run in runtime.list_validation_runs(workspace))
-    state = project_service.load_problem_state(workspace)
-    assert "specification_reviewed" in state.readiness
+    state = project_service.load_project_state(workspace)
+    assert "specification_reviewed" in state.process.readiness
 
 
 def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) -> None:
@@ -256,10 +256,9 @@ def test_validation_creates_escalation_for_failed_review_report(tmp_path: Path) 
         artifact_format="json",
         artifact_kind="primary",
         created_by_task_id=task.task_id,
-        parent_artifact_id=None,
-        metadata={"template_ref": task.template_ref},
         storage_path=f"artifacts/{uuid.uuid4()}.json",
         created_at="2026-04-20T00:00:00+00:00",
+        metadata=ArtifactMetadata(template_ref=task.template_ref),
     )
     runtime.store_artifact(
         workspace,
@@ -354,10 +353,9 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
         artifact_format="json",
         artifact_kind="primary",
         created_by_task_id=task.task_id,
-        parent_artifact_id=None,
-        metadata={"template_ref": task.template_ref},
         storage_path=f"artifacts/{uuid.uuid4()}.json",
         created_at="2026-04-20T00:00:00+00:00",
+        metadata=ArtifactMetadata(template_ref=task.template_ref),
     )
     runtime.store_artifact(
         workspace,

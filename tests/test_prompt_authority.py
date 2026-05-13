@@ -28,14 +28,35 @@ from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.domain.clarifications import ClarificationOption
-from pov_generator.domain.problem_state import (
-    RemoveAssumptionPatch,
-    RemoveDecisionPatch,
-    UpsertAssumptionPatch,
-    UpsertDecisionPatch,
-    apply_problem_patch,
+from pov_generator.domain.positions import Position
+from pov_generator.domain.project_knowledge import (
+    RejectPositionPatch,
+    UpsertPositionPatch,
 )
 from pov_generator.domain.registry import ObjectRef
+
+
+def _make_position(
+    identifier: str,
+    position_type: str,
+    statement: str,
+    *,
+    source: str = "system",
+    visibility: str = "architectural",
+    scope: str = "global",
+    tags: tuple[str, ...] = (),
+) -> Position:
+    return Position(
+        identifier=identifier,
+        type=position_type,  # type: ignore[arg-type]
+        statement=statement,
+        visibility=visibility,  # type: ignore[arg-type]
+        scope=scope,  # type: ignore[arg-type]
+        source=source,  # type: ignore[arg-type]
+        taken_by="test",
+        taken_at="2026-05-13T10:00:00+00:00",
+        tags=tags,
+    )
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -131,14 +152,16 @@ def test_project_state_uses_visual_markers(tmp_path: Path) -> None:
         confidence_without_user=0.3,
         options=(ClarificationOption(option_id="opt", label="100К"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [d] = clar_service.register_candidates(workspace, (candidate,))
     clar_service.answer_clarification(workspace, request_id=d.request_id, selected_option_ids=("opt",))
 
-    runtime.apply_problem_patch(
+    runtime.apply_knowledge_patch(
         workspace,
-        UpsertAssumptionPatch(assumption_id="a1", statement="Бэкап ежедневный", source="system"),
+        UpsertPositionPatch(
+            position=_make_position("a1", "assumption", "Бэкап ежедневный"),
+        ),
         actor="test",
         reason="add assumption",
     )
@@ -202,13 +225,19 @@ def test_task_summary_not_duplicated_in_user_prompt(tmp_path: Path) -> None:
 
 
 def test_assumption_removed_when_user_answers_same_question(tmp_path: Path) -> None:
-    """Сценарий: на autopilot система приняла assumption по вопросу X.
+    """Сценарий: система приняла assumption по вопросу X.
     Потом другая задача задала тот же вопрос X (cross-task duplicate).
-    Пользователь ответил явно. Старая assumption должна уйти из state."""
+    Пользователь ответил явно. Старая assumption должна уйти из state.
+
+    Этап 3: чтобы кандидат стал ``assumed``, нужно либо подобрать
+    ``visibility=technical`` (на balanced/control не выводится), либо
+    переключить mode в autopilot. Берём technical — это деталь стека.
+    """
     workspace, project_id, runtime, clar_service, reg = _bootstrap(tmp_path)
 
-    # 1) Создаём candidate, который превратится в assumption (autopilot path).
-    # Для воспроизводимости — прямо записываем assumed request в state.
+    # 1) Создаём candidate, который превратится в assumption.
+    # visibility=technical → balanced (default mode) не proactive → есть
+    # default_assumption → assume.
     cand_for_assumption = clar_service.candidate_from_question(
         project_id=project_id,
         source_type="validation",
@@ -219,8 +248,8 @@ def test_assumption_removed_when_user_answers_same_question(tmp_path: Path) -> N
         severity="medium",
         confidence_without_user=0.85,
         options=(ClarificationOption(option_id="o", label="default"),),
-        decision_owner_role="business",
-        min_participation_mode="balanced",
+        decision_owner_role="architect",
+        visibility="technical",
         default_assumption="Python + FastAPI (по умолчанию)",
     )
     [d_assume] = clar_service.register_candidates(workspace, (cand_for_assumption,))
@@ -228,10 +257,11 @@ def test_assumption_removed_when_user_answers_same_question(tmp_path: Path) -> N
     assume_req = runtime.get_clarification_request(workspace, assume_req_id)
     assert assume_req.status == "assumed"
 
-    # Подтверждаем что assumption в state
-    state_before = runtime.load_problem_state(workspace)
-    assumption_key = f"clarification_{assume_req_id}"
-    assert assumption_key in state_before.assumptions
+    # Подтверждаем что assumption в Layer A
+    knowledge_before = runtime.load_knowledge(workspace)
+    position_id = f"clarification.{assume_req_id}"
+    pos = knowledge_before.get(position_id)
+    assert pos is not None and pos.type == "assumption" and pos.status == "active"
 
     # 2) Другая задача (cross-task) задаёт тот же вопрос — будет
     # reuse_existing assumed request (мой B3 cross-task dedup).
@@ -246,7 +276,7 @@ def test_assumption_removed_when_user_answers_same_question(tmp_path: Path) -> N
         confidence_without_user=0.3,
         options=(ClarificationOption(option_id="py", label="Python + FastAPI"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [d2] = clar_service.register_candidates(workspace, (cand_open,))
     # Поскольку assumed уже есть с тем же вопросом — это reuse_existing.
@@ -261,14 +291,13 @@ def test_assumption_removed_when_user_answers_same_question(tmp_path: Path) -> N
         free_text="Python + FastAPI",
     )
 
-    # После reopen + answer assumption должна быть удалена (через reopen path)
-    # и заменена decision.
-    state_after = runtime.load_problem_state(workspace)
-    assert assumption_key not in state_after.assumptions, (
-        "assumption должна быть удалена после reopen"
-    )
-    decision_key = f"clarification_{assume_req_id}"
-    assert decision_key in state_after.decisions
+    # После reopen + answer assumption должна быть superseded/rejected
+    # (через reopen path) и заменена decision (same identifier, новый type).
+    knowledge_after = runtime.load_knowledge(workspace)
+    final = knowledge_after.get(position_id)
+    assert final is not None
+    assert final.type == "decision", "после answer положение должно быть decision"
+    assert final.status == "active"
 
 
 def test_reopen_clarification_removes_previous_decision(tmp_path: Path) -> None:
@@ -284,20 +313,23 @@ def test_reopen_clarification_removes_previous_decision(tmp_path: Path) -> None:
         confidence_without_user=0.3,
         options=(ClarificationOption(option_id="o", label="3 млн"),),
         decision_owner_role="business",
-        min_participation_mode="balanced",
+        visibility="architectural",
     )
     [d] = clar_service.register_candidates(workspace, (cand,))
     request_id = d.request_id
     clar_service.answer_clarification(workspace, request_id=request_id, selected_option_ids=("o",))
 
-    state_after_answer = runtime.load_problem_state(workspace)
-    decision_key = f"clarification_{request_id}"
-    assert decision_key in state_after_answer.decisions
+    knowledge_after_answer = runtime.load_knowledge(workspace)
+    position_id = f"clarification.{request_id}"
+    after_answer = knowledge_after_answer.get(position_id)
+    assert after_answer is not None and after_answer.type == "decision"
+    assert after_answer.status == "active"
 
     clar_service.reopen_clarification(workspace, request_id=request_id)
-    state_after_reopen = runtime.load_problem_state(workspace)
-    assert decision_key not in state_after_reopen.decisions, (
-        "при reopen decision должен быть удалён из state, чтобы не противоречить будущему ответу"
+    knowledge_after_reopen = runtime.load_knowledge(workspace)
+    after_reopen = knowledge_after_reopen.get(position_id)
+    assert after_reopen is not None and after_reopen.status == "rejected", (
+        "при reopen положение должно быть отвергнуто, чтобы не противоречить будущему ответу"
     )
 
 
@@ -312,12 +344,15 @@ def test_collect_applied_decisions_filters_by_task_id(tmp_path: Path) -> None:
     svc._runtime = runtime
 
     # Decision, affecting только task-A
-    runtime.apply_problem_patch(
+    runtime.apply_knowledge_patch(
         workspace,
-        UpsertDecisionPatch(
-            decision_id="d_for_a",
-            statement="Используем Python",
-            source="clarification:req-A",
+        UpsertPositionPatch(
+            position=_make_position(
+                identifier="clarification.req-A",
+                position_type="decision",
+                statement="Используем Python",
+                source="clarification",
+            )
         ),
         actor="test",
         reason="t",
@@ -340,7 +375,7 @@ def test_collect_applied_decisions_filters_by_task_id(tmp_path: Path) -> None:
             answer_mode="single",
             options=(),
             recommended_option_id=None,
-            min_participation_mode="balanced",
+            visibility="architectural",
             default_assumption=None,
             affected_task_ids=("task-A",),
             related_artifact_ids=(),
@@ -361,8 +396,9 @@ def test_collect_applied_decisions_filters_by_task_id(tmp_path: Path) -> None:
     applied_for_a = svc._collect_applied_decisions(workspace, "task-A")
     applied_for_b = svc._collect_applied_decisions(workspace, "task-B")
 
-    assert any(d["decision_id"] == "d_for_a" for d in applied_for_a)
-    assert not any(d["decision_id"] == "d_for_a" for d in applied_for_b), (
+    target_id = "clarification.req-A"
+    assert any(d["decision_id"] == target_id for d in applied_for_a)
+    assert not any(d["decision_id"] == target_id for d in applied_for_b), (
         "decision affecting только task-A не должен попадать в applied для task-B"
     )
 
@@ -373,12 +409,15 @@ def test_collect_applied_decisions_includes_global(tmp_path: Path) -> None:
     svc = ExecutionService.__new__(ExecutionService)
     svc._runtime = runtime
 
-    runtime.apply_problem_patch(
+    runtime.apply_knowledge_patch(
         workspace,
-        UpsertDecisionPatch(
-            decision_id="global_d",
-            statement="Используем dark mode по дефолту",
-            source="operator:user1",
+        UpsertPositionPatch(
+            position=_make_position(
+                identifier="global_d",
+                position_type="decision",
+                statement="Используем dark mode по дефолту",
+                source="user",
+            )
         ),
         actor="test",
         reason="manual decision",
@@ -409,12 +448,15 @@ def test_project_state_truncated_when_huge(tmp_path: Path, monkeypatch) -> None:
     # Используем длинные statements чтобы наверняка превысить cap.
     long_statement = "x" * 400
     for i in range(50):
-        runtime.apply_problem_patch(
+        runtime.apply_knowledge_patch(
             workspace,
-            UpsertDecisionPatch(
-                decision_id=f"d{i}",
-                statement=f"Решение #{i}: " + long_statement,
-                source="operator",
+            UpsertPositionPatch(
+                position=_make_position(
+                    identifier=f"d{i}",
+                    position_type="decision",
+                    statement=f"Решение #{i}: " + long_statement,
+                    source="user",
+                )
             ),
             actor="test",
             reason="bulk",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -9,8 +10,40 @@ from pathlib import Path
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ContextBudget, ContextItem, ContextManifest
+from ..domain.positions import Position
+from ..domain.project_state import ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..infrastructure.sqlite_runtime import SqliteRuntime
+
+
+def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
+    """Получить значение требуемого «поля состояния».
+
+    Транслирует имена полей старого ProblemState в актуальные источники:
+
+    - ``business_request`` — manifest;
+    - ``goal`` — формулировка положения ``project.goal`` в Layer A.
+    """
+    if field_name == "business_request":
+        return state.manifest.business_request
+    if field_name == "goal":
+        return state.knowledge.goal_statement()
+    return None
+
+
+def _clarification_request_id_from_position(position: Position) -> str | None:
+    """Извлечь request_id из identifier'а положения, привязанного к уточнению.
+
+    Положения, рождённые координатором уточнений, имеют стабильный префикс
+    ``clarification.`` в identifier'е. Это позволяет связать положение
+    обратно с источником без хранения дополнительного поля.
+    """
+    if position.source != "clarification":
+        return None
+    prefix = "clarification."
+    if not position.identifier.startswith(prefix):
+        return None
+    return position.identifier[len(prefix):]
 
 
 def estimate_tokens(content: str) -> int:
@@ -41,8 +74,7 @@ class ContextService:
         прошлой попытке + почему она забракована. Даёт LLM continuity, не
         повторяет ту же ошибку.
         """
-        manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
+        state = self._runtime.load_project_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
 
@@ -68,15 +100,18 @@ class ContextService:
 
         # Слой 2 — Task inputs (template-declared, как раньше).
         for field_name in template.inputs.required_problem_fields:
-            value = getattr(state, field_name, None)
+            value = _resolve_state_field(state, field_name)
             if value in (None, ""):
-                raise ConflictError(f"Для задачи '{task.task_id}' отсутствует обязательное поле ProblemState '{field_name}'.")
+                raise ConflictError(
+                    f"Для задачи '{task.task_id}' отсутствует обязательное "
+                    f"поле состояния '{field_name}'."
+                )
             content = json_dumps(value) if isinstance(value, (dict, list, tuple)) else str(value)
             item = ContextItem(
                 item_id=str(uuid.uuid4()),
                 item_type="problem_field",
-                source_ref=f"problem_state:{state.version}:{field_name}",
-                title=f"ProblemState.{field_name}",
+                source_ref=f"knowledge:{state.knowledge.version}:{field_name}",
+                title=f"State.{field_name}",
                 content=content,
                 token_estimate=estimate_tokens(content),
                 required=True,
@@ -89,6 +124,19 @@ class ContextService:
         optional_artifact_roles = tuple(
             role for role in template.inputs.optional_artifact_roles if role not in required_artifact_roles
         )
+
+        # Этап 7.3: декларативный auto-collect. Когда шаблон поднял флаг
+        # `collect_optional_from_active_domain_packs`, добавляем в optional
+        # все артефакты, созданные задачами активных доменных паков
+        # (origin_kind == "domain_contribution"). Это снимает hand-coded
+        # список optional из финальной merge-задачи: новый домен попадает
+        # в контекст автоматически.
+        if template.inputs.collect_optional_from_active_domain_packs:
+            existing = set(required_artifact_roles) | set(optional_artifact_roles)
+            for role in self._collect_domain_contribution_roles(workspace):
+                if role not in existing:
+                    optional_artifact_roles = (*optional_artifact_roles, role)
+                    existing.add(role)
 
         if not required_artifact_roles and not optional_artifact_roles:
             optional_artifact_roles = tuple(sorted({artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}))
@@ -141,10 +189,10 @@ class ContextService:
         manifest_max_tokens = max_tokens if max_tokens is not None else 1_048_576
         context_manifest = ContextManifest(
             manifest_id=str(uuid.uuid4()),
-            project_id=manifest.project_id,
+            project_id=state.manifest.project_id,
             task_id=task.task_id,
             template_ref=template.ref.as_string(),
-            problem_state_version=state.version,
+            problem_state_version=state.knowledge.version,
             budget=ContextBudget(
                 max_input_tokens=manifest_max_tokens,
                 reserved_for_output=min(1200, manifest_max_tokens // 2),
@@ -154,6 +202,7 @@ class ContextService:
             excluded_items=(),
             input_fingerprint=fingerprint,
             created_at=utc_now_iso(),
+            used_position_ids=self.collect_used_position_ids(state),
         )
         self._runtime.record_context_manifest(workspace, context_manifest)
         return ContextBuildResult(manifest=context_manifest)
@@ -217,12 +266,50 @@ class ContextService:
     # который мог бы вытолкнуть upstream артефакты из budget.
     _PROJECT_STATE_TOKEN_HARD_CAP: int = 2000
 
+    def _collect_domain_contribution_roles(self, workspace: Path) -> tuple[str, ...]:
+        """Роли артефактов, рождённых задачами активных доменных паков.
+
+        Этап 7.3: пробегаем граф задач workspace, отбираем те, у которых
+        ``origin_kind == "domain_contribution"`` (созданы при раскрытии
+        слотов доменных паков). Их primary-артефакты — кандидаты для
+        автоматического подмешивания в optional-контекст финального merge.
+        """
+        domain_task_ids: set[str] = set()
+        for task in self._runtime.list_tasks(workspace):
+            if task.origin_kind == "domain_contribution":
+                domain_task_ids.add(task.task_id)
+        if not domain_task_ids:
+            return ()
+        roles: list[str] = []
+        seen: set[str] = set()
+        for artifact in self._runtime.list_artifacts(workspace):
+            if artifact.created_by_task_id not in domain_task_ids:
+                continue
+            if artifact.artifact_role in seen:
+                continue
+            seen.add(artifact.artifact_role)
+            roles.append(artifact.artifact_role)
+        return tuple(sorted(roles))
+
+    def collect_used_position_ids(self, state: ProjectState) -> tuple[str, ...]:
+        """Идентификаторы положений Layer A, которые попали в контекст задачи.
+
+        Этап 1.4: пока подаём все активные положения, реально попавшие
+        в ``_build_project_state_section`` (decisions/assumptions/facts).
+        Полноценная фильтрация по релевантности — Этап 2 roadmap.
+        """
+        ids: list[str] = []
+        for position in state.knowledge.active():
+            if position.type in {"decision", "assumption", "fact"}:
+                ids.append(position.identifier)
+        return tuple(ids)
+
     def _build_project_state_section(
         self,
         workspace: Path,
         task,
         template,
-        state,
+        state: ProjectState,
     ) -> ContextItem | None:
         """Собирает компактный markdown-снимок «что мы уже знаем о проекте».
 
@@ -230,17 +317,20 @@ class ContextService:
         противоречить уже принятым решениям/допущениям. Без этой секции
         LLM работает «без scope»: видит только входные артефакты, но не
         знает что пользователь уже ответил на вопросы.
+
+        Источники теперь — Layer A (knowledge) и Layer B (process).
         """
         # B5: контекст с явной иерархией источников через visual markers.
         # См. system_prompt — он опирается на эти маркеры для приоритезации.
         sections: list[str] = []
 
         # 🎯 Goal (главное что задача держит в голове)
-        if state.goal:
-            sections.append("## 🎯 Цель проекта\n" + state.goal.strip())
+        goal_statement = state.knowledge.goal_statement()
+        if goal_statement:
+            sections.append("## 🎯 Цель проекта\n" + goal_statement.strip())
 
         # 📥 Business request (исходный raw input)
-        business_request = (state.business_request or "").strip()
+        business_request = (state.manifest.business_request or "").strip()
         if business_request:
             if len(business_request) > 1500:
                 business_request = business_request[:1500].rstrip() + " …"
@@ -249,31 +339,36 @@ class ContextService:
                 + business_request
             )
 
-        # 🟢 USER DECISIONS — обязательные ограничения (видны в system_prompt
-        # иерархии как «🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ»). Только не-clarification
-        # источники не маркируются как user — это решения из других каналов
-        # (operator, system), но всё равно decisions; их тоже сюда.
-        decisions_section = self._format_facts_section(
+        # 🟢 USER DECISIONS — обязательные ограничения.
+        #
+        # always_full=True: решения пользователя ВСЕГДА показываются полным
+        # текстом, даже в global-секции. Раньше global-список обрезал
+        # statement до 120 символов; для решений вида
+        # «<длинный вопрос>? Ответ: <короткий ответ>» это резало именно
+        # часть «Ответ: …», и LLM видел только вопрос без ответа. Из-за
+        # этого модель эмитила blocking_questions с пометкой «Решение
+        # пользователя не найдено в контексте», что плодило дубликаты
+        # уточнений и блокировало pipeline.
+        decisions_section = self._format_positions_section(
             workspace=workspace,
             task=task,
             template=template,
-            facts=state.decisions,
+            positions=state.knowledge.by_type("decision"),
             relevant_title="🟢 Решения пользователя — ОБЯЗАТЕЛЬНО учитывай в выводе",
             global_title="🟢 Другие принятые решения проекта (тоже учитывай)",
-            kind="decision",
+            always_full=True,
         )
         if decisions_section:
             sections.append(decisions_section)
 
         # 🟡 ASSUMPTIONS — рабочие, можно override decision'ом
-        assumptions_section = self._format_facts_section(
+        assumptions_section = self._format_positions_section(
             workspace=workspace,
             task=task,
             template=template,
-            facts=state.assumptions,
+            positions=state.knowledge.by_type("assumption"),
             relevant_title="🟡 Допущения системы для этой задачи (можно использовать, decision важнее)",
             global_title="🟡 Другие активные допущения проекта",
-            kind="assumption",
         )
         if assumptions_section:
             sections.append(assumptions_section)
@@ -281,7 +376,7 @@ class ContextService:
         # ⚫ Open gaps — НЕ утверждать
         gaps_lines = [
             f"- **{gap.title}** ({gap.severity}): {gap.description}".rstrip()
-            for gap in state.active_gaps.values()
+            for gap in state.process.active_gaps.values()
             if gap.closed_at is None
         ]
         if gaps_lines:
@@ -292,11 +387,15 @@ class ContextService:
                 + "\n".join(gaps_lines[: self._GLOBAL_LIST_LIMIT])
             )
 
-        # 🔵 Known facts — extracted база
+        # 🔵 Known facts — extracted база (исключая бизнес-запрос и цель,
+        # они уже выведены в отдельные секции выше).
+        from ..domain.project_knowledge import GOAL_POSITION_ID
+
+        reserved_fact_ids = {GOAL_POSITION_ID, "project.business_request"}
         facts_lines = [
-            f"- {fact.statement}".rstrip()
-            for fact in state.known_facts.values()
-            if fact.statement
+            f"- {position.statement}".rstrip()
+            for position in state.knowledge.by_type("fact")
+            if position.statement and position.identifier not in reserved_fact_ids
         ]
         if facts_lines:
             sections.append(
@@ -305,7 +404,7 @@ class ContextService:
             )
 
         # Active methodology (лензa рассуждения)
-        methodology_records = state.active_methodology_pack_records
+        methodology_records = state.process.active_methodology_pack_records
         if methodology_records:
             method_ref = next(iter(methodology_records.values())).ref
             sections.append(f"## 📐 Активная методология рассуждения\n{method_ref}")
@@ -339,7 +438,7 @@ class ContextService:
         return ContextItem(
             item_id=str(uuid.uuid4()),
             item_type="problem_field",
-            source_ref=f"project_state:{state.version}",
+            source_ref=f"project_state:k{state.knowledge.version}/p{state.process.version}",
             title="Контекст проекта",
             content=content,
             token_estimate=token_estimate,
@@ -347,57 +446,59 @@ class ContextService:
             priority=1500,
         )
 
-    def _format_facts_section(
+    def _format_positions_section(
         self,
         *,
         workspace: Path,
         task,
         template,
-        facts: dict,
+        positions: Iterable[Position],
         relevant_title: str,
         global_title: str,
-        kind: str,
+        always_full: bool = False,
     ) -> str | None:
-        """Разбивает facts на relevant и global, форматирует markdown.
+        """Разбивает положения на relevant и global, форматирует markdown.
 
-        Relevant decisions/assumptions — те, что:
+        Relevant — положения, релевантные конкретной задаче:
         - пришли из clarification, чей affected_task_ids содержит task.task_id, ИЛИ
-        - related_artifact_ids пересекаются с template required/optional roles.
+        - related_artifact_ids уточнения пересекаются с required/optional ролями задачи.
 
-        Остальные = global → отображаются компактным списком (заголовок + 1 строка).
+        Остальные — global, выводятся компактным списком.
+
+        ``always_full``: даже в global-секции показывать положения целиком.
+        Используется для decisions: их обрезка приводила к тому, что LLM
+        видел вопрос без ответа («Ответ: Ма…») и переспрашивал.
         """
-        if not facts:
+        positions_list = [p for p in positions if (p.statement or "").strip()]
+        if not positions_list:
             return None
-        relevant: list[tuple[str, str]] = []  # (statement, source_meta)
-        global_items: list[tuple[str, str]] = []
+
         template_roles = set(template.inputs.required_artifact_roles) | set(
             template.inputs.optional_artifact_roles
         )
-        for fact in facts.values():
-            is_relevant = self._is_fact_relevant_to_task(
-                workspace, fact, task, template_roles
-            )
-            statement = (fact.statement or "").strip()
-            source = (fact.source or "").strip()
-            if not statement:
-                continue
-            if is_relevant:
-                relevant.append((statement, source))
+        relevant: list[Position] = []
+        global_items: list[Position] = []
+        for position in positions_list:
+            if self._is_position_relevant_to_task(
+                workspace, position, task, template_roles
+            ):
+                relevant.append(position)
             else:
-                global_items.append((statement, source))
+                global_items.append(position)
+
         chunks: list[str] = []
         if relevant:
             relevant_lines = [
-                self._format_fact_line(statement, source, full=True)
-                for statement, source in relevant[: self._RELEVANT_FULL_LIMIT]
+                self._format_position_line(position, full=True)
+                for position in relevant[: self._RELEVANT_FULL_LIMIT]
             ]
             chunks.append(f"## {relevant_title}\n" + "\n".join(relevant_lines))
         if global_items:
             head = global_items[: self._GLOBAL_LIST_LIMIT]
             remaining = len(global_items) - len(head)
             global_lines = [
-                self._format_fact_line(statement, source, full=False)
-                for statement, source in head
+                self._format_position_line(position, full=always_full)
+                for position in head
             ]
             if remaining > 0:
                 global_lines.append(f"- … и ещё {remaining}")
@@ -405,38 +506,38 @@ class ContextService:
         return "\n\n".join(chunks) if chunks else None
 
     @staticmethod
-    def _format_fact_line(statement: str, source: str, *, full: bool) -> str:
-        # Источник в виде "clarification:{id}" / "system:..." / "operator:..." —
-        # выводим в человеко-читаемом виде, без UUID в спам-режиме.
+    def _format_position_line(position: Position, *, full: bool) -> str:
+        """Форматирует одну строку положения для markdown-секции."""
+        statement = (position.statement or "").strip()
+        if not statement:
+            return ""
         source_label = ""
-        if source.startswith("clarification:"):
+        if position.source == "clarification":
             source_label = " _(ответ на вопрос пользователя)_"
-        elif source:
-            source_label = f" _(источник: {source.split(':', 1)[0]})_"
+        elif position.source and position.source != "system":
+            source_label = f" _(источник: {position.source})_"
         if full:
             return f"- {statement.rstrip()}.{source_label}".replace("..", ".")
-        # Compact: первые 120 символов
         compact = statement if len(statement) <= 120 else statement[:117] + "…"
         return f"- {compact}".rstrip()
 
-    def _is_fact_relevant_to_task(
+    def _is_position_relevant_to_task(
         self,
         workspace: Path,
-        fact,
+        position: Position,
         task,
         template_roles: set[str],
     ) -> bool:
-        """Decision/assumption считается relevant к task если:
-        - источник fact'а — clarification, чей affected_task_ids содержит task.task_id, ИЛИ
-        - related_artifact_ids этого clarification пересекаются с required/optional artifact roles задачи.
+        """Положение считается relevant к task если:
+        - источник — clarification, чей affected_task_ids содержит task.task_id, ИЛИ
+        - related_artifact_ids этого clarification пересекаются с ролями задачи.
 
-        Для прочих источников (system/operator/etc.) — relevant по умолчанию,
-        чтобы случайно не отфильтровать что-то важное.
+        Для прочих источников — relevant по умолчанию, чтобы случайно не
+        отфильтровать важное.
         """
-        source = (fact.source or "").strip()
-        if not source.startswith("clarification:"):
+        request_id = _clarification_request_id_from_position(position)
+        if request_id is None:
             return True
-        request_id = source.split(":", 1)[1]
         try:
             request = self._runtime.get_clarification_request(workspace, request_id)
         except Exception:

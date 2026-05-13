@@ -67,10 +67,20 @@ class WorkflowRunnerService:
         provider: str | None,
         model: str | None,
         max_steps: int,
+        continue_past_validation_failure: bool = False,
     ) -> WorkflowRunRecord:
         """Создаёт запись workflow_run и стартует фоновый thread. Возвращает
         свежий снимок записи (status=pending). UI должен poll'ить или
-        слушать WS, чтобы увидеть прогресс."""
+        слушать WS, чтобы увидеть прогресс.
+
+        ``continue_past_validation_failure``: если True, runner не
+        останавливается после validation_failed одной задачи, а пробует
+        следующую допустимую. Нужно для auto-resume после ответа на
+        уточнение: одна задача может стабильно валить валидацию, но
+        другие готовые задачи (например, ``request_normalization``)
+        обязаны получить свой шанс — иначе пользователю кажется, что
+        система ходит по кругу.
+        """
         snapshot, report = self._registry_service.validate()
         if not report.is_valid:
             raise RuntimeError("Registry invalid; cannot start workflow run.")
@@ -97,7 +107,15 @@ class WorkflowRunnerService:
 
         thread = threading.Thread(
             target=self._run_loop,
-            args=(workspace, snapshot, run_id, provider, model, int(max_steps)),
+            args=(
+                workspace,
+                snapshot,
+                run_id,
+                provider,
+                model,
+                int(max_steps),
+                bool(continue_past_validation_failure),
+            ),
             daemon=True,
             name=f"workflow-run-{run_id[:8]}",
         )
@@ -134,6 +152,7 @@ class WorkflowRunnerService:
         provider: str | None,
         model: str | None,
         max_steps: int,
+        continue_past_validation_failure: bool = False,
     ) -> None:
         # pending → running
         self._mutate(workspace, run_id, status="running", last_step_summary="Запуск шагов...")
@@ -217,26 +236,50 @@ class WorkflowRunnerService:
                 )
                 return
 
-            # Validation провалилась — терминал, но это нормальный финал
-            # (а не ошибка): пользователю нужно что-то поправить.
+            # Validation провалилась.
+            #
+            # Default (continue_past_validation_failure=False): останавливаем
+            # run — пользователю нужно посмотреть, что не так.
+            #
+            # Auto-resume (continue_past_validation_failure=True): просто
+            # фиксируем step и идём дальше. Failed-задача уже помечена
+            # status=failed в `WorkflowService._execute_existing_task`,
+            # admission её больше не выберет; planner возьмёт следующую
+            # допустимую задачу. Без этого одна стабильно валящая задача
+            # блокировала весь pipeline после ответа на уточнение — главный
+            # сценарий «система ходит кругами».
             if result.validation_status != "passed":
-                self._append_step_and_finalize(
-                    workspace,
-                    run_id,
-                    step_index=step_index,
-                    step_started_at=step_started_at,
-                    planning_outcome=result.planning_outcome,
-                    selected_step_id=result.selected_step_id,
-                    task_id=result.task_id,
-                    task_key=result.selected_step_id,
-                    execution_run_id=result.execution_run_id,
-                    validation_status=result.validation_status,
-                    error_message=step_record.error_message,
-                    final_status="completed",
-                    stop_reason="validation_failed",
-                    summary=step_summary,
+                if not continue_past_validation_failure:
+                    self._append_step_and_finalize(
+                        workspace,
+                        run_id,
+                        step_index=step_index,
+                        step_started_at=step_started_at,
+                        planning_outcome=result.planning_outcome,
+                        selected_step_id=result.selected_step_id,
+                        task_id=result.task_id,
+                        task_key=result.selected_step_id,
+                        execution_run_id=result.execution_run_id,
+                        validation_status=result.validation_status,
+                        error_message=step_record.error_message,
+                        final_status="completed",
+                        stop_reason="validation_failed",
+                        summary=step_summary,
+                    )
+                    return
+                # continue-режим: апдейтим запись и идём на следующую
+                # итерацию планировщика.
+                run = self._runtime.get_workflow_run(workspace, run_id)
+                if run is None:
+                    return
+                updated = replace(
+                    run,
+                    current_step=step_index,
+                    last_step_summary=step_summary,
+                    steps=run.steps + (step_record,),
                 )
-                return
+                self._runtime.update_workflow_run(workspace, updated)
+                continue
 
             # Шаг успешен — апдейтим запись и идём дальше.
             run = self._runtime.get_workflow_run(workspace, run_id)
@@ -369,12 +412,19 @@ class WorkflowRunnerService:
 
     @staticmethod
     def _step_summary_from_result(step_index: int, max_steps: int, result) -> str:
-        """Короткая человеко-читаемая сводка шага для last_step_summary."""
+        """Короткая человеко-читаемая сводка шага для last_step_summary.
+
+        Раньше префикс был «Шаг N/M: …» — индикатор max_steps в UI был
+        убран как нерелевантный (workflow не имеет фиксированной длины,
+        max_steps — это sanity ceiling). Сводка теперь несёт только смысл
+        события без счётчиков.
+        """
+        del step_index, max_steps  # не используем — UI считает сам
         if result.planning_outcome == "objective_completed":
-            return f"Шаг {step_index}/{max_steps}: цель проекта достигнута."
+            return "Цель проекта достигнута."
         if result.planning_outcome not in {"selected", "retried"}:
-            return f"Шаг {step_index}/{max_steps}: планировщик заблокирован ({result.planning_outcome})."
+            return f"Планировщик заблокирован ({result.planning_outcome})."
         title = result.selected_step_id or (result.task_id or "")
         if result.validation_status == "passed":
-            return f"Шаг {step_index}/{max_steps}: завершено — {title}"
-        return f"Шаг {step_index}/{max_steps}: проблема — {title} ({result.validation_status})"
+            return f"Завершено: {title}"
+        return f"Проблема: {title} ({result.validation_status})"

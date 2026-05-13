@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..common.errors import NotFoundError
-from ..infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
+from ..domain.project_state import ProjectManifest
+from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
 @dataclass(frozen=True)

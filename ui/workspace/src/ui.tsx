@@ -344,15 +344,14 @@ export function ProjectRail({
 }
 
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
-  // L6-8: 5 вкладок + Settings (§5C IA, USERS_AND_JTBD.md).
-  // Старые табы (Артефакты, Активность, Состояние, Замечания, Технические
-  // детали) удалены из навигации: артефакты живут в Обзоре (P3 v2 skeleton)
-  // и доступны drill-down'ом из drawer; активность раздроблена в Обзор
-  // и Задачи; Состояние/Замечания/Тех.детали собраны в Settings.
+  // L6-8: 5 вкладок + Settings (§5C IA). Артефакты возвращены в навигацию
+  // по фидбеку пользователя: drawer из Обзора был неявным каналом, явная
+  // вкладка нужна для централизованного просмотра + metadata.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
     { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
+    { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
     { to: `/projects/${projectId}/decisions`, label: "Журнал решений" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
     { to: `/projects/${projectId}/settings`, label: "⚙ Настройки" },

@@ -1,6 +1,8 @@
 # Контекст и исполнение
 
-> **Статус:** v2.1 · черновик · 2026-05-09
+> **Статус:** v3.0 · черновик · 2026-05-13. Артефакты — first-class
+> объекты с явным графом связей; reasoning и methodology trace —
+> метаинформация, а не отдельные артефакты (Этап 1 roadmap).
 
 Документ объединяет артефакты, манифесты контекста и исполнение. Исполнитель всегда работает только с явно собранным `ContextManifest`. Поверх каждой leaf-задачи накладывается wrapper активного `methodology_pack`, который формирует структуру рассуждения вокруг основной инструкции.
 
@@ -12,30 +14,73 @@
 class ArtifactRecord(BaseModel):
     artifact_id: UUID
     project_id: UUID
-    contract_ref: str
+    artifact_role: str
     title: str
-    kind: Literal["primary", "reasoning", "trace", "derived"]
-    format: Literal["json", "markdown", "text", "binary"]
-    created_by_task_id: UUID
-    parent_artifact_id: UUID | None
-    storage_uri: str
-    metadata: dict
+    description: str | None
+    artifact_format: Literal["json", "markdown", "text"]
+    artifact_kind: Literal["primary", "synthesized", "derived"]
+    created_by_task_id: UUID | None
+    storage_path: str
+    created_at: datetime
+    relations: ArtifactRelations
+    metadata: ArtifactMetadata
+    is_superseded: bool
+
+class ArtifactRelations(BaseModel):
+    """Граф связей артефакта."""
+    parent_artifact_id: UUID | None        # предыдущая версия
+    input_artifact_ids: tuple[UUID, ...]   # lineage по контексту
+    child_artifact_ids: tuple[UUID, ...]   # для synthesized — компоненты-источники
+
+class ArtifactMetadata(BaseModel):
+    """Метаинформация артефакта.
+
+    Содержит reasoning и methodology trace, которые в v2.* были
+    отдельными артефактами, а теперь свёрнуты в метаинформацию
+    primary артефакта.
+    """
+    template_ref: str | None
+    provider: str | None
+    model: str | None
+    complexity: Literal["trivial", "standard", "complex"] | None
+    methodology_pack_ref: str | None
+    execution_run_id: UUID | None
+    reasoning: dict                        # бывший reasoning_artifact
+    methodology_trace: dict                # бывший methodology_trace
+    overall_confidence: float | None
+    field_confidence: dict[str, float]
+    used_position_ids: tuple[str, ...]     # положения Layer A (Этап 1.4)
+    extras: dict
 ```
 
 Виды артефактов:
 
-- `primary` — основной результат задачи (по `produces.artifact` шаблона);
-- `reasoning` — `reasoning_artifact`, схема которого собирается из активного `methodology_pack`;
-- `trace` — `methodology_trace` (последовательность стадий, сработавшие правила, ссылки на эмиттированные `ClarificationCandidate`);
-- `derived` — производные представления (markdown-render, summary).
+- `primary` — основной результат leaf-задачи (по `produces.artifact` шаблона);
+- `synthesized` — синтезированный артефакт композитной задачи (объединение результатов детей; механика слияния — Этап 5 roadmap);
+- `derived` — производные представления (markdown-render, summary и т.п.).
 
 Правила:
 
 - артефакт неизменяем;
-- исправление создает новый артефакт;
+- исправление создаёт новый артефакт со ссылкой через `relations.parent_artifact_id`;
+- старая версия помечается `is_superseded = True`;
 - основной артефакт валидируется по `artifact_contract`;
 - markdown/render/summary являются производными представлениями или производными артефактами;
-- артефакт связан с задачей-производителем.
+- артефакт связан с задачей-производителем (`created_by_task_id`).
+
+### Граф артефактов
+
+Артефакты образуют направленный граф, где `relations.input_artifact_ids`
+определяет «вход → выход» (lineage). Обратные ссылки (downstream) не
+хранятся явно — вычисляются обходом индекса при необходимости
+(`runtime.downstream_artifacts(artifact_id)`).
+
+Граф используется для:
+
+- определения, какие артефакты затрагивает оспаривание положения слоя A
+  (через `used_position_ids` + downstream обход);
+- провенанса при объяснении «откуда этот вывод» (upstream обход);
+- инвалидации артефактов при retry или версионировании.
 
 ---
 
@@ -46,11 +91,21 @@ class ContextManifest(BaseModel):
     manifest_id: UUID
     project_id: UUID
     task_id: UUID
-    task_template_ref: str
-    problem_state_version: int
-    items: list[ContextItem]
+    template_ref: str
+    problem_state_version: int            # версия знания на момент сборки
+    items: tuple[ContextItem, ...]
     budget: ContextBudget
+    excluded_items: tuple[str, ...]
+    input_fingerprint: str
+    created_at: datetime
+    used_position_ids: tuple[str, ...]    # положения Layer A, попавшие в контекст (Этап 1.4)
 ```
+
+`used_position_ids` — это идентификаторы положений слоя A, реально попавшие
+в собранный контекст задачи. При создании primary артефакта это значение
+переносится в `ArtifactMetadata.used_position_ids` (см. PS11), что замыкает
+граф «положение → артефакт» и позволяет вычислять `artifacts_using_position`
+для оспаривания.
 
 Элемент контекста:
 
@@ -96,7 +151,7 @@ Wrapper активного `methodology_pack` оборачивает испол�
 
 Алгоритм:
 
-1. Прочитать активный `methodology_pack` из `ProblemState.active_methodology_packs`.
+1. Прочитать активный `methodology_pack` из `ProcessState.active_methodology_packs`.
 2. С учётом `complexity` шаблона задачи отобрать обязательные стадии (`required_stages` + `optional_stages`, минус `skip_stages` из `complexity_overrides`).
 3. Сформировать комбинированный prompt:
    - системная часть от методологии: описание стадий и формата `reasoning_artifact`,
@@ -134,17 +189,24 @@ class ExecutionRequest(BaseModel):
 class ExecutionResult(BaseModel):
     execution_run_id: UUID
     status: Literal["succeeded", "failed"]
-    primary_artifact_id: UUID | None        # по produces.artifact шаблона
-    reasoning_artifact_id: UUID | None      # по схеме активной методологии
-    methodology_trace_id: UUID | None       # трасса стадий wrapper'a
-    proposed_problem_patches: list[dict]
-    clarification_candidates: list[dict]
-    trace_ids: list[UUID]                   # технические трассы LLM/tool runs
+    outputs: tuple[ExecutionOutput, ...]    # один primary артефакт на leaf-задачу
+    methodology_candidates: tuple[ClarificationCandidate, ...]
+    trace_ids: tuple[UUID, ...]             # технические трассы LLM/tool runs
+    proposed_goal: str | None
     failure_code: str | None
     failure_message: str | None
 ```
 
-Успешное исполнение leaf-задачи производит три артефакта: `primary`, `reasoning_artifact`, `methodology_trace`. Все три валидируются: `primary` — по `artifact_contract` из `produces.artifact`, `reasoning_artifact` — по схеме активной методологии, `methodology_trace` — по фиксированной системной схеме.
+Успешное исполнение leaf-задачи производит **один primary артефакт**.
+Reasoning и methodology trace — это поля :attr:`ArtifactMetadata.reasoning`
+и :attr:`ArtifactMetadata.methodology_trace` этого артефакта, не отдельные
+``ArtifactRecord`` (Этап 1.1 roadmap).
+
+Валидация:
+
+- `primary.content` — по `artifact_contract` из `produces.artifact`;
+- `primary.metadata.reasoning` — по схеме активного `methodology_pack`;
+- `primary.metadata.methodology_trace` — по фиксированной системной схеме.
 
 `proposed_problem_patches` не применяются средой исполнения напрямую. Их применяет слой управления процессом после валидации.
 
@@ -167,7 +229,7 @@ LLM не получает:
 - произвольный доступ к проекту;
 - право создавать задачи;
 - право активировать доменные пакеты;
-- право менять `ProblemState` напрямую.
+- право менять `ProjectKnowledge` / `ProcessState` напрямую.
 - право задавать вопрос пользователю напрямую.
 
 ---
@@ -208,11 +270,14 @@ unsupported_executor
 |---|---|
 | EC1 | Исполнение без `ContextManifest` запрещено. |
 | EC2 | Среда исполнения запускает только листовые задачи. |
-| EC3 | Среда исполнения не меняет граф задач и `ProblemState` напрямую. |
+| EC3 | Среда исполнения не меняет граф задач и `ProjectKnowledge` / `ProcessState` напрямую. |
 | EC4 | Артефакт неизменяем. |
 | EC5 | Исполнитель не получает контекст вне манифеста. |
 | EC6 | Выход LLM должен соответствовать контракту артефакта. |
-| EC7 | Кандидаты уточнений проходят через координатор уточнений. |
-| EC8 | Успешное исполнение leaf-задачи производит `primary`, `reasoning_artifact` и `methodology_trace`. |
-| EC9 | `reasoning_artifact` валидируется по схеме активного `methodology_pack`. |
-| EC10 | Wrapper методологии не создаёт узлов в графе задач. |
+| EC7 | Один primary артефакт на исполнение leaf-задачи; reasoning и methodology trace — поля его метаинформации. |
+| EC8 | `relations.input_artifact_ids` отражает реальные артефакты-входы из `ContextManifest`. |
+| EC9 | `metadata.used_position_ids` совпадает с `ContextManifest.used_position_ids` на момент сборки. |
+| EC10 | Производные представления (markdown, summary) хранятся отдельно от primary, со ссылкой через `relations.parent_artifact_id` или `relations.input_artifact_ids`. |
+| EC11 | Кандидаты уточнений проходят через координатор уточнений. |
+| EC12 | `metadata.reasoning` валидируется по схеме активного `methodology_pack` (бывший инвариант про `reasoning_artifact`). |
+| EC13 | Wrapper методологии не создаёт узлов в графе задач. |
