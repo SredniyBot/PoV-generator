@@ -1,5 +1,5 @@
 /**
- * L6-2: Home dashboard (P4 status-first navigation из USERS_AND_JTBD.md §5C).
+ * L6-2: Home dashboard (P4 status-first navigation).
  *
  * Корневой экран `/`: проекты сгруппированы по статусу.
  * Закрывает M-J4 «распределить внимание между 3–5 параллельными»

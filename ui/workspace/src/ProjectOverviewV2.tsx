@@ -1,5 +1,5 @@
 /**
- * L6-1: Goal-anchored mission control (P3 v2 из USERS_AND_JTBD.md §5B).
+ * L6-1: Goal-anchored mission control (P3 v2).
  *
  * Двухпанельный главный экран проекта:
  * - Левая часть (артефакт): skeleton артефакта со статусами разделов.
