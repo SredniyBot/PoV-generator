@@ -1,7 +1,7 @@
 """Тесты для methodology rule evaluator и Claude провайдеров.
 
-Покрывают Phase 3 (rule firing → ClarificationCandidate) и Phase 6
-(claude_sdk / claude_subscription адаптеры) — see Задача #9 в BACKLOG.md.
+Покрывают: rule firing → ClarificationCandidate и адаптеры
+claude_sdk / claude_subscription.
 """
 
 from __future__ import annotations

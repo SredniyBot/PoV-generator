@@ -1,7 +1,7 @@
 """Тесты для `human_approval` quality gate `client.requirements_signoff@1.0.0`.
 
-Покрывают BACKLOG.md задачу #8 (W1.3): полный цикл от завершения review-задачи
-до закрытия objective через ответ заказчика на gate.
+Покрывают полный цикл от завершения review-задачи до закрытия objective
+через ответ заказчика на gate.
 """
 
 from __future__ import annotations
