@@ -523,6 +523,75 @@ class ProviderSettingsService:
             added.append(routing)
         return tuple(added)
 
+    def diagnose_resolution(self) -> tuple[dict[str, object], ...]:
+        """Для каждого purpose посчитать, что реально пойдёт в LLM-вызов.
+
+        Используется UI-панелью «Куда пойдёт» в Settings → Assignments,
+        чтобы пользователь видел: «при запуске пайплайна execution.standard
+        отправится в claude_subscription / Claude CLI / claude-opus-4-7».
+        Без подобного diagnostic'а пользователь не уверен, что его
+        настройки применяются — отсюда вопросы вида «а ты точно
+        переключаешь модели?».
+
+        Каждая запись — словарь с полями: ``purpose``, ``label``,
+        ``model_name`` (из assignment), ``resolved`` — что фактически
+        выбрано (или ``None`` если резолв упал) с пояснением ошибки.
+        """
+        from ..common.errors import ConflictError
+
+        out: list[dict[str, object]] = []
+        for purpose in ALL_PURPOSES:
+            label = PURPOSE_LABELS_FOR_UI.get(purpose, purpose)
+            assignment = self._store.get_assignment(purpose)
+            entry: dict[str, object] = {
+                "purpose": purpose,
+                "label": label,
+                "model_name": assignment.model_name if assignment else None,
+                "resolved": None,
+                "error": None,
+            }
+            if assignment is None:
+                entry["error"] = "Не назначено"
+                out.append(entry)
+                continue
+
+            # Реплицируем логику resolve_for_purpose без построения провайдера
+            # (чтобы не делать сетевых вызовов и не требовать рабочих кредитов).
+            routings = self._store.list_routings_for_model(assignment.model_name)
+            if not routings:
+                entry["error"] = "У выбранной модели нет рабочих маршрутов"
+                out.append(entry)
+                continue
+            primary = routings[0]
+            connection = self._store.get_connection(primary.connection_id)
+            if connection is None:
+                entry["error"] = "Routing ссылается на удалённый connection"
+                out.append(entry)
+                continue
+            entry["resolved"] = {
+                "provider_type": connection.provider_type,
+                "connection_id": connection.connection_id,
+                "connection_display_name": connection.display_name,
+                "model_name": assignment.model_name,
+                "fallback_routings": [
+                    {
+                        "connection_display_name": (
+                            self._store.get_connection(r.connection_id).display_name
+                            if self._store.get_connection(r.connection_id)
+                            else "(удалён)"
+                        ),
+                        "provider_type": (
+                            self._store.get_connection(r.connection_id).provider_type
+                            if self._store.get_connection(r.connection_id)
+                            else "unknown"
+                        ),
+                    }
+                    for r in routings[1:]
+                ],
+            }
+            out.append(entry)
+        return tuple(out)
+
     def sync_all_connections(self) -> dict[str, int]:
         """Прогон sync_known_routings по всем connections. Используется при
         запуске API — чтобы старые connections автоматически подцепляли

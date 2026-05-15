@@ -4194,6 +4194,51 @@ code {
   background: rgba(232, 128, 128, 0.06);
 }
 
+/* Колонка «Куда пойдёт» — diagnostic-резолва. */
+.llm-diag-cell {
+  font-size: 12px;
+}
+
+.llm-diag {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.llm-diag--ok {
+  border-left: 2px solid #7fc99c;
+}
+
+.llm-diag--err {
+  border-left: 2px solid #e88080;
+  color: #e88080;
+}
+
+.llm-diag--neutral {
+  color: var(--text-tertiary);
+}
+
+.llm-diag strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.llm-diag__via {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.llm-diag__fallback {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
 .llm-row__side {
   display: flex;
   flex-direction: column;

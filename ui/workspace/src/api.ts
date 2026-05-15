@@ -278,6 +278,28 @@ export const api = {
       "/api/settings/assignments/reset-to-recommended",
       { method: "POST" },
     ),
+  // Diagnostics: для каждого purpose показать, что реально будет
+  // использовано при следующем LLM-вызове. Подтверждение того, что
+  // переключение модели в UI действительно работает.
+  getSettingsDiagnostics: () =>
+    request<
+      Array<{
+        purpose: string;
+        label: string;
+        model_name: string | null;
+        resolved: null | {
+          provider_type: "openrouter" | "anthropic" | "claude_cli";
+          connection_id: string;
+          connection_display_name: string;
+          model_name: string;
+          fallback_routings: Array<{
+            connection_display_name: string;
+            provider_type: "openrouter" | "anthropic" | "claude_cli";
+          }>;
+        };
+        error: string | null;
+      }>
+    >("/api/settings/diagnostics"),
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

@@ -674,16 +674,28 @@ function AssignmentsTab() {
     queryKey: ["llm-settings", "models"],
     queryFn: () => api.listModels(),
   });
+  // Diagnostics: какой connection реально будет вызван. Перезапрашиваем
+  // при любом изменении assignments / models, чтобы пользователь видел
+  // эффект изменений сразу.
+  const diagnosticsQuery = useQuery({
+    queryKey: ["llm-settings", "diagnostics"],
+    queryFn: () => api.getSettingsDiagnostics(),
+  });
+
+  const invalidateAll = () => {
+    qc.invalidateQueries({ queryKey: ["llm-settings", "assignments"] });
+    qc.invalidateQueries({ queryKey: ["llm-settings", "diagnostics"] });
+  };
 
   const setMutation = useMutation({
     mutationFn: ({ purpose, modelName }: { purpose: string; modelName: string }) =>
       api.setAssignment(purpose, modelName),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "assignments"] }),
+    onSuccess: invalidateAll,
   });
 
   const resetMutation = useMutation({
     mutationFn: () => api.resetAssignmentsToRecommended(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "assignments"] }),
+    onSuccess: invalidateAll,
   });
 
   if (purposesQuery.isLoading || assignmentsQuery.isLoading || modelsQuery.isLoading) {
@@ -720,58 +732,98 @@ function AssignmentsTab() {
           <p>В каталоге пока нет моделей — подключите источник на вкладке «Источники».</p>
         </div>
       ) : (
-        <table className="llm-table">
-          <thead>
-            <tr>
-              <th>Сценарий</th>
-              <th>Модель</th>
-            </tr>
-          </thead>
-          <tbody>
-            {purposes.map((p) => {
-              const current = assignmentsByPurpose[p.id] ?? "";
-              const missing = Boolean(current) && !availableModels.includes(current);
-              const hasValidAssignment = Boolean(current) && !missing;
-              return (
-                <tr key={p.id} className={missing ? "llm-table__row--warn" : undefined}>
-                  <td>{p.label}</td>
-                  <td>
-                    <select
-                      value={missing ? "" : current}
-                      onChange={(e) =>
-                        setMutation.mutate({ purpose: p.id, modelName: e.target.value })
-                      }
-                    >
-                      {/* Заглушка "не назначено" показываем только когда
-                          реально ничего не назначено или назначенная
-                          модель потеряна. Если модель валидна — её и
-                          показываем как selected, заглушку прячем. */}
-                      {!hasValidAssignment ? (
-                        <option value="" disabled>
-                          {missing
-                            ? `${current} — модель потеряна, выберите другую`
-                            : "не назначено"}
-                        </option>
+        <>
+          <table className="llm-table">
+            <thead>
+              <tr>
+                <th>Сценарий</th>
+                <th>Модель</th>
+                <th>Куда пойдёт при запуске</th>
+              </tr>
+            </thead>
+            <tbody>
+              {purposes.map((p) => {
+                const current = assignmentsByPurpose[p.id] ?? "";
+                const missing = Boolean(current) && !availableModels.includes(current);
+                const hasValidAssignment = Boolean(current) && !missing;
+                const diag = diagnosticsQuery.data?.find((d) => d.purpose === p.id);
+                return (
+                  <tr key={p.id} className={missing ? "llm-table__row--warn" : undefined}>
+                    <td>{p.label}</td>
+                    <td>
+                      <select
+                        value={missing ? "" : current}
+                        onChange={(e) =>
+                          setMutation.mutate({ purpose: p.id, modelName: e.target.value })
+                        }
+                      >
+                        {/* Заглушка "не назначено" показываем только когда
+                            реально ничего не назначено или назначенная
+                            модель потеряна. */}
+                        {!hasValidAssignment ? (
+                          <option value="" disabled>
+                            {missing
+                              ? `${current} — модель потеряна, выберите другую`
+                              : "не назначено"}
+                          </option>
+                        ) : null}
+                        {availableModels.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                      {missing ? (
+                        <p className="llm-form__error" style={{ marginTop: 4 }}>
+                          Текущая модель «{current}» больше недоступна — выберите другую.
+                        </p>
                       ) : null}
-                      {availableModels.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                    {missing ? (
-                      <p className="llm-form__error" style={{ marginTop: 4 }}>
-                        Текущая модель «{current}» больше недоступна — выберите другую.
-                      </p>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    </td>
+                    <td className="llm-diag-cell">
+                      <ResolutionPreview diag={diag} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="llm-settings__hint" style={{ marginTop: 12 }}>
+            Колонка «Куда пойдёт» показывает реально выбранный маршрут на
+            момент запуска. Это значение пересчитывается из БД каждый раз,
+            когда пайплайн обращается к LLM — изменения здесь применяются
+            мгновенно, без перезапуска сервиса.
+          </p>
+        </>
       )}
     </div>
+  );
+}
+
+
+function ResolutionPreview({
+  diag,
+}: {
+  diag: NonNullable<Awaited<ReturnType<typeof api.getSettingsDiagnostics>>>[number] | undefined;
+}) {
+  if (!diag) return <span className="llm-diag llm-diag--neutral">…</span>;
+  if (diag.error) {
+    return <span className="llm-diag llm-diag--err">{diag.error}</span>;
+  }
+  const r = diag.resolved;
+  if (!r) return <span className="llm-diag llm-diag--neutral">—</span>;
+  return (
+    <span className="llm-diag llm-diag--ok">
+      <strong>{r.model_name}</strong>
+      <span className="llm-diag__via">через {r.connection_display_name}</span>
+      {r.fallback_routings.length > 0 ? (
+        <span
+          className="llm-diag__fallback"
+          title={r.fallback_routings.map((f) => f.connection_display_name).join(", ")}
+        >
+          +{r.fallback_routings.length} backup
+        </span>
+      ) : null}
+    </span>
   );
 }
 

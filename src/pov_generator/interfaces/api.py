@@ -337,6 +337,17 @@ def create_app(
         applied = provider_settings_service.reset_assignments_to_recommended()
         return [{"purpose": a.purpose, "model_name": a.model_name} for a in applied]
 
+    @app.get("/api/settings/diagnostics")
+    def settings_diagnostics() -> Any:
+        """Что реально пойдёт в LLM-вызов при текущих настройках.
+
+        Для каждого purpose: имя модели + через какой connection пойдёт
+        + список fallback'ов. Используется в UI как наглядное
+        подтверждение, что переключение модели в Assignments действительно
+        работает.
+        """
+        return list(provider_settings_service.diagnose_resolution())
+
     @app.get("/api/projects")
     def list_projects() -> Any:
         return to_primitive(query_service.list_projects())
