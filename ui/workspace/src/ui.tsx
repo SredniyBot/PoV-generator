@@ -305,9 +305,6 @@ export function ProjectRail({
       <Button tone="primary" icon={<Plus size={16} />} onClick={onCreate}>
         Новый проект
       </Button>
-      <Link to="/settings" className="rail-link" title="Настройки LLM-провайдеров и моделей">
-        <Settings size={14} /> Настройки
-      </Link>
       <div className="project-rail__header">
         <span>Проекты</span>
         <span>{projects.length}</span>
@@ -343,6 +340,13 @@ export function ProjectRail({
           ))
         )}
       </nav>
+      {/* «Настройки» — внизу рейла. Системные настройки (LLM-провайдеры,
+          модели, назначения), не связанные с конкретным проектом. */}
+      <div className="project-rail__footer">
+        <Link to="/settings" className="rail-link" title="Настройки LLM-провайдеров и моделей">
+          <Settings size={14} /> Настройки
+        </Link>
+      </div>
     </aside>
   );
 }

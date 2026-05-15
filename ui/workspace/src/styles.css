@@ -152,9 +152,16 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;  /* список тянется, footer прижимается к низу */
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+}
+
+.project-rail__footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .project-item {
@@ -3966,21 +3973,21 @@ code {
 /* === LLM Settings page === */
 
 .rail-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   font-size: 13px;
   color: var(--text-secondary);
   text-decoration: none;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  transition: background 0.15s ease, color 0.15s ease;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .rail-link:hover {
   background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-subtle);
   color: var(--text-primary);
 }
 
@@ -4138,27 +4145,62 @@ code {
   background: rgba(255, 255, 255, 0.02);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
-.llm-form h3 { margin: 0; }
+.llm-form h3 { margin: 0; font-size: 16px; }
 
+/* Поля формы — переиспользуем общую дизайн-систему .field. */
 .llm-form label {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  min-width: 0;
 }
 
 .llm-form input,
 .llm-form select {
-  padding: 8px 10px;
+  width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-primary);
+  padding: 11px 12px;
   font-size: 14px;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.llm-form input:focus,
+.llm-form select:focus {
+  border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+/* Кастомная стрелка у select'ов — как в .field. */
+.llm-form select,
+.llm-table select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 42px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(215, 221, 227, 0.88) 50%),
+    linear-gradient(135deg, rgba(215, 221, 227, 0.88) 50%, transparent 50%);
+  background-position:
+    calc(100% - 19px) calc(50% - 3px),
+    calc(100% - 13px) calc(50% - 3px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.llm-form select option,
+.llm-table select option {
+  background: var(--surface-secondary, #1c222b);
+  color: var(--text-primary);
 }
 
 .llm-form__note {
@@ -4211,11 +4253,19 @@ code {
 
 .llm-table select {
   width: 100%;
-  padding: 6px 8px;
+  padding: 9px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.llm-table select:focus {
+  border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
 }
 
 .btn {

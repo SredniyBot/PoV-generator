@@ -53,17 +53,20 @@ KNOWN_MODELS_BY_PROVIDER: dict[ProviderType, tuple[str, ...]] = {
         "openai/gpt-4o-mini",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-chat",
+        "anthropic/claude-opus-4-7",
         "anthropic/claude-sonnet-4-5",
         "anthropic/claude-haiku-4-5",
     ),
     "anthropic": (
         "claude-haiku-4-5",
         "claude-sonnet-4-5",
-        "claude-opus-4-6",
+        "claude-opus-4-7",  # текущий флагман
+        "claude-opus-4-6",  # legacy, для совместимости с прошлыми проектами
     ),
     "claude_cli": (
         "claude-haiku-4-5",
         "claude-sonnet-4-5",
+        "claude-opus-4-7",
         "claude-opus-4-6",
     ),
 }
@@ -75,7 +78,8 @@ KNOWN_MODELS_BY_PROVIDER: dict[ProviderType, tuple[str, ...]] = {
 RECOMMENDED_BY_PURPOSE: dict[str, tuple[str, ...]] = {
     PURPOSE_EXECUTION_TRIVIAL: ("claude-haiku-4-5", "openai/gpt-4o-mini"),
     PURPOSE_EXECUTION_STANDARD: ("claude-sonnet-4-5", "deepseek/deepseek-v4-flash"),
-    PURPOSE_EXECUTION_COMPLEX: ("claude-opus-4-6", "claude-sonnet-4-5", "openai/gpt-4.1-mini"),
+    # Opus 4.7 — текущий флагман на сложных задачах синтеза.
+    PURPOSE_EXECUTION_COMPLEX: ("claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-5", "openai/gpt-4.1-mini"),
     PURPOSE_DOMAIN_PACK_SELECTOR: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_CLARIFICATION_CE11: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_COMPLEXITY_SELECTOR: ("claude-haiku-4-5", "openai/gpt-4o-mini"),

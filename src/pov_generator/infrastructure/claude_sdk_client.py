@@ -20,7 +20,9 @@ def model_for_complexity(complexity: str | None) -> str:
     overrides = {
         "trivial": os.environ.get("POV_CLAUDE_MODEL_TRIVIAL", "claude-haiku-4-5-20251001"),
         "standard": os.environ.get("POV_CLAUDE_MODEL_STANDARD", "claude-sonnet-4-6"),
-        "complex": os.environ.get("POV_CLAUDE_MODEL_COMPLEX", "claude-opus-4-6"),
+        # Opus 4.7 — текущий флагман на сложных задачах синтеза (финальное ТЗ,
+        # сложные analysis-задачи в complex-режиме).
+        "complex": os.environ.get("POV_CLAUDE_MODEL_COMPLEX", "claude-opus-4-7"),
     }
     return overrides.get(complexity or "standard", overrides["standard"])
 
