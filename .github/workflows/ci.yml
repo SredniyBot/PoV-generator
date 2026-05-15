@@ -11,25 +11,30 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend tests + registry validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Backend (${{ matrix.os }} / py${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
       - name: Install package + dev deps (constrained by lockfile)
         # requirements.lock pins transitive versions known to be compatible
         # (regenerate via `uv pip compile pyproject.toml --extra dev -o requirements.lock`).
-        run: pip install -e .[dev] --constraint requirements.lock
+        run: python -m pip install -e .[dev] --constraint requirements.lock
       - name: ruff lint
-        run: ruff check src tests
+        run: python -m ruff check src tests
       - name: pytest
-        run: pytest -q
+        run: python -m pytest -q
       - name: registry validate
-        run: povgen registry validate
+        run: python -m pov_generator registry validate
 
   ui:
     name: UI build (tsc + vite)

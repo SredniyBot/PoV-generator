@@ -620,12 +620,79 @@ def _required_string_list(values: list[object], key: str) -> list[str]:
     return normalized
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """Cross-platform entry point for the API server.
+
+    Configurable via CLI flags or environment variables (``POV_HOST``,
+    ``POV_PORT``, ``POV_RELOAD``, ``POV_WORKERS``). Examples::
+
+        povgen-api                          # 127.0.0.1:8788
+        povgen-api --port 9000              # custom port
+        povgen-api --reload                 # hot-reload for development
+        POV_PORT=9000 povgen-api            # env-driven
+    """
+    import argparse
+    import os
+
     import uvicorn
+
+    parser = argparse.ArgumentParser(
+        prog="povgen-api",
+        description="Run the PoV Generator FastAPI server.",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("POV_HOST", "127.0.0.1"),
+        help="Bind address (default: 127.0.0.1, env: POV_HOST).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("POV_PORT", "8788")),
+        help="Bind port (default: 8788, env: POV_PORT).",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        default=os.environ.get("POV_RELOAD", "").lower() in {"1", "true", "yes"},
+        help="Enable code reload on file changes (development; env: POV_RELOAD).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("POV_WORKERS", "1")),
+        help="Number of worker processes (production; ignored with --reload).",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=os.environ.get("POV_LOG_LEVEL", "info"),
+        choices=["critical", "error", "warning", "info", "debug", "trace"],
+        help="Uvicorn log level (default: info, env: POV_LOG_LEVEL).",
+    )
+    args = parser.parse_args(argv)
+
+    # Both --reload and --workers >1 require an import string + factory=True
+    # so uvicorn can re-import the app per worker / per file change.
+    if args.reload or args.workers > 1:
+        uvicorn.run(
+            "pov_generator.interfaces.api:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            workers=args.workers if args.workers > 1 and not args.reload else None,
+            log_level=args.log_level,
+        )
+        return
 
     repo_root = Path(__file__).resolve().parents[3]
     uvicorn.run(
         create_app(repo_root=repo_root, runtime_root=repo_root / "runtime"),
-        host="127.0.0.1",
-        port=8788,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
     )
+
+
+if __name__ == "__main__":
+    main()

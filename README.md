@@ -1,39 +1,70 @@
 # PoV Generator
 
 Фреймворк управляемой подготовки проектных артефактов — в первую очередь
-коммерческих ТЗ для PoV/PoC. На входе — бизнес-запрос. На выходе — структурированный
-документ, прошедший методологически явное рассуждение, валидацию и точки
-ручного согласования.
+коммерческих ТЗ для PoV/PoC. На входе — бизнес-запрос. На выходе —
+структурированный документ, прошедший методологически явное рассуждение,
+валидацию и точки ручного согласования.
 
 Подробности устройства — в [`ARCHITECTURE.md`](ARCHITECTURE.md). Контракты — в
 [`specs/`](specs/). Реестр шаблонов — в [`templates/`](templates/).
 
 ---
 
-## Быстрый старт
+## Требования
 
-Требования: **Python 3.11**, **Node 20**, Windows PowerShell.
+* **Python 3.11+**
+* **Node 20+** (для сборки UI)
 
-```powershell
-# 1. Зависимости (lockfile фиксирует версии)
-py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -e .[dev] --constraint requirements.lock
+Работает на Linux, macOS и Windows.
 
-# 2. Собрать UI
-cd ui\workspace; npm ci; npm run build; cd ..\..
+---
 
-# 3. Запустить
-.\.venv\Scripts\povgen-api
+## Установка
+
+```bash
+# 1. Виртуальное окружение
+python -m venv .venv
+
+# 2. Активировать
+#   Linux / macOS:
+source .venv/bin/activate
+#   Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+#   Windows cmd:
+.venv\Scripts\activate.bat
+
+# 3. Зависимости (lockfile фиксирует версии)
+python -m pip install -e .[dev] --constraint requirements.lock
+
+# 4. Собрать UI
+npm --prefix ui/workspace ci
+npm --prefix ui/workspace run build
+
+# 5. Настройка окружения (опционально)
+cp .env.example .env     # отредактируйте под себя
 ```
 
-Или одной командой через helper (он сам соберёт UI, если `dist/` отсутствует):
+`.env` в gitignore. Шаблон с описанием всех переменных — [`.env.example`](.env.example).
 
-```powershell
-.\run_workspace.ps1            # запустить
-.\run_workspace.ps1 -BuildUi   # пересобрать UI и запустить
+---
+
+## Запуск
+
+После активации venv:
+
+```bash
+povgen-api                       # production-режим, http://127.0.0.1:8788/
+povgen-api --reload              # dev-режим с hot-reload
+povgen-api --port 9000 --host 0.0.0.0
 ```
 
-После запуска:
+Эквивалентно через модуль (если console scripts недоступны):
+
+```bash
+python -m pov_generator.interfaces.api --reload
+```
+
+После запуска доступны:
 
 | Адрес | Что |
 |---|---|
@@ -41,80 +72,53 @@ cd ui\workspace; npm ci; npm run build; cd ..\..
 | <http://127.0.0.1:8788/docs> | Swagger / API |
 | <http://127.0.0.1:8788/api/health> | Healthcheck |
 
+### Frontend в режиме разработки
+
+Два терминала: backend (`povgen-api`) и vite dev-server
+(`npm --prefix ui/workspace run dev`). Открывать <http://127.0.0.1:5173/> —
+vite сам проксирует `/api` и `/ws` на 8788.
+
 ---
 
-## Frontend в режиме разработки
+## CLI
 
-Backend в одном терминале, vite dev-server в другом:
-
-```powershell
-# терминал 1
-.\.venv\Scripts\povgen-api
-
-# терминал 2
-cd ui\workspace; npm run dev
+```bash
+povgen registry validate                   # проверить реестр
+povgen workflow run-until-blocked \
+       --workspace runtime/demo            # прогнать workflow
+povgen --help                              # все команды
 ```
 
-Открывать <http://127.0.0.1:5173/> — vite сам проксирует `/api` и `/ws` на 8788.
+Эквивалент: `python -m pov_generator <subcommand>`.
 
 ---
 
 ## Выбор LLM-провайдера
 
-Провайдер задаётся через `POV_EXECUTION_PROVIDER`. По умолчанию — `stub`
-(детерминированные фикстуры, без сети).
+Управляется переменной `POV_EXECUTION_PROVIDER` в `.env` или окружении.
+По умолчанию — `stub` (детерминированные фикстуры, без сети).
 
-### OpenRouter
+| Провайдер | Что нужно |
+|---|---|
+| `stub` | Ничего; локальные фикстуры в `templates/stub_fixtures/`. |
+| `openrouter` | `POV_OPENROUTER_API_KEY` + опц. `POV_OPENROUTER_MODEL`. |
+| `claude_sdk` | `POV_ANTHROPIC_API_KEY` (Anthropic API). |
+| `claude_subscription` | Локально установленный и залогиненный `claude` CLI. |
 
-```powershell
-$env:POV_EXECUTION_PROVIDER = "openrouter"
-$env:POV_OPENROUTER_API_KEY = "<ключ>"
-$env:POV_OPENROUTER_MODEL   = "deepseek/deepseek-chat"   # опционально
-```
-
-### Claude через Anthropic API
-
-```powershell
-$env:POV_EXECUTION_PROVIDER = "claude_sdk"
-$env:POV_ANTHROPIC_API_KEY  = "<ключ>"
-```
-
-Маппинг сложности задачи на модель управляется env-переменными
-`POV_CLAUDE_MODEL_TRIVIAL`, `POV_CLAUDE_MODEL_STANDARD`,
-`POV_CLAUDE_MODEL_COMPLEX` (или общая `POV_CLAUDE_MODEL`).
-
-### Claude через подписку (без API-ключа)
-
-Требует установленного и залогиненного CLI `claude`:
-
-```powershell
-npm install -g @anthropic-ai/claude-code
-claude login
-
-$env:POV_EXECUTION_PROVIDER = "claude_subscription"
-```
+Все доступные переменные описаны в [`.env.example`](.env.example).
 
 ---
 
-## Команды CLI
+## Разработка
 
-```powershell
-.\.venv\Scripts\povgen registry validate           # проверить реестр
-.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo
+```bash
+python -m pytest -q                # тесты
+python -m ruff check src tests     # линт
+python -m pov_generator registry validate   # реестр
 ```
 
-`povgen --help` — список всех команд.
-
----
-
-## Тесты
-
-```powershell
-.\.venv\Scripts\python -m pytest -q
-ruff check src tests
-```
-
-CI (`.github/workflows/ci.yml`) гонит то же самое + сборку UI на каждом push'е.
+CI (`.github/workflows/ci.yml`) гонит то же самое на матрице
+**Linux × Windows × macOS** × **Python 3.11 + 3.12** + сборку UI.
 
 ---
 
@@ -122,7 +126,7 @@ CI (`.github/workflows/ci.yml`) гонит то же самое + сборку U
 
 ```
 src/pov_generator/   ← бэкенд (domain / application / infrastructure / interfaces)
-ui/workspace/        ← React + Vite SPA (L1→L4 пирамида)
+ui/workspace/        ← React + Vite SPA (пирамида L1→L4)
 templates/           ← декларативный реестр (objectives / tasks / artifacts /
                        domains / methodologies / gates / vocabularies)
 specs/               ← нормативные контракты (00 → 12)
@@ -136,5 +140,4 @@ runtime/             ← локальные workspace'ы (gitignored)
 
 * [`ARCHITECTURE.md`](ARCHITECTURE.md) — карта системы и cookbook для расширения.
 * [`templates/README.md`](templates/README.md) — навигация по реестру.
-* [`specs/`](specs/) — нормативные спецификации. Порядок чтения: `00 → 01 → 02
-  → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12`.
+* [`specs/`](specs/) — нормативные спецификации (порядок чтения: `00 → 12`).
