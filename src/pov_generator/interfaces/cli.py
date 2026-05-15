@@ -28,13 +28,16 @@ def main(argv: list[str] | None = None) -> None:
     load_repo_env(repo_root)
     registry_service = RegistryService(FilesystemRegistryLoader(repo_root / "templates"))
     runtime = SqliteRuntime()
+    # Один реестр LLM-провайдеров на процесс — все сервисы DI'ятся одной точкой.
+    from ..infrastructure.llm import LLMProviderRegistry
+    llm_registry = LLMProviderRegistry()
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service)
+    execution_service = ExecutionService(runtime, context_service, llm_registry=llm_registry)
     validation_service = ValidationService(runtime)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
-    domain_pack_selection_service = DomainPackSelectionService()
+    domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
 
     try:
         _dispatch(

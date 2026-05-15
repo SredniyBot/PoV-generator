@@ -1,25 +1,28 @@
+"""Авто-выбор доменных пакетов под бизнес-запрос.
+
+Два режима:
+
+* ``stub`` — детерминированный matcher по ``entry_signals`` пака. Используется
+  в тестах и при ``POV_DOMAIN_PACK_SELECTION_PROVIDER=stub``. Не делает
+  LLM-вызовов, поэтому идёт собственным путём.
+
+* LLM (openrouter / claude_sdk / claude_subscription) — реальный выбор через
+  языковую модель. Конкретный провайдер резолвится через
+  :class:`LLMProviderRegistry`, switch по имени провайдера живёт только там.
+"""
+
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 
 from ..common.errors import ConflictError
 from ..domain.registry import DomainPackSpec, ObjectRef, RegistrySnapshot
-from ..infrastructure.claude_sdk_client import (
-    ClaudeSdkClient,
-    model_for_complexity as claude_sdk_model_for_complexity,
-)
-from ..infrastructure.claude_subscription_client import (
-    ClaudeSubscriptionClient,
-    model_for_complexity as claude_subscription_model_for_complexity,
-)
-from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..infrastructure.llm import LLMProviderRegistry
 
-# Селектор domain pack'ов и task-runner вызывают LLM из «standard»-зоны
-# сложности: задача не тривиальная (нужно понять запрос), но и не на грани
-# сложности артефакта-синтеза. Маппинг complexity → модель для Claude
-# живёт в инфраструктурных клиентах; здесь просто фиксируем уровень.
+# Селектор domain pack'ов — это «standard»-сложность: понять запрос,
+# выбрать минимум-достаточный набор пакетов. Для Claude-провайдеров этот
+# уровень маппится на сонетовскую модель (см. claude_sdk_client.model_for_complexity).
 _LLM_COMPLEXITY = "standard"
 
 
@@ -33,6 +36,9 @@ class DomainPackSelectionResult:
 
 
 class DomainPackSelectionService:
+    def __init__(self, *, llm_registry: LLMProviderRegistry | None = None) -> None:
+        self._llm = llm_registry or LLMProviderRegistry()
+
     def select_for_request(
         self,
         snapshot: RegistrySnapshot,
@@ -44,57 +50,38 @@ class DomainPackSelectionService:
     ) -> DomainPackSelectionResult:
         ObjectRef.parse(objective_ref)
         candidate_packs = self._candidate_packs(snapshot)
-        active_provider = provider or os.environ.get("POV_DOMAIN_PACK_SELECTION_PROVIDER")
-        if not active_provider:
-            # Авто-выбор провайдера, если в env не задано явно. Подхватываем
-            # тот же провайдер, что и для основного workflow
-            # (POV_EXECUTION_PROVIDER), иначе fallback по наличию ключа.
-            active_provider = (
-                os.environ.get("POV_EXECUTION_PROVIDER")
-                or ("openrouter" if os.environ.get("POV_OPENROUTER_API_KEY") else "stub")
-            )
-        active_model = (
-            model
-            or os.environ.get("POV_DOMAIN_PACK_SELECTION_MODEL")
-            or self._default_model_for_provider(active_provider)
+
+        # Stub — не LLM-вызов, идёт особняком (regex matcher).
+        # Резолвим имя провайдера, чтобы понять: stub ли это.
+        # Если в env стоит реальный LLM-провайдер — используем его через registry.
+        resolved_provider_name = (
+            provider
+            or _env("POV_DOMAIN_PACK_SELECTION_PROVIDER")
+            or _env("POV_EXECUTION_PROVIDER")
+            or ("openrouter" if _env("POV_OPENROUTER_API_KEY") else "stub")
         )
 
         if not candidate_packs:
             return DomainPackSelectionResult(
-                provider=active_provider,
-                model=active_model,
+                provider=resolved_provider_name,
+                model=model or "",
                 selected_pack_refs=(),
                 rationale="В реестре нет активных доменных пакетов.",
                 confidence=1.0,
             )
 
-        if active_provider == "stub":
-            return self._select_stub(candidate_packs, request_text, model=active_model)
-        if active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
-            return self._select_llm(
-                candidate_packs,
-                request_text,
-                provider=active_provider,
-                model=active_model,
-            )
-        raise ConflictError(
-            f"Неподдерживаемый provider выбора доменных пакетов: {active_provider}. "
-            "Поддерживаются: stub, openrouter, claude_sdk, claude_subscription."
+        if resolved_provider_name == "stub":
+            return self._select_stub(candidate_packs, request_text, model=model or "stub")
+
+        # LLM-провайдер. Всё, что касается env / model / complexity → registry.
+        llm = self._llm.from_env(
+            override_provider=provider,
+            override_model=model,
+            env_provider_var="POV_DOMAIN_PACK_SELECTION_PROVIDER",
+            env_model_var="POV_DOMAIN_PACK_SELECTION_MODEL",
+            complexity=_LLM_COMPLEXITY,
         )
-
-    def _default_model_for_provider(self, provider: str) -> str:
-        """Дефолтная модель, если ни флаг команды, ни env не заданы.
-
-        Для claude-провайдеров возвращаем рекомендованную для «standard»
-        задач модель (CLI subscription может вернуть None — тогда берём
-        пустую строку: модель определит сам CLI/Anthropic API)."""
-        if provider == "openrouter":
-            return os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
-        if provider == "claude_sdk":
-            return claude_sdk_model_for_complexity(_LLM_COMPLEXITY)
-        if provider == "claude_subscription":
-            return claude_subscription_model_for_complexity(_LLM_COMPLEXITY) or ""
-        return ""
+        return self._select_llm(candidate_packs, request_text, llm=llm)
 
     def _candidate_packs(
         self,
@@ -133,7 +120,10 @@ class DomainPackSelectionService:
             rationale = "Автоматический модуль подбора не нашёл явных сигналов для подключения доменных пакетов."
             confidence = 0.55
         else:
-            rationale = "Автоматический модуль подбора выбрал доменные пакеты по сигналам исходного запроса: " + "; ".join(rationale_parts)
+            rationale = (
+                "Автоматический модуль подбора выбрал доменные пакеты по сигналам "
+                "исходного запроса: " + "; ".join(rationale_parts)
+            )
             confidence = 0.78
         return DomainPackSelectionResult(
             provider="stub",
@@ -167,8 +157,7 @@ class DomainPackSelectionService:
         candidate_packs: tuple[DomainPackSpec, ...],
         request_text: str,
         *,
-        provider: str,
-        model: str,
+        llm,  # LLMProvider — Protocol, не указываем явно, чтобы избежать циклов
     ) -> DomainPackSelectionResult:
         schema: dict[str, object] = {
             "type": "object",
@@ -180,22 +169,21 @@ class DomainPackSelectionService:
                 "confidence": {"type": "number"},
             },
         }
-        candidate_lines = []
         valid_refs = {pack.ref.as_string() for pack in candidate_packs}
-        for pack in candidate_packs:
-            candidate_lines.append(
-                "\n".join(
-                    [
-                        f"- ref: {pack.ref.as_string()}",
-                f"  name: {pack.title}",
-                        f"  domain: {pack.domain}",
-                        f"  description: {pack.description}",
-                        f"  entry_signals: {', '.join(pack.entry_signals) if pack.entry_signals else 'нет'}",
-                    ]
-                )
+        candidate_lines = [
+            "\n".join(
+                [
+                    f"- ref: {pack.ref.as_string()}",
+                    f"  name: {pack.title}",
+                    f"  domain: {pack.domain}",
+                    f"  description: {pack.description}",
+                    f"  entry_signals: {', '.join(pack.entry_signals) if pack.entry_signals else 'нет'}",
+                ]
             )
+            for pack in candidate_packs
+        ]
         system_prompt = (
-                "Ты определяешь, какие доменные пакеты нужно включить для обработки бизнес-запроса. "
+            "Ты определяешь, какие доменные пакеты нужно включить для обработки бизнес-запроса. "
             "Выбирай минимальный, но достаточный набор пакетов. "
             "Не подключай пакет без реальной необходимости. "
             "Ориентируйся на сам запрос, а не на желание включить всё подряд. "
@@ -208,12 +196,11 @@ class DomainPackSelectionService:
                 request_text.strip(),
                 "Доступные доменные пакеты:",
                 *candidate_lines,
-                "Выбери только те пакеты, которые действительно нужны, чтобы правильно разобрать такой запрос и собрать качественное ТЗ.",
+                "Выбери только те пакеты, которые действительно нужны, "
+                "чтобы правильно разобрать такой запрос и собрать качественное ТЗ.",
             ]
         )
-        payload = self._chat_json(
-            provider=provider,
-            model=model,
+        payload = llm.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
@@ -229,48 +216,16 @@ class DomainPackSelectionService:
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
             raise ConflictError("LLM-модуль подбора не вернул числовую уверенность.")
         return DomainPackSelectionResult(
-            provider=provider,
-            model=model,
+            provider=llm.name,
+            model=llm.model or "",
             selected_pack_refs=selected,
             rationale=rationale.strip(),
             confidence=float(confidence),
         )
 
-    def _chat_json(
-        self,
-        *,
-        provider: str,
-        model: str,
-        system_prompt: str,
-        user_prompt: str,
-        schema: dict,
-    ) -> dict:
-        """Единая точка вызова LLM. Тот же контракт, что у
-        `ExecutionService._chat_json_via_provider`: возвращает dict,
-        соответствующий схеме."""
-        if provider == "openrouter":
-            return self._openrouter_client(model).chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        if provider == "claude_sdk":
-            return ClaudeSdkClient.from_env(model=model).chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        if provider == "claude_subscription":
-            return ClaudeSubscriptionClient.from_env(model=model or None).chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        raise ConflictError(f"Неподдерживаемый provider: {provider}")
 
-    def _openrouter_client(self, model: str) -> OpenRouterClient:
-        api_key = os.environ.get("POV_OPENROUTER_API_KEY")
-        if not api_key:
-            raise ConflictError("Не задан POV_OPENROUTER_API_KEY.")
-        base_url = os.environ.get("POV_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        return OpenRouterClient(
-            OpenRouterConfig(
-                api_key=api_key,
-                model=model,
-                base_url=base_url,
-            )
-        )
+def _env(name: str) -> str | None:
+    """Безопасное чтение env: пустая строка трактуется как «не задано»."""
+    import os
+    value = os.environ.get(name)
+    return value if value and value.strip() else None

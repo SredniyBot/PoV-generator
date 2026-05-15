@@ -24,7 +24,6 @@ from ..domain.project_knowledge import (
 )
 from ..domain.project_state import ProjectState
 
-
 # --- помощники привязки уточнений к Layer A ---------------------------------
 
 
@@ -79,15 +78,11 @@ def _build_clarification_position(
         taken_at=now,
         tags=("clarification",),
     )
-from ..infrastructure.claude_sdk_client import ClaudeSdkClient
-from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
-from ..infrastructure.claude_subscription_client import ClaudeSubscriptionClient
-from ..infrastructure.claude_subscription_client import (
-    model_for_complexity as claude_subscription_model_for_complexity,
-)
-from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import (
     SqliteRuntime,
+)
+from ..infrastructure.sqlite_runtime import (
     _normalize_clarification_question as _normalize_clarification_question_local,
 )
 
@@ -140,11 +135,13 @@ class ClarificationService:
         provider: str | None = None,
         model: str | None = None,
         draft_provider: ClarificationDraftProvider | None = None,
+        llm_registry: LLMProviderRegistry | None = None,
     ) -> None:
         self._runtime = runtime
         self._provider = provider
         self._model = model
         self._draft_provider = draft_provider
+        self._llm = llm_registry or LLMProviderRegistry()
 
     def register_candidates(
         self,
@@ -807,68 +804,33 @@ class ClarificationService:
         user_prompt = self._draft_user_prompt(candidate=candidate, context=context, fallback=fallback)
         schema = self._draft_schema()
 
-        if provider == "openrouter":
-            payload = self._openrouter_client().chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        elif provider == "claude_sdk":
-            payload = ClaudeSdkClient.from_env(
-                model=self._active_model_for_provider(provider)
-            ).chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-        elif provider == "claude_subscription":
-            payload = ClaudeSubscriptionClient.from_env(
-                model=self._active_model_for_provider(provider)
-            ).chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-        else:
-            raise ConflictError(f"Неподдерживаемый provider подготовки уточнений: {provider}")
-
+        # Один путь для всех LLM-провайдеров через registry.
+        llm = self._llm.get(
+            provider=provider,
+            model=self._model or os.environ.get("POV_CLARIFICATION_MODEL"),
+            complexity="standard",  # CE11 — задача стандартной сложности
+        )
+        payload = llm.chat_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+        )
         return self._normalize_draft_payload(payload, fallback=fallback)
 
     def _active_provider(self) -> str:
+        """Какой провайдер использовать для CE11 LLM-подготовки карточки.
+
+        Приоритеты:
+        1. Явный конструктор / `POV_CLARIFICATION_PROVIDER`.
+        2. `POV_EXECUTION_PROVIDER` — CE11 идёт той же моделью, что и
+           основной workflow (минимизирует расхождения в стиле ответа).
+        3. ``stub`` — если ничего не задано, CE11 не делает LLM-вызовов
+           (fallback берётся из эмиттера candidate).
+        """
         configured = self._provider or os.environ.get("POV_CLARIFICATION_PROVIDER")
         if configured:
             return configured
-        # По умолчанию идём за провайдером исполнения задач (Q4: claude по
-        # подписке — основной). Это держит CE11 и leaf-задачи на одной
-        # модельной семье и минимизирует расхождения в стиле ответа.
-        execution_provider = os.environ.get("POV_EXECUTION_PROVIDER", "stub")
-        if execution_provider in {"claude_sdk", "claude_subscription"}:
-            return execution_provider
-        if execution_provider == "openrouter" and os.environ.get("POV_OPENROUTER_API_KEY"):
-            return "openrouter"
-        # Историческая совместимость: если ключ openrouter есть, но execution
-        # не настроен явно, всё равно используем openrouter (старое поведение).
-        if os.environ.get("POV_OPENROUTER_API_KEY"):
-            return "openrouter"
-        return "stub"
-
-    def _active_model_for_provider(self, provider: str) -> str | None:
-        # Явный override (конструктор / env) выигрывает у per-provider дефолтов.
-        explicit = self._model or os.environ.get("POV_CLARIFICATION_MODEL")
-        if explicit:
-            return explicit
-        # Подготовка уточнения — задача "standard" сложности: ни trivial, ни complex.
-        if provider == "claude_sdk":
-            return claude_sdk_model_for_complexity("standard")
-        if provider == "claude_subscription":
-            return claude_subscription_model_for_complexity("standard")
-        return os.environ.get("POV_OPENROUTER_MODEL") or "openai/gpt-4.1-mini"
-
-    def _active_model(self) -> str:
-        # Сохранена для обратной совместимости openrouter-ветки.
-        return self._active_model_for_provider("openrouter") or "openai/gpt-4.1-mini"
-
-    def _openrouter_client(self) -> OpenRouterClient:
-        api_key = os.environ.get("POV_OPENROUTER_API_KEY")
-        if not api_key:
-            raise ConflictError("Не задан POV_OPENROUTER_API_KEY для подготовки уточнения.")
-        return OpenRouterClient(
-            OpenRouterConfig(
-                api_key=api_key,
-                model=self._active_model(),
-                base_url=os.environ.get("POV_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            )
-        )
+        return os.environ.get("POV_EXECUTION_PROVIDER", "stub")
 
     def _clarification_context(
         self,

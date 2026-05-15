@@ -25,6 +25,7 @@ from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
 from ..common.serialization import to_primitive, utc_now_iso
 from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -43,11 +44,16 @@ def create_app(
 
     registry_service = RegistryService(FilesystemRegistryLoader(resolved_repo_root / "templates"))
     runtime = SqliteRuntime()
-    clarification_service = ClarificationService(runtime)
+    # Единая точка резолва LLM-провайдера (см. infrastructure/llm).
+    # Все сервисы, которым нужен LLM-вызов, получают её через DI и
+    # обращаются через registry.get(...) / registry.from_env(...) —
+    # switch по имени провайдера живёт только внутри registry.
+    llm_registry = LLMProviderRegistry()
+    clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service)
+    execution_service = ExecutionService(runtime, context_service, llm_registry=llm_registry)
     validation_service = ValidationService(runtime, clarification_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     workflow_runner_service = WorkflowRunnerService(
@@ -55,7 +61,7 @@ def create_app(
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
-    domain_pack_selection_service = DomainPackSelectionService()
+    domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
     command_service = WorkspaceCommandService(
         catalog,
         registry_service,

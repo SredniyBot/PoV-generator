@@ -37,10 +37,7 @@ from ..common.errors import ConflictError
 from ..common.serialization import json_dumps
 from ..domain.project_state import ProjectState
 from ..domain.registry import TemplateSpec
-from ..infrastructure.claude_sdk_client import ClaudeSdkClient
-from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
-from ..infrastructure.claude_subscription_client import ClaudeSubscriptionClient
-from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..infrastructure.llm import LLMProviderRegistry
 
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 
@@ -184,28 +181,16 @@ def _llm_select(
         },
     }
 
-    if provider == "openrouter":
-        api_key = os.environ.get("POV_OPENROUTER_API_KEY")
-        if not api_key:
-            raise ConflictError("POV_OPENROUTER_API_KEY не задан для complexity-selector.")
-        client = OpenRouterClient(
-            OpenRouterConfig(
-                api_key=api_key,
-                model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL") or "openai/gpt-4.1-mini",
-                base_url=os.environ.get("POV_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            )
-        )
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-    elif provider == "claude_sdk":
-        client = ClaudeSdkClient.from_env(
-            model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL") or claude_sdk_model_for_complexity("trivial"),
-        )
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-    elif provider == "claude_subscription":
-        client = ClaudeSubscriptionClient.from_env(model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL"))
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-    else:
-        raise ConflictError(f"Неподдерживаемый provider для complexity-selector: {provider}")
+    # Один путь для всех LLM-провайдеров. Complexity-selector — самая
+    # дешёвая задача (trivial по своей сути): для Claude используем
+    # haiku-маппинг, для openrouter — отдельную POV_COMPLEXITY_SELECTOR_MODEL
+    # либо дефолт. Switch по провайдеру делает registry.
+    llm = LLMProviderRegistry().get(
+        provider=provider,
+        model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL"),
+        complexity="trivial",
+    )
+    payload = llm.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
 
     raw_complexity = str(payload.get("complexity") or declared)
     chosen = _coerce_complexity(raw_complexity) or declared
