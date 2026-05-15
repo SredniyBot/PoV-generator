@@ -195,6 +195,74 @@ export const api = {
       `/api/projects/${projectId}/failure-pins${qs}`,
     );
   },
+
+  // --- Settings: LLM providers / models / assignments --------------------
+  listPurposes: () => request<{ id: string; label: string }[]>("/api/settings/purposes"),
+  listProviders: () => request<import("./types").ProviderConnectionView[]>("/api/settings/providers"),
+  createProvider: (payload: {
+    provider_type: "openrouter" | "anthropic" | "claude_cli";
+    display_name: string;
+    api_key?: string;
+    extras?: Record<string, string>;
+  }) =>
+    request<import("./types").ProviderConnectionView>("/api/settings/providers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateProvider: (
+    connectionId: string,
+    payload: { display_name?: string; api_key?: string; extras?: Record<string, string> },
+  ) =>
+    request<import("./types").ProviderConnectionView>(
+      `/api/settings/providers/${connectionId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+    ),
+  deleteProvider: (connectionId: string) =>
+    request<{ status: string }>(`/api/settings/providers/${connectionId}`, {
+      method: "DELETE",
+    }),
+  testProvider: (connectionId: string, model?: string) =>
+    request<import("./types").TestResultView>(`/api/settings/providers/${connectionId}/test`, {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
+
+  listModels: () => request<import("./types").ModelCatalogEntry[]>("/api/settings/models"),
+  addCustomModel: (payload: { connection_id: string; model_name: string; priority?: number }) =>
+    request<import("./types").ModelRoutingView>("/api/settings/models", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  testModel: (modelName: string) =>
+    request<import("./types").TestResultView>(
+      `/api/settings/models/${encodeURIComponent(modelName)}/test`,
+      { method: "POST", body: "{}" },
+    ),
+  updateRouting: (routingId: string, payload: { priority?: number; enabled?: boolean }) =>
+    request<import("./types").ModelRoutingView>(`/api/settings/routings/${routingId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  deleteRouting: (routingId: string) =>
+    request<{ status: string }>(`/api/settings/routings/${routingId}`, {
+      method: "DELETE",
+    }),
+
+  listAssignments: () =>
+    request<{ purpose: string; model_name: string }[]>("/api/settings/assignments"),
+  setAssignment: (purpose: string, modelName: string) =>
+    request<{ purpose: string; model_name: string }>("/api/settings/assignments", {
+      method: "PUT",
+      body: JSON.stringify({ purpose, model_name: modelName }),
+    }),
+  resetAssignmentsToRecommended: () =>
+    request<{ purpose: string; model_name: string }[]>(
+      "/api/settings/assignments/reset-to-recommended",
+      { method: "POST" },
+    ),
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

@@ -804,12 +804,23 @@ class ClarificationService:
         user_prompt = self._draft_user_prompt(candidate=candidate, context=context, fallback=fallback)
         schema = self._draft_schema()
 
-        # Один путь для всех LLM-провайдеров через registry.
-        llm = self._llm.get(
-            provider=provider,
-            model=self._model or os.environ.get("POV_CLARIFICATION_MODEL"),
-            complexity="standard",  # CE11 — задача стандартной сложности
-        )
+        # Резолв провайдера:
+        # * если задан явный provider override (через конструктор / env) —
+        #   legacy путь через registry.get с env-кредитами;
+        # * иначе — resolve_for_purpose через settings-store.
+        explicit_model = self._model or os.environ.get("POV_CLARIFICATION_MODEL")
+        if self._provider or os.environ.get("POV_CLARIFICATION_PROVIDER"):
+            llm = self._llm.get(
+                provider=provider,
+                model=explicit_model,
+                complexity="standard",
+            )
+        else:
+            llm = self._llm.resolve_for_purpose(
+                "clarification_ce11",
+                complexity="standard",
+                override_model=explicit_model,
+            )
         payload = llm.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,

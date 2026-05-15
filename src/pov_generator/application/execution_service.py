@@ -66,21 +66,29 @@ class ExecutionService:
         if len(artifact_roles) != 1:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
-        active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER", "stub")
+        active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER")
         # W3.2: pre-selector сложности задачи. Default — off, в этом случае
         # возвращает declared `template.complexity`. С `POV_COMPLEXITY_SELECTOR=on`
         # или `=stub` оценка может перезаписать сложность по фактическому
         # контексту проекта (число активных domain packs, бизнес-запрос и т.д.).
-        complexity_selection = select_complexity(template=template, state=state)
+        complexity_selection = select_complexity(template=template, state=state, llm_registry=self._llm)
         complexity_value = complexity_selection.complexity
 
-        # Резолв LLM-провайдера. Stub и structural-merge идут особняком
-        # (это не LLM-вызовы), для них экземпляр не собираем — модель в
-        # этом случае нужна только как метка в metadata артефакта.
+        # Резолв LLM-провайдера. Три пути:
+        # 1. ``stub`` или structural-merge — не LLM-вызов, провайдер не нужен.
+        # 2. Явное имя провайдера (claude_sdk / openrouter / ...) — legacy
+        #    env-based путь, оставлен для тестов и обратной совместимости CLI.
+        # 3. Иначе (provider=None) — резолв через settings-store по purpose.
+        #    Это **основной** путь: модель и connection определяются
+        #    конфигурацией системы (Settings → Default Models).
         llm_provider: LLMProvider | None = None
-        if active_provider not in ("stub",) and (
-            template.merge is None or template.merge.strategy != "structural"
-        ):
+        non_llm_path = active_provider == "stub" or (
+            template.merge is not None and template.merge.strategy == "structural"
+        )
+        if non_llm_path:
+            active_model = model or _fallback_model_for_meta(active_provider or "stub", complexity_value)
+        elif active_provider in {"openrouter", "claude_sdk", "claude_subscription"}:
+            # Legacy: явное имя провайдера, кредиты из env.
             llm_provider = self._llm.get(
                 provider=active_provider,
                 model=model,
@@ -88,7 +96,15 @@ class ExecutionService:
             )
             active_model = llm_provider.model or ""
         else:
-            active_model = model or _fallback_model_for_meta(active_provider, complexity_value)
+            # Новый путь: модель из settings-store, connection выбирается
+            # автоматически по приоритету routings.
+            llm_provider = self._llm.resolve_for_purpose(
+                "execution",
+                complexity=complexity_value,
+                override_model=model,
+            )
+            active_provider = llm_provider.name
+            active_model = llm_provider.model or ""
         active_methodology: MethodologyPackSpec | None = None
         for ref in state.process.active_methodology_pack_records.keys():
             try:

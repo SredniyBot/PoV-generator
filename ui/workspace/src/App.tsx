@@ -33,6 +33,7 @@ import { marked } from "marked";
 
 import { api } from "./api";
 import { DecisionLogPage } from "./DecisionLogPage";
+import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { SettingsPage } from "./SettingsPage";
@@ -291,6 +292,7 @@ function AppFrame() {
               )
             }
           />
+          <Route path="/settings" element={<LlmSettingsPage />} />
           <Route path="/projects/:projectId" element={<Navigate to="overview" replace />} />
           <Route
             path="/projects/:projectId/*"

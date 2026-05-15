@@ -73,14 +73,25 @@ class DomainPackSelectionService:
         if resolved_provider_name == "stub":
             return self._select_stub(candidate_packs, request_text, model=model or "stub")
 
-        # LLM-провайдер. Всё, что касается env / model / complexity → registry.
-        llm = self._llm.from_env(
-            override_provider=provider,
-            override_model=model,
-            env_provider_var="POV_DOMAIN_PACK_SELECTION_PROVIDER",
-            env_model_var="POV_DOMAIN_PACK_SELECTION_MODEL",
-            complexity=_LLM_COMPLEXITY,
-        )
+        # LLM-провайдер. Три пути:
+        # 1. Явный provider override → registry.get (legacy env-based).
+        # 2. POV_DOMAIN_PACK_SELECTION_PROVIDER в env → registry.get (legacy).
+        # 3. Иначе → resolve_for_purpose("domain_pack_selector") — настройки
+        #    приходят из Settings → Default Models через persistence-слой.
+        if provider is not None or _env("POV_DOMAIN_PACK_SELECTION_PROVIDER"):
+            llm = self._llm.from_env(
+                override_provider=provider,
+                override_model=model,
+                env_provider_var="POV_DOMAIN_PACK_SELECTION_PROVIDER",
+                env_model_var="POV_DOMAIN_PACK_SELECTION_MODEL",
+                complexity=_LLM_COMPLEXITY,
+            )
+        else:
+            llm = self._llm.resolve_for_purpose(
+                "domain_pack_selector",
+                complexity=_LLM_COMPLEXITY,
+                override_model=model,
+            )
         return self._select_llm(candidate_packs, request_text, llm=llm)
 
     def _candidate_packs(
