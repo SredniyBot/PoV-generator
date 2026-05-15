@@ -1,0 +1,73 @@
+kind: task_template
+id: common.implementation_dependency_plan
+version: 1.0.0
+title: Сформировать план реализации с фазами и зависимостями
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+      - common.solution_option_inventory@1.0.0
+produces:
+  artifact: common.implementation_dependency_plan@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.scope_boundary_matrix
+    - artifact.common.solution_option_inventory
+  max_tokens: 20000
+planning:
+  priority: 580
+effects:
+  readiness:
+    set:
+      - dimension: implementation_plan_drafted
+        status: ready
+summary: |
+  Сформируй план реализации PoV: фазы, milestones, ключевые зависимости,
+  ориентир по срокам. Это раздел ТЗ, по которому команда планирует ресурсы,
+  а заказчик — внутренние согласования.
+
+  Структура:
+
+  ▸ ФАЗЫ (phases) — крупные блоки работы. Для каждой:
+    «Название. Цель фазы. Длительность (недели/спринты). Ключевые результаты».
+    Типовая декомпозиция PoV: подготовка (1 нед.) → анализ и моделирование
+    (2-3 нед.) → демонстрация и валидация (1-2 нед.) → поставка и приёмка
+    (1 нед.). Адаптируй под природу проекта.
+
+  ▸ MILESTONES (key_milestones) — конкретные контрольные точки между
+    фазами или внутри них. Каждая milestone — формальное событие:
+    «Демо MVP заказчику», «Прохождение валидационной выборки»,
+    «Подписание акта приёмки фазы 1».
+
+  ▸ ЗАВИСИМОСТИ (dependencies) — что блокирует или предшествует чему.
+    Формат: «<задача> требует <условие>». Например: «Запуск ML-обучения
+    требует получения обезличенной выгрузки из 1С ЗУП», «Демо BI-дашборда
+    требует утверждения дизайн-макета HR-командой».
+
+  ▸ КРИТИЧЕСКИЙ ПУТЬ (critical_path) — последовательность зависимостей,
+    срыв любой из которых отодвигает финал PoV.
+
+  ▸ ВХОДЫ ОТ ЗАКАЗЧИКА (customer_inputs) — что должен предоставить
+    заказчик и к какой дате. «Обезличенная выгрузка к началу недели 2»,
+    «Доступ к тестовому контуру к концу недели 1».
+
+  ▸ ТРИГГЕРЫ ОСТАНОВКИ (stop_conditions) — формальные условия, при
+    которых PoV приостанавливается досрочно. «Качество данных ниже
+    минимально пригодного по результатам EDA», «Заказчик не предоставил
+    выгрузку в течение 2 недель».
+
+  Правила:
+  • Числа явные где возможно: длительность в неделях / днях / спринтах.
+  • Каждая фаза имеет проверяемый result, не «работаем над X».
+  • Опирайся на scope_boundary_matrix и solution_option_inventory.
+    Не вставляй фазы для работы, выходящей за scope.
+
+  confidence 0.7-0.85.

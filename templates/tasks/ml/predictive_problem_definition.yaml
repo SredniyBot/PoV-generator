@@ -6,17 +6,29 @@ type: leaf
 status: active
 domain: ml
 executor: llm
+methodology: minimal
 requires:
   state: [business_request]
   artifacts:
-    required: [common.normalized_request@1.0.0]
+    # data_landscape_assessment добавлен в required: postановка предиктивной
+    # задачи должна знать, какие данные доступны, прежде чем формулировать
+    # горизонт, метрики и пороги. Раньше зависимость висела только в prompt
+    # «опирайся если есть» — это размытое требование.
+    required:
+      - common.normalized_request@1.0.0
+      - ml.data_landscape_assessment@1.0.0
 produces:
   artifact: ml.predictive_problem_definition@1.0.0
 context:
-  include: [artifact.common.normalized_request]
+  include:
+    - artifact.common.normalized_request
+    - artifact.ml.data_landscape_assessment
   max_tokens: 24000
 planning:
-  priority: 740
+  # Priority понижен с 740 до 720: должен идти ПОСЛЕ data_landscape (730).
+  # Раньше priority inversion: predictive шёл первым, но логически опирается на
+  # вывод feasibility данных.
+  priority: 720
 effects:
   readiness:
     set:

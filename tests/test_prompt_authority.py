@@ -119,13 +119,19 @@ def test_system_prompt_contains_source_hierarchy() -> None:
         current_step_title="dummy",
         context_manifest=MockCtx(),
     )
-    # Ключевые маркеры иерархии должны присутствовать
-    assert "ИЕРАРХИЯ ИСТОЧНИКОВ" in system_prompt
+    # Ключевые маркеры иерархии должны присутствовать (новый формат:
+    # XML-блоки <source_hierarchy>, <writing_principles>, и т.д.).
+    assert "source_hierarchy" in system_prompt.lower() or "ИЕРАРХИЯ ИСТОЧНИКОВ" in system_prompt
     assert "🟢" in system_prompt and "РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ" in system_prompt
     assert "🟡" in system_prompt and "ДОПУЩЕНИЯ" in system_prompt
     assert "⚫" in system_prompt
-    # Явные правила
-    assert "НЕ ПОДЛЕЖАТ пересмотру" in system_prompt or "не подлежат пересмотру" in system_prompt.lower()
+    # Явные правила: решения пользователя обязательны (формат может быть
+    # «не оспаривай» или «не подлежат пересмотру»).
+    assert (
+        "не подлежат пересмотру" in system_prompt.lower()
+        or "не оспаривай" in system_prompt.lower()
+        or "обязательные ограничения" in system_prompt.lower()
+    )
     assert "blocking_questions" in system_prompt
 
 

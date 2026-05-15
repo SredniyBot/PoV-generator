@@ -1,0 +1,69 @@
+kind: task_template
+id: common.solution_recommendation
+version: 1.0.0
+title: Выбрать рекомендованный архитектурный вариант
+type: leaf
+status: active
+domain: common
+executor: llm
+# Это задача выбора — методология применима полностью (option_generation
+# уже сделан upstream, decision-стадия здесь критична).
+methodology: full
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.solution_option_inventory@1.0.0
+      - common.business_outcome_model@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+produces:
+  artifact: common.solution_tradeoff_matrix@1.0.0
+context:
+  include:
+    - artifact.common.solution_option_inventory
+    - artifact.common.business_outcome_model
+    - artifact.common.scope_boundary_matrix
+  max_tokens: 16000
+planning:
+  priority: 700
+effects:
+  readiness:
+    set:
+      - dimension: solution_recommended
+        status: ready
+summary: |
+  Из подготовленных вариантов архитектуры выбери ОДИН рекомендованный
+  и обоснуй выбор. Это явная decision-задача (раньше выбор «терялся»
+  внутри option_inventory).
+
+  Структура:
+
+  ▸ ВАРИАНТЫ (options) — компактное переизложение upstream-вариантов с
+    их fit_for_pilot, pros, cons, risks. Не дублируй полные описания —
+    суть в одну-две строки на вариант.
+
+  ▸ РЕКОМЕНДОВАННЫЙ ВАРИАНТ (recommended_option) — название одного из
+    вариантов из option_inventory. Точное совпадение по имени.
+
+  ▸ ОБОСНОВАНИЕ (recommendation_rationale) — 2-4 абзаца прозой:
+    — почему именно этот вариант выигрывает на этом проекте;
+    — какие критерии решения были применены (опирайся на цели из
+      business_outcome_model и границы scope_boundary_matrix);
+    — какие компромиссы приняты осознанно;
+    — при каких условиях выбор бы поменялся.
+
+  ▸ ОТЛОЖЕННЫЕ РЕШЕНИЯ (deferred_decisions) — что осознанно НЕ решено
+    в рамках PoV и будет проработано позже. Например: «выбор между
+    PostgreSQL и ClickHouse откладывается до этапа production-внедрения,
+    после анализа объёмов».
+
+  Правила:
+  • Рекомендация — это позиция, не сухой отчёт. Используй активный залог
+    («рекомендуем вариант X, потому что…»).
+  • Не выбирай вариант, нарушающий жёсткие ограничения из
+    constraint_inventory. Если все варианты их нарушают — оставь
+    recommended_option пустым и зафиксируй в blocking_questions.
+  • Опирайся на бизнес-цель: вариант должен максимизировать целевой
+    эффект из business_outcome_model.
+
+  confidence 0.7-0.85.

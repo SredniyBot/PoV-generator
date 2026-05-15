@@ -1,0 +1,75 @@
+kind: task_template
+id: common.deployment_topology
+version: 1.0.0
+title: Описать топологию развёртывания
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.solution_option_inventory@1.0.0
+    optional:
+      - security.security_compliance_constraints@1.0.0
+      - integration.integration_operating_model@1.0.0
+produces:
+  artifact: common.deployment_topology@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.solution_option_inventory
+    - artifact.security.security_compliance_constraints
+    - artifact.integration.integration_operating_model
+  max_tokens: 16000
+planning:
+  priority: 500
+effects:
+  readiness:
+    set:
+      - dimension: deployment_topology_drafted
+        status: ready
+summary: |
+  Опиши топологию развёртывания PoV: какие среды, какие сети, где живут
+  компоненты. Это раздел, на который смотрит ИТ-отдел перед согласованием
+  доступов и инфраструктуры.
+
+  Структура:
+
+  ▸ ENVIRONMENTS — список сред с их назначением. Для PoV обычно
+    достаточно «dev / pilot / hand-off». Для каждой:
+    — `name` (dev / staging / pilot / production-like)
+    — `purpose` — что в ней живёт, кто её использует
+    — `scaling` (опционально) — целевая нагрузка / число пользователей,
+      если важно
+
+  ▸ NETWORK_ZONES — выделенные сетевые контуры (приватный VLAN заказчика,
+    защищённое облако, бастион-хост, публичный egress для LLM). Не
+    выдумывай зоны, которых нет в брифе или решениях.
+
+  ▸ COMPONENTS — где физически размещён каждый ключевой компонент
+    решения. Для каждого:
+    — `name` (например «ML-сервис», «BI-дашборд», «LLM-блок рекомендаций»)
+    — `placement` — в какой среде / зоне
+    — `technology` (опционально) — стек, если зафиксирован в решениях
+    — `responsibilities` — какую функцию обеспечивает
+
+  ▸ DEPLOYMENT_FLOW — короткая проза о том, как решение разворачивается
+    и обновляется. Что является артефактом поставки (Docker-образ /
+    Git-репозиторий / пакетный установщик), кто запускает, как происходит
+    откат.
+
+  Правила:
+  • Опирайся на security_compliance_constraints (если активен) для
+    ограничений контура и integration_operating_model для источников
+    данных.
+  • Не натягивай типовую трёх-средную схему dev/stage/prod, если PoV
+    предполагает только один пилотный контур.
+  • Если в брифе ничего не сказано про контур — фиксируй базовое
+    предположение «PoV в одной dev-среде заказчика» и помечай как
+    assumption.
+
+  confidence 0.7-0.85.

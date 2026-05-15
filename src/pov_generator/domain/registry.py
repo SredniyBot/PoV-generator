@@ -199,6 +199,18 @@ class TemplateSpec:
     # Этап 5: если задано, leaf-задача — merge-операция. Execution-слой
     # объединяет входные артефакты по стратегии вместо обычного исполнения.
     merge: MergeConfig | None = None
+    # Methodology mode (Track 5) — определяет, какие стадии reasoning
+    # methodology применяются к этой задаче:
+    #   full       — все стадии методологии (полный CoT с option_generation
+    #                 и decision); подходит для задач выбора варианта,
+    #                 сценарного анализа.
+    #   minimal    — только базовые стадии (goal_framing + decision);
+    #                 подходит для синтетических и описательных задач,
+    #                 где «выбор варианта» избыточен.
+    #   validation — только decision-stage; подходит для review/QA-задач.
+    #   skip       — методология не применяется (чистая экстракция, нет
+    #                 решений и нет альтернатив).
+    methodology_mode: str = "full"
     source_path: Path = Path("")
 
     @property
@@ -358,6 +370,40 @@ class MethodologyPackSpec:
     @property
     def ref(self) -> ObjectRef:
         return ObjectRef(self.identifier, self.version)
+
+    def stages_for(
+        self,
+        complexity: ComplexityLevel | None,
+        methodology_mode: str = "full",
+    ) -> tuple[MethodologyStageSpec, ...]:
+        """Возвращает активные стадии для задачи с учётом её methodology_mode.
+
+        methodology_mode определяет, какие стадии reasoning'а имеют смысл
+        для природы задачи:
+        • full       — все стадии (включая option_generation/decision)
+        • minimal    — только описательные/синтетические (goal_framing,
+                       jtbd_anchor); option_generation и decision-подобные
+                       стадии пропускаются как нерелевантные
+        • validation — только финальная decision-стадия
+        • skip       — methodology не применяется
+        """
+        if methodology_mode == "skip":
+            return ()
+        all_stages = self.stages_for_complexity(complexity)
+        if methodology_mode == "full":
+            return all_stages
+        # heuristic для распознавания стадий:
+        # • decision-like: identifier == "decision" или содержит "decision"
+        # • option-like: identifier содержит "option"
+        if methodology_mode == "validation":
+            return tuple(s for s in all_stages if "decision" in s.identifier.lower())
+        if methodology_mode == "minimal":
+            return tuple(
+                s for s in all_stages
+                if "option" not in s.identifier.lower()
+                and "decision" not in s.identifier.lower()
+            )
+        return all_stages
 
     def stages_for_complexity(self, complexity: ComplexityLevel | None) -> tuple[MethodologyStageSpec, ...]:
         skip: set[str] = set()
@@ -541,6 +587,30 @@ def parse_objective(raw: dict[str, Any], source_path: Path) -> ObjectiveSpec:
     )
 
 
+_METHODOLOGY_MODES = frozenset({"full", "minimal", "validation", "skip"})
+
+
+def _parse_methodology_mode(value: Any, owner: str) -> str:
+    """Прочитать поле `methodology.mode` из YAML шаблона.
+
+    Допускается как `methodology: minimal` (короткая запись), так и
+    `methodology: {mode: minimal}` (полная). По умолчанию — `full`.
+    """
+    if value is None:
+        return "full"
+    if isinstance(value, str):
+        mode = value
+    elif isinstance(value, dict):
+        mode = str(value.get("mode", "full"))
+    else:
+        return "full"
+    if mode not in _METHODOLOGY_MODES:
+        raise ValidationError(
+            f"{owner}: methodology mode {mode!r} должен быть одним из {sorted(_METHODOLOGY_MODES)}"
+        )
+    return mode
+
+
 def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
     owner = str(source_path)
     version = require_str(raw, "version", owner)
@@ -666,6 +736,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         instruction=optional_str(raw, "instruction"),
         summary=optional_str(raw, "summary") or "",
         merge=merge_config,
+        methodology_mode=_parse_methodology_mode(raw.get("methodology"), owner),
         source_path=source_path,
     )
 

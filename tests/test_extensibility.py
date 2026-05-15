@@ -125,8 +125,17 @@ class TestDerivedComposition:
         ).validate()
         template = snapshot.resolve_template("common.requirements_spec_generation@1.0.0")
         assert template.inputs.collect_optional_from_active_domain_packs is True
-        # И hand-coded optional пустой — больше не нужно их перечислять.
-        assert template.inputs.optional_artifact_roles == ()
+        # Обновлено: optional перечисляет common-задачи, которые дополняют
+        # финальный merge (acceptance_model, phased_plan, delivery_scope,
+        # solution_recommendation). Это не доменные паки, а common-расширение.
+        # Доменные продолжают подмешиваться через auto-collect.
+        expected_common_optional = {
+            "solution_tradeoff_matrix",
+            "acceptance_model_definition",
+            "implementation_dependency_plan",
+            "delivery_scope_definition",
+        }
+        assert expected_common_optional <= set(template.inputs.optional_artifact_roles)
 
     def test_new_domain_pack_artifact_auto_appears_in_context(self, tmp_path: Path) -> None:
         """Когда активен ml-пак, его primary-артефакт (predictive_problem_definition)

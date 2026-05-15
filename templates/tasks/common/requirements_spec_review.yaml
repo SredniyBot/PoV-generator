@@ -6,6 +6,8 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Ревью: только финальное decision-suжение; промежуточных стадий нет.
+methodology: validation
 requires:
   state: [business_request]
   artifacts:

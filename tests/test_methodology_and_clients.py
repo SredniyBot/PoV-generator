@@ -170,9 +170,14 @@ def test_methodology_trace_artifact_records_real_rule_outcomes(tmp_path: Path) -
     payload = primary.metadata.methodology_trace
 
     methodology = snapshot.resolve_methodology_pack(bundle.request.methodology_pack_ref)
+    # Track 5: ожидаемый набор правил зависит от methodology_mode задачи.
+    # Если задача-источник имеет mode=skip/minimal/validation, она получит
+    # только подмножество стадий.
+    task_template = snapshot.resolve_template(bundle.request.template_ref)
+    methodology_mode = getattr(task_template, "methodology_mode", "full")
     expected_rules = {
         (stage.identifier, rule.identifier)
-        for stage in methodology.stages_for_complexity(bundle.request.complexity)
+        for stage in methodology.stages_for(bundle.request.complexity, methodology_mode)
         for rule in stage.rules
     }
     actual_rules = {(item["stage_id"], item["rule_id"]) for item in payload["rules_evaluated"]}

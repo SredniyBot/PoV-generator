@@ -6,6 +6,8 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Синтез из upstream-артефактов; решений нет, есть только конфликтные точки.
+methodology: minimal
 requires:
   state: [business_request]
   artifacts:

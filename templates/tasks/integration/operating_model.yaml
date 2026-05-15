@@ -6,6 +6,7 @@ type: leaf
 status: active
 domain: integration
 executor: llm
+methodology: minimal
 requires:
   state: [business_request]
   artifacts:

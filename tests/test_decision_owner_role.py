@@ -137,22 +137,24 @@ def _make_runtime_with_workspace(tmp_path: Path) -> tuple[SqliteRuntime, Path]:
 @pytest.mark.parametrize(
     "mode, expected_action",
     [
-        # Этап 3: методологические кандидаты получают visibility=architectural.
-        # autopilot не выводит architectural проактивно → есть default_assumption → assume.
+        # Обновлено: методологические кандидаты по умолчанию имеют
+        # visibility=technical (advisory). Это значит, что:
+        # • autopilot/balanced/control: вне proactive set → assume (если
+        #   есть default_assumption) или defer.
+        # • expert: technical в proactive set → ask.
         ("autopilot", "assume"),
-        # balanced/control/expert выводят architectural → ask.
-        ("balanced", "ask"),
-        ("control", "ask"),
+        ("balanced", "assume"),
+        ("control", "assume"),
         ("expert", "ask"),
     ],
 )
 def test_methodologist_visibility_filters_by_engagement(
     tmp_path: Path, mode: str, expected_action: str
 ) -> None:
-    """Методологические кандидаты имеют visibility=architectural.
+    """Методологические кандидаты — advisory, visibility=technical по умолчанию.
 
-    autopilot их автоматически принимает как допущения (вне proactive set);
-    balanced и выше — выносят пользователю.
+    autopilot/balanced/control имеют их в инбоксе либо через assume (если
+    есть default_assumption), либо defer. expert выводит явно.
     """
     runtime, workspace = _make_runtime_with_workspace(tmp_path)
     runtime.apply_process_patch(
@@ -173,7 +175,7 @@ def test_methodologist_visibility_filters_by_engagement(
         task_id="task-1",
     ).candidates
     assert candidates
-    assert all(c.visibility == "architectural" for c in candidates)
+    assert all(c.visibility == "technical" for c in candidates)
 
     decisions = service.register_candidates(workspace, candidates)
     assert all(d.action == expected_action for d in decisions)

@@ -93,7 +93,11 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     tasks = runtime.list_tasks(workspace)
 
     assert state.process.root_task_id is not None
-    assert len(tasks) == 16
+    # Обновлено: после Phase 3 (добавлены glossary_drafting,
+    # deployment_topology, project_risk_register к 4 уже добавленным в Phase 2)
+    # общее число задач выросло с 16 до 23. Privacy_impact_assessment живёт
+    # в security-домене и появляется только когда активен security pack.
+    assert len(tasks) == 23
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
 

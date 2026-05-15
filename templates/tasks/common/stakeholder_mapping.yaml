@@ -6,6 +6,8 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Структурированная экстракция ролей и интересов; решений нет.
+methodology: skip
 requires:
   state: [business_request]
   artifacts:

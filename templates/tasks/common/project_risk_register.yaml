@@ -1,0 +1,66 @@
+kind: task_template
+id: common.project_risk_register
+version: 1.0.0
+title: Собрать реестр рисков проекта
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.constraint_inventory@1.0.0
+    optional:
+      - common.business_outcome_model@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+      - common.implementation_dependency_plan@1.0.0
+produces:
+  artifact: common.project_risk_register@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.constraint_inventory
+    - artifact.common.business_outcome_model
+    - artifact.common.scope_boundary_matrix
+    - artifact.common.implementation_dependency_plan
+  max_tokens: 18000
+planning:
+  priority: 520
+effects:
+  readiness:
+    set:
+      - dimension: risk_register_compiled
+        status: ready
+summary: |
+  Собери единый реестр рисков PoV — то, что может пойти не так, и как с этим
+  обращаться. Это агрегатор: тащи риски из upstream-артефактов (constraints,
+  business outcome, scope, implementation plan) и дополняй типовыми для
+  природы проекта.
+
+  Структура каждого риска:
+
+  ▸ TITLE — короткая формулировка (1 строка)
+  ▸ CATEGORY — тип: «качество данных», «организационный», «технический»,
+    «комплаенс», «ценность для бизнеса», «зависимость от заказчика»,
+    «срок поставки»
+  ▸ DESCRIPTION — 1-2 предложения о сути риска
+  ▸ PROBABILITY — low / medium / high
+  ▸ IMPACT — low / medium / high
+  ▸ MITIGATION — конкретное действие для снижения вероятности или
+    последствий («ранний EDA для оценки качества данных к концу недели 1»)
+  ▸ TRIGGER — что считается признаком наступления риска и поводом
+    к остановке/эскалации
+  ▸ OWNER — кто отвечает за митигацию (роль из stakeholder-map)
+
+  Правила:
+  • Не дублируй риски из одного upstream-артефакта; агрегируй похожие.
+  • Не выдумывай риски «для красоты». Каждый риск либо упомянут в
+    upstream, либо очевидно следует из специфики проекта PoV.
+  • Каждый риск должен иметь митигацию. «Митигация: следить» — это не
+    митигация; конкретное действие — да.
+  • Для high/high рисков укажи trigger (формальный критерий остановки).
+
+  Уровень: 5-12 рисков типично. confidence 0.7-0.85.

@@ -1,0 +1,77 @@
+kind: task_template
+id: common.delivery_scope_definition
+version: 1.0.0
+title: Определить состав поставки PoV
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+produces:
+  artifact: common.delivery_scope_definition@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.scope_boundary_matrix
+  max_tokens: 16000
+planning:
+  priority: 560
+effects:
+  readiness:
+    set:
+      - dimension: delivery_scope_defined
+        status: ready
+summary: |
+  Определи состав поставки PoV — что физически передаётся заказчику в конце
+  проекта. Это формальный список deliverables.
+
+  Структура:
+
+  ▸ DELIVERY_ITEMS — конкретные результаты, передаваемые заказчику.
+    Для каждого: «Название (тип артефакта). Назначение. Формат и носитель.
+    Кому передаётся».
+    Примеры (адаптируй под природу проекта):
+    — «Исходный код решения. Git-репозиторий с README и инструкцией запуска.
+       Передаётся в инфраструктуру заказчика».
+    — «Обученная модель и веса. Файл .pkl/.joblib + Dockerfile. Передаётся
+       вместе с кодом».
+    — «BI-дашборд развёрнутый в контуре заказчика. URL + roles. Передаётся
+       HR-команде».
+    — «Отчёт о PoV. PDF на 15-25 страниц со структурой <X>. Передаётся
+       подписантам со стороны заказчика».
+    — «Презентация финальной демо. Slide deck + видео-запись».
+
+  ▸ EXCLUDED_ITEMS — что НЕ входит в поставку. Защита от ожиданий «а где
+    регламент эксплуатации? а где SLA-договор? а где runbook?». Если для
+    PoV это не предусмотрено — явно перечислить.
+
+  ▸ DEMO_EXPECTATIONS — формат финальной демонстрации заказчику.
+    «60-минутная live-сессия с командой подрядчика; разбираем 3 типовых
+    кейса; включает QA-сессию».
+
+  ▸ EVIDENCE_ARTIFACTS — доказательства, подтверждающие пройденные критерии
+    приёмки. Какие документы / скриншоты / логи / отчёты валидации
+    прилагаются к акту.
+
+  ▸ IP_OWNERSHIP / ПРАВА — кому принадлежит каждый артефакт после поставки.
+    Если в брифе есть условия (например, «решение остаётся в собственности
+    ГК МКТех») — отразить дословно.
+
+  ▸ HANDOVER_PROCESS — как происходит фактическая передача: подписание акта,
+    knowledge transfer-сессия, период гарантийной поддержки (если применимо
+    к PoV).
+
+  Правила:
+  • Опирайся на scope_boundary_matrix: всё, что in-scope, должно иметь
+    соответствующий deliverable.
+  • Каждый item должен быть СЧИТАЕМЫМ: «отчёт» — это плохо, «PDF-отчёт
+    на 15+ страниц со структурой 1-N» — это нормально.
+  • Если в брифе условия передачи прав не упомянуты — оставь в open_questions.
+
+  confidence 0.75-0.9.

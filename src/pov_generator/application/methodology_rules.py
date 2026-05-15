@@ -135,6 +135,7 @@ def evaluate_methodology_rules(
     reasoning: dict[str, Any],
     project_id: str,
     task_id: str,
+    methodology_mode: str = "full",
 ) -> MethodologyEvaluation:
     """Прогоняет правила активной методологии по reasoning_artifact.
 
@@ -142,9 +143,12 @@ def evaluate_methodology_rules(
     - `{"stages": [{"stage_id": ..., "outputs": {...}}, ...]}` (наш runtime
       формат);
     - `{"<stage_id>": {<fields>}, ...}` (raw, как в тестах).
+
+    `methodology_mode` (Track 5): per-task фильтр стадий. См.
+    `MethodologyPackSpec.stages_for`.
     """
 
-    active_stages = methodology.stages_for_complexity(complexity)
+    active_stages = methodology.stages_for(complexity, methodology_mode)
     stage_outputs = _stage_outputs_from_reasoning(reasoning)
 
     candidates: list[ClarificationCandidate] = []

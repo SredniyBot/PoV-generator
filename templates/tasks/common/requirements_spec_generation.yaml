@@ -6,6 +6,9 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Финальный synthesis: option_generation/decision не применимы — выбор уже
+# сделан в upstream.
+methodology: minimal
 # Этап 5: финальный ТЗ — синтетический merge всех аналитических артефактов.
 # LLM интегрирует пересекающиеся темы (scope/stakeholders/options/...)
 # в связный документ. Strategy=synthetic не меняет путь исполнения,
@@ -23,7 +26,19 @@ requires:
       - common.scope_boundary_matrix@1.0.0
       - common.stakeholder_map@1.0.0
       - common.solution_option_inventory@1.0.0
-    optional: []
+    # Дополнительные аналитические артефакты, обогащающие финальный
+    # documenting-проход. Они опциональны, потому что для совсем простых
+    # PoV (тривиальная сложность) могут пропускаться. Если присутствуют —
+    # финальный merge берёт их разделы.
+    optional:
+      - common.solution_tradeoff_matrix@1.0.0
+      - common.acceptance_model_definition@1.0.0
+      - common.implementation_dependency_plan@1.0.0
+      - common.delivery_scope_definition@1.0.0
+      - common.glossary_terms@1.0.0
+      - common.project_risk_register@1.0.0
+      - common.deployment_topology@1.0.0
+      - security.privacy_impact_assessment@1.0.0
     # Этап 7.3: вместо hand-coded списка optional всех доменных артефактов
     # — декларативный auto-collect. Любая задача активного доменного
     # пака (origin_kind=domain_contribution) подмешивает свой primary
@@ -73,7 +88,19 @@ summary: |
   • Бизнес-обоснование — формула эффекта, пример расчёта, окупаемость.
   • Технические требования и ограничения — компактно из constraint_inventory и
     доменных артефактов.
-  • Риски — таблица «Риск / Вероятность / Влияние / Митигация».
+  • Топология развёртывания — если активен deployment_topology: среды, сетевые
+    контуры, размещение компонентов, цикл поставки. Заполняй структурированное
+    поле `deployment_topology` (environments / network_zones / components /
+    deployment_flow).
+  • Реестр рисков — если активен project_risk_register: структурированный
+    список с probability/impact/mitigation/trigger/owner. Заполняй поле
+    `project_risks_detail`. Старое поле `risks` (плоский список) оставляй
+    пустым, чтобы избежать дубля.
+  • Оценка воздействия на ПДн (DPIA) — если активен privacy_impact_assessment:
+    заполняй структурированное поле `privacy_impact` (pii_categories,
+    processing_purposes, lawful_basis, controls, residual_risks и т.д.).
+  • Глоссарий — если активен glossary_terms: заполняй массив `glossary`
+    (объекты term/definition/category/synonyms). Идёт приложением в конце.
   • Следующие шаги.
   • Перспектива масштабирования — что в следующих этапах.
 

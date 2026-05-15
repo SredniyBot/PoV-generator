@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.project_risk_register
+version: 1.0.0
+title: Реестр рисков проекта
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

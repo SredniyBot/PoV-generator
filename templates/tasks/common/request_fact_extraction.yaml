@@ -6,6 +6,9 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Чистая экстракция — methodology с option_generation/decision не даёт
+# полезного сигнала и засоряет reasoning-trace.
+methodology: skip
 requires:
   state: [business_request]
 produces:

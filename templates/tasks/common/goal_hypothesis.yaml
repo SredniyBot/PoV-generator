@@ -6,6 +6,8 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Goal_framing + decision релевантны; option_generation/jtbd — избыточны.
+methodology: minimal
 requires:
   state: [business_request]
 produces:

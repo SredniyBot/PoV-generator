@@ -6,6 +6,8 @@ type: leaf
 status: active
 domain: common
 executor: llm
+# Экстракция + категоризация; нет выбора между альтернативами.
+methodology: skip
 requires:
   state: [business_request]
 produces:
