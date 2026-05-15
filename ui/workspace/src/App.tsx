@@ -9,6 +9,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -36,7 +37,6 @@ import { DecisionLogPage } from "./DecisionLogPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
-import { SettingsPage } from "./SettingsPage";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ActionDescriptor,
@@ -516,23 +516,18 @@ function WorkspaceRoute({
         />
         <Route path="decisions" element={<DecisionLogPage projectId={projectId} />} />
         <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
-        <Route
-          path="settings"
-          element={
-            <SettingsPage
-              projectId={projectId}
-              panels={{
-                state: <StatePage projectId={projectId} actions={commandMutations} />,
-                review: <ReviewPage projectId={projectId} />,
-                debug: <DebugPage projectId={projectId} onRetryTask={commandMutations.retryTask} />,
-              }}
-            />
-          }
-        />
-        {/* Legacy aliases — старые закладки переживут редизайн */}
-        <Route path="state" element={<Navigate to={`/projects/${projectId}/settings?tab=state`} replace />} />
-        <Route path="review" element={<Navigate to={`/projects/${projectId}/settings?tab=review`} replace />} />
-        <Route path="debug" element={<Navigate to={`/projects/${projectId}/settings?tab=debug`} replace />} />
+        {/* Диагностические страницы — прямой доступ по URL.
+            Вкладки в WorkspaceTabs больше нет: эти разделы (Состояние /
+            Замечания / Технические детали) не являются настройками,
+            а ссылка «⚙ Настройки» на их объединение путала с root-level
+            страницей `/settings` (LLM-провайдеры). */}
+        <Route path="state" element={<StatePage projectId={projectId} actions={commandMutations} />} />
+        <Route path="review" element={<ReviewPage projectId={projectId} />} />
+        <Route path="debug" element={<DebugPage projectId={projectId} onRetryTask={commandMutations.retryTask} />} />
+        {/* Старый объединённый settings-таб больше не используется;
+            редиректим на Обзор. Если пользователь сохранил bookmark с
+            ?tab=state/review/debug — перенаправляем на прямой URL. */}
+        <Route path="settings" element={<SettingsTabRedirect projectId={projectId} />} />
         <Route path="*" element={<Navigate to="overview" replace />} />
       </Routes>
     </div>
@@ -541,6 +536,19 @@ function WorkspaceRoute({
 
 
 // ---- W4.1 (R1): WorkflowRunProgressPanel ---------------------------------
+
+function SettingsTabRedirect({ projectId }: { projectId: string }) {
+  // Старый объединённый settings-таб удалён; bookmarks вида
+  // `/projects/:id/settings?tab=state` редиректятся на прямой URL
+  // `/projects/:id/state`. Без `?tab=` — на Обзор.
+  const [searchParams] = useSearchParams();
+  const tab = searchParams.get("tab");
+  if (tab === "state") return <Navigate to={`/projects/${projectId}/state`} replace />;
+  if (tab === "review") return <Navigate to={`/projects/${projectId}/review`} replace />;
+  if (tab === "debug") return <Navigate to={`/projects/${projectId}/debug`} replace />;
+  return <Navigate to={`/projects/${projectId}/overview`} replace />;
+}
+
 
 function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
   const activeQuery = useQuery({
