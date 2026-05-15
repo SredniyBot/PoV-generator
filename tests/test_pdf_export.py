@@ -52,6 +52,29 @@ def test_render_artifact_pdf_handles_empty_title() -> None:
     assert pdf_bytes.startswith(b"%PDF-")
 
 
+def test_render_artifact_pdf_embeds_unicode_font_for_cyrillic() -> None:
+    """Регрессия: кириллица не должна рендериться через core-PDF Helvetica
+    (она не имеет Cyrillic-глифов → чёрные квадраты в PDF-вьюверах).
+
+    Проверяем, что в выводном PDF есть встроенный subset-шрифт
+    (имя вида ``ABCDEF+FontName``), а не только core-шрифты.
+    """
+    import re
+
+    pdf_bytes = render_artifact_pdf(
+        markdown_content="# Заголовок\n\nКириллический параграф для проверки.",
+        title="Test",
+    )
+    data = pdf_bytes.decode("latin-1", errors="replace")
+    base_fonts = set(re.findall(r"/BaseFont\s*/([\w+-]+)", data))
+    # Встроенный subset reportlab именует как `<6 latin caps>+FontName`.
+    subset_fonts = [name for name in base_fonts if re.match(r"^[A-Z]{6}\+", name)]
+    assert subset_fonts, (
+        f"В PDF не встроен ни один Unicode-subset (есть только core-fonts: {base_fonts}). "
+        "Кириллица будет отображаться как чёрные квадраты."
+    )
+
+
 def test_download_pdf_endpoint_returns_pdf_for_real_artifact(tmp_path: Path) -> None:
     """End-to-end: гоняем stub-workflow, скачиваем итоговый ТЗ как PDF."""
     runtime_root = tmp_path / "runtime"
