@@ -6,7 +6,21 @@ from dataclasses import dataclass
 
 from ..common.errors import ConflictError
 from ..domain.registry import DomainPackSpec, ObjectRef, RegistrySnapshot
+from ..infrastructure.claude_sdk_client import (
+    ClaudeSdkClient,
+    model_for_complexity as claude_sdk_model_for_complexity,
+)
+from ..infrastructure.claude_subscription_client import (
+    ClaudeSubscriptionClient,
+    model_for_complexity as claude_subscription_model_for_complexity,
+)
 from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
+
+# Селектор domain pack'ов и task-runner вызывают LLM из «standard»-зоны
+# сложности: задача не тривиальная (нужно понять запрос), но и не на грани
+# сложности артефакта-синтеза. Маппинг complexity → модель для Claude
+# живёт в инфраструктурных клиентах; здесь просто фиксируем уровень.
+_LLM_COMPLEXITY = "standard"
 
 
 @dataclass(frozen=True)
@@ -32,11 +46,17 @@ class DomainPackSelectionService:
         candidate_packs = self._candidate_packs(snapshot)
         active_provider = provider or os.environ.get("POV_DOMAIN_PACK_SELECTION_PROVIDER")
         if not active_provider:
-            active_provider = "openrouter" if os.environ.get("POV_OPENROUTER_API_KEY") else "stub"
+            # Авто-выбор провайдера, если в env не задано явно. Подхватываем
+            # тот же провайдер, что и для основного workflow
+            # (POV_EXECUTION_PROVIDER), иначе fallback по наличию ключа.
+            active_provider = (
+                os.environ.get("POV_EXECUTION_PROVIDER")
+                or ("openrouter" if os.environ.get("POV_OPENROUTER_API_KEY") else "stub")
+            )
         active_model = (
             model
             or os.environ.get("POV_DOMAIN_PACK_SELECTION_MODEL")
-            or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+            or self._default_model_for_provider(active_provider)
         )
 
         if not candidate_packs:
@@ -50,9 +70,31 @@ class DomainPackSelectionService:
 
         if active_provider == "stub":
             return self._select_stub(candidate_packs, request_text, model=active_model)
-        if active_provider == "openrouter":
-            return self._select_openrouter(candidate_packs, request_text, model=active_model)
-        raise ConflictError(f"Неподдерживаемый provider выбора доменных пакетов: {active_provider}")
+        if active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
+            return self._select_llm(
+                candidate_packs,
+                request_text,
+                provider=active_provider,
+                model=active_model,
+            )
+        raise ConflictError(
+            f"Неподдерживаемый provider выбора доменных пакетов: {active_provider}. "
+            "Поддерживаются: stub, openrouter, claude_sdk, claude_subscription."
+        )
+
+    def _default_model_for_provider(self, provider: str) -> str:
+        """Дефолтная модель, если ни флаг команды, ни env не заданы.
+
+        Для claude-провайдеров возвращаем рекомендованную для «standard»
+        задач модель (CLI subscription может вернуть None — тогда берём
+        пустую строку: модель определит сам CLI/Anthropic API)."""
+        if provider == "openrouter":
+            return os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+        if provider == "claude_sdk":
+            return claude_sdk_model_for_complexity(_LLM_COMPLEXITY)
+        if provider == "claude_subscription":
+            return claude_subscription_model_for_complexity(_LLM_COMPLEXITY) or ""
+        return ""
 
     def _candidate_packs(
         self,
@@ -120,11 +162,12 @@ class DomainPackSelectionService:
                 stems.add(token[:6])
         return stems
 
-    def _select_openrouter(
+    def _select_llm(
         self,
         candidate_packs: tuple[DomainPackSpec, ...],
         request_text: str,
         *,
+        provider: str,
         model: str,
     ) -> DomainPackSelectionResult:
         schema: dict[str, object] = {
@@ -168,7 +211,9 @@ class DomainPackSelectionService:
                 "Выбери только те пакеты, которые действительно нужны, чтобы правильно разобрать такой запрос и собрать качественное ТЗ.",
             ]
         )
-        payload = self._openrouter_client(model).chat_json(
+        payload = self._chat_json(
+            provider=provider,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
@@ -184,12 +229,38 @@ class DomainPackSelectionService:
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
             raise ConflictError("LLM-модуль подбора не вернул числовую уверенность.")
         return DomainPackSelectionResult(
-            provider="openrouter",
+            provider=provider,
             model=model,
             selected_pack_refs=selected,
             rationale=rationale.strip(),
             confidence=float(confidence),
         )
+
+    def _chat_json(
+        self,
+        *,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict,
+    ) -> dict:
+        """Единая точка вызова LLM. Тот же контракт, что у
+        `ExecutionService._chat_json_via_provider`: возвращает dict,
+        соответствующий схеме."""
+        if provider == "openrouter":
+            return self._openrouter_client(model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_sdk":
+            return ClaudeSdkClient.from_env(model=model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_subscription":
+            return ClaudeSubscriptionClient.from_env(model=model or None).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        raise ConflictError(f"Неподдерживаемый provider: {provider}")
 
     def _openrouter_client(self, model: str) -> OpenRouterClient:
         api_key = os.environ.get("POV_OPENROUTER_API_KEY")
