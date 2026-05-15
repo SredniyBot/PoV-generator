@@ -466,3 +466,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_until_blocked.add_argument("--max-steps", type=int, default=20)
 
     return parser
+
+
+if __name__ == "__main__":
+    main()
