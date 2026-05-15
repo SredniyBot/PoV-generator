@@ -344,16 +344,33 @@ function WorkspaceRoute({
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  // ВАЖНО: provider больше НЕ передаётся из UI — каждый запуск пайплайна
-  // использует системные настройки `/settings` (provider+model подбирается
-  // на сервере через resolve_for_purpose). Раньше localStorage хранил
-  // provider="openrouter" дефолтно и заставлял backend идти через
-  // legacy env-path → ошибка POV_OPENROUTER_API_KEY когда пользователь
-  // не настроил OpenRouter. model передаётся пустой строкой (= использовать
-  // assignment); UI-override модели — TODO в будущей версии.
+  // ВАЖНО: ни provider, ни model больше НЕ передаются из UI.
+  // Каждый запуск пайплайна использует системные настройки `/settings`
+  // — провайдер и модель резолвятся на сервере через resolve_for_purpose
+  // → ModelAssignment → ModelRouting → ProviderConnection.
+  //
+  // Раньше localStorage хранил provider="openrouter" и
+  // model="deepseek/deepseek-v4-flash" дефолтно, и эти значения уходили
+  // в API → backend шёл legacy env-path → ошибки про отсутствующие ключи
+  // или несуществующие модели.
+  //
+  // Сейчас оба значения — пустые константы. Стейлые ключи в браузерном
+  // localStorage больше не читаются, удаляем их на mount (миграция —
+  // ниже, в `useEffect`).
   const provider = "";
   const setProvider = (_: string) => {};
-  const [model, setModel] = useStoredState("povgen.model", "");
+  const model = "";
+  const setModel = (_: string) => {};
+  useEffect(() => {
+    // Очистка стейлых дефолтов: если в localStorage лежит "deepseek/..."
+    // или "openrouter" — не нужно, settings-store теперь источник истины.
+    try {
+      window.localStorage.removeItem("povgen.provider");
+      window.localStorage.removeItem("povgen.model");
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const [flashProjection, setFlashProjection] = useState<ProjectionName | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
 
@@ -3406,9 +3423,9 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   // W4.2 (G1): canvas-based task graph через ReactFlow + dagre.
   // Кликнул на узел → открывается drawer с тем же TaskNodeDetail,
   // что и на L2 Activity, плюс панель «Рассуждение» внутри.
-  // provider не передаётся из UI — см. WorkspaceRoute (Bug #3 fix).
+  // Ни provider, ни model из UI не передаются — см. WorkspaceRoute.
   const provider = "";
-  const [model] = useStoredState("povgen.model", "");
+  const model = "";
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
