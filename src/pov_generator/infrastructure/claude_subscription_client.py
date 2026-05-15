@@ -4,6 +4,18 @@
 `claude` (он должен быть установлен и залогинен через `claude login`).
 Авторизация происходит по сессии CLI, отдельный API-key не нужен.
 
+Важно про выбор CLI: пакет ``claude-agent-sdk`` приходит с **bundled**
+бинарником ``_bundled/claude.exe`` и по умолчанию его и запускает. Этот
+bundled CLI НЕ авторизован — он не знает про сессию пользователя,
+поднятую через ``claude login`` глобально. Если не задать ``cli_path``
+явно, SDK уйдёт в bundled, тот висит на старте → SDK выдаёт
+"Control request timeout: initialize" через 60 секунд.
+
+Решение: при создании клиента находим системный ``claude`` через
+``shutil.which`` (или env-override ``POV_CLAUDE_CLI_PATH``) и
+передаём его в ``ClaudeAgentOptions.cli_path``. Если ни системный,
+ни override-путь не найдены — fail fast с понятным сообщением.
+
 Ограничение: structured output через tool-use здесь не используется
 (это сложно реализовать через агентскую SDK). Вместо этого мы просим
 модель вернуть строго JSON и затем извлекаем его из ответа.
@@ -12,9 +24,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +39,14 @@ from ..common.errors import ConflictError
 class ClaudeSubscriptionConfig:
     model: str | None
     max_turns: int = 1
+    # Путь к ``claude`` CLI. None → попытаемся найти через PATH. Если и
+    # этого нет — поднимаем ConflictError (НЕ используем bundled CLI,
+    # потому что он не залогинен).
+    cli_path: str | None = None
+    # Таймаут initialize в миллисекундах. По умолчанию 120 сек (вдвое
+    # больше дефолта SDK = 60s). Передаётся в ``ClaudeAgentOptions.load_timeout_ms``;
+    # SDK дополнительно читает env ``CLAUDE_CODE_STREAM_CLOSE_TIMEOUT``.
+    load_timeout_ms: int = 120_000
 
 
 def model_for_complexity(complexity: str | None) -> str | None:
@@ -44,6 +66,11 @@ class ClaudeSubscriptionClient:
     """Тонкая обёртка над claude-agent-sdk."""
 
     def __init__(self, config: ClaudeSubscriptionConfig) -> None:
+        # Если cli_path не пришёл из конфига (например, прямой конструктор
+        # в тестах), резолвим его здесь. Это гарантирует, что SDK НЕ
+        # уйдёт в bundled CLI.
+        if config.cli_path is None:
+            config = dataclasses.replace(config, cli_path=_resolve_cli_path())
         self._config = config
         try:
             import claude_agent_sdk  # type: ignore[import-not-found]
@@ -64,7 +91,12 @@ class ClaudeSubscriptionClient:
             raise ConflictError(
                 f"POV_CLAUDE_MAX_TURNS должно быть целым числом, получено: {max_turns_raw}"
             ) from exc
-        return cls(ClaudeSubscriptionConfig(model=active_model, max_turns=max_turns))
+        return cls(ClaudeSubscriptionConfig(
+            model=active_model,
+            max_turns=max_turns,
+            cli_path=_resolve_cli_path(),
+            load_timeout_ms=_resolve_load_timeout_ms(),
+        ))
 
     @property
     def model(self) -> str:
@@ -89,19 +121,36 @@ class ClaudeSubscriptionClient:
 
     async def _collect(self, system_prompt: str, user_prompt: str) -> str:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
+        # cli_path обязателен — он направляет SDK на залогиненный системный CLI
+        # вместо bundled (см. docstring модуля).
         options_kwargs: dict[str, Any] = {
             "system_prompt": system_prompt,
             "max_turns": self._config.max_turns,
             "permission_mode": "bypassPermissions",
+            "cli_path": self._config.cli_path,
+            "load_timeout_ms": self._config.load_timeout_ms,
         }
         if self._config.model:
             options_kwargs["model"] = self._config.model
         try:
             options = self._sdk.ClaudeAgentOptions(**options_kwargs)
         except TypeError:
-            # Если model не поддерживается, повторим без него.
-            options_kwargs.pop("model", None)
-            options = self._sdk.ClaudeAgentOptions(**options_kwargs)
+            # Если какое-то поле не поддерживается старой версией SDK —
+            # последовательно отбрасываем малозначимые и пробуем снова.
+            for fallback_key in ("load_timeout_ms", "model", "cli_path"):
+                options_kwargs.pop(fallback_key, None)
+                try:
+                    options = self._sdk.ClaudeAgentOptions(**options_kwargs)
+                    break
+                except TypeError:
+                    continue
+            else:
+                # Последняя попытка с минимальным набором.
+                options = self._sdk.ClaudeAgentOptions(
+                    system_prompt=system_prompt,
+                    max_turns=self._config.max_turns,
+                    permission_mode="bypassPermissions",
+                )
 
         chunks: list[str] = []
         try:
@@ -114,8 +163,24 @@ class ClaudeSubscriptionClient:
                     if isinstance(text, str):
                         chunks.append(text)
         except Exception as exc:  # pragma: no cover
+            msg = str(exc)
+            if "Control request timeout" in msg and "initialize" in msg:
+                raise ConflictError(
+                    "Claude CLI не отвечает на initialize-запрос. Возможные причины:\n"
+                    "• CLI не залогинен в текущей сессии — выполните `claude login`.\n"
+                    "• SDK использует bundled CLI вместо системного — задайте "
+                    "POV_CLAUDE_CLI_PATH= путь к вашему `claude` (см. `where claude`).\n"
+                    "• На старте Windows-процесса не хватает default-таймаута 120s "
+                    "— увеличьте через POV_CLAUDE_LOAD_TIMEOUT_MS.\n"
+                    f"Текущий cli_path: {self._config.cli_path or '<не задан>'}; "
+                    f"load_timeout_ms: {self._config.load_timeout_ms}."
+                ) from exc
             raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
         return "".join(chunks)
+
+    @staticmethod
+    def _format_load_timeout_msg(seconds: int) -> str:  # for tests
+        return f"load_timeout_ms={seconds * 1000}"
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         text = text.strip()
@@ -139,3 +204,32 @@ class ClaudeSubscriptionClient:
         if not isinstance(payload, dict):
             raise ConflictError(f"Ожидался JSON-объект, получено: {payload!r}")
         return payload
+
+
+def _resolve_cli_path() -> str | None:
+    """Найти путь к залогиненному системному `claude` CLI.
+
+    Приоритеты:
+    1. ``POV_CLAUDE_CLI_PATH`` — явный override (для нестандартных установок).
+    2. ``shutil.which("claude")`` — стандартный поиск через PATH. На Windows
+       это вернёт `.cmd`-shim, который запустит npm-установку.
+    3. ``None`` — не нашли. SDK тогда уйдёт в свой bundled CLI; вызов
+       почти наверняка упадёт по таймауту (bundled не залогинен). Мы это
+       состояние ловим в ``_collect`` и даём пользователю осмысленный
+       совет в тексте ошибки.
+    """
+    override = os.environ.get("POV_CLAUDE_CLI_PATH")
+    if override and os.path.exists(override):
+        return override
+    found = shutil.which("claude")
+    return found  # может быть None — это OK, обработаем в run-time
+
+
+def _resolve_load_timeout_ms() -> int:
+    """Таймаут initialize-запроса. 120s по умолчанию — вдвое больше
+    дефолта SDK (60s). Override через ``POV_CLAUDE_LOAD_TIMEOUT_MS``."""
+    raw = os.environ.get("POV_CLAUDE_LOAD_TIMEOUT_MS", "120000")
+    try:
+        return max(int(raw), 30_000)  # минимум 30s — иначе SDK сам поднимет до 60.
+    except (TypeError, ValueError):
+        return 120_000

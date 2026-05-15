@@ -29,6 +29,9 @@ class ClaudeSubscriptionProvider:
         max_turns: int = 1,
     ) -> None:
         self.model = model
+        # cli_path / load_timeout_ms резолвятся внутри
+        # ``ClaudeSubscriptionClient.__init__`` через _resolve_* helpers —
+        # см. docstring claude_subscription_client.py.
         self._client = ClaudeSubscriptionClient(
             ClaudeSubscriptionConfig(model=model, max_turns=max_turns)
         )
