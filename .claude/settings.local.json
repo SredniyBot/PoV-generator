@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.\\\\.venv\\\\Scripts\\\\python -m pytest -q)",
+      "Bash(.\\\\.venv\\\\Scripts\\\\povgen registry *)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python -m pytest -q 2>&1)",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python -c \"import anthropic; print\\(anthropic.__version__\\)\")"
+    ]
+  }
+}

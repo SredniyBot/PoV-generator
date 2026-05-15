@@ -4,7 +4,6 @@ from typing import Any
 
 from ..common.errors import ValidationError
 
-
 JSONSchema = dict[str, Any]
 
 
@@ -35,10 +34,10 @@ def _analysis_object(required: list[str], properties: JSONSchema) -> JSONSchema:
 
 
 def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) -> JSONSchema:
-    frontend_enabled = _pack_enabled(domain_pack_refs, "frontend.web_app_requirements")
-    ml_enabled = _pack_enabled(domain_pack_refs, "ml.predictive_analytics_pov_requirements")
-    security_enabled = _pack_enabled(domain_pack_refs, "security.enterprise_compliance_requirements")
-    integration_enabled = _pack_enabled(domain_pack_refs, "integration.enterprise_delivery_requirements")
+    frontend_enabled = _pack_enabled(domain_pack_refs, "frontend.web_workspace") or _pack_enabled(domain_pack_refs, "frontend.web_app_requirements")
+    ml_enabled = _pack_enabled(domain_pack_refs, "ml.predictive_analytics") or _pack_enabled(domain_pack_refs, "ml.predictive_analytics_pov_requirements")
+    security_enabled = _pack_enabled(domain_pack_refs, "security.enterprise_compliance") or _pack_enabled(domain_pack_refs, "security.enterprise_compliance_requirements")
+    integration_enabled = _pack_enabled(domain_pack_refs, "integration.enterprise_integration") or _pack_enabled(domain_pack_refs, "integration.enterprise_delivery_requirements")
 
     requirements_spec_properties: JSONSchema = {
         "title": {"type": "string"},
@@ -66,6 +65,93 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "deployment_requirements": _string_array_schema(),
         "delivery_artifacts": _string_array_schema(),
         "phased_plan": _string_array_schema(),
+        # Расширенные разделы — необязательные. Если в upstream активны
+        # соответствующие задачи (glossary_drafting / deployment_topology /
+        # project_risk_register / privacy_impact_assessment), то их вклад
+        # подмешивается в финальное ТЗ как отдельные разделы. Если нет —
+        # эти поля просто отсутствуют, и рендерер их опускает.
+        "glossary": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["term", "definition"],
+                "additionalProperties": False,
+                "properties": {
+                    "term": {"type": "string"},
+                    "definition": {"type": "string"},
+                    "category": {"type": "string"},
+                    "synonyms": _string_array_schema(),
+                },
+            },
+        },
+        "deployment_topology": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "environments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "purpose"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "scaling": {"type": "string"},
+                        },
+                    },
+                },
+                "network_zones": _string_array_schema(),
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "placement", "responsibilities"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "placement": {"type": "string"},
+                            "technology": {"type": "string"},
+                            "responsibilities": {"type": "string"},
+                        },
+                    },
+                },
+                "deployment_flow": {"type": "string"},
+            },
+        },
+        "project_risks_detail": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "category", "description", "probability", "impact", "mitigation"],
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string"},
+                    "category": {"type": "string"},
+                    "description": {"type": "string"},
+                    "probability": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "impact": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "mitigation": {"type": "string"},
+                    "trigger": {"type": "string"},
+                    "owner": {"type": "string"},
+                },
+            },
+        },
+        "privacy_impact": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "pii_categories": _string_array_schema(),
+                "processing_purposes": _string_array_schema(),
+                "lawful_basis": {"type": "string"},
+                "data_minimization": _string_array_schema(),
+                "controls": _string_array_schema(),
+                "data_subject_rights": {"type": "string"},
+                "cross_border_transfers": {"type": "string"},
+                "retention_policy": {"type": "string"},
+                "residual_risks": _string_array_schema(),
+            },
+        },
     }
 
     requirements_spec_required = [
@@ -445,10 +531,19 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                             "summary": {"type": "string"},
                             "boundary_fit": {"type": "string"},
                             "enabling_conditions": _string_array_schema(),
+                            "pros": _string_array_schema(),
+                            "cons": _string_array_schema(),
+                            "fit_score": {"type": "number"},
                         },
                     },
                 },
                 "comparison_axes": _string_array_schema(),
+                # recommended_option и rationale переехали сюда из
+                # solution_tradeoff_matrix: задача solution_option_inventory
+                # явно выбирает один вариант (см. её prompt). Раньше поле
+                # отсутствовало в схеме и рекомендация терялась в массиве.
+                "recommended_option": {"type": "string"},
+                "recommendation_rationale": {"type": "string"},
             },
         ),
         "solution_tradeoff_matrix": _analysis_object(
@@ -554,6 +649,100 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "critical_dependencies": _string_array_schema(),
                 "project_risks": _string_array_schema(),
                 "proposed_timeline": _string_array_schema(),
+            },
+        ),
+        # Phase 3+4 additions: glossary, risk register, deployment topology,
+        # privacy DPIA. Все они опциональные дополнения к финальному ТЗ.
+        "glossary_terms": _analysis_object(
+            ["entries"],
+            {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["term", "definition"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "term": {"type": "string"},
+                            "definition": {"type": "string"},
+                            "category": {"type": "string"},
+                            "synonyms": _string_array_schema(),
+                        },
+                    },
+                },
+                "domain_scope": {"type": "string"},
+            },
+        ),
+        "project_risk_register": _analysis_object(
+            ["risks"],
+            {
+                "risks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["title", "category", "probability", "impact", "mitigation"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "title": {"type": "string"},
+                            "category": {"type": "string"},
+                            "description": {"type": "string"},
+                            "probability": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "impact": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "mitigation": {"type": "string"},
+                            "trigger": {"type": "string"},
+                            "owner": {"type": "string"},
+                        },
+                    },
+                },
+                "summary": {"type": "string"},
+            },
+        ),
+        "deployment_topology": _analysis_object(
+            ["environments", "network_zones", "components"],
+            {
+                "environments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "purpose"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "scaling": {"type": "string"},
+                        },
+                    },
+                },
+                "network_zones": _string_array_schema(),
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "placement", "responsibilities"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "placement": {"type": "string"},
+                            "responsibilities": {"type": "string"},
+                            "technology": {"type": "string"},
+                        },
+                    },
+                },
+                "deployment_flow": {"type": "string"},
+            },
+        ),
+        "privacy_impact_assessment": _analysis_object(
+            ["pii_categories", "processing_purposes", "lawful_basis", "controls"],
+            {
+                "pii_categories": _string_array_schema(),
+                "processing_purposes": _string_array_schema(),
+                "lawful_basis": {"type": "string"},
+                "data_minimization": _string_array_schema(),
+                "controls": _string_array_schema(),
+                "data_subject_rights": _string_array_schema(),
+                "cross_border_transfers": {"type": "string"},
+                "retention_policy": {"type": "string"},
+                "residual_risks": _string_array_schema(),
             },
         ),
         "predictive_problem_definition": _analysis_object(
@@ -686,7 +875,16 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "properties": {
                 "overall_status": {
                     "type": "string",
-                    "enum": ["passed", "needs_changes", "needs_user_input"],
+                    # Расширено: prompt задачи `requirements_spec_review` использует
+                    # более выразительные значения. Старые `needs_changes` и
+                    # `needs_user_input` остаются для обратной совместимости.
+                    "enum": [
+                        "passed",
+                        "passed_with_remarks",
+                        "needs_changes",
+                        "needs_user_input",
+                        "failed_needs_rework",
+                    ],
                 },
                 "confidence": {"type": "number"},
                 "summary": {"type": "string"},
@@ -767,6 +965,649 @@ def schema_instruction(role: str, domain_pack_refs: tuple[str, ...]) -> str:
         f"Роль артефакта: {role}\n"
         f"Схема: {schema}"
     )
+
+
+def _render_bulleted(lines: list[str], items: list[Any]) -> None:
+    """Helper: добавить буллет-список с разнесением многострочных пунктов."""
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        # Если пункт многострочный — преобразуем переводы строк в
+        # markdown-перенос (двойной пробел в конце строки), чтобы абзацы
+        # внутри одного пункта рендерились нормально.
+        text = text.replace("\n", "  \n  ")
+        lines.append(f"- {text}")
+
+
+def _intro_for(label: str, count: int) -> str:
+    """Короткая вводная фраза перед буллетным списком, чтобы документ читался
+    как текст с логикой, а не как набор отдельных списков. Цель — связность.
+    """
+    if count == 0:
+        return ""
+    if count == 1:
+        return f"_Ниже фиксируется ключевой пункт по разделу «{label}»._"
+    return f"_Ниже зафиксировано {count} пункт(ов) по разделу «{label}»._"
+
+
+def _render_requirements_spec(payload: dict[str, Any]) -> str:
+    """Рендерит ТЗ как связный документ, а не как набор плоских списков.
+
+    Принципы:
+    • Документ начинается с краткого резюме (Executive Summary) — главное
+      сообщение читателю.
+    • Каждый раздел имеет НАРРАТИВНУЮ ВСТАВКУ перед буллет-списком,
+      чтобы читатель понимал, ЗАЧЕМ этот раздел и что в нём искать.
+    • Парные блоки (что входит / что не входит) даются рядом с явным
+      контрастом.
+    • Риски — таблицей, а не списком: даёт сразу видимую структуру.
+    • Доменные расширения (frontend / ml / security / integration) идут в
+      собственных подразделах с горизонтальной чертой-разделителем.
+    • Маркеры разделов (🎯, 🛡, 🔌, 💡) — лёгкая визуальная навигация.
+    """
+    lines: list[str] = []
+
+    title = (payload.get("title") or "Техническое задание").strip()
+    lines.append(f"# {title}")
+    lines.append("")
+
+    # ----- Введение / резюме --------------------------------------------------
+    summary = (payload.get("executive_summary") or "").strip()
+    if summary:
+        # Резюме идёт «цитатой» — визуально выделяется в начале документа.
+        lines.append("> " + summary.replace("\n", "\n> "))
+        lines.append("")
+
+    business_context = (payload.get("business_context") or "").strip()
+    if business_context:
+        lines.append("## Контекст и постановка задачи")
+        lines.append("")
+        lines.append(business_context)
+        lines.append("")
+
+    business_goal = (payload.get("business_goal") or "").strip()
+    if business_goal:
+        lines.append("## 🎯 Бизнес-цель")
+        lines.append("")
+        lines.append(business_goal)
+        lines.append("")
+
+    target_outcomes = payload.get("target_outcomes") or []
+    if target_outcomes:
+        lines.append("### Целевые результаты")
+        lines.append("")
+        lines.append(_intro_for("целевые результаты", len(target_outcomes)))
+        lines.append("")
+        _render_bulleted(lines, target_outcomes)
+        lines.append("")
+
+    # ----- Границы проекта ----------------------------------------------------
+    scope_in = payload.get("scope_in") or []
+    scope_out = payload.get("scope_out") or []
+    if scope_in or scope_out:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Границы текущего этапа")
+        lines.append("")
+        lines.append(
+            "Раздел фиксирует, какие результаты PoV команда обязуется поставить, "
+            "и какие пункты сознательно вынесены за рамки этапа. Это защита от "
+            "scope creep и явная точка для последующих обсуждений."
+        )
+        lines.append("")
+        if scope_in:
+            lines.append("**✅ Входит в этап**")
+            lines.append("")
+            _render_bulleted(lines, scope_in)
+            lines.append("")
+        if scope_out:
+            lines.append("**⛔️ Не входит в этап (отнесено к следующим этапам)**")
+            lines.append("")
+            _render_bulleted(lines, scope_out)
+            lines.append("")
+
+    # ----- Стейкхолдеры -------------------------------------------------------
+    stakeholders = payload.get("stakeholders") or payload.get("actors") or []
+    if stakeholders:
+        lines.append("## 👥 Стейкхолдеры и роли")
+        lines.append("")
+        lines.append(
+            "Здесь перечислены ключевые роли, влияющие на проект: владелец, "
+            "согласующие, ответственные за данные и инфраструктуру, конечные "
+            "пользователи."
+        )
+        lines.append("")
+        _render_bulleted(lines, stakeholders)
+        lines.append("")
+
+    operating_model = payload.get("operating_model") or []
+    if operating_model:
+        lines.append("### Операционная модель")
+        lines.append("")
+        _render_bulleted(lines, operating_model)
+        lines.append("")
+
+    # ----- Пользовательские сценарии -----------------------------------------
+    user_stories = payload.get("user_stories") or []
+    if user_stories:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 📋 Пользовательские сценарии")
+        lines.append("")
+        lines.append(
+            "Сценарии описывают типовые пути использования решения "
+            "конкретными ролями. Они служат основой для проектирования "
+            "интерфейса и приёмки."
+        )
+        lines.append("")
+        _render_bulleted(lines, user_stories)
+        lines.append("")
+
+    # ----- Требования ---------------------------------------------------------
+    data_reqs = payload.get("data_requirements") or []
+    func_reqs = payload.get("functional_requirements") or []
+    non_func_reqs = payload.get("non_functional_requirements") or []
+    integration_reqs = payload.get("integration_requirements") or []
+    security_reqs = payload.get("security_requirements") or []
+    deployment_reqs = payload.get("deployment_requirements") or []
+
+    if any([data_reqs, func_reqs, non_func_reqs, integration_reqs, security_reqs, deployment_reqs]):
+        lines.append("---")
+        lines.append("")
+        lines.append("## Требования к решению")
+        lines.append("")
+        lines.append(
+            "Требования сгруппированы по типу — от функциональных до "
+            "инфраструктурных. Каждый пункт должен быть проверяем на "
+            "финальной приёмке."
+        )
+        lines.append("")
+
+        if func_reqs:
+            lines.append("### Функциональные требования")
+            lines.append("")
+            _render_bulleted(lines, func_reqs)
+            lines.append("")
+
+        if non_func_reqs:
+            lines.append("### Нефункциональные требования")
+            lines.append("")
+            _render_bulleted(lines, non_func_reqs)
+            lines.append("")
+
+        if data_reqs:
+            lines.append("### Требования к данным")
+            lines.append("")
+            _render_bulleted(lines, data_reqs)
+            lines.append("")
+
+        if integration_reqs:
+            lines.append("### 🔌 Интеграционные требования")
+            lines.append("")
+            _render_bulleted(lines, integration_reqs)
+            lines.append("")
+
+        if security_reqs:
+            lines.append("### 🛡 Требования ИБ и комплаенса")
+            lines.append("")
+            _render_bulleted(lines, security_reqs)
+            lines.append("")
+
+        if deployment_reqs:
+            lines.append("### Требования к развёртыванию")
+            lines.append("")
+            _render_bulleted(lines, deployment_reqs)
+            lines.append("")
+
+    # ----- Доменные расширения ------------------------------------------------
+    frontend = payload.get("frontend_requirements")
+    if frontend:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🖥 Требования к интерфейсу")
+        lines.append("")
+        lines.append(
+            "Этот блок описывает пользовательскую часть решения: кто будет "
+            "работать с системой, какие сценарии он проходит, какие экраны и "
+            "представления видит."
+        )
+        lines.append("")
+        if frontend.get("user_roles"):
+            lines.append("### Пользовательские роли")
+            lines.append("")
+            _render_bulleted(lines, frontend["user_roles"])
+            lines.append("")
+        if frontend.get("user_flows"):
+            lines.append("### Пользовательские потоки")
+            lines.append("")
+            _render_bulleted(lines, frontend["user_flows"])
+            lines.append("")
+        if frontend.get("screens"):
+            lines.append("### Экраны")
+            lines.append("")
+            _render_bulleted(lines, frontend["screens"])
+            lines.append("")
+        if frontend.get("analytics_views"):
+            lines.append("### Аналитические представления")
+            lines.append("")
+            _render_bulleted(lines, frontend["analytics_views"])
+            lines.append("")
+        if frontend.get("decision_support_needs"):
+            lines.append("### Поддержка принятия решений")
+            lines.append("")
+            _render_bulleted(lines, frontend["decision_support_needs"])
+            lines.append("")
+        if frontend.get("ux_constraints"):
+            lines.append("### UX-ограничения и принципы")
+            lines.append("")
+            _render_bulleted(lines, frontend["ux_constraints"])
+            lines.append("")
+
+    ml_requirements = payload.get("ml_requirements")
+    if ml_requirements:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🤖 ML-задача и данные")
+        lines.append("")
+        prediction_target = (ml_requirements.get("prediction_target") or "").strip()
+        prediction_horizon = (ml_requirements.get("prediction_horizon") or "").strip()
+        prediction_unit = (ml_requirements.get("prediction_unit") or "").strip()
+        if prediction_target:
+            lines.append(f"**Цель предсказания.** {prediction_target}")
+            lines.append("")
+        if prediction_horizon:
+            lines.append(f"**Горизонт прогноза.** {prediction_horizon}")
+            lines.append("")
+        if prediction_unit:
+            lines.append(f"**Единица предсказания.** {prediction_unit}")
+            lines.append("")
+        if ml_requirements.get("data_sources"):
+            lines.append("### Источники данных")
+            lines.append("")
+            _render_bulleted(lines, ml_requirements["data_sources"])
+            lines.append("")
+        if ml_requirements.get("model_outputs"):
+            lines.append("### Выходы модели")
+            lines.append("")
+            _render_bulleted(lines, ml_requirements["model_outputs"])
+            lines.append("")
+        if ml_requirements.get("evaluation_metrics"):
+            lines.append("### Метрики качества")
+            lines.append("")
+            _render_bulleted(lines, ml_requirements["evaluation_metrics"])
+            lines.append("")
+        if ml_requirements.get("explainability_requirements"):
+            lines.append("### Требования к интерпретируемости")
+            lines.append("")
+            _render_bulleted(lines, ml_requirements["explainability_requirements"])
+            lines.append("")
+
+    security_detail = payload.get("security_constraints_detail")
+    if security_detail:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🔒 Детальные ограничения ИБ и комплаенса")
+        lines.append("")
+        lines.append(
+            "Раздел раскрывает требования к контуру решения: где живут данные, "
+            "как защищены, как контролируется доступ, что допустимо в работе с ИИ."
+        )
+        lines.append("")
+        if security_detail.get("deployment_constraints"):
+            lines.append("### Контур и развёртывание")
+            lines.append("")
+            _render_bulleted(lines, security_detail["deployment_constraints"])
+            lines.append("")
+        if security_detail.get("privacy_constraints"):
+            lines.append("### Приватность данных")
+            lines.append("")
+            _render_bulleted(lines, security_detail["privacy_constraints"])
+            lines.append("")
+        if security_detail.get("access_control_constraints"):
+            lines.append("### Контроль доступа")
+            lines.append("")
+            _render_bulleted(lines, security_detail["access_control_constraints"])
+            lines.append("")
+        if security_detail.get("allowed_ai_usage"):
+            lines.append("### Допустимое использование ИИ")
+            lines.append("")
+            _render_bulleted(lines, security_detail["allowed_ai_usage"])
+            lines.append("")
+        if security_detail.get("mandatory_controls"):
+            lines.append("### Обязательные меры контроля")
+            lines.append("")
+            _render_bulleted(lines, security_detail["mandatory_controls"])
+            lines.append("")
+
+    integration_model = payload.get("integration_model")
+    if integration_model:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🔌 Интеграционная модель")
+        lines.append("")
+        lines.append(
+            "Описание того, откуда поступают данные, в каком виде, как часто, "
+            "куда уходит результат, и кто обеспечивает эксплуатацию связей."
+        )
+        lines.append("")
+        if integration_model.get("source_systems"):
+            lines.append("### Системы-источники")
+            lines.append("")
+            _render_bulleted(lines, integration_model["source_systems"])
+            lines.append("")
+        if integration_model.get("delivery_pattern"):
+            lines.append("### Способ доставки данных")
+            lines.append("")
+            _render_bulleted(lines, integration_model["delivery_pattern"])
+            lines.append("")
+        refresh = (integration_model.get("refresh_model") or "").strip()
+        if refresh:
+            lines.append(f"**Модель обновления.** {refresh}")
+            lines.append("")
+        if integration_model.get("target_surfaces"):
+            lines.append("### Точки потребления результата")
+            lines.append("")
+            _render_bulleted(lines, integration_model["target_surfaces"])
+            lines.append("")
+        if integration_model.get("operating_roles"):
+            lines.append("### Операционные роли")
+            lines.append("")
+            _render_bulleted(lines, integration_model["operating_roles"])
+            lines.append("")
+
+    # ----- Топология развёртывания -------------------------------------------
+    deployment_topology = payload.get("deployment_topology") or {}
+    if deployment_topology:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🏗 Топология развёртывания")
+        lines.append("")
+        lines.append(
+            "Раздел описывает, как и где физически разворачивается решение: "
+            "среды, сетевые контуры, где живут ключевые компоненты, как "
+            "выглядит цикл поставки и обновлений."
+        )
+        lines.append("")
+        environments = deployment_topology.get("environments") or []
+        if environments:
+            lines.append("### Среды")
+            lines.append("")
+            lines.append("| Среда | Назначение | Масштаб |")
+            lines.append("|---|---|---|")
+            for env in environments:
+                if not isinstance(env, dict):
+                    continue
+                name = (env.get("name") or "").strip() or "—"
+                purpose = (env.get("purpose") or "").strip() or "—"
+                scaling = (env.get("scaling") or "").strip() or "—"
+                lines.append(f"| {name} | {purpose} | {scaling} |")
+            lines.append("")
+        network_zones = deployment_topology.get("network_zones") or []
+        if network_zones:
+            lines.append("### Сетевые контуры")
+            lines.append("")
+            _render_bulleted(lines, network_zones)
+            lines.append("")
+        components = deployment_topology.get("components") or []
+        if components:
+            lines.append("### Размещение компонентов")
+            lines.append("")
+            lines.append("| Компонент | Размещение | Технология | Назначение |")
+            lines.append("|---|---|---|---|")
+            for comp in components:
+                if not isinstance(comp, dict):
+                    continue
+                name = (comp.get("name") or "").strip() or "—"
+                placement = (comp.get("placement") or "").strip() or "—"
+                technology = (comp.get("technology") or "").strip() or "—"
+                resp = (comp.get("responsibilities") or "").strip() or "—"
+                lines.append(f"| {name} | {placement} | {technology} | {resp} |")
+            lines.append("")
+        deployment_flow = (deployment_topology.get("deployment_flow") or "").strip()
+        if deployment_flow:
+            lines.append("### Цикл поставки и обновлений")
+            lines.append("")
+            lines.append(deployment_flow)
+            lines.append("")
+
+    # ----- DPIA / Оценка воздействия на персональные данные ------------------
+    privacy_impact = payload.get("privacy_impact") or {}
+    if privacy_impact:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🔐 Оценка воздействия на персональные данные (DPIA)")
+        lines.append("")
+        lines.append(
+            "Формальный раздел для DPO/ИБ заказчика: какие категории ПДн "
+            "обрабатываются, на каком основании, какими мерами защищены и "
+            "какие остаточные риски остаются."
+        )
+        lines.append("")
+        pii_categories = privacy_impact.get("pii_categories") or []
+        if pii_categories:
+            lines.append("**Категории ПДн.**")
+            lines.append("")
+            _render_bulleted(lines, pii_categories)
+            lines.append("")
+        else:
+            lines.append(
+                "В рамках PoV персональные данные не обрабатываются "
+                "(используются обезличенные или синтетические данные)."
+            )
+            lines.append("")
+        processing_purposes = privacy_impact.get("processing_purposes") or []
+        if processing_purposes:
+            lines.append("**Цели обработки.**")
+            lines.append("")
+            _render_bulleted(lines, processing_purposes)
+            lines.append("")
+        lawful_basis = (privacy_impact.get("lawful_basis") or "").strip()
+        if lawful_basis:
+            lines.append(f"**Правовое основание.** {lawful_basis}")
+            lines.append("")
+        data_min = privacy_impact.get("data_minimization") or []
+        if data_min:
+            lines.append("**Минимизация данных.**")
+            lines.append("")
+            _render_bulleted(lines, data_min)
+            lines.append("")
+        controls = privacy_impact.get("controls") or []
+        if controls:
+            lines.append("**Меры контроля.**")
+            lines.append("")
+            _render_bulleted(lines, controls)
+            lines.append("")
+        dsr = (privacy_impact.get("data_subject_rights") or "").strip()
+        if dsr:
+            lines.append(f"**Права субъектов ПДн.** {dsr}")
+            lines.append("")
+        cross_border = (privacy_impact.get("cross_border_transfers") or "").strip()
+        if cross_border:
+            lines.append(f"**Трансграничная передача.** {cross_border}")
+            lines.append("")
+        retention = (privacy_impact.get("retention_policy") or "").strip()
+        if retention:
+            lines.append(f"**Хранение и ретенция.** {retention}")
+            lines.append("")
+        residual = privacy_impact.get("residual_risks") or []
+        if residual:
+            lines.append("**Остаточные риски.**")
+            lines.append("")
+            _render_bulleted(lines, residual)
+            lines.append("")
+
+    # ----- Результаты и критерии приёмки -------------------------------------
+    delivery_artifacts = payload.get("delivery_artifacts") or []
+    acceptance = payload.get("acceptance_criteria") or []
+    success = payload.get("success_criteria") or []
+    if delivery_artifacts or acceptance or success:
+        lines.append("---")
+        lines.append("")
+        lines.append("## ✅ Результаты и приёмка")
+        lines.append("")
+        lines.append(
+            "Конкретные результаты этапа и измеримые критерии, по которым "
+            "результат принимается заказчиком."
+        )
+        lines.append("")
+        if delivery_artifacts:
+            lines.append("### Поставляемые результаты")
+            lines.append("")
+            _render_bulleted(lines, delivery_artifacts)
+            lines.append("")
+        if success:
+            lines.append("### Критерии успеха")
+            lines.append("")
+            _render_bulleted(lines, success)
+            lines.append("")
+        if acceptance:
+            lines.append("### Критерии приёмки")
+            lines.append("")
+            _render_bulleted(lines, acceptance)
+            lines.append("")
+
+    # ----- План этапов --------------------------------------------------------
+    phased = payload.get("phased_plan") or []
+    if phased:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🗓 Этапы реализации")
+        lines.append("")
+        lines.append(
+            "Крупная декомпозиция работы по фазам. Конкретные сроки и "
+            "состав работ внутри фаз уточняются на этапе подготовки контракта."
+        )
+        lines.append("")
+        _render_bulleted(lines, phased)
+        lines.append("")
+
+    # ----- Альтернативы, допущения, риски, открытые вопросы ------------------
+    alternatives = payload.get("alternatives_considered") or []
+    assumptions = payload.get("assumptions") or []
+    risks = payload.get("risks") or []
+    open_questions = payload.get("open_questions") or []
+
+    if alternatives:
+        lines.append("## 🧭 Рассмотренные альтернативы")
+        lines.append("")
+        lines.append(
+            "Альтернативные варианты архитектуры, между которыми сделан "
+            "осознанный выбор. Зафиксированы здесь для прозрачности и для "
+            "повторного обсуждения, если контекст изменится."
+        )
+        lines.append("")
+        _render_bulleted(lines, alternatives)
+        lines.append("")
+
+    if assumptions:
+        lines.append("## 💡 Допущения")
+        lines.append("")
+        lines.append(
+            "Рабочие предположения, на которых строится решение. При "
+            "несоответствии реальности — пересмотр соответствующих разделов."
+        )
+        lines.append("")
+        _render_bulleted(lines, assumptions)
+        lines.append("")
+
+    risks_detail = payload.get("project_risks_detail") or []
+    if risks_detail:
+        lines.append("## ⚠️ Реестр рисков")
+        lines.append("")
+        lines.append(
+            "Структурированный реестр известных рисков PoV с оценкой "
+            "вероятности и влияния, митигацией, триггером эскалации и "
+            "владельцем. Пополняется по ходу реализации."
+        )
+        lines.append("")
+        lines.append("| # | Риск | Категория | Вероятность | Влияние | Митигация | Триггер | Владелец |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for idx, risk in enumerate(risks_detail, start=1):
+            if not isinstance(risk, dict):
+                continue
+            title_risk = (risk.get("title") or "").strip().replace("|", "\\|") or "—"
+            category = (risk.get("category") or "").strip().replace("|", "\\|") or "—"
+            prob = (risk.get("probability") or "").strip() or "—"
+            impact = (risk.get("impact") or "").strip() or "—"
+            mitigation = (risk.get("mitigation") or "").strip().replace("|", "\\|") or "—"
+            trigger = (risk.get("trigger") or "").strip().replace("|", "\\|") or "—"
+            owner = (risk.get("owner") or "").strip().replace("|", "\\|") or "—"
+            lines.append(
+                f"| {idx} | {title_risk} | {category} | {prob} | {impact} | "
+                f"{mitigation} | {trigger} | {owner} |"
+            )
+        lines.append("")
+        # Дополнительно — короткие описания, чтобы таблица не оставалась без
+        # контекста, если описание риска длиннее одной строки.
+        descriptions = [
+            (r.get("title", "").strip(), (r.get("description") or "").strip())
+            for r in risks_detail
+            if isinstance(r, dict) and (r.get("description") or "").strip()
+        ]
+        if descriptions:
+            lines.append("**Расшифровки рисков.**")
+            lines.append("")
+            for title_risk, desc in descriptions:
+                if not title_risk:
+                    continue
+                lines.append(f"- **{title_risk}.** {desc}")
+            lines.append("")
+    elif risks:
+        lines.append("## ⚠️ Риски")
+        lines.append("")
+        lines.append(
+            "Известные риски проекта с указанием митигации. Список не "
+            "исчерпывающий и пополняется по ходу реализации."
+        )
+        lines.append("")
+        _render_bulleted(lines, risks)
+        lines.append("")
+
+    if open_questions:
+        lines.append("## ❓ Открытые вопросы")
+        lines.append("")
+        lines.append(
+            "Вопросы, которые остаются на согласование с заказчиком. Их "
+            "наличие — нормальная часть PoV-документации: они отражают "
+            "осознанные точки уточнения, а не пробелы в проработке."
+        )
+        lines.append("")
+        _render_bulleted(lines, open_questions)
+        lines.append("")
+
+    # ----- Глоссарий (приложение) --------------------------------------------
+    glossary = payload.get("glossary") or []
+    if glossary:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 📖 Глоссарий")
+        lines.append("")
+        lines.append(
+            "Словарь ключевых терминов, ролей, систем и метрик, упомянутых "
+            "в документе, — для общего понимания заказчиком и подрядчиком."
+        )
+        lines.append("")
+        for entry in glossary:
+            if not isinstance(entry, dict):
+                continue
+            term = (entry.get("term") or "").strip()
+            definition = (entry.get("definition") or "").strip()
+            if not term or not definition:
+                continue
+            category = (entry.get("category") or "").strip()
+            synonyms = entry.get("synonyms") or []
+            suffix = ""
+            if synonyms:
+                suffix = f" _(синонимы: {', '.join(str(s).strip() for s in synonyms if str(s).strip())})_"
+            tag = f" _[{category}]_" if category else ""
+            lines.append(f"- **{term}**{tag} — {definition}{suffix}")
+        lines.append("")
+
+    # Финальная пустая строка для аккуратности.
+    if lines and lines[-1] != "":
+        lines.append("")
+    return "\n".join(lines)
 
 
 def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
@@ -1314,137 +2155,7 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
         return "\n".join(lines)
 
     if artifact_role == "requirements_spec":
-        lines = [f"# {payload['title']}"]
-        if payload.get("executive_summary"):
-            lines.extend(["## Краткое резюме", payload["executive_summary"]])
-        if payload.get("business_context"):
-            lines.extend(["\n## Бизнес-контекст", payload["business_context"]])
-        lines.extend([f"\n## Бизнес-цель\n{payload['business_goal']}"])
-        if payload.get("target_outcomes"):
-            lines.extend(["\n## Целевые результаты", *[f"- {item}" for item in payload["target_outcomes"]]])
-        if payload.get("scope_in"):
-            lines.extend(["\n## Входит в текущий этап", *[f"- {item}" for item in payload["scope_in"]]])
-        if payload.get("scope_out"):
-            lines.extend(["\n## Не входит в текущий этап", *[f"- {item}" for item in payload["scope_out"]]])
-        lines.extend(
-            [
-                "\n## Критерии успеха",
-                *[f"- {item}" for item in payload["success_criteria"]],
-                "\n## Стейкхолдеры",
-                *[f"- {item}" for item in payload.get("stakeholders", payload["actors"])],
-            ]
-        )
-        if payload.get("operating_model"):
-            lines.extend(["\n## Операционная модель", *[f"- {item}" for item in payload["operating_model"]]])
-        lines.extend(
-            [
-                "\n## Пользовательские сценарии",
-                *[f"- {item}" for item in payload["user_stories"]],
-                "\n## Требования к данным",
-                *[f"- {item}" for item in payload.get("data_requirements", [])],
-                "\n## Функциональные требования",
-                *[f"- {item}" for item in payload["functional_requirements"]],
-                "\n## Нефункциональные требования",
-                *[f"- {item}" for item in payload["non_functional_requirements"]],
-            ]
-        )
-        if payload.get("integration_requirements"):
-            lines.extend(["\n## Интеграционные требования", *[f"- {item}" for item in payload["integration_requirements"]]])
-        if payload.get("security_requirements"):
-            lines.extend(["\n## Требования ИБ и комплаенса", *[f"- {item}" for item in payload["security_requirements"]]])
-        if payload.get("deployment_requirements"):
-            lines.extend(["\n## Требования к развертыванию", *[f"- {item}" for item in payload["deployment_requirements"]]])
-        if payload.get("delivery_artifacts"):
-            lines.extend(["\n## Результаты этапа", *[f"- {item}" for item in payload["delivery_artifacts"]]])
-        lines.extend(
-            [
-                "\n## Допущения",
-                *[f"- {item}" for item in payload["assumptions"]],
-                "\n## Риски",
-                *[f"- {item}" for item in payload["risks"]],
-                "\n## Рассмотренные альтернативы",
-                *[f"- {item}" for item in payload["alternatives_considered"]],
-                "\n## Критерии приемки",
-                *[f"- {item}" for item in payload["acceptance_criteria"]],
-            ]
-        )
-        if payload.get("phased_plan"):
-            lines.extend(["\n## Этапы и план", *[f"- {item}" for item in payload["phased_plan"]]])
-        lines.extend(["\n## Открытые вопросы", *[f"- {item}" for item in payload["open_questions"]]])
-
-        frontend = payload.get("frontend_requirements")
-        if frontend:
-            lines.extend(
-                [
-                    "\n## Требования к интерфейсу и BI",
-                    "### Пользовательские роли",
-                    *[f"- {item}" for item in frontend["user_roles"]],
-                    "\n### Пользовательские потоки",
-                    *[f"- {item}" for item in frontend["user_flows"]],
-                    "\n### Экраны",
-                    *[f"- {item}" for item in frontend["screens"]],
-                ]
-            )
-            if frontend.get("analytics_views"):
-                lines.extend(["\n### Аналитические представления", *[f"- {item}" for item in frontend["analytics_views"]]])
-            if frontend.get("decision_support_needs"):
-                lines.extend(["\n### Сценарии поддержки решений", *[f"- {item}" for item in frontend["decision_support_needs"]]])
-            lines.extend(["\n### UX-ограничения", *[f"- {item}" for item in frontend["ux_constraints"]]])
-
-        ml_requirements = payload.get("ml_requirements")
-        if ml_requirements:
-            lines.extend(
-                [
-                    "\n## ML-требования",
-                    f"### Цель предсказания\n{ml_requirements['prediction_target']}",
-                    f"\n### Горизонт прогноза\n{ml_requirements['prediction_horizon']}",
-                    f"\n### Единица предсказания\n{ml_requirements['prediction_unit']}",
-                    "\n### Источники данных",
-                    *[f"- {item}" for item in ml_requirements["data_sources"]],
-                    "\n### Выходы модели",
-                    *[f"- {item}" for item in ml_requirements["model_outputs"]],
-                    "\n### Метрики",
-                    *[f"- {item}" for item in ml_requirements["evaluation_metrics"]],
-                    "\n### Требования к интерпретируемости",
-                    *[f"- {item}" for item in ml_requirements["explainability_requirements"]],
-                ]
-            )
-
-        security_detail = payload.get("security_constraints_detail")
-        if security_detail:
-            lines.extend(
-                [
-                    "\n## Детальные ограничения ИБ",
-                    "### Контур и развертывание",
-                    *[f"- {item}" for item in security_detail["deployment_constraints"]],
-                    "\n### Ограничения по приватности данных",
-                    *[f"- {item}" for item in security_detail["privacy_constraints"]],
-                    "\n### Контроль доступа",
-                    *[f"- {item}" for item in security_detail["access_control_constraints"]],
-                    "\n### Допустимое использование AI",
-                    *[f"- {item}" for item in security_detail["allowed_ai_usage"]],
-                    "\n### Обязательные меры контроля",
-                    *[f"- {item}" for item in security_detail["mandatory_controls"]],
-                ]
-            )
-
-        integration_model = payload.get("integration_model")
-        if integration_model:
-            lines.extend(
-                [
-                    "\n## Интеграционная модель",
-                    "### Источники и системы",
-                    *[f"- {item}" for item in integration_model["source_systems"]],
-                    "\n### Способ доставки данных",
-                    *[f"- {item}" for item in integration_model["delivery_pattern"]],
-                    f"\n### Модель обновления\n{integration_model['refresh_model']}",
-                    "\n### Точки потребления результата",
-                    *[f"- {item}" for item in integration_model["target_surfaces"]],
-                    "\n### Операционные роли",
-                    *[f"- {item}" for item in integration_model["operating_roles"]],
-                ]
-            )
-        return "\n".join(lines)
+        return _render_requirements_spec(payload)
 
     if artifact_role == "review_report":
         lines = [
@@ -1464,6 +2175,127 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines.extend(["\n## Блокирующие вопросы", *[f"- {item}" for item in payload["blocking_questions"]]])
         lines.append("\n## Рекомендации")
         lines.extend(f"- {item}" for item in payload["recommendations"])
+        return "\n".join(lines)
+
+    if artifact_role == "glossary_terms":
+        entries = payload.get("entries") or []
+        lines = ["# Глоссарий"]
+        if payload.get("domain_scope"):
+            lines.append(payload["domain_scope"])
+            lines.append("")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            term = str(entry.get("term") or "").strip()
+            definition = str(entry.get("definition") or "").strip()
+            if not term:
+                continue
+            line = f"**{term}** — {definition}"
+            if entry.get("category"):
+                line += f" _({entry['category']})_"
+            lines.append(line)
+            syns = entry.get("synonyms") or []
+            if syns:
+                lines.append(f"  Синонимы: {', '.join(syns)}")
+        return "\n\n".join(lines)
+
+    if artifact_role == "project_risk_register":
+        risks = payload.get("risks") or []
+        lines = ["# Реестр рисков проекта"]
+        if payload.get("summary"):
+            lines.append(payload["summary"])
+        lines.append("\n| # | Риск | Категория | Вероятность | Влияние | Митигация |")
+        lines.append("|---|------|-----------|-------------|---------|-----------|")
+        for i, r in enumerate(risks, 1):
+            if not isinstance(r, dict):
+                continue
+            title = str(r.get("title") or "—")
+            cat = str(r.get("category") or "—")
+            prob = str(r.get("probability") or "—")
+            imp = str(r.get("impact") or "—")
+            mit = str(r.get("mitigation") or "—").replace("\n", " ")
+            lines.append(f"| {i} | {title} | {cat} | {prob} | {imp} | {mit} |")
+        # Детали рисков с описанием/триггером/владельцем
+        details = []
+        for i, r in enumerate(risks, 1):
+            if not isinstance(r, dict):
+                continue
+            description = (r.get("description") or "").strip()
+            trigger = (r.get("trigger") or "").strip()
+            owner = (r.get("owner") or "").strip()
+            if any([description, trigger, owner]):
+                block = [f"### Риск {i}: {r.get('title', '—')}"]
+                if description:
+                    block.append(description)
+                if trigger:
+                    block.append(f"**Триггер останова:** {trigger}")
+                if owner:
+                    block.append(f"**Ответственный:** {owner}")
+                details.append("\n".join(block))
+        if details:
+            lines.append("\n## Детали критичных рисков\n")
+            lines.append("\n\n".join(details))
+        return "\n".join(lines)
+
+    if artifact_role == "deployment_topology":
+        lines = ["# Топология развёртывания"]
+        envs = payload.get("environments") or []
+        if envs:
+            lines.append("\n## Среды")
+            for env in envs:
+                if not isinstance(env, dict):
+                    continue
+                name = env.get("name", "—")
+                purpose = env.get("purpose", "")
+                scaling = env.get("scaling", "")
+                line = f"**{name}** — {purpose}"
+                if scaling:
+                    line += f" _(масштабирование: {scaling})_"
+                lines.append(line)
+        zones = payload.get("network_zones") or []
+        if zones:
+            lines.append("\n## Сетевые зоны")
+            lines.extend(f"- {z}" for z in zones)
+        components = payload.get("components") or []
+        if components:
+            lines.append("\n## Размещение компонентов")
+            lines.append("\n| Компонент | Среда / зона | Технология | Зона ответственности |")
+            lines.append("|-----------|--------------|------------|-----------------------|")
+            for c in components:
+                if not isinstance(c, dict):
+                    continue
+                name = c.get("name", "—")
+                placement = c.get("placement", "—")
+                tech = c.get("technology", "—")
+                resp = c.get("responsibilities", "—")
+                lines.append(f"| {name} | {placement} | {tech} | {resp} |")
+        if payload.get("deployment_flow"):
+            lines.append("\n## Процесс развёртывания")
+            lines.append(payload["deployment_flow"])
+        return "\n".join(lines)
+
+    if artifact_role == "privacy_impact_assessment":
+        lines = ["# Оценка воздействия на персональные данные (DPIA)"]
+        sections = [
+            ("Категории ПДн", payload.get("pii_categories")),
+            ("Цели обработки", payload.get("processing_purposes")),
+            ("Минимизация данных", payload.get("data_minimization")),
+            ("Меры контроля", payload.get("controls")),
+            ("Права субъектов ПДн", payload.get("data_subject_rights")),
+            ("Остаточные риски", payload.get("residual_risks")),
+        ]
+        if payload.get("lawful_basis"):
+            lines.append(f"\n**Правовое основание обработки:** {payload['lawful_basis']}")
+        for title, items in sections:
+            if items:
+                lines.append(f"\n## {title}")
+                lines.extend(f"- {item}" for item in items)
+        if payload.get("cross_border_transfers"):
+            lines.append("\n## Трансграничная передача данных")
+            lines.append(payload["cross_border_transfers"])
+        if payload.get("retention_policy"):
+            lines.append("\n## Хранение данных")
+            lines.append(payload["retention_policy"])
         return "\n".join(lines)
 
     raise ValidationError(f"Неизвестный рендерер артефакта: {artifact_role}")

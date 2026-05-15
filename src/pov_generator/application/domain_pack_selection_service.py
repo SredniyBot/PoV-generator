@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import re
-from typing import Any
+from dataclasses import dataclass
 
 from ..common.errors import ConflictError
 from ..domain.registry import DomainPackSpec, ObjectRef, RegistrySnapshot
@@ -24,13 +23,13 @@ class DomainPackSelectionService:
         self,
         snapshot: RegistrySnapshot,
         *,
-        recipe_ref: str,
+        objective_ref: str,
         request_text: str,
         provider: str | None = None,
         model: str | None = None,
     ) -> DomainPackSelectionResult:
-        recipe_object_ref = ObjectRef.parse(recipe_ref)
-        candidate_packs = self._candidate_packs(snapshot, recipe_object_ref)
+        ObjectRef.parse(objective_ref)
+        candidate_packs = self._candidate_packs(snapshot)
         active_provider = provider or os.environ.get("POV_DOMAIN_PACK_SELECTION_PROVIDER")
         if not active_provider:
             active_provider = "openrouter" if os.environ.get("POV_OPENROUTER_API_KEY") else "stub"
@@ -45,7 +44,7 @@ class DomainPackSelectionService:
                 provider=active_provider,
                 model=active_model,
                 selected_pack_refs=(),
-                rationale="Для выбранного recipe нет совместимых domain pack.",
+                rationale="В реестре нет активных доменных пакетов.",
                 confidence=1.0,
             )
 
@@ -53,23 +52,18 @@ class DomainPackSelectionService:
             return self._select_stub(candidate_packs, request_text, model=active_model)
         if active_provider == "openrouter":
             return self._select_openrouter(candidate_packs, request_text, model=active_model)
-        raise ConflictError(f"Неподдерживаемый provider выбора domain pack: {active_provider}")
+        raise ConflictError(f"Неподдерживаемый provider выбора доменных пакетов: {active_provider}")
 
     def _candidate_packs(
         self,
         snapshot: RegistrySnapshot,
-        recipe_ref: ObjectRef,
     ) -> tuple[DomainPackSpec, ...]:
-        candidates: list[DomainPackSpec] = []
-        for pack in snapshot.domain_packs.values():
-            if pack.status != "active":
-                continue
-            for fragment_ref in pack.recipe_fragment_refs:
-                fragment = snapshot.resolve_recipe_fragment(fragment_ref)
-                if recipe_ref.as_string() in {target.as_string() for target in fragment.target_recipe_refs}:
-                    candidates.append(pack)
-                    break
-        return tuple(sorted(candidates, key=lambda item: item.ref.as_string()))
+        return tuple(
+            sorted(
+                (pack for pack in snapshot.domain_packs.values() if pack.status == "active"),
+                key=lambda item: item.ref.as_string(),
+            )
+        )
 
     def _select_stub(
         self,
@@ -150,7 +144,7 @@ class DomainPackSelectionService:
                 "\n".join(
                     [
                         f"- ref: {pack.ref.as_string()}",
-                        f"  name: {pack.name}",
+                f"  name: {pack.title}",
                         f"  domain: {pack.domain}",
                         f"  description: {pack.description}",
                         f"  entry_signals: {', '.join(pack.entry_signals) if pack.entry_signals else 'нет'}",
@@ -158,7 +152,7 @@ class DomainPackSelectionService:
                 )
             )
         system_prompt = (
-            "Ты определяешь, какие domain pack нужно включить для обработки бизнес-запроса. "
+                "Ты определяешь, какие доменные пакеты нужно включить для обработки бизнес-запроса. "
             "Выбирай минимальный, но достаточный набор пакетов. "
             "Не подключай пакет без реальной необходимости. "
             "Ориентируйся на сам запрос, а не на желание включить всё подряд. "
@@ -169,7 +163,7 @@ class DomainPackSelectionService:
             [
                 "Исходный бизнес-запрос:",
                 request_text.strip(),
-                "Доступные domain pack для выбранного recipe:",
+                "Доступные доменные пакеты:",
                 *candidate_lines,
                 "Выбери только те пакеты, которые действительно нужны, чтобы правильно разобрать такой запрос и собрать качественное ТЗ.",
             ]

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import re
-
+from pathlib import Path
 
 _ENV_LINE_PATTERN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
 

@@ -5,29 +5,54 @@ from typing import Literal
 
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
+from .registry import ObjectRef
 
-
-TaskStatus = Literal["queued", "in_progress", "waiting_for_children", "completed", "failed", "obsolete"]
-TaskCommand = Literal["start", "complete", "fail", "retry", "obsolete", "mark_waiting", "requeue_finalization"]
-RecipeProgressStatus = Literal["pending", "materialized", "in_progress", "completed", "failed", "obsolete"]
+TaskStatus = Literal[
+    "candidate",
+    "ready",
+    "blocked",
+    "in_progress",
+    "waiting_for_children",
+    "completed",
+    "failed",
+    "skipped",
+    "obsolete",
+]
+TaskCommand = Literal["start", "complete", "fail", "retry", "obsolete", "skip", "mark_ready", "mark_blocked"]
+TaskOriginKind = Literal["objective_root", "base_child", "domain_contribution", "repair", "user_request", "system"]
 
 
 @dataclass(frozen=True)
 class TaskRecord:
     task_id: str
     project_id: str
-    template_id: str
-    template_version: str
+    objective_ref: str
+    parent_task_id: str | None
+    template_ref: str
     template_type: str
-    template_role: str
-    recipe_id: str
-    recipe_version: str
-    recipe_step_id: str
-    task_family_key: str
+    title: str
     status: TaskStatus
+    origin_kind: TaskOriginKind
+    origin_ref: str
+    stable_key: str
+    depth: int
+    slot_id: str | None
     attempt: int
+    error_message: str | None
     created_at: str
     updated_at: str
+
+    @property
+    def template_id(self) -> str:
+        return ObjectRef.parse(self.template_ref).identifier
+
+    @property
+    def template_version(self) -> str:
+        return ObjectRef.parse(self.template_ref).version
+
+    @property
+    def task_key(self) -> str:
+        return self.stable_key.rsplit(":", 1)[-1]
 
 
 @dataclass(frozen=True)
@@ -40,69 +65,47 @@ class TaskEvent:
     created_at: str
 
 
-@dataclass(frozen=True)
-class TaskRecipeProgress:
-    project_id: str
-    recipe_id: str
-    recipe_version: str
-    recipe_step_id: str
-    status: RecipeProgressStatus
-    task_id: str | None
-    updated_at: str
-    note: str | None = None
-
-
 def initial_task_status(template_type: str) -> TaskStatus:
     if template_type == "composite":
         return "waiting_for_children"
-    return "queued"
+    return "candidate"
 
 
-def apply_task_command(task: TaskRecord, command: TaskCommand) -> TaskRecord:
+def apply_task_command(task: TaskRecord, command: TaskCommand, *, error_message: str | None = None) -> TaskRecord:
     now = utc_now_iso()
     current = task.status
+    if command == "mark_ready":
+        if current in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
+            return task
+        return TaskRecord(**{**task.__dict__, "status": "ready", "error_message": None, "updated_at": now})
+    if command == "mark_blocked":
+        if current in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
+            return task
+        return TaskRecord(**{**task.__dict__, "status": "blocked", "error_message": error_message, "updated_at": now})
     if command == "start":
-        if current != "queued":
+        if current not in {"ready", "candidate"}:
             raise ConflictError(f"Cannot start task from status '{current}'.")
-        return TaskRecord(**{**task.__dict__, "status": "in_progress", "updated_at": now})
+        return TaskRecord(**{**task.__dict__, "status": "in_progress", "error_message": None, "updated_at": now})
     if command == "complete":
-        if current not in {"queued", "in_progress", "waiting_for_children"}:
+        if current not in {"ready", "candidate", "in_progress", "waiting_for_children"}:
             raise ConflictError(f"Cannot complete task from status '{current}'.")
-        return TaskRecord(**{**task.__dict__, "status": "completed", "updated_at": now})
+        return TaskRecord(**{**task.__dict__, "status": "completed", "error_message": None, "updated_at": now})
     if command == "fail":
-        if current not in {"queued", "in_progress", "waiting_for_children"}:
+        if current in {"completed", "obsolete", "skipped"}:
             raise ConflictError(f"Cannot fail task from status '{current}'.")
-        return TaskRecord(**{**task.__dict__, "status": "failed", "updated_at": now})
+        return TaskRecord(**{**task.__dict__, "status": "failed", "error_message": error_message, "updated_at": now})
     if command == "retry":
         if current != "failed":
             raise ConflictError(f"Cannot retry task from status '{current}'.")
         return TaskRecord(
-            **{**task.__dict__, "status": "queued", "attempt": task.attempt + 1, "updated_at": now}
+            **{**task.__dict__, "status": "ready", "attempt": task.attempt + 1, "error_message": None, "updated_at": now}
         )
     if command == "obsolete":
         if current in {"completed", "obsolete"}:
             raise ConflictError(f"Cannot obsolete task from status '{current}'.")
         return TaskRecord(**{**task.__dict__, "status": "obsolete", "updated_at": now})
-    if command == "mark_waiting":
-        if current != "in_progress" or task.template_type != "dynamic":
-            raise ConflictError("Only dynamic in-progress tasks can move to waiting_for_children.")
-        return TaskRecord(**{**task.__dict__, "status": "waiting_for_children", "updated_at": now})
-    if command == "requeue_finalization":
-        if current != "waiting_for_children" or task.template_type != "dynamic":
-            raise ConflictError("Only dynamic waiting tasks can requeue for finalization.")
-        return TaskRecord(**{**task.__dict__, "status": "queued", "updated_at": now})
+    if command == "skip":
+        if current in {"completed", "obsolete"}:
+            raise ConflictError(f"Cannot skip task from status '{current}'.")
+        return TaskRecord(**{**task.__dict__, "status": "skipped", "error_message": error_message, "updated_at": now})
     raise TypeError(f"Unsupported task command: {command}")
-
-
-def recipe_progress_status_for_task(status: TaskStatus) -> RecipeProgressStatus:
-    if status == "queued":
-        return "materialized"
-    if status == "in_progress":
-        return "in_progress"
-    if status == "waiting_for_children":
-        return "in_progress"
-    if status == "completed":
-        return "completed"
-    if status == "failed":
-        return "failed"
-    return "obsolete"

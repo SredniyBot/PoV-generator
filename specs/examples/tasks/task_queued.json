@@ -1,54 +1,40 @@
-{
+﻿{
   "task_id": "018f3b5a-3a01-7aaa-9b11-000000000001",
   "project_id": "018f3b5a-0000-7000-a000-000000000001",
-  "parent_id": null,
-  "template_id": "requirements_synthesis",
-  "template_version": "1.0.0",
-  "stage_gate": "requirements",
-  "status": "queued",
-  "priority": 0,
-  "queue_position": 42,
-  "attempt": 0,
-  "escalation_count": 0,
-  "locked_by": null,
-  "locked_at": null,
-  "lock_expires_at": null,
-  "payload": {
-    "domain": "rag",
-    "client": "ACME Corp",
-    "correlation_id": "018f3b5a-0000-7000-c000-0000000000aa"
+  "objective_ref": "common.requirements_specification@1.0.0",
+  "parent_task_id": "018f3b5a-3a00-7aaa-9b11-000000000010",
+  "template_ref": "common.identify_data_sources@1.0.0",
+  "template_type": "leaf",
+  "title": "Выявить источники данных",
+  "status": "ready",
+  "depth": 3,
+  "origin": {
+    "kind": "base_child",
+    "source_ref": "common.analyze_data@1.0.0"
   },
-  "summary": "Синтез ТЗ для RAG-системы ACME Corp",
+  "stable_key": "project:data:sources",
+  "priority_hint": 0,
+  "attempt": 0,
   "error": null,
-  "version": 2,
-  "created_at": "2026-04-15T13:00:00Z",
-  "updated_at": "2026-04-15T13:00:12Z",
-  "started_at": null,
-  "completed_at": null,
-  "inputs": [
+  "created_at": "2026-04-30T10:00:00Z",
+  "updated_at": "2026-04-30T10:01:00Z",
+  "edges": [
     {
-      "task_input_id": "018f3b5a-3a02-7000-a000-000000000011",
-      "task_id": "018f3b5a-3a01-7aaa-9b11-000000000001",
-      "input_name": "questionnaire",
-      "artifact_id": "018f3b5a-a000-7000-0000-00000000aaaa",
-      "artifact_type": "questionnaire",
-      "source": "dependency",
-      "resolved_at": "2026-04-15T13:00:10Z"
+      "kind": "parent_child",
+      "from_task_id": "018f3b5a-3a00-7aaa-9b11-000000000010",
+      "to_task_id": "018f3b5a-3a01-7aaa-9b11-000000000001",
+      "strength": "hard",
+      "reason": "base child of common.analyze_data"
     }
   ],
-  "outputs": [],
-  "dependencies": [
-    {
-      "dep_id": "018f3b5a-d000-7000-0000-000000000001",
-      "project_id": "018f3b5a-0000-7000-a000-000000000001",
-      "from_task_id": "018f3b5a-3a00-7aaa-9b11-000000000002",
-      "to_task_id": "018f3b5a-3a01-7aaa-9b11-000000000001",
-      "kind": "hard",
-      "input_name": "questionnaire",
-      "producer_output": "questionnaire",
-      "artifact_ref": "018f3b5a-a000-7000-0000-00000000aaaa",
-      "resolved_at": "2026-04-15T13:00:10Z",
-      "created_at": "2026-04-15T13:00:00Z"
-    }
-  ]
+  "admission": {
+    "admitted": true,
+    "checks": [
+      {
+        "name": "state_inputs",
+        "passed": true,
+        "message": "business_request доступен"
+      }
+    ]
+  }
 }

@@ -1,0 +1,107 @@
+kind: methodology_pack
+id: process.lean_jtbd
+version: 1.0.0
+title: JTBD-driven decision making
+status: active
+description: >
+  Минимальная методология рассуждения: цель → JTBD → варианты → решение.
+  Применяется ко всем leaf-задачам проекта через runtime wrapper.
+
+stage_execution_mode: single_call
+
+stages:
+  - id: goal_framing
+    title: Сформулировать цель задачи
+    description: >
+      Что именно задача должна получить как результат.
+      Без интерпретации причин и выходов в смежные шаги.
+    produces:
+      - field: declared_goal
+        type: string
+        required: true
+        description: Цель задачи в одном предложении.
+    rules:
+      - id: empty_goal
+        if: declared_goal == null
+        emit_candidate:
+          severity: high
+          need: Цель задачи не сформулирована.
+          blocking_scope: task
+
+  - id: jtbd_anchor
+    title: Зафиксировать JTBD пользователя
+    description: >
+      Привязать задачу к работе пользователя в формате when / want / so_that.
+      Если контекста на это не хватает — оставить поля пустыми, а не выдумывать.
+    produces:
+      - field: jtbd_focus
+        type: object
+        schema:
+          when: string
+          want: string
+          so_that: string
+
+  - id: option_generation
+    title: Сгенерировать варианты решения
+    description: >
+      Минимум два взаимоисключающих варианта с обоснованиями
+      и оценкой уверенности от 0 до 1.
+    produces:
+      - field: options
+        type: array
+        item_schema:
+          label: string
+          rationale: string
+          tradeoffs: string
+          confidence: number
+    constraints:
+      min: 2
+      max: 5
+
+  - id: decision
+    title: Выбрать вариант или эскалировать
+    description: >
+      Если есть явный лидер по уверенности — выбрать.
+      Если варианты сопоставимы или общий уровень уверенности низкий — эскалировать.
+    produces:
+      - field: chosen_option_id
+        type: string
+        nullable: true
+        description: Идентификатор выбранного варианта.
+      - field: escalation_candidate_id
+        type: string
+        nullable: true
+        description: Идентификатор кандидата уточнения, если выбор эскалирован.
+    rules:
+      - id: ambiguous_choice
+        if: max(option_generation.options[*].confidence) - second(option_generation.options[*].confidence) < 0.15
+        emit_candidate:
+          severity: high
+          need: Варианты сопоставимы по уверенности — нужно решение.
+          options_from: stage.option_generation.options
+          blocking_scope: task
+      - id: low_overall_confidence
+        if: max(option_generation.options[*].confidence) < 0.5
+        emit_candidate:
+          severity: medium
+          need: Уверенность во всех вариантах ниже порога.
+          blocking_scope: task
+
+reasoning_artifact:
+  required_stages: [goal_framing, decision]
+  optional_stages: [jtbd_anchor, option_generation]
+
+complexity_overrides:
+  trivial:
+    skip_stages: [option_generation]
+    relax_rules: [ambiguous_choice, low_overall_confidence]
+
+clarification_policy:
+  default_blocking_scope: task
+  ask_when:
+    - owner_decision_required
+    - low_confidence_high_impact
+    - security_or_legal_risk
+
+provenance:
+  emit_source_refs: true

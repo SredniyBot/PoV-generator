@@ -1,0 +1,12 @@
+kind: artifact_contract
+id: common.requirements_spec
+version: 1.0.0
+title: Техническое задание
+# Этап 7.5: YAML-схема носит декларативный характер.
+# Реальную валидацию делает hand-coded `application.artifact_contracts.py`.
+# unstructured=true честно сообщает: YAML здесь не задаёт обязательных полей.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true
+

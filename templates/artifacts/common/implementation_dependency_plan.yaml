@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: common.implementation_dependency_plan
+version: 1.0.0
+title: План реализации с зависимостями и фазами
+# Этап 7.5: YAML — декларативный, реальная схема в `artifact_contracts.py`.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

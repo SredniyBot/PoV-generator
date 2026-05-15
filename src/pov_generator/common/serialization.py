@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
-import json
 from pathlib import Path
 from typing import Any
 

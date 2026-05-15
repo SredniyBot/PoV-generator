@@ -1,24 +1,56 @@
 from __future__ import annotations
 
-from pathlib import Path
+import hashlib
 import json
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
-from ..domain.registry import RegistrySnapshot
+from ..domain.clarifications import ClarificationCandidate, ClarificationOption
+from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, validate_json_schema
+from .clarification_service import ClarificationService
+from .methodology_rules import evaluate_methodology_rules
 
 if TYPE_CHECKING:
     from .execution_service import ExecutionBundle
 
 
+_KNOWN_DECISION_OWNER_ROLES: frozenset[str] = frozenset(
+    {"business", "client", "methodologist", "architect", "data_owner", "security"}
+)
+
+
+def _normalize_decision_owner_role(approver_role: str | None) -> str:
+    """Маппинг `quality_gate.approver_role` (свободный формат, расширяемый
+    словарь spec/02) на канонический `DecisionOwnerRole`. Имена осознанно
+    совпадают, но gate может объявить, например, `dpo` — нормализуем
+    к ближайшей роли (`security`). Неизвестные роли уходят в `client` для
+    human_approval gate'ов (внешнее согласование) и `business` иначе."""
+    if not approver_role:
+        return "client"
+    role = approver_role.strip().lower()
+    if role in _KNOWN_DECISION_OWNER_ROLES:
+        return role
+    aliases = {
+        "dpo": "security",
+        "ciso": "security",
+        "owner": "client",
+        "stakeholder": "business",
+        "bo": "business",
+        "po": "business",
+    }
+    return aliases.get(role, "client")
+
+
 class ValidationService:
-    def __init__(self, runtime: SqliteRuntime) -> None:
+    def __init__(self, runtime: SqliteRuntime, clarification_service: ClarificationService | None = None) -> None:
         self._runtime = runtime
+        self._clarification_service = clarification_service or ClarificationService(runtime)
 
     def validate_execution(
         self,
@@ -29,10 +61,12 @@ class ValidationService:
         execution_bundle: ExecutionBundle,
     ) -> ValidationRun:
         manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
+        process = self._runtime.load_process_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
-        template = snapshot.resolve_template(f"{task.template_id}@{task.template_version}")
+        template = snapshot.resolve_template(task.template_ref)
         findings: list[ValidationFinding] = []
+        clarification_candidate_ids: list[str] = []
+        active_domain_refs = tuple(sorted(process.active_domain_pack_records.keys()))
 
         if execution_bundle.result.status != "succeeded":
             findings.append(
@@ -46,10 +80,14 @@ class ValidationService:
             )
         else:
             for output in execution_bundle.result.outputs:
+                # Reasoning и methodology trace валидируются отдельным контрактом методологии,
+                # не схемой основного артефакта. На этом этапе пропускаем.
+                if getattr(output, "kind", "primary") != "primary":
+                    continue
                 artifact = self._runtime.load_artifact(workspace, output.artifact_id)
                 try:
                     payload = json.loads(self._runtime.load_artifact_content(workspace, artifact.artifact_id))
-                    validate_json_schema(payload, artifact_schema(output.artifact_role, tuple(sorted(state.enabled_domain_packs.keys()))))
+                    validate_json_schema(payload, artifact_schema(output.artifact_role, active_domain_refs))
                 except (json.JSONDecodeError, ValidationError) as exc:
                     findings.append(
                         ValidationFinding(
@@ -63,15 +101,31 @@ class ValidationService:
                     )
                     continue
 
-                findings.extend(
-                    self._semantic_findings(
+                semantic_findings, candidates = self._semantic_analysis(
                         artifact_role=output.artifact_role,
                         payload=payload,
                         template_ref=template.ref.as_string(),
-                        enabled_domain_packs=tuple(sorted(state.enabled_domain_packs.keys())),
+                        active_domain_pack_refs=tuple(sorted(process.active_domain_pack_records.keys())),
                         artifact_id=artifact.artifact_id,
+                        project_id=manifest.project_id,
+                        task_id=task_id,
                     )
-                )
+                decisions = self._clarification_service.register_candidates(workspace, tuple(candidates))
+                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+                # Семантический gate `needs_user_input` создаётся в
+                # `_semantic_analysis` сырым — на основе непустого
+                # `blocking_questions` из LLM. Но если после регистрации
+                # кандидатов оказалось, что ВСЕ они дедуплицировались на
+                # answered/assumed/deferred (никаких реально открытых
+                # вопросов не появилось) — задача не блокирует pipeline.
+                # Это решает кейс security_constraints_assessment, где LLM
+                # эмитил 7 вопросов, все 7 нашли матчинг в системе, ни
+                # одного нового open-request, но задача всё равно падала.
+                if not self._has_open_blocking_outcome(workspace, decisions):
+                    semantic_findings = tuple(
+                        f for f in semantic_findings if f.finding_type != "needs_user_input"
+                    )
+                findings.extend(semantic_findings)
 
                 if output.artifact_role == "review_report":
                     if payload.get("overall_status") != "passed":
@@ -85,11 +139,25 @@ class ValidationService:
                                 related_artifact_ids=(artifact.artifact_id,),
                             )
                         )
+                    else:
+                        gate_candidates = self._maybe_emit_gate_candidates(
+                            workspace=workspace,
+                            snapshot=snapshot,
+                            project_id=manifest.project_id,
+                            task_id=task_id,
+                            artifact_role=output.artifact_role,
+                            artifact_id=artifact.artifact_id,
+                        )
+                        if gate_candidates:
+                            decisions = self._clarification_service.register_candidates(
+                                workspace, tuple(gate_candidates)
+                            )
+                            clarification_candidate_ids.extend(d.candidate_id for d in decisions)
 
                 if (
                     output.artifact_role == "requirements_spec"
                     and template.ref.as_string() != "common.requirements_spec_generation@2.0.0"
-                    and "frontend.web_app_requirements@1.0.0" in state.enabled_domain_packs
+                    and self._has_pack(tuple(sorted(process.active_domain_pack_records.keys())), "frontend.web_workspace", "frontend.web_app_requirements")
                     and not payload.get("frontend_requirements")
                 ):
                     findings.append(
@@ -104,6 +172,21 @@ class ValidationService:
                     )
 
         status = "passed" if not any(item.blocking for item in findings) else "failed"
+        # Кандидаты от правил методологии теперь поступают из execution_service:
+        # rules eval делается там же, где формируется reasoning, и попадает
+        # в methodology_trace с реальными `fired`/`candidates_emitted`.
+        # Здесь только регистрируем их через ClarificationService.
+        if execution_bundle.result.status == "succeeded" and execution_bundle.result.methodology_candidates:
+            try:
+                decisions = self._clarification_service.register_candidates(
+                    workspace, execution_bundle.result.methodology_candidates
+                )
+                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+            except Exception:
+                # Fail-safe: ошибка регистрации кандидата не должна валить
+                # валидацию основного артефакта. Аналогично прежнему поведению.
+                pass
+
         validation_run = ValidationRun(
             validation_run_id=str(uuid.uuid4()),
             project_id=manifest.project_id,
@@ -111,11 +194,12 @@ class ValidationService:
             execution_run_id=execution_bundle.result.execution_run_id,
             status=status,
             findings=tuple(findings),
+            clarification_candidate_ids=tuple(clarification_candidate_ids),
             created_at=utc_now_iso(),
         )
         self._runtime.record_validation_run(workspace, validation_run)
 
-        if status != "passed":
+        if status != "passed" and any(finding.finding_type != "needs_user_input" for finding in findings):
             ticket = EscalationTicket(
                 escalation_ticket_id=str(uuid.uuid4()),
                 project_id=manifest.project_id,
@@ -123,7 +207,7 @@ class ValidationService:
                 reason_code="validation_failed",
                 severity="error",
                 blocking=True,
-                summary=f"Валидация задачи '{task.recipe_step_id}' завершилась с ошибками.",
+                summary=f"Валидация задачи '{task.task_key}' завершилась с ошибками.",
                 details={"findings": [finding.message for finding in findings]},
                 created_at=utc_now_iso(),
             )
@@ -131,16 +215,53 @@ class ValidationService:
 
         return validation_run
 
-    def _semantic_findings(
+    def _has_open_blocking_outcome(self, workspace: Path, decisions) -> bool:
+        """True если регистрация кандидатов реально породила хотя бы один
+        open-request, блокирующий задачу.
+
+        ВАЖНО: всегда перечитываем актуальный статус request'а из БД, потому
+        что пока шла регистрация (включая LLM-enrichment description+options
+        для каждого кандидата — это секунды каждый), пользователь мог уже
+        ответить на параллельно созданные вопросы. Если на момент финала
+        валидации все blocking-вопросы УЖЕ закрыты — finding `needs_user_input`
+        не нужен.
+
+        Логика для каждого decision:
+        - action == "assume"/"defer" → закрытое автоматически, не блокирует.
+        - action в {"ask", "reuse_existing"} с request_id → читаем актуальный
+          статус из БД:
+            * status == "open" + blocking_scope != "none" → блокирует
+            * любой другой статус (answered/assumed/deferred) → не блокирует
+        - Без request_id (нестандартный сценарий) → не блокирует.
+        """
+        for decision in decisions:
+            if decision.action in {"assume", "defer"}:
+                continue
+            if not decision.request_id:
+                continue
+            try:
+                existing = self._runtime.get_clarification_request(workspace, decision.request_id)
+            except Exception:
+                # Запросить не удалось — считаем блокирующим (безопасный
+                # дефолт, чтобы не пропустить реальную блокировку).
+                return True
+            if existing.status == "open" and existing.blocking_scope != "none":
+                return True
+        return False
+
+    def _semantic_analysis(
         self,
         *,
         artifact_role: str,
         payload: dict[str, Any],
         template_ref: str,
-        enabled_domain_packs: tuple[str, ...],
+        active_domain_pack_refs: tuple[str, ...],
         artifact_id: str,
-    ) -> list[ValidationFinding]:
+        project_id: str,
+        task_id: str,
+    ):
         findings: list[ValidationFinding] = []
+        candidates = []
         confidence = payload.get("confidence")
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.45:
             findings.append(
@@ -153,32 +274,110 @@ class ValidationService:
                     related_artifact_ids=(artifact_id,),
                 )
             )
+            if not payload.get("blocking_questions"):
+                candidates.append(
+                    self._clarification_service.candidate_from_question(
+                        project_id=project_id,
+                        source_type="validation",
+                        # W6/B2: source_id ДОЛЖЕН быть стабильным между re-run
+                        # одной задачи. Раньше включали artifact_id, который
+                        # меняется при каждом исполнении → find_clarification_by_source
+                        # не находил answered request → дубли вопросов после
+                        # ответа. Теперь привязываемся к (task_id, artifact_role).
+                        source_id=f"{task_id}:{artifact_role}:low_confidence",
+                        question="Какой ключевой бизнес-контекст нужно учесть, чтобы повысить уверенность результата?",
+                        affected_task_ids=(task_id,),
+                        related_artifact_ids=(artifact_id,),
+                        severity="high",
+                        confidence_without_user=float(confidence),
+                        rationale="Результат задачи имеет низкую уверенность, а в контексте недостаточно данных для надежного вывода.",
+                        impact="Ответ поможет перезапустить задачу с более точным пониманием требований.",
+                    )
+                )
 
         blocking_questions = payload.get("blocking_questions")
         if isinstance(blocking_questions, list) and blocking_questions:
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="needs_user_input",
-                    severity="error",
-                    blocking=True,
-                    message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
-                    related_artifact_ids=(artifact_id,),
-                )
+            # АРХИТЕКТУРНОЕ РЕШЕНИЕ: blocking_questions от LLM трактуются как
+            # **advisory follow-ups**, а не как стоп-сигнал.
+            #
+            # Причина: LLM с высокой уверенностью (confidence >= 0.45) сам
+            # производит качественный артефакт со всеми разделами + ДОПОЛНИТЕЛЬНО
+            # заполняет blocking_questions деталями, которые «было бы хорошо
+            # уточнить». В реальной консалтинговой работе это нормально:
+            # ТЗ всегда содержит секцию «открытые вопросы» / «допущения»,
+            # это не блокер для поставки документа.
+            #
+            # Старая логика валила задачу на любой непустой blocking_questions,
+            # что приводило к бесконечному циклу:
+            #   task → LLM выдаёт хороший артефакт + 5 вопросов → task failed
+            #   → user отвечает 5 вопросов → retry → LLM выдаёт хороший артефакт
+            #   + 5 новых вопросов → ...
+            #
+            # Новая логика:
+            # • Если confidence < 0.45 (низкая уверенность зафиксирована выше)
+            #   — задача УЖЕ помечена `low_confidence` finding'ом (blocking=True).
+            #   В этом случае blocking_questions ДЕЙСТВИТЕЛЬНО блокируют:
+            #   candidates создаются с blocking_scope="task", а finding
+            #   needs_user_input явно добавляется для прозрачности.
+            # • Если confidence >= 0.45 — артефакт валиден.
+            #   blocking_questions становятся advisory-кандидатами
+            #   (blocking_scope="none"). Они появляются в инбоксе как
+            #   «follow-up для уточнения», но НЕ блокируют admission задачи
+            #   и НЕ создают `needs_user_input` finding.
+            is_low_confidence = (
+                isinstance(confidence, (int, float))
+                and not isinstance(confidence, bool)
+                and confidence < 0.45
             )
+            advisory_scope = "task" if is_low_confidence else "none"
+            if is_low_confidence:
+                findings.append(
+                    ValidationFinding(
+                        finding_id=str(uuid.uuid4()),
+                        finding_type="needs_user_input",
+                        severity="error",
+                        blocking=True,
+                        message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
+                        related_artifact_ids=(artifact_id,),
+                    )
+                )
+            for question in blocking_questions:
+                normalized_question = str(question).strip()
+                if not normalized_question:
+                    continue
+                # W6/B2: hash вопроса в source_id даёт стабильный идентификатор
+                # между re-run (порядок blocking_questions может меняться —
+                # `index` был ненадёжным якорем). artifact_id тоже выкинут
+                # как нестабильный между запусками задачи.
+                question_hash = hashlib.sha1(
+                    normalized_question.lower().encode("utf-8")
+                ).hexdigest()[:10]
+                candidates.append(
+                    self._clarification_service.candidate_from_question(
+                        project_id=project_id,
+                        source_type="validation",
+                        source_id=f"{task_id}:{artifact_role}:question:{question_hash}",
+                        question=normalized_question,
+                        affected_task_ids=(task_id,),
+                        related_artifact_ids=(artifact_id,),
+                        severity="high" if is_low_confidence else "medium",
+                        confidence_without_user=0.2,
+                        blocking_scope=advisory_scope,
+                    )
+                )
 
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
-            findings.extend(self._validate_enterprise_spec(payload, enabled_domain_packs, artifact_id))
+            findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))
 
         if artifact_role == "review_report" and template_ref == "common.requirements_spec_review@2.0.0":
             findings.extend(self._validate_review_report(payload, artifact_id))
 
-        return findings
+        return findings, candidates
 
     def _validate_enterprise_spec(
         self,
         payload: dict[str, Any],
-        enabled_domain_packs: tuple[str, ...],
+        active_domain_pack_refs: tuple[str, ...],
         artifact_id: str,
     ) -> list[ValidationFinding]:
         findings: list[ValidationFinding] = []
@@ -208,7 +407,7 @@ class ValidationService:
                     )
                 )
 
-        if any(ref.startswith("frontend.web_app_requirements@") for ref in enabled_domain_packs):
+        if self._has_pack(active_domain_pack_refs, "frontend.web_workspace", "frontend.web_app_requirements"):
             frontend = payload.get("frontend_requirements")
             if not isinstance(frontend, dict) or not frontend.get("screens"):
                 findings.append(
@@ -222,7 +421,7 @@ class ValidationService:
                     )
                 )
 
-        if any(ref.startswith("ml.predictive_analytics_pov_requirements@") for ref in enabled_domain_packs):
+        if self._has_pack(active_domain_pack_refs, "ml.predictive_analytics", "ml.predictive_analytics_pov_requirements"):
             ml_requirements = payload.get("ml_requirements")
             if not isinstance(ml_requirements, dict) or not ml_requirements.get("prediction_target"):
                 findings.append(
@@ -236,7 +435,7 @@ class ValidationService:
                     )
                 )
 
-        if any(ref.startswith("security.enterprise_compliance_requirements@") for ref in enabled_domain_packs):
+        if self._has_pack(active_domain_pack_refs, "security.enterprise_compliance", "security.enterprise_compliance_requirements"):
             security_detail = payload.get("security_constraints_detail")
             if not isinstance(security_detail, dict) or not security_detail.get("mandatory_controls"):
                 findings.append(
@@ -250,7 +449,7 @@ class ValidationService:
                     )
                 )
 
-        if any(ref.startswith("integration.enterprise_delivery_requirements@") for ref in enabled_domain_packs):
+        if self._has_pack(active_domain_pack_refs, "integration.enterprise_integration", "integration.enterprise_delivery_requirements"):
             integration_model = payload.get("integration_model")
             if not isinstance(integration_model, dict) or not integration_model.get("delivery_pattern"):
                 findings.append(
@@ -265,6 +464,12 @@ class ValidationService:
                 )
 
         return findings
+
+    def _has_pack(self, active_domain_pack_refs: tuple[str, ...], *pack_prefixes: str) -> bool:
+        return any(
+            any(pack_ref.startswith(f"{pack_prefix}@") for pack_prefix in pack_prefixes)
+            for pack_ref in active_domain_pack_refs
+        )
 
     def _validate_review_report(self, payload: dict[str, Any], artifact_id: str) -> list[ValidationFinding]:
         findings: list[ValidationFinding] = []
@@ -293,3 +498,85 @@ class ValidationService:
                 )
             )
         return findings
+
+    def _evaluate_methodology_rules(
+        self,
+        *,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        reasoning: dict,
+        project_id: str,
+        task_id: str,
+    ) -> list[ClarificationCandidate]:
+        # Тонкий делегат к pure-функции в `methodology_rules`. Сохранён для
+        # обратной совместимости с тестами, которые исторически вызывают этот
+        # метод напрямую. В рантайме теперь правила прогоняет execution_service.
+        evaluation = evaluate_methodology_rules(
+            methodology=methodology,
+            complexity=complexity,
+            reasoning=reasoning,
+            project_id=project_id,
+            task_id=task_id,
+        )
+        return list(evaluation.candidates)
+
+    def _maybe_emit_gate_candidates(
+        self,
+        *,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        project_id: str,
+        task_id: str,
+        artifact_role: str,
+        artifact_id: str,
+    ) -> list[ClarificationCandidate]:
+        manifest = self._runtime.load_manifest(workspace)
+        objective = snapshot.resolve_objective(manifest.objective_ref)
+        candidates: list[ClarificationCandidate] = []
+        existing_requests = self._runtime.list_clarification_requests(workspace)
+        for gate_ref in objective.done_gate_refs:
+            gate = snapshot.resolve_quality_gate(gate_ref)
+            if gate.check_type != "human_approval":
+                continue
+            required_roles = set(gate.required_artifact_roles)
+            if required_roles and artifact_role not in required_roles:
+                continue
+            already = any(
+                req.source_type == "quality_gate" and req.source_id == gate.ref.as_string()
+                for req in existing_requests
+            )
+            if already:
+                continue
+            decision_modes = gate.decision_modes or ("approved", "approved_with_comments", "rejected")
+            options_typed = tuple(
+                ClarificationOption(option_id=mode, label=mode, description="")
+                for mode in decision_modes
+            )
+            candidates.append(
+                ClarificationCandidate(
+                    candidate_id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    source_type="quality_gate",
+                    source_id=gate.ref.as_string(),
+                    need=f"Требуется внешнее согласование: {gate.title}.",
+                    question=f"Согласовать результат gate '{gate.title}'?",
+                    description=f"Gate {gate.ref.as_string()} требует решения роли '{gate.approver_role or 'approver'}'.",
+                    rationale="Gate настроен на human_approval — пока не получено решение, цель не считается завершённой.",
+                    impact="Без согласования цель проекта не закрывается.",
+                    severity="high",
+                    confidence_without_user=0.0,
+                    # Этап 3.1: внешнее согласование (sign-off) — это
+                    # principal-уровень: всплывает в любом engagement-режиме.
+                    visibility="principal",
+                    default_assumption=None,
+                    recommended_answer=None,
+                    answer_mode="single",
+                    options=options_typed,
+                    affected_task_ids=(task_id,),
+                    related_artifact_ids=(artifact_id,),
+                    blocking_scope="objective",
+                    decision_owner_role=_normalize_decision_owner_role(gate.approver_role),
+                    created_at="",
+                )
+            )
+        return candidates

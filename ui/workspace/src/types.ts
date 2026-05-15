@@ -1,12 +1,15 @@
 export type ProjectionName =
   | "shell"
-  | "journey"
+  | "task_graph"
   | "situation"
   | "timeline"
   | "artifacts"
+  | "clarifications"
   | "review"
   | "state"
-  | "debug";
+  | "debug"
+  | "overview"
+  | "methodology";
 
 export interface ProjectListItemView {
   project_id: string;
@@ -17,12 +20,11 @@ export interface ProjectListItemView {
   current_step_title: string | null;
 }
 
-export interface RecipeCatalogItemView {
-  recipe_ref: string;
-  name: string;
-  domain: string;
-  stage_gate: string;
-  step_count: number;
+export interface ObjectiveCatalogItemView {
+  objective_ref: string;
+  title: string;
+  root_task_ref: string;
+  required_artifact_count: number;
 }
 
 export interface DomainPackCatalogItemView {
@@ -37,7 +39,7 @@ export interface DomainPackCatalogItemView {
 export interface ProjectCreatedView {
   project_id: string;
   name: string;
-  recipe_ref: string;
+  objective_ref: string;
   domain_pack_refs: string[];
   workspace_path: string;
   changed_projections: ProjectionName[];
@@ -47,36 +49,40 @@ export interface ProjectShellView {
   project_id: string;
   name: string;
   business_request: string;
-  recipe_ref: string;
-  enabled_domain_packs: string[];
+  objective_ref: string;
+  active_domain_packs: string[];
   goal: string | null;
   status_label: string;
   updated_at: string;
 }
 
-export interface JourneyStepView {
-  step_id: string;
+export interface TaskNodeView {
+  task_id: string;
+  task_key: string;
+  parent_task_id: string | null;
   title: string;
   template_ref: string;
-  source_kind: string;
-  source_ref: string;
+  template_type: string;
   status: string;
   status_summary: string | null;
-  latest_task_id: string | null;
+  origin_kind: string;
+  origin_ref: string;
+  slot_id: string | null;
+  depth: number;
   retryable: boolean;
-  required: boolean;
   is_current: boolean;
+  blocking_clarification_count: number;
+  updated_at: string;
+  children: TaskNodeView[];
 }
 
-export interface ProjectJourneyView {
+export interface ProjectTaskGraphView {
   project_id: string;
-  recipe_ref: string;
-  domain_pack_refs: string[];
-  recipe_fragment_refs: string[];
-  current_step_id: string | null;
-  completed_steps: number;
-  total_steps: number;
-  steps: JourneyStepView[];
+  objective_ref: string;
+  current_task_id: string | null;
+  completed_leaf_tasks: number;
+  total_leaf_tasks: number;
+  nodes: TaskNodeView[];
 }
 
 export interface ActionDescriptor {
@@ -127,6 +133,50 @@ export interface ProjectTimelineView {
   total_entries: number;
 }
 
+export interface ClarificationOptionView {
+  option_id: string;
+  label: string;
+  description: string;
+  effect_preview: string;
+  confidence: number | null;
+}
+
+export interface ClarificationItemView {
+  clarification_id: string;
+  status: string;
+  priority: string;
+  title: string;
+  question: string;
+  description: string;
+  reason: string;
+  impact: string;
+  answer_mode: string;
+  options: ClarificationOptionView[];
+  recommended_option_id: string | null;
+  min_participation_mode: string;
+  default_assumption: string | null;
+  blocking_scope: string;
+  decision_owner_role: string;
+  auto_resolved: boolean;
+  affected_task_ids: string[];
+  related_artifact_ids: string[];
+  selected_option_ids: string[];
+  free_text: string | null;
+  resolution_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectClarificationsView {
+  project_id: string;
+  mode: string;
+  open_count: number;
+  answered_count: number;
+  assumed_count: number;
+  blocking_count: number;
+  items: ClarificationItemView[];
+}
+
 export interface ArtifactSummaryView {
   artifact_id: string;
   artifact_role: string;
@@ -154,6 +204,18 @@ export interface ArtifactDetailView {
   json_content: string;
   markdown_content: string | null;
   validations: ArtifactValidationView[];
+  // Metadata Этапов 1 + 5.
+  artifact_kind: string;
+  provider: string | null;
+  model: string | null;
+  complexity: string | null;
+  methodology_pack_ref: string | null;
+  merge_strategy: string | null;
+  used_position_ids: string[];
+  input_artifact_ids: string[];
+  parent_artifact_id: string | null;
+  is_superseded: boolean;
+  overall_confidence: number | null;
 }
 
 export interface ReviewIssueView {
@@ -176,10 +238,14 @@ export interface ProjectStateView {
   project_id: string;
   goal: string | null;
   active_gaps: Record<string, unknown>[];
+  assumptions: Record<string, unknown>[];
+  decisions: Record<string, unknown>[];
   readiness: Record<string, unknown>[];
   known_facts: Record<string, unknown>[];
-  enabled_domain_packs: Record<string, unknown>[];
-  recipe_composition: Record<string, unknown> | null;
+  active_domain_packs: Record<string, unknown>[];
+  active_methodology_packs: Record<string, unknown>[];
+  clarification_mode: string;
+  root_task_id: string | null;
   updated_at: string;
 }
 
@@ -204,6 +270,8 @@ export interface ProjectDebugView {
   context_manifests: ContextManifestSummaryView[];
   validation_runs: Record<string, unknown>[];
   escalations: Record<string, unknown>[];
+  clarification_candidates: Record<string, unknown>[];
+  clarification_requests: Record<string, unknown>[];
 }
 
 export interface CommandResultView {
@@ -240,3 +308,272 @@ export interface WsErrorMessage {
 }
 
 export type WsMessage = WsSnapshotMessage | WsProjectionChangedMessage | WsErrorMessage;
+
+
+export interface OverviewClarificationItem {
+  clarification_id: string;
+  title: string;
+  priority: string;
+  blocking_scope: string;
+  source_type: string;
+}
+
+export interface OverviewArtifactItem {
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  created_at: string;
+}
+
+export interface ObjectiveProgressView {
+  artifacts_required: number;
+  artifacts_ready: number;
+  gates_required: number;
+  gates_passed: number;
+}
+
+export interface ProjectOverviewView {
+  project_id: string;
+  name: string;
+  objective_ref: string;
+  stage_summary: string;
+  current_activity: string;
+  objective_progress: ObjectiveProgressView;
+  critical_clarifications: OverviewClarificationItem[];
+  key_artifacts: OverviewArtifactItem[];
+  active_methodology: string | null;
+  active_domain_packs: string[];
+  clarification_mode: string;
+  updated_at: string;
+}
+
+
+// ---- Async workflow runs (W4.1 / R1) -------------------------------------
+
+export type WorkflowRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface WorkflowStepView {
+  sequence: number;
+  task_id: string | null;
+  task_key: string | null;
+  selected_step_id: string | null;
+  planning_outcome: string;
+  validation_status: string | null;
+  execution_run_id: string | null;
+  started_at: string;
+  finished_at: string;
+  error_message: string | null;
+}
+
+export interface WorkflowRunView {
+  run_id: string;
+  project_id: string;
+  status: WorkflowRunStatus;
+  provider: string | null;
+  model: string | null;
+  max_steps: number;
+  current_step: number;
+  total_steps_completed: number;
+  started_at: string;
+  finished_at: string | null;
+  last_step_summary: string;
+  stop_reason: string | null;
+  error_message: string | null;
+  cancel_requested: boolean;
+  steps: WorkflowStepView[];
+}
+
+
+// ---- Methodology pack catalog (для L2 MethodologyView) -------------------
+
+export interface MethodologyStageProducesView {
+  field: string;
+  type: string;
+  required: boolean;
+}
+
+export interface MethodologyStageRuleView {
+  id: string;
+  if: string | null;
+}
+
+export interface MethodologyStageView {
+  id: string;
+  title: string;
+  description: string;
+  produces: MethodologyStageProducesView[];
+  rules: MethodologyStageRuleView[];
+}
+
+export interface MethodologyPackView {
+  pack_ref: string;
+  title: string;
+  description: string;
+  status: string;
+  stage_execution_mode: string;
+  stages: MethodologyStageView[];
+  required_stages: string[];
+  optional_stages: string[];
+}
+
+
+// ---- Methodology trace для L3 ReasoningPanel + L4 Provenance -------------
+
+export interface MethodologyReasoningStageView {
+  stage_id: string;
+  title: string;
+  outputs: Record<string, unknown>;
+  _source?: Record<string, unknown> | null;
+}
+
+export interface MethodologyReasoningPayload {
+  methodology_pack_ref: string;
+  stages: MethodologyReasoningStageView[];
+  complexity: string | null;
+}
+
+export interface MethodologyTraceRuleOutcome {
+  stage_id: string;
+  rule_id: string;
+  fired: boolean;
+  candidate_id?: string;
+}
+
+export interface MethodologyTraceCandidate {
+  candidate_id: string;
+  source_id: string;
+  severity: string;
+  blocking_scope: string;
+}
+
+export interface MethodologyTracePayload {
+  methodology_pack_ref: string;
+  stage_execution_mode: string;
+  complexity: string | null;
+  stages_executed: string[];
+  stage_outputs: Record<string, Record<string, unknown>>;
+  rules_evaluated: MethodologyTraceRuleOutcome[];
+  candidates_emitted: MethodologyTraceCandidate[];
+}
+
+export interface MethodologyExecutionSummary {
+  execution_run_id: string | null;
+  provider: string | null;
+  model: string | null;
+  status: string | null;
+  context_manifest_id: string | null;
+  created_at: string | null;
+}
+
+export interface MethodologyTraceResponse {
+  task_id: string;
+  trace: MethodologyTracePayload | null;
+  reasoning: MethodologyReasoningPayload | null;
+  trace_artifact_id?: string;
+  reasoning_artifact_id?: string | null;
+  execution?: MethodologyExecutionSummary | null;
+  message?: string;
+}
+
+
+// ---- L6 design extensions (P3v2 skeleton, P5 pins, P7 decisions, P8 versions) ----
+
+export type ArtifactSectionStatus = "done" | "in_progress" | "pending" | "needs_review";
+
+export interface ArtifactSectionView {
+  section_id: string;
+  title: string;
+  status: ArtifactSectionStatus;
+  summary: string | null;
+  has_pins: boolean;
+  pin_count: number;
+}
+
+export interface ArtifactSkeletonView {
+  project_id: string;
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  sections: ArtifactSectionView[];
+  sections_done: number;
+  sections_total: number;
+  has_markdown: boolean;
+  created_at: string;
+}
+
+export type DecisionKind = "answered" | "assumed";
+
+export interface DecisionLogEntryView {
+  decision_id: string;
+  kind: DecisionKind;
+  title: string;
+  question: string;
+  resolution_summary: string | null;
+  selected_option_ids: string[];
+  free_text: string | null;
+  rationale: string;
+  impact: string;
+  blocking_scope: string;
+  decision_owner_role: string;
+  source_type: string;
+  source_id: string | null;
+  affected_task_ids: string[];
+  related_artifact_ids: string[];
+  alternatives: ClarificationOptionView[];
+  auto_resolved: boolean;
+  decided_at: string;
+  created_at: string;
+}
+
+export interface ProjectDecisionLogView {
+  project_id: string;
+  entries: DecisionLogEntryView[];
+  total_count: number;
+  answered_count: number;
+  assumed_count: number;
+}
+
+export interface ArtifactVersionItemView {
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  label: string;
+  is_current: boolean;
+  created_at: string;
+  created_by_task_id: string | null;
+  parent_artifact_id: string | null;
+  description: string;
+}
+
+export interface ProjectArtifactVersionsView {
+  project_id: string;
+  chains: ArtifactVersionItemView[][];
+}
+
+export type FailurePinKind = "candidate_open" | "assumption" | "validation_finding";
+export type FailurePinSeverity = "high" | "medium" | "low";
+
+export interface FailurePinView {
+  pin_id: string;
+  artifact_id: string;
+  section_id: string | null;
+  severity: FailurePinSeverity;
+  kind: FailurePinKind;
+  message: string;
+  source_type: string;
+  source_id: string | null;
+  confidence_without_user: number | null;
+  related_clarification_id: string | null;
+}
+
+export interface ProjectFailurePinsView {
+  project_id: string;
+  artifact_id: string | null;
+  pins: FailurePinView[];
+  total_count: number;
+}

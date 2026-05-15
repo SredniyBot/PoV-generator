@@ -1,277 +1,170 @@
-# Validation и Governance — спецификация
+# Валидация и управление качеством
 
-> **Статус:** v1.1 · Draft · 2026-04-19
-> **Зависимости:** [00_overview.md](00_overview.md), [02_task_store.md](02_task_store.md), [04_problem_state.md](04_problem_state.md), [07_execution_runtime.md](07_execution_runtime.md), [09_domain_packs.md](09_domain_packs.md)
-> **Область:** contract validation, critique loops, stage-gate governance и human escalation.
+> **Статус:** v2.1 · черновик · 2026-05-09
 
----
-
-## 1. Назначение и зона ответственности
-
-### 1.1. Что делает
-- Проверяет outputs задачи против `output_contract`.
-- Выполняет дополнительные checks, critique loops и integration validation.
-- Проверяет readiness claims и recipe completion conditions перед success.
-- Учитывает expectations активных `Domain Pack` при проверке completeness и quality.
-- Оценивает exit criteria текущего `StageGate`.
-- Создаёт escalation tickets при невозможности надёжно продолжать автоматически.
-
-### 1.2. Чего НЕ делает
-- Не выбирает следующий template.
-- Не исполняет бизнес-задачу вместо Runtime.
-- Не меняет raw artifacts.
+Валидация проверяет результат задачи, поддерева или цели. Она не выбирает следующую задачу и не скрывает ошибки. Quality gate отделён от валидации артефактов и валидации методологии: gate — это точка явного согласования с заказчиком или ответственной ролью между фазами проекта.
 
 ---
 
-## 2. Валидационный pipeline
+## Процесс проверки
 
-### 2.1. Порядок шагов
+Валидация листовой задачи:
 
-После `ExecutionResult(status="succeeded")` система обязана пройти:
+```text
+1. Статус исполнения.
+2. Наличие primary, reasoning_artifact, methodology_trace.
+3. Контракт и схема primary артефакта.
+4. Схема reasoning_artifact (по активной методологии).
+5. Семантические правила задачи и правила методологии.
+6. Уверенность и политика кандидатов уточнений.
+7. Доменные ожидания.
+8. Предложенные изменения `ProjectKnowledge` / `ProcessState`.
+9. Решение о завершении.
+```
 
-1. `output_contract` validation
-2. artifact schema validation
-3. optional critique / review loop
-4. integration checks
-5. readiness / recipe completion validation
-6. domain-pack validation expectations
-7. `ProblemStatePatch` validation
-8. commit outputs + patch
+Валидация композитной задачи или цели:
 
-Только после этих шагов задача может перейти в `Completed`.
+```text
+1. Завершение обязательных дочерних задач.
+2. Наличие обязательных артефактов поддерева.
+3. Блокирующие задачи в ошибке.
+4. Проверки качества.
+5. Открытые блокирующие пробелы.
+6. Решение о завершении.
+```
 
-### 2.2. `ValidationRun`
+---
+
+## ValidationRun
 
 ```python
 class ValidationRun(BaseModel):
     validation_run_id: UUID
-    project_id: ProjectId
-    task_id: TaskId
-    execution_run_id: ExecutionRunId
-    status: Literal["running", "passed", "failed", "escalated"]
-    findings: list["ValidationFinding"] = []
+    project_id: UUID
+    task_id: UUID | None
+    scope: Literal["task", "subtree", "objective", "artifact"]
+    status: Literal["passed", "failed", "warning"]
+    findings: list[ValidationFinding]
+    clarification_candidate_ids: list[UUID]
 ```
+
+Finding:
 
 ```python
 class ValidationFinding(BaseModel):
-    finding_id: UUID
-    finding_type: Literal["contract_error", "schema_error", "quality_risk", "integration_failure", "readiness_failure", "recipe_failure"]
+    finding_type: str
     severity: Literal["info", "warning", "error", "critical"]
     blocking: bool
     message: str
-    related_artifact_ids: list[UUID] = []
-```
-
-### 2.3. Domain Pack expectations
-
-Каждый активный `Domain Pack` может добавлять:
-
-- обязательные artifact roles;
-- доменные review expectations;
-- доменные completeness checks;
-- readiness expectations;
-- quality findings specific to the domain.
-
-Нормативное правило:
-
-Если `Domain Pack` активирован в `ProblemState`, validator обязан учитывать его expectations даже тогда, когда основной `Recipe` является общим.
-
-Пример:
-
-Если активирован `frontend` pack, то validation черновика ТЗ должна уметь проверить, что в артефакте появились или были подготовлены:
-
-- роли пользователей;
-- пользовательские потоки;
-- ожидания по экранам;
-- ключевые UX/UI ограничения.
-
----
-
-## 3. Critique loops
-
-### 3.1. Источник правил
-
-Critique loop запускается только если:
-
-- `validation_policy.critique_template_refs` не пуст;
-- есть findings, которые допускают correction;
-- `max_correction_loops > 0`.
-
-### 3.2. Правила
-
-- Каждая correction iteration создаёт **отдельную задачу** или отдельный execution attempt; скрытых циклов внутри validator нет.
-- `max_correction_loops` жёсткий.
-- После исчерпания loops система либо fail'ит, либо escalates по policy.
-
----
-
-## 4. Stage-Gate governance
-
-### 4.1. Роль stage gate
-
-`StageGate` — это governance-механизм, а не planner.  
-Он:
-
-- ограничивает допуск новых задач в фазу;
-- проверяет exit criteria;
-- допускает controlled backflow.
-
-### 4.2. `GatePolicy`
-
-```python
-class GatePolicy(BaseModel):
-    stage_gate: StageGate
-    required_gap_types_closed: list[NamespacedId] = []
-    required_readiness_types: list[NamespacedId] = []
-    required_artifact_roles: list[NamespacedId] = []
-    required_check_ids: list[str] = []
-    allows_backflow_to: list[StageGate] = []
-```
-
-### 4.3. Exit criteria
-
-Gate может быть закрыт, только если:
-
-- нет blocking gaps, относящихся к текущей фазе;
-- обязательные readiness dimensions не ниже `ready`/`waived`;
-- есть обязательные artifact roles;
-- выполнены обязательные domain-pack expectations для этой фазы;
-- все required checks passed;
-- нет active critical escalations по фазе.
-
-### 4.4. Backflow
-
-Если в более поздней фазе открыт новый blocking gap ранней фазы:
-
-1. governance layer не переписывает историю;
-2. открывает gate backflow;
-3. Planner снова может создавать задачи соответствующего stage.
-
----
-
-## 5. Human escalation
-
-### 5.1. `EscalationTicket`
-
-```python
-class EscalationTicket(BaseModel):
-    escalation_ticket_id: UUID
-    project_id: ProjectId
-    task_id: TaskId | None = None
-    stage_gate: StageGate
-    reason_code: str
-    severity: Literal["warning", "error", "critical"]
-    blocking: bool
-    summary: str
-    details: dict[str, Any]
-    created_at: datetime
-    resolved_at: datetime | None = None
-    resolution: str | None = None
-```
-
-### 5.2. Когда создаётся escalation
-
-- missing blocking user input;
-- repeated correction exhaustion;
-- conflicting confirmed decisions;
-- impossible context assembly for required task;
-- critical validation failure;
-- external side-effect approval required.
-
-### 5.3. Типы разрешения
-
-- `user_answered`
-- `developer_override`
-- `accepted_risk`
-- `aborted_project`
-- `replanned`
-
----
-
-## 6. Хранение и DDL
-
-```sql
-CREATE TABLE validation_runs (
-    validation_run_id     UUID         PRIMARY KEY,
-    project_id            UUID         NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
-    task_id               UUID         NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-    execution_run_id      UUID         NOT NULL REFERENCES execution_runs(execution_run_id) ON DELETE CASCADE,
-    status                TEXT         NOT NULL CHECK (status IN ('running','passed','failed','escalated')),
-    started_at            TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    finished_at           TIMESTAMPTZ
-);
-
-CREATE TABLE validation_findings (
-    finding_id            UUID         PRIMARY KEY,
-    validation_run_id     UUID         NOT NULL REFERENCES validation_runs(validation_run_id) ON DELETE CASCADE,
-    finding_type          TEXT         NOT NULL,
-    severity              TEXT         NOT NULL CHECK (severity IN ('info','warning','error','critical')),
-    blocking              BOOLEAN      NOT NULL,
-    message               TEXT         NOT NULL,
-    details               JSONB        NOT NULL DEFAULT '{}'::jsonb
-);
-
-CREATE TABLE escalation_tickets (
-    escalation_ticket_id  UUID         PRIMARY KEY,
-    project_id            UUID         NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
-    task_id               UUID         REFERENCES tasks(task_id) ON DELETE SET NULL,
-    stage_gate            TEXT         NOT NULL,
-    reason_code           TEXT         NOT NULL,
-    severity              TEXT         NOT NULL CHECK (severity IN ('warning','error','critical')),
-    blocking              BOOLEAN      NOT NULL,
-    summary               TEXT         NOT NULL,
-    details               JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    created_at            TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    resolved_at           TIMESTAMPTZ,
-    resolution            TEXT
-);
+    related_task_ids: list[UUID]
+    related_artifact_ids: list[UUID]
 ```
 
 ---
 
-## 7. API
+## Проверки качества
 
-```python
-class ValidationService(Protocol):
-    async def validate_execution(
-        self,
-        *,
-        task_id: TaskId,
-        execution_result: ExecutionResult,
-    ) -> ValidationRun: ...
+Quality gate — точка явного согласования с заказчиком или ответственной ролью между фазами проекта. Это не валидация задачи и не методологическая проверка.
 
-class GovernanceService(Protocol):
-    async def evaluate_stage_gate(
-        self,
-        *,
-        project_id: ProjectId,
-        stage_gate: StageGate,
-    ) -> dict[str, Any]: ...
+Типы `check.type`:
 
-    async def create_escalation(
-        self,
-        *,
-        ticket: EscalationTicket,
-    ) -> None: ...
+- `human_approval` — решение принимает человек через UI системы (заказчик, методолог, архитектор и т.п.).
+- `external_signoff` — решение фиксируется во внешней системе (DocuSign, Jira-тикет, подпись DPO в отдельной системе). Gateway фиксирует событие, а не собирает ответ через UI.
+- `automated_review` — формальная LLM- или script-проверка. Используется для случаев вроде schema compliance, не как главный путь.
+
+Пример внешнего согласования с заказчиком:
+
+```yaml
+kind: quality_gate
+id: client.requirements_signoff
+version: 1.0.0
+title: Согласование ТЗ с заказчиком
+status: active
+
+trigger:
+  on_artifact_ready: common.requirements_spec@1.0.0
+
+check:
+  type: human_approval
+  approver_role: client
+  decision_modes: [approved, approved_with_comments, rejected]
+  blocking: true
+  timeout_hours: 120
+
+on_pass: complete_objective
+on_fail: create_repair_task
+on_comments: rerun_via_clarifications
 ```
+
+Пример automated review:
+
+```yaml
+kind: quality_gate
+id: ml.requirements_complete
+version: 1.0.0
+title: Проверить полноту ML-раздела ТЗ
+
+requires:
+  artifacts:
+    - common.requirements_spec@1.0.0
+
+check:
+  type: automated_review
+  instruction: prompts/ml/review_ml_requirements.md
+
+on_fail: create_repair_task
+```
+
+Доменные пакеты могут добавлять gate в `review.domain_gates`. На уровне gate доменный пакет обычно использует `automated_review`; внешнее согласование заказчика — это gate уровня objective, а не домена.
 
 ---
 
-## 8. Инварианты
+## Исправление
 
-| Код | Инвариант |
+Задача исправления создается, если:
+
+- замечание можно исправить;
+- проверка качества или шаблон разрешают исправление;
+- есть достаточно контекста;
+- исправление не нарушает политику цели.
+
+Исправление не переписывает старый артефакт. Оно создает новый артефакт или артефакт-исправление.
+
+---
+
+## Уточнения и эскалации
+
+Валидация не задает вопросы пользователю напрямую. Она может:
+
+- создать `ValidationFinding`;
+- создать `ClarificationCandidate`;
+- разрешить исправление;
+- создать `EscalationTicket`.
+
+`ClarificationCandidate` создается, если результат может быть улучшен ответом пользователя, но это еще не означает, что вопрос нужно показывать.
+
+`EscalationTicket` создается, если есть исключительная ситуация:
+
+- повторный провал валидации после исправления;
+- критичный ИБ, юридический или регуляторный риск;
+- конфликт вводных, который делает результат недостоверным;
+- ошибка системного контракта;
+- провал исполнителя или инструмента, который пользователь должен видеть;
+- отсутствие безопасного допущения при критичном влиянии на цель.
+
+Обычный недостающий бизнес-контекст должен идти через координатор уточнений, а не через техническую эскалацию.
+
+---
+
+## Инварианты
+
+| ID | Правило |
 |---|---|
-| G1 | Task не может стать `Completed` без успешного `ValidationRun` |
-| G2 | `StageGate` не используется Planner'ом как источник доменной логики |
-| G3 | Blocking escalation ticket блокирует закрытие gate |
-| G4 | Critique loop не может выполняться скрыто; каждая итерация traceable |
-| G5 | Validation не может silently менять confirmed decisions |
-| G6 | `core_task` не может считаться успешным, если recipe-required meta-passes не подтверждены |
-| G7 | Активный `Domain Pack` обязан влиять на validation expectations соответствующей фазы |
-
----
-
-## 9. Что вне области этой спеки
-
-- Planner scoring — [05_planning_coordinator.md](05_planning_coordinator.md).
-- Execution adapters — [07_execution_runtime.md](07_execution_runtime.md).
+| V1 | Листовая задача не становится `completed` без валидации. |
+| V2 | Провал валидации виден в UI. |
+| V3 | Проверка качества не заменяет планировщик. |
+| V4 | Доменные ожидания приходят из доменных пакетов, проверок качества и контрактов. |
+| V5 | Исправление не мутирует старые артефакты. |
+| V6 | Блокирующая эскалация блокирует соответствующую область. |
+| V7 | Кандидаты уточнений нельзя молча игнорировать: они должны быть приняты как допущение, отложены, превращены в вопрос или эскалированы. |
+| V8 | Техническая эскалация не заменяет обычное пользовательское уточнение. |

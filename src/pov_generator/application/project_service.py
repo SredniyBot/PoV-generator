@@ -1,148 +1,270 @@
+"""Сервис инициализации и операций уровня проекта.
+
+Создаёт workspace, инициализирует двухслойное состояние (knowledge + process)
+и предоставляет операторам высокоуровневые команды: задать цель, открыть/закрыть
+пробел, изменить готовность, переключить методологию, активировать домен,
+сменить engagement-режим.
+
+Цель проекта (``project.goal``) живёт в Layer A как положение с
+``visibility='principal'`` и ``scope='global'`` (см. roadmap, Этап 0).
+"""
+
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-import uuid
 
-from ..common.serialization import to_primitive, utc_now_iso
-from ..domain.problem_state import (
-    AddFactPatch,
-    EnableDomainPackPatch,
-    ProblemEvent,
-    ProblemState,
-    SetGoalPatch,
-    SetRecipeCompositionPatch,
+from ..common.serialization import utc_now_iso
+from ..domain.positions import (
+    Position,
+    PositionSource,
+    PositionType,
+    VisibilityLevel,
+)
+from ..domain.process_state import (
+    ActivateDomainPackPatch,
+    ActivateMethodologyPackPatch,
+    CloseGapPatch,
+    DisableMethodologyPackPatch,
+    ProcessState,
+    SetClarificationModePatch,
     UpsertGapPatch,
     UpsertReadinessPatch,
-    apply_problem_patch,
 )
+from ..domain.project_knowledge import (
+    GOAL_POSITION_ID,
+    ProjectKnowledge,
+    UpsertPositionPatch,
+    apply_knowledge_patch,
+)
+from ..domain.project_state import ProjectManifest, ProjectState, StateEvent
 from ..domain.registry import DomainPackSpec, ObjectRef
-from ..infrastructure.sqlite_runtime import ProjectManifest, SqliteRuntime
+from ..infrastructure.sqlite_runtime import SqliteRuntime
+
+
+_INITIAL_REQUEST_POSITION_ID = "project.business_request"
 
 
 @dataclass(frozen=True)
 class ProjectBootstrap:
+    """Результат инициализации проекта — манифест + начальное состояние."""
+
     manifest: ProjectManifest
-    state: ProblemState
+    state: ProjectState
 
 
 class ProjectService:
+    """Команды уровня проекта: создание, операторские правки положений/состояния."""
+
     def __init__(self, runtime: SqliteRuntime) -> None:
         self._runtime = runtime
+
+    # --- инициализация ------------------------------------------------------
 
     def init_project(
         self,
         workspace: Path,
         name: str,
-        recipe_ref: ObjectRef,
+        objective_ref: ObjectRef,
         request_text: str,
-        bootstrap_recipe,
+        domain_packs: tuple[DomainPackSpec, ...] = (),
+        default_methodology_pack_ref: str | None = "process.lean_jtbd@1.0.0",
     ) -> ProjectBootstrap:
+        """Создать новый проект и записать его начальное состояние."""
         project_id = str(uuid.uuid4())
+        created_at = utc_now_iso()
         manifest = ProjectManifest(
             project_id=project_id,
             name=name,
-            recipe_ref=recipe_ref.as_string(),
-            created_at=utc_now_iso(),
-        )
-        state = ProblemState(
-            project_id=project_id,
-            recipe_ref=recipe_ref.as_string(),
+            objective_ref=objective_ref.as_string(),
             business_request=request_text.strip(),
-            goal=None,
+            created_at=created_at,
         )
 
-        for pack_ref in bootstrap_recipe.enabled_domain_pack_refs:
-            pack = next(
-                (
-                    snapshot_pack
-                    for snapshot_pack in bootstrap_recipe.domain_packs
-                    if snapshot_pack.ref.as_string() == pack_ref
-                ),
-                None,
-            )
-            if pack is None:
-                raise ValueError(f"Bootstrap pack not found: {pack_ref}")
-            state = apply_problem_patch(
-                state,
-                EnableDomainPackPatch(
+        # Layer A: исходный запрос фиксируем как principal-fact.
+        knowledge = ProjectKnowledge()
+        knowledge = apply_knowledge_patch(
+            knowledge,
+            UpsertPositionPatch(
+                Position(
+                    identifier=_INITIAL_REQUEST_POSITION_ID,
+                    type="fact",
+                    statement=request_text.strip(),
+                    visibility="principal",
+                    scope="global",
+                    source="input",
+                    taken_by="system",
+                    taken_at=created_at,
+                    tags=("project", "input"),
+                )
+            ),
+        )
+
+        # Layer B: активируем доменные паки и дефолтную методологию.
+        process = ProcessState()
+        for pack in domain_packs:
+            from ..domain.process_state import apply_process_patch
+
+            process = apply_process_patch(
+                process,
+                ActivateDomainPackPatch(
                     pack_ref=pack.ref.as_string(),
                     domain=pack.domain,
                     source="bootstrap",
+                    rationale="Domain pack chosen at project creation.",
+                    confidence=1.0,
+                ),
+            )
+        if default_methodology_pack_ref:
+            from ..domain.process_state import apply_process_patch
+
+            process = apply_process_patch(
+                process,
+                ActivateMethodologyPackPatch(
+                    pack_ref=default_methodology_pack_ref,
+                    source="bootstrap",
+                    rationale="Default project methodology.",
                 ),
             )
 
-        state = apply_problem_patch(
-            state,
-            SetRecipeCompositionPatch(
-                base_recipe_ref=bootstrap_recipe.base_recipe.ref.as_string(),
-                domain_pack_refs=bootstrap_recipe.enabled_domain_pack_refs,
-                recipe_fragment_refs=bootstrap_recipe.composed_recipe.recipe_fragment_refs,
-                step_ids=tuple(step.identifier for step in bootstrap_recipe.composed_recipe.steps),
+        state = ProjectState(manifest=manifest, knowledge=knowledge, process=process)
+
+        bootstrap_events = (
+            StateEvent(
+                layer="knowledge",
+                version=knowledge.version,
+                patch_type="bootstrap",
+                payload={"positions": list(knowledge.positions.keys())},
+                actor="system",
+                reason="project initialization",
+                created_at=created_at,
+            ),
+            StateEvent(
+                layer="process",
+                version=process.version,
+                patch_type="bootstrap",
+                payload={
+                    "active_domain_packs": list(process.active_domain_packs.keys()),
+                    "active_methodology_packs": list(process.active_methodology_packs.keys()),
+                },
+                actor="system",
+                reason="project initialization",
+                created_at=created_at,
             ),
         )
-
-        core_orders = [
-            step.order
-            for step in bootstrap_recipe.composed_recipe.steps
-            if bootstrap_recipe.template_lookup[step.identifier].semantics.template_role == "core_task"
-        ]
-        first_core_order = min(core_orders) if core_orders else 10_000
-        for step in bootstrap_recipe.composed_recipe.steps:
-            template = bootstrap_recipe.template_lookup[step.identifier]
-            if step.order < first_core_order and template.semantics.template_role == "meta_analysis":
-                for gap_id in template.semantics.closes_gaps:
-                    state = apply_problem_patch(
-                        state,
-                        UpsertGapPatch(
-                            gap_id=gap_id,
-                            title=bootstrap_recipe.gap_labels.get(gap_id, gap_id.replace("_", " ").title()),
-                            description=f"Стартовый gap сформирован из шага '{step.identifier}'.",
-                            severity="high",
-                            blocking=True,
-                        ),
-                    )
-            for readiness_id in step.completion.readiness:
-                state = apply_problem_patch(
-                    state,
-                    UpsertReadinessPatch(
-                        dimension=readiness_id,
-                        status="missing",
-                        blocking=step.order <= first_core_order,
-                        confidence=1.0,
-                    ),
-                )
-        state = apply_problem_patch(
-            state,
-            AddFactPatch(
-                fact_id="initial_request",
-                statement=request_text.strip(),
-                source="project_init",
-            ),
-        )
-
-        bootstrap_event = ProblemEvent(
-            version=state.version,
-            patch_type="bootstrap_state",
-            payload={"recipe_ref": recipe_ref.as_string(), "state": to_primitive(state)},
-            actor="system",
-            reason="project initialization",
-            created_at=utc_now_iso(),
-        )
-        self._runtime.create_workspace(workspace, manifest, state, bootstrap_event)
+        self._runtime.create_workspace(workspace, manifest, state, bootstrap_events)
         return ProjectBootstrap(manifest=manifest, state=state)
+
+    # --- чтение -------------------------------------------------------------
 
     def load_manifest(self, workspace: Path) -> ProjectManifest:
         return self._runtime.load_manifest(workspace)
 
-    def load_problem_state(self, workspace: Path) -> ProblemState:
-        return self._runtime.load_problem_state(workspace)
+    def load_project_state(self, workspace: Path) -> ProjectState:
+        return self._runtime.load_project_state(workspace)
 
-    def problem_history(self, workspace: Path) -> list[ProblemEvent]:
-        return self._runtime.list_problem_events(workspace)
+    def state_history(self, workspace: Path) -> list[StateEvent]:
+        return self._runtime.list_state_events(workspace)
 
-    def set_goal(self, workspace: Path, text: str, actor: str = "operator", reason: str = "manual update") -> ProblemState:
-        return self._runtime.apply_problem_patch(workspace, SetGoalPatch(text=text), actor=actor, reason=reason)
+    # --- операторские команды (Layer A — знания) ----------------------------
+
+    def set_goal(
+        self,
+        workspace: Path,
+        text: str,
+        *,
+        actor: str = "operator",
+        reason: str = "manual goal update",
+    ) -> ProjectKnowledge:
+        """Зафиксировать или обновить цель проекта.
+
+        Цель — положение типа ``fact`` с уровнем ``principal`` и
+        ``scope='global'``. Стабильный id — :data:`GOAL_POSITION_ID`.
+        """
+        return self._upsert_position(
+            workspace,
+            identifier=GOAL_POSITION_ID,
+            position_type="fact",
+            statement=text.strip(),
+            visibility="principal",
+            scope="global",
+            source="user" if actor == "operator" else "system",
+            taken_by=actor,
+            tags=("project", "goal"),
+            actor=actor,
+            reason=reason,
+        )
+
+    def add_fact(
+        self,
+        workspace: Path,
+        identifier: str,
+        statement: str,
+        *,
+        source: PositionSource = "user",
+        visibility: VisibilityLevel = "architectural",
+        actor: str = "operator",
+        taken_by_label: str | None = None,
+        reason: str = "manual fact registration",
+        tags: tuple[str, ...] = (),
+    ) -> ProjectKnowledge:
+        """Зафиксировать факт о проекте как положение Layer A.
+
+        ``source`` — категория источника (user/system/...).
+        ``taken_by_label`` — свободная метка актора (например, имя CLI-команды
+        или selector'а), сохраняется в Position.taken_by. Если не задан —
+        используется ``actor``.
+        """
+        return self._upsert_position(
+            workspace,
+            identifier=identifier,
+            position_type="fact",
+            statement=statement,
+            visibility=visibility,
+            scope="global",
+            source=source,
+            taken_by=taken_by_label or actor,
+            tags=tags,
+            actor=actor,
+            reason=reason,
+        )
+
+    def _upsert_position(
+        self,
+        workspace: Path,
+        *,
+        identifier: str,
+        position_type: PositionType,
+        statement: str,
+        visibility: VisibilityLevel,
+        scope: str,
+        source: PositionSource,
+        taken_by: str,
+        tags: tuple[str, ...] = (),
+        actor: str,
+        reason: str,
+    ) -> ProjectKnowledge:
+        now = utc_now_iso()
+        position = Position(
+            identifier=identifier,
+            type=position_type,
+            statement=statement,
+            visibility=visibility,
+            scope=scope,  # type: ignore[arg-type]
+            source=source,
+            taken_by=taken_by,
+            taken_at=now,
+            tags=tags,
+        )
+        return self._runtime.apply_knowledge_patch(
+            workspace,
+            UpsertPositionPatch(position=position),
+            actor=actor,
+            reason=reason,
+        )
+
+    # --- операторские команды (Layer B — процесс) ---------------------------
 
     def add_gap(
         self,
@@ -150,22 +272,39 @@ class ProjectService:
         gap_id: str,
         title: str,
         description: str,
-        severity: str,
-        blocking: bool,
+        severity: str = "medium",
+        blocking: bool = True,
+        *,
         actor: str = "operator",
-        reason: str = "manual update",
-    ) -> ProblemState:
-        return self._runtime.apply_problem_patch(
+        reason: str = "manual gap registration",
+    ) -> ProcessState:
+        return self._runtime.apply_process_patch(
             workspace,
-            UpsertGapPatch(gap_id=gap_id, title=title, description=description, severity=severity, blocking=blocking),
+            UpsertGapPatch(
+                gap_id=gap_id,
+                title=title,
+                description=description,
+                severity=severity,  # type: ignore[arg-type]
+                blocking=blocking,
+            ),
             actor=actor,
             reason=reason,
         )
 
-    def close_gap(self, workspace: Path, gap_id: str, actor: str = "operator", reason: str = "manual update") -> ProblemState:
-        from ..domain.problem_state import CloseGapPatch
-
-        return self._runtime.apply_problem_patch(workspace, CloseGapPatch(gap_id=gap_id), actor=actor, reason=reason)
+    def close_gap(
+        self,
+        workspace: Path,
+        gap_id: str,
+        *,
+        actor: str = "operator",
+        reason: str = "manual gap close",
+    ) -> ProcessState:
+        return self._runtime.apply_process_patch(
+            workspace,
+            CloseGapPatch(gap_id=gap_id),
+            actor=actor,
+            reason=reason,
+        )
 
     def set_readiness(
         self,
@@ -174,34 +313,80 @@ class ProjectService:
         status: str,
         blocking: bool,
         confidence: float,
+        *,
         actor: str = "operator",
-        reason: str = "manual update",
-    ) -> ProblemState:
-        return self._runtime.apply_problem_patch(
+        reason: str = "manual readiness update",
+    ) -> ProcessState:
+        return self._runtime.apply_process_patch(
             workspace,
-            UpsertReadinessPatch(dimension=dimension, status=status, blocking=blocking, confidence=confidence),
+            UpsertReadinessPatch(
+                dimension=dimension,
+                status=status,  # type: ignore[arg-type]
+                blocking=blocking,
+                confidence=confidence,
+            ),
             actor=actor,
             reason=reason,
         )
 
-    def add_fact(self, workspace: Path, fact_id: str, statement: str, source: str) -> ProblemState:
-        return self._runtime.apply_problem_patch(
+    def set_clarification_mode(self, workspace: Path, mode: str) -> ProcessState:
+        return self._runtime.apply_process_patch(
             workspace,
-            AddFactPatch(fact_id=fact_id, statement=statement, source=source),
+            SetClarificationModePatch(mode=mode),  # type: ignore[arg-type]
             actor="operator",
-            reason="manual fact registration",
+            reason="clarification mode changed",
         )
 
     def enable_domain_pack(
         self,
         workspace: Path,
         pack: DomainPackSpec,
+        *,
         actor: str = "operator",
         reason: str = "manual domain activation",
-    ) -> ProblemState:
-        return self._runtime.apply_problem_patch(
+    ) -> ProcessState:
+        return self._runtime.apply_process_patch(
             workspace,
-            EnableDomainPackPatch(pack_ref=pack.ref.as_string(), domain=pack.domain, source=actor),
+            ActivateDomainPackPatch(
+                pack_ref=pack.ref.as_string(),
+                domain=pack.domain,
+                source="operator" if actor == "operator" else "system",
+                rationale=reason,
+                confidence=1.0,
+            ),
+            actor=actor,
+            reason=reason,
+        )
+
+    def set_methodology(
+        self,
+        workspace: Path,
+        pack_ref: str,
+        *,
+        actor: str = "operator",
+        reason: str = "manual methodology activation",
+    ) -> ProcessState:
+        """Сменить активный methodology pack.
+
+        В MVP активна не более одной методологии (PS10) — текущие активные
+        отключаются перед активацией новой.
+        """
+        process = self._runtime.load_process_state(workspace)
+        for ref, record in process.active_methodology_packs.items():
+            if record.status == "active" and ref != pack_ref:
+                self._runtime.apply_process_patch(
+                    workspace,
+                    DisableMethodologyPackPatch(pack_ref=ref),
+                    actor=actor,
+                    reason=f"replaced by {pack_ref}",
+                )
+        return self._runtime.apply_process_patch(
+            workspace,
+            ActivateMethodologyPackPatch(
+                pack_ref=pack_ref,
+                source="operator" if actor == "operator" else "system",
+                rationale=reason,
+            ),
             actor=actor,
             reason=reason,
         )

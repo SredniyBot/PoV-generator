@@ -1,0 +1,30 @@
+kind: task_template
+id: common.generate_requirements_spec
+version: 1.0.0
+title: Сформировать итоговое ТЗ
+type: composite
+status: active
+domain: common
+children:
+  # Параллельные аналитические шаги, дополняющие финальный synthesis.
+  # Каждый производит отдельный артефакт, который requirements_spec_generation
+  # подмешивает в финальный документ через optional-контекст.
+  - id: solution_recommendation
+    task: common.solution_recommendation@1.0.0
+  - id: acceptance_model
+    task: common.acceptance_model_definition@1.0.0
+  - id: implementation_plan
+    task: common.implementation_dependency_plan@1.0.0
+  - id: delivery_scope
+    task: common.delivery_scope_definition@1.0.0
+  - id: glossary_drafting
+    task: common.glossary_drafting@1.0.0
+  - id: deployment_topology
+    task: common.deployment_topology@1.0.0
+  - id: project_risk_register
+    task: common.project_risk_register@1.0.0
+  - id: requirements_spec_generation
+    task: common.requirements_spec_generation@1.0.0
+slots:
+  - id: spec.domain_sections
+    title: Доменные разделы ТЗ

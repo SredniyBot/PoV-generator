@@ -1,0 +1,21 @@
+kind: domain_pack
+id: frontend.web_workspace
+version: 1.0.0
+title: Веб-интерфейс и пользовательские сценарии
+description: Добавляет анализ пользователей, экранов, потоков и UX-ограничений.
+domain: frontend
+status: active
+detect:
+  signals:
+    - веб-интерфейс
+    - интерфейс
+    - ui
+    - ux
+    - dashboard
+    - bi
+    - визуализация
+contributes:
+  - to: spec.domain_sections
+    add:
+      - id: frontend_user_flow_analysis
+        task: frontend.user_flow_analysis@1.0.0

@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .clarifications import ClarificationCandidate
 
-ExecutionProvider = Literal["stub", "openrouter"]
+ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
 ExecutionStatus = Literal["succeeded", "failed", "cancelled"]
 
 
@@ -18,12 +19,15 @@ class ExecutionRequest:
     provider: ExecutionProvider
     model: str
     actor: str
+    complexity: str | None = None
+    methodology_pack_ref: str | None = None
 
 
 @dataclass(frozen=True)
 class ExecutionOutput:
     artifact_id: str
     artifact_role: str
+    kind: Literal["primary", "reasoning", "trace"] = "primary"
 
 
 @dataclass(frozen=True)
@@ -43,3 +47,8 @@ class ExecutionResult:
     proposed_goal: str | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+    # Кандидаты уточнений, полученные от правил активной methodology_pack во время
+    # исполнения. Не персистятся в execution_runs — это in-memory канал между
+    # execution_service и validation_service: validation регистрирует их через
+    # ClarificationService, не пересчитывая правила.
+    methodology_candidates: tuple[ClarificationCandidate, ...] = field(default_factory=tuple)

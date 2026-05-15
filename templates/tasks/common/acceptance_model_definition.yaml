@@ -1,0 +1,73 @@
+kind: task_template
+id: common.acceptance_model_definition
+version: 1.0.0
+title: Сформировать модель приёмки PoV
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.business_outcome_model@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+produces:
+  artifact: common.acceptance_model_definition@1.0.0
+context:
+  include:
+    - artifact.common.normalized_request
+    - artifact.common.business_outcome_model
+    - artifact.common.scope_boundary_matrix
+  max_tokens: 20000
+planning:
+  priority: 600
+effects:
+  readiness:
+    set:
+      - dimension: acceptance_model_defined
+        status: ready
+summary: |
+  Сформируй модель приёмки PoV — то есть формальный контракт, по которому
+  заказчик и подрядчик понимают «принято / не принято».
+
+  Структура (включай разделы, для которых есть содержание):
+
+  ▸ КРИТЕРИИ ПРИЁМКИ (acceptance_criteria) — измеримые условия успеха
+    каждого результата. Volere-стиль: для каждого критерия — Fit Criterion
+    (как именно проверяется), Verification Method (демо / тест / документ /
+    интервью), Source (из какой цели/требования вытекает).
+    Пример: «Модель достигает ROC-AUC ≥ 0.7 на тестовой выборке заказчика.
+    Fit Criterion: после прогона на hold-out наборе из ≥ 1000 записей.
+    Verification: совместная сессия с командой data-science заказчика».
+
+  ▸ ДОКАЗАТЕЛЬСТВА УСПЕХА (success_evidence) — конкретные артефакты,
+    которые подрядчик предъявит для подтверждения каждого критерия:
+    отчёт о метриках, screencast интерфейса, итоговый документ. Это не
+    общие фразы «качественный результат» — это «PDF-отчёт N страниц
+    с разделами X, Y, Z».
+
+  ▸ УСЛОВИЯ ОТКАЗА (rejection_conditions) — формальные триггеры, по
+    которым заказчик имеет право не принять работу. Пример: «модель не
+    воспроизводится из переданного кода», «дашборд недоступен внешним
+    тестировщикам в течение 2 рабочих дней после развёртывания».
+
+  ▸ GO / NO-GO MAP — для PoV: какая метрика, какой целевой порог,
+    какое решение принимается при достижении/недостижении.
+    «ROC-AUC ≥ 0.7 → Go в продакшен / 0.6-0.7 → расширенный пилот /
+    < 0.6 → No-Go и пересмотр».
+
+  ▸ ФОРМАЛЬНЫЕ ОДОБРЕНИЯ (formal_approvals) — кто подписывает приёмку,
+    в каком формате (акт / e-mail / протокол), какие документы прилагаются.
+
+  Правила:
+  • Каждый критерий — измеримый. Если нет числа или верифицируемого
+    действия — это open question, не критерий приёмки.
+  • Опирайся на business_outcome_model (KPI верхнего уровня) и
+    scope_boundary_matrix (что в scope).
+  • Не дублируй критерии из upstream-артефактов; ссылайся на них при
+    необходимости.
+
+  confidence 0.7-0.85.

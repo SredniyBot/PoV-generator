@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.glossary_terms
+version: 1.0.0
+title: Глоссарий терминов проекта
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

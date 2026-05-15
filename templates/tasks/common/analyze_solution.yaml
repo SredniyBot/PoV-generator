@@ -1,0 +1,29 @@
+kind: task_template
+id: common.analyze_solution
+version: 1.0.0
+title: Разобрать решение и рамку поставки
+type: composite
+status: active
+domain: common
+children:
+  - id: business_outcome_framing
+    task: common.business_outcome_framing@1.0.0
+  - id: scope_boundary_definition
+    task: common.scope_boundary_definition@1.0.0
+  - id: stakeholder_mapping
+    task: common.stakeholder_mapping@1.0.0
+  - id: solution_option_inventory
+    task: common.solution_option_inventory@1.0.0
+slots:
+  - id: data.entities
+    title: Сущности и источники данных
+  - id: data.quality
+    title: Качество и пригодность данных
+  - id: data.privacy
+    title: Персональные и чувствительные данные
+  - id: solution.evaluation
+    title: Оценка качества решения
+  - id: solution.outputs
+    title: Выходы решения и интеграции
+  - id: solution.explainability
+    title: Объяснимость результата

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ValidationStatus = Literal["passed", "failed", "escalated"]
 FindingSeverity = Literal["info", "warning", "error", "critical"]
 
@@ -26,6 +25,7 @@ class ValidationRun:
     execution_run_id: str
     status: ValidationStatus
     findings: tuple[ValidationFinding, ...] = field(default_factory=tuple)
+    clarification_candidate_ids: tuple[str, ...] = field(default_factory=tuple)
     created_at: str = ""
 
 

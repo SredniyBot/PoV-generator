@@ -1,20 +1,25 @@
 import type {
   ArtifactDetailView,
   ArtifactSummaryView,
+  ClarificationItemView,
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
+  MethodologyPackView,
+  MethodologyTraceResponse,
+  WorkflowRunView,
+  ObjectiveCatalogItemView,
   ProjectCreatedView,
+  ProjectClarificationsView,
   ProjectDebugView,
-  ProjectJourneyView,
   ProjectListItemView,
   ProjectReviewView,
   ProjectShellView,
   ProjectSituationView,
   ProjectStateView,
+  ProjectTaskGraphView,
   ProjectTimelineView,
   ProjectionName,
-  RecipeCatalogItemView,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -39,7 +44,7 @@ export const api = {
   listProjects: () => request<ProjectListItemView[]>("/api/projects"),
   createProject: (payload: {
     name: string;
-    recipe_ref: string;
+    objective_ref: string;
     request_text: string;
     domain_pack_refs: string[];
   }) =>
@@ -47,12 +52,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  listRecipes: () => request<RecipeCatalogItemView[]>("/api/registry/recipes"),
+  listObjectives: () => request<ObjectiveCatalogItemView[]>("/api/registry/objectives"),
   listDomainPacks: () => request<DomainPackCatalogItemView[]>("/api/registry/domain-packs"),
+  listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
   getShell: (projectId: string) => request<ProjectShellView>(`/api/projects/${projectId}/shell`),
-  getJourney: (projectId: string) => request<ProjectJourneyView>(`/api/projects/${projectId}/journey`),
+  getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
+  getClarifications: (projectId: string) => request<ProjectClarificationsView>(`/api/projects/${projectId}/clarifications`),
+  getClarificationDetail: (projectId: string, clarificationId: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/clarifications/${clarificationId}`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
@@ -64,11 +73,29 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined }),
     }),
-  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 20) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
+  runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 1000) =>
+    // W4.1 (R1): endpoint асинхронный, возвращает WorkflowRunView (status=pending)
+    // сразу. Прогресс читается через getActiveWorkflowRun.
+    //
+    // maxSteps=1000 — эффективно «без лимита» (sanity ceiling против бесконечной
+    // петли планировщика). Раньше дефолт был 3, что в реальной работе превращалось
+    // в «нажми Run 5+ раз чтобы пройти весь pipeline». Реальный проект — 15-25
+    // leaf-задач × до 2-3 ретраев = ~50-75 шагов максимум.
+    request<WorkflowRunView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
       body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
     }),
+  cancelWorkflow: (projectId: string, runId: string) =>
+    request<{ status: string; run_id: string }>(`/api/projects/${projectId}/commands/cancel-workflow`, {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId }),
+    }),
+  getActiveWorkflowRun: (projectId: string) =>
+    request<WorkflowRunView | null>(`/api/projects/${projectId}/workflow-runs/active`),
+  getWorkflowRun: (projectId: string, runId: string) =>
+    request<WorkflowRunView>(`/api/projects/${projectId}/workflow-runs/${runId}`),
+  listWorkflowRuns: (projectId: string, limit = 20) =>
+    request<WorkflowRunView[]>(`/api/projects/${projectId}/workflow-runs?limit=${limit}`),
   retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",
@@ -97,6 +124,75 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
+  answerClarification: (
+    projectId: string,
+    payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string },
+  ) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/answer-clarification`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  acceptAssumption: (projectId: string, clarificationId: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/accept-assumption`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId }),
+    }),
+  setClarificationMode: (projectId: string, mode: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/set-clarification-mode`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    }),
+  // W5.1: clarification flow operations + audit events
+  deferClarification: (projectId: string, clarificationId: string, reason?: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/commands/defer-clarification`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId, reason }),
+    }),
+  reopenClarification: (projectId: string, clarificationId: string) =>
+    request<ClarificationItemView>(`/api/projects/${projectId}/commands/reopen-clarification`, {
+      method: "POST",
+      body: JSON.stringify({ clarification_id: clarificationId }),
+    }),
+  getClarificationEvents: (projectId: string, clarificationId: string) =>
+    request<Array<{
+      event_id: string;
+      request_id: string;
+      project_id: string;
+      event_type: string;
+      payload: Record<string, unknown>;
+      actor: string;
+      created_at: string;
+    }>>(`/api/projects/${projectId}/clarifications/${clarificationId}/events`),
+  getNextOpenClarification: (projectId: string, afterId?: string) =>
+    request<ClarificationItemView | null>(
+      `/api/projects/${projectId}/clarifications/next${afterId ? `?after_id=${encodeURIComponent(afterId)}` : ""}`,
+    ),
+  setMethodology: (projectId: string, packRef: string) =>
+    request<CommandResultView>(`/api/projects/${projectId}/commands/set-methodology`, {
+      method: "POST",
+      body: JSON.stringify({ pack_ref: packRef }),
+    }),
+  getOverview: (projectId: string) =>
+    request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
+  getMethodologyTrace: (projectId: string, taskId: string) =>
+    request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
+  // L6 design extensions
+  getArtifactSkeleton: (projectId: string, artifactId: string) =>
+    request<import("./types").ArtifactSkeletonView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/skeleton`,
+    ),
+  getDecisionLog: (projectId: string) =>
+    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decisions`),
+  getArtifactVersions: (projectId: string) =>
+    request<import("./types").ProjectArtifactVersionsView>(
+      `/api/projects/${projectId}/artifact-versions`,
+    ),
+  getFailurePins: (projectId: string, artifactId?: string) => {
+    const qs = artifactId ? `?artifact_id=${encodeURIComponent(artifactId)}` : "";
+    return request<import("./types").ProjectFailurePinsView>(
+      `/api/projects/${projectId}/failure-pins${qs}`,
+    );
+  },
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {

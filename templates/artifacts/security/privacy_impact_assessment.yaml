@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: security.privacy_impact_assessment
+version: 1.0.0
+title: Оценка воздействия на персональные данные (DPIA)
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

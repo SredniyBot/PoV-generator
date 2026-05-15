@@ -1,0 +1,12 @@
+kind: artifact_contract
+id: common.solution_option_inventory
+version: 1.0.0
+title: Набор вариантов решения
+# Этап 7.5: YAML-схема носит декларативный характер.
+# Реальную валидацию делает hand-coded `application.artifact_contracts.py`.
+# unstructured=true честно сообщает: YAML здесь не задаёт обязательных полей.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true
+

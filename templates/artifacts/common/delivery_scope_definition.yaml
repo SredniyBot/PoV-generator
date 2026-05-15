@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: common.delivery_scope_definition
+version: 1.0.0
+title: Состав поставки PoV
+# Этап 7.5: YAML — декларативный, реальная схема в `artifact_contracts.py`.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

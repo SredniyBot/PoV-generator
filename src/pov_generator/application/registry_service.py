@@ -9,10 +9,12 @@ from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
 @dataclass(frozen=True)
 class RegistrySummary:
     vocabulary_count: int
+    objective_count: int
     template_count: int
-    recipe_count: int
-    recipe_fragment_count: int
+    artifact_contract_count: int
     domain_pack_count: int
+    methodology_pack_count: int
+    quality_gate_count: int
 
 
 class RegistryService:
@@ -27,287 +29,214 @@ class RegistryService:
         errors: list[RegistryIssue] = []
         warnings: list[RegistryIssue] = []
 
+        for objective in snapshot.objectives.values():
+            if objective.root_task_ref.as_string() not in snapshot.templates:
+                errors.append(
+                    RegistryIssue(
+                        "error",
+                        f"Цель ссылается на неизвестную корневую задачу '{objective.root_task_ref.as_string()}'.",
+                        str(objective.source_path),
+                    )
+                )
+            for artifact_ref in objective.done_artifact_refs:
+                if artifact_ref.as_string() not in snapshot.artifact_contracts:
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель ссылается на неизвестный контракт артефакта '{artifact_ref.as_string()}'.",
+                            str(objective.source_path),
+                        )
+                    )
+            for gate_ref in objective.done_gate_refs:
+                if gate_ref.as_string() not in snapshot.quality_gates:
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель ссылается на неизвестную проверку качества '{gate_ref.as_string()}'.",
+                            str(objective.source_path),
+                        )
+                    )
+
+        declared_slots: set[str] = set()
         for template in snapshot.templates.values():
+            if template.status != "active":
+                warnings.append(
+                    RegistryIssue(
+                        "warning",
+                        f"Шаблон задачи '{template.ref.as_string()}' не активен.",
+                        str(template.source_path),
+                    )
+                )
             if not snapshot.has_vocabulary_entry("domains", template.domain):
                 errors.append(
                     RegistryIssue("error", f"Неизвестный домен '{template.domain}'.", str(template.source_path))
                 )
-            if not snapshot.has_vocabulary_entry("template_roles", template.semantics.template_role):
+            if template.template_type == "composite" and not template.children and not template.slots:
                 errors.append(
                     RegistryIssue(
                         "error",
-                        f"Неизвестная роль шаблона '{template.semantics.template_role}'.",
+                        f"Композитная задача '{template.ref.as_string()}' должна иметь children или slots.",
                         str(template.source_path),
                     )
                 )
-            for gap_id in (*template.semantics.closes_gaps, *template.activation.forbidden_open_gaps):
-                if not snapshot.has_vocabulary_entry("gap_types", gap_id):
-                    errors.append(
-                        RegistryIssue("error", f"Неизвестный gap '{gap_id}'.", str(template.source_path))
-                    )
-            for readiness_id in template.activation.required_readiness:
-                if not snapshot.has_vocabulary_entry("readiness_dimensions", readiness_id):
-                    errors.append(
-                        RegistryIssue(
-                            "error", f"Неизвестная readiness-ось '{readiness_id}'.", str(template.source_path)
-                        )
-                    )
-            for raise_spec in template.semantics.raises_readiness:
-                if not snapshot.has_vocabulary_entry("readiness_dimensions", raise_spec.dimension):
+            if template.template_type == "leaf":
+                if not template.executor:
                     errors.append(
                         RegistryIssue(
                             "error",
-                            f"Неизвестная readiness-ось '{raise_spec.dimension}'.",
+                            f"Листовая задача '{template.ref.as_string()}' должна иметь executor.",
                             str(template.source_path),
                         )
                     )
-            for role in template.outputs.artifact_roles:
-                if not snapshot.has_vocabulary_entry("artifact_roles", role):
-                    errors.append(
-                        RegistryIssue("error", f"Неизвестная роль артефакта '{role}'.", str(template.source_path))
-                    )
-
-        for recipe in snapshot.recipes.values():
-            if not snapshot.has_vocabulary_entry("domains", recipe.domain):
-                errors.append(RegistryIssue("error", f"Неизвестный домен '{recipe.domain}'.", str(recipe.source_path)))
-            seen_step_ids: set[str] = set()
-            seen_orders: set[int] = set()
-            core_steps = 0
-            review_after_core = False
-            core_seen = False
-            for step in recipe.steps:
-                if step.identifier in seen_step_ids:
-                    errors.append(
-                        RegistryIssue("error", f"Duplicate recipe step id '{step.identifier}'.", str(recipe.source_path))
-                    )
-                seen_step_ids.add(step.identifier)
-                if step.order in seen_orders:
-                    errors.append(
-                        RegistryIssue("error", f"Duplicate recipe step order '{step.order}'.", str(recipe.source_path))
-                    )
-                seen_orders.add(step.order)
-                try:
-                    template = snapshot.resolve_template(step.template_ref)
-                except Exception as exc:
+                if len(template.outputs.artifact_roles) != 1:
                     errors.append(
                         RegistryIssue(
                             "error",
-                            f"Recipe step '{step.identifier}' references missing template: {exc}",
-                            str(recipe.source_path),
+                            f"Листовая задача '{template.ref.as_string()}' должна производить ровно один основной артефакт.",
+                            str(template.source_path),
                         )
                     )
-                    continue
-                if template.semantics.template_role == "core_task":
-                    core_steps += 1
-                    core_seen = True
-                if template.semantics.template_role == "review" and not core_seen:
+            for child in template.children:
+                if child.task_ref.as_string() not in snapshot.templates:
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Задача '{template.ref.as_string()}' ссылается на неизвестного child '{child.task_ref.as_string()}'.",
+                            str(template.source_path),
+                        )
+                    )
+            for slot in template.slots:
+                declared_slots.add(slot.identifier)
+            for artifact_role in (*template.inputs.required_artifact_roles, *template.inputs.optional_artifact_roles, *template.outputs.artifact_roles):
+                if artifact_role and not any(contract.artifact_role == artifact_role for contract in snapshot.artifact_contracts.values()):
                     warnings.append(
                         RegistryIssue(
                             "warning",
-                            f"Review step '{step.identifier}' appears before the core task.",
-                            str(recipe.source_path),
+                            f"Для роли артефакта '{artifact_role}' не найден контракт в новом реестре.",
+                            str(template.source_path),
                         )
                     )
-                if template.semantics.template_role == "review" and core_seen:
-                    review_after_core = True
-                for readiness_id in step.completion.readiness:
-                    if not snapshot.has_vocabulary_entry("readiness_dimensions", readiness_id):
-                        errors.append(
-                            RegistryIssue(
-                                "error",
-                                f"Recipe step '{step.identifier}' uses unknown readiness '{readiness_id}'.",
-                                str(recipe.source_path),
-                            )
-                        )
-                for artifact_role in step.completion.artifact_roles:
-                    if not snapshot.has_vocabulary_entry("artifact_roles", artifact_role):
-                        errors.append(
-                            RegistryIssue(
-                                "error",
-                                f"Recipe step '{step.identifier}' uses unknown artifact role '{artifact_role}'.",
-                                str(recipe.source_path),
-                            )
-                        )
-            if core_steps != 1:
-                errors.append(
-                    RegistryIssue(
-                        "error",
-                        f"Recipe '{recipe.identifier}@{recipe.version}' must contain exactly one core task step.",
-                        str(recipe.source_path),
-                    )
-                )
-            if core_steps == 1 and not review_after_core:
-                warnings.append(
-                    RegistryIssue(
-                        "warning",
-                        f"Recipe '{recipe.identifier}@{recipe.version}' has no review step after the core task.",
-                        str(recipe.source_path),
-                    )
-                )
 
-        for fragment in snapshot.recipe_fragments.values():
-            if not snapshot.has_vocabulary_entry("domains", fragment.domain):
-                errors.append(
-                    RegistryIssue("error", f"Unknown domain '{fragment.domain}'.", str(fragment.source_path))
-                )
-            if fragment.status != "active":
+        for pack in snapshot.domain_packs.values():
+            if pack.status != "active":
                 warnings.append(
                     RegistryIssue(
                         "warning",
-                        f"Recipe fragment '{fragment.identifier}@{fragment.version}' is not active.",
-                        str(fragment.source_path),
+                        f"Доменный пакет '{pack.ref.as_string()}' не активен.",
+                        str(pack.source_path),
                     )
                 )
-            if not fragment.target_recipe_refs:
-                errors.append(
-                    RegistryIssue(
-                        "error",
-                        f"Recipe fragment '{fragment.identifier}@{fragment.version}' must target at least one recipe.",
-                        str(fragment.source_path),
-                    )
-                )
-            for target_ref in fragment.target_recipe_refs:
-                try:
-                    recipe = snapshot.resolve_recipe(target_ref)
-                except Exception as exc:
+            if not snapshot.has_vocabulary_entry("domains", pack.domain):
+                errors.append(RegistryIssue("error", f"Неизвестный домен '{pack.domain}'.", str(pack.source_path)))
+            for contribution in pack.contributions:
+                if contribution.slot_id not in declared_slots:
                     errors.append(
                         RegistryIssue(
                             "error",
-                            f"Recipe fragment '{fragment.identifier}' references missing target recipe: {exc}",
-                            str(fragment.source_path),
+                            f"Доменный пакет '{pack.ref.as_string()}' расширяет неизвестный slot '{contribution.slot_id}'.",
+                            str(pack.source_path),
                         )
                     )
-                    continue
-                recipe_step_ids = {step.identifier for step in recipe.steps}
-                seen_step_ids: set[str] = set()
-                for step in fragment.steps:
-                    if step.identifier in seen_step_ids or step.identifier in recipe_step_ids:
+                seen_ids: set[str] = set()
+                for item in contribution.items:
+                    if item.identifier in seen_ids:
                         errors.append(
                             RegistryIssue(
                                 "error",
-                                f"Recipe fragment step id '{step.identifier}' collides inside target recipe "
-                                f"'{recipe.identifier}@{recipe.version}'.",
-                                str(fragment.source_path),
+                                f"Дублирующийся contribution id '{item.identifier}'.",
+                                str(pack.source_path),
                             )
                         )
-                    seen_step_ids.add(step.identifier)
-                    if step.anchor_step_id not in recipe_step_ids:
+                    seen_ids.add(item.identifier)
+                    if item.task_ref and item.task_ref.as_string() not in snapshot.templates:
                         errors.append(
                             RegistryIssue(
                                 "error",
-                                f"Recipe fragment step '{step.identifier}' references unknown anchor "
-                                f"'{step.anchor_step_id}'.",
-                                str(fragment.source_path),
+                                f"Contribution '{item.identifier}' ссылается на неизвестную задачу '{item.task_ref.as_string()}'.",
+                                str(pack.source_path),
                             )
                         )
-                    try:
-                        template = snapshot.resolve_template(step.template_ref)
-                    except Exception as exc:
+                    if item.gate_ref and item.gate_ref.as_string() not in snapshot.quality_gates:
                         errors.append(
                             RegistryIssue(
                                 "error",
-                                f"Recipe fragment step '{step.identifier}' references missing template: {exc}",
-                                str(fragment.source_path),
+                                f"Contribution '{item.identifier}' ссылается на неизвестную проверку '{item.gate_ref.as_string()}'.",
+                                str(pack.source_path),
                             )
                         )
-                        continue
-                    if template.domain not in {fragment.domain, "common"}:
-                        warnings.append(
-                            RegistryIssue(
-                                "warning",
-                                f"Template '{template.identifier}@{template.version}' has domain '{template.domain}' "
-                                f"which does not match fragment domain '{fragment.domain}'.",
-                                str(fragment.source_path),
-                            )
-                        )
-                    for readiness_id in step.completion.readiness:
-                        if not snapshot.has_vocabulary_entry("readiness_dimensions", readiness_id):
-                            errors.append(
-                                RegistryIssue(
-                                    "error",
-                                    f"Recipe fragment step '{step.identifier}' uses unknown readiness "
-                                    f"'{readiness_id}'.",
-                                    str(fragment.source_path),
-                                )
-                            )
-                    for artifact_role in step.completion.artifact_roles:
-                        if not snapshot.has_vocabulary_entry("artifact_roles", artifact_role):
-                            errors.append(
-                                RegistryIssue(
-                                    "error",
-                                    f"Recipe fragment step '{step.identifier}' uses unknown artifact role "
-                                    f"'{artifact_role}'.",
-                                    str(fragment.source_path),
-                                )
-                            )
 
-        for domain_pack in snapshot.domain_packs.values():
-            if not snapshot.has_vocabulary_entry("domains", domain_pack.domain):
-                errors.append(
-                    RegistryIssue(
-                        "error",
-                        f"Unknown domain '{domain_pack.domain}'.",
-                        str(domain_pack.source_path),
-                    )
-                )
-            if domain_pack.status != "active":
-                warnings.append(
-                    RegistryIssue(
-                        "warning",
-                        f"Domain pack '{domain_pack.identifier}@{domain_pack.version}' is not active.",
-                        str(domain_pack.source_path),
-                    )
-                )
-            for template_ref in domain_pack.template_refs:
-                try:
-                    template = snapshot.resolve_template(template_ref)
-                except Exception as exc:
-                    errors.append(
-                        RegistryIssue(
-                            "error",
-                            f"Domain pack '{domain_pack.identifier}' references missing template: {exc}",
-                            str(domain_pack.source_path),
-                        )
-                    )
-                    continue
-                if template.domain not in {domain_pack.domain, "common"}:
+        for gate in snapshot.quality_gates.values():
+            for artifact_role in gate.required_artifact_roles:
+                if not any(contract.artifact_role == artifact_role for contract in snapshot.artifact_contracts.values()):
                     warnings.append(
                         RegistryIssue(
                             "warning",
-                            f"Template '{template.identifier}@{template.version}' has domain '{template.domain}' "
-                            f"which does not match pack domain '{domain_pack.domain}'.",
-                            str(domain_pack.source_path),
+                            f"Проверка качества '{gate.ref.as_string()}' требует артефакт без контракта: '{artifact_role}'.",
+                            str(gate.source_path),
                         )
                     )
-            for fragment_ref in domain_pack.recipe_fragment_refs:
-                try:
-                    fragment = snapshot.resolve_recipe_fragment(fragment_ref)
-                except Exception as exc:
+
+
+        for methodology in snapshot.methodology_packs.values():
+            if methodology.status != "active":
+                warnings.append(
+                    RegistryIssue(
+                        "warning",
+                        f"Методологический пакет '{methodology.ref.as_string()}' не активен.",
+                        str(methodology.source_path),
+                    )
+                )
+            stage_ids = {stage.identifier for stage in methodology.stages}
+            seen_field_names: set[str] = set()
+            for stage in methodology.stages:
+                for produces in stage.produces:
+                    if produces.field_name in seen_field_names:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"Поле '{produces.field_name}' стадии '{stage.identifier}' дублируется в '{methodology.ref.as_string()}'.",
+                                str(methodology.source_path),
+                            )
+                        )
+                    seen_field_names.add(produces.field_name)
+            for stage_id in methodology.reasoning_artifact.required_stages:
+                if stage_id not in stage_ids:
                     errors.append(
                         RegistryIssue(
                             "error",
-                            f"Domain pack '{domain_pack.identifier}' references missing recipe fragment: {exc}",
-                            str(domain_pack.source_path),
+                            f"reasoning_artifact.required_stages ссылается на неизвестную стадию '{stage_id}' в '{methodology.ref.as_string()}'.",
+                            str(methodology.source_path),
                         )
                     )
-                    continue
-                if fragment.domain != domain_pack.domain:
-                    warnings.append(
+            for stage_id in methodology.reasoning_artifact.optional_stages:
+                if stage_id not in stage_ids:
+                    errors.append(
                         RegistryIssue(
-                            "warning",
-                            f"Recipe fragment '{fragment.identifier}@{fragment.version}' has domain "
-                            f"'{fragment.domain}', expected '{domain_pack.domain}'.",
-                            str(domain_pack.source_path),
+                            "error",
+                            f"reasoning_artifact.optional_stages ссылается на неизвестную стадию '{stage_id}' в '{methodology.ref.as_string()}'.",
+                            str(methodology.source_path),
                         )
                     )
+            for override in methodology.complexity_overrides:
+                for stage_id in override.skip_stages:
+                    if stage_id not in stage_ids:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"complexity_overrides[{override.complexity}].skip_stages ссылается на неизвестную стадию '{stage_id}' в '{methodology.ref.as_string()}'.",
+                                str(methodology.source_path),
+                            )
+                        )
 
         return snapshot, ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 
     def summary(self, snapshot: RegistrySnapshot) -> RegistrySummary:
         return RegistrySummary(
             vocabulary_count=len(snapshot.vocabularies),
+            objective_count=len(snapshot.objectives),
             template_count=len(snapshot.templates),
-            recipe_count=len(snapshot.recipes),
-            recipe_fragment_count=len(snapshot.recipe_fragments),
+            artifact_contract_count=len(snapshot.artifact_contracts),
             domain_pack_count=len(snapshot.domain_packs),
+            methodology_pack_count=len(snapshot.methodology_packs),
+            quality_gate_count=len(snapshot.quality_gates),
         )

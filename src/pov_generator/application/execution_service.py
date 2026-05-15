@@ -1,20 +1,37 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import json
 import os
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
-from ..domain.artifacts import ArtifactRecord
+from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
-from ..domain.registry import RegistrySnapshot, compose_recipe
+from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
+from ..infrastructure.claude_sdk_client import ClaudeSdkClient, model_for_complexity
+from ..infrastructure.claude_subscription_client import (
+    ClaudeSubscriptionClient,
+)
+from ..infrastructure.claude_subscription_client import (
+    model_for_complexity as model_for_complexity_subscription,
+)
 from ..infrastructure.openrouter_client import OpenRouterClient
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
+from .complexity_selector_service import select_complexity
 from .context_service import ContextService
+from .merge_strategies import structural_merge
+from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
+
+
+def _json_safe(value: str) -> str:
+    """Эскейпит строку для безопасной подстановки внутрь JSON-литерала."""
+    # json.dumps оборачивает в кавычки — нужно их срезать, остаётся
+    # корректно эскейпированное содержимое.
+    return json.dumps(value, ensure_ascii=False)[1:-1]
 
 
 @dataclass(frozen=True)
@@ -38,68 +55,208 @@ class ExecutionService:
         provider: str | None = None,
         model: str | None = None,
     ) -> ExecutionBundle:
-        manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
+        state = self._runtime.load_project_state(workspace)
+        manifest = state.manifest
         task = self._runtime.get_task(workspace, task_id)
-        template = snapshot.resolve_template(f"{task.template_id}@{task.template_version}")
+        template = snapshot.resolve_template(task.template_ref)
         context_result = self._context_service.build_for_task(workspace, snapshot, task_id)
         context_manifest = context_result.manifest
-        composed_recipe = compose_recipe(snapshot, manifest.recipe_ref, tuple(sorted(state.enabled_domain_packs.keys())))
-        current_step = next((step for step in composed_recipe.steps if step.identifier == task.recipe_step_id), None)
-        if current_step is None:
-            raise ConflictError(f"Шаг '{task.recipe_step_id}' отсутствует в composed recipe.")
 
         artifact_roles = template.outputs.artifact_roles
         if len(artifact_roles) != 1:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
         active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER", "stub")
-        active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+        # W3.2: pre-selector сложности задачи. Default — off, в этом случае
+        # возвращает declared `template.complexity`. С `POV_COMPLEXITY_SELECTOR=on`
+        # или `=stub` оценка может перезаписать сложность по фактическому
+        # контексту проекта (число активных domain packs, бизнес-запрос и т.д.).
+        complexity_selection = select_complexity(template=template, state=state)
+        complexity_value = complexity_selection.complexity
+        if active_provider == "claude_sdk":
+            active_model = model or model_for_complexity(complexity_value)
+        elif active_provider == "claude_subscription":
+            active_model = model or model_for_complexity_subscription(complexity_value)
+        else:
+            active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+        active_methodology: MethodologyPackSpec | None = None
+        for ref in state.process.active_methodology_pack_records.keys():
+            try:
+                active_methodology = snapshot.resolve_methodology_pack(ref)
+                break
+            except Exception:
+                continue
+        active_domain_refs = tuple(sorted(state.process.active_domain_pack_records.keys()))
 
         system_prompt, user_prompt = self._build_prompt(
             template_name=template.name,
-            framework_summary=template.framework_summary,
+            task_summary=template.summary,
             artifact_role=artifact_role,
-            domain_pack_refs=tuple(sorted(state.enabled_domain_packs.keys())),
-            current_step_title=current_step.title,
+            domain_pack_refs=active_domain_refs,
+            current_step_title=task.title,
             context_manifest=context_manifest,
         )
 
-        if active_provider == "stub":
+        # Этап 5: если шаблон помечен как merge-задача со strategy=structural,
+        # обходим LLM/stub и собираем результат детерминированно из входных
+        # артефактов. Strategy=synthetic идёт обычным LLM-путём; metadata
+        # отметит, что это была merge-операция. Strategy=hybrid зарезервирована.
+        if template.merge is not None and template.merge.strategy == "structural":
+            payload = self._execute_structural_merge(
+                workspace=workspace,
+                context_manifest=context_manifest,
+                merge_config=template.merge,
+            )
+            live_reasoning = None
+        elif template.merge is not None and template.merge.strategy == "hybrid":
+            raise ConflictError(
+                f"merge.strategy=hybrid не реализован в MVP (template={template.ref.as_string()})"
+            )
+        elif active_provider == "stub":
             payload = self._execute_stub(
                 artifact_role=artifact_role,
                 context_manifest=context_manifest,
-                business_request=state.business_request,
-                goal=state.goal,
-                domain_pack_refs=tuple(sorted(state.enabled_domain_packs.keys())),
+                business_request=state.manifest.business_request,
+                goal=state.knowledge.goal_statement(),
+                domain_pack_refs=active_domain_refs,
             )
-        elif active_provider == "openrouter":
-            payload = OpenRouterClient.from_env().chat_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=artifact_schema(artifact_role, tuple(sorted(state.enabled_domain_packs.keys()))),
-            )
+            live_reasoning = None
+        elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
+            primary_schema = artifact_schema(artifact_role, active_domain_refs)
+            # W3.1: выбор между single_call (один LLM-вызов на primary+reasoning)
+            # и per_stage_cot (отдельный вызов на каждую стадию + финальный
+            # на primary с накопительным контекстом). Mode читается из
+            # methodology_pack; для задач без активной методологии всегда
+            # single_call.
+            if (
+                active_methodology is not None
+                and active_methodology.stage_execution_mode == "per_stage_cot"
+            ):
+                payload, live_reasoning = self._execute_per_stage_cot(
+                    provider=active_provider,
+                    model=active_model,
+                    base_system_prompt=system_prompt,
+                    base_user_prompt=user_prompt,
+                    methodology=active_methodology,
+                    complexity=complexity_value,
+                    primary_schema=primary_schema,
+                )
+            else:
+                payload, live_reasoning = self._execute_single_call(
+                    provider=active_provider,
+                    model=active_model,
+                    base_system_prompt=system_prompt,
+                    base_user_prompt=user_prompt,
+                    methodology=active_methodology,
+                    complexity=complexity_value,
+                    primary_schema=primary_schema,
+                )
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
 
+        # Этап 1.1: reasoning и methodology trace больше не отдельные
+        # артефакты — они становятся метаинформацией primary артефакта.
+        # Этап 1.4: input_artifact_ids выводим из context_manifest items
+        # типа "artifact"; used_position_ids — placeholder, полностью
+        # подключается в Этапе 2 (выборка положений).
+        execution_run_id = str(uuid.uuid4())
+        reasoning_payload: dict[str, object] = {}
+        methodology_trace_payload: dict[str, object] = {}
+        methodology_candidates: tuple = ()
+        if active_methodology is not None:
+            reasoning_payload = self._build_reasoning_payload(
+                workspace=workspace,
+                task=task,
+                methodology=active_methodology,
+                complexity=complexity_value,
+                live_reasoning=live_reasoning,
+            )
+            evaluation = evaluate_methodology_rules(
+                methodology=active_methodology,
+                complexity=complexity_value,
+                reasoning=reasoning_payload,
+                project_id=manifest.project_id,
+                task_id=task.task_id,
+                methodology_mode=getattr(template, "methodology_mode", "full"),
+            )
+            methodology_trace_payload = self._build_methodology_trace_payload(
+                methodology=active_methodology,
+                complexity=complexity_value,
+                evaluation=evaluation,
+            )
+            methodology_candidates = evaluation.candidates
+
+        input_artifact_ids = self._extract_input_artifact_ids(context_manifest)
+
         artifact_id = str(uuid.uuid4())
+        # B4: при retry или повторном создании артефакта того же role
+        # текущей задачи — связываем версии через parent_artifact_id и
+        # помечаем предыдущую superseded. Это даёт работающую цепочку
+        # версий (для L6-6 versions dropdown) и корректный «current» во
+        # всех view-методах.
+        previous_active = self._runtime.latest_active_artifact_by_role_and_task(
+            workspace,
+            artifact_role=artifact_role,
+            created_by_task_id=task.task_id,
+        )
         artifact_record = ArtifactRecord(
             artifact_id=artifact_id,
             project_id=manifest.project_id,
             artifact_role=artifact_role,
-            title=f"{template.name} ({artifact_role})",
-            description=f"Артефакт, созданный задачей {task.recipe_step_id}",
+            # Раньше склеивали `<template.name> (<role_id>)` — техническое id
+            # роли в скобках захламляло список артефактов в UI и не несло
+            # информации для пользователя. Теперь title = чистое название
+            # шаблона задачи; роль артефакта показывается отдельной мета-меткой
+            # в карточке.
+            title=template.name,
+            description=f"Артефакт, созданный задачей {task.task_key}",
             artifact_format="json",
             artifact_kind="primary",
             created_by_task_id=task.task_id,
-            parent_artifact_id=None,
-            metadata={"template_ref": template.ref.as_string()},
             storage_path=f"artifacts/{artifact_id}.json",
             created_at=utc_now_iso(),
+            relations=ArtifactRelations(
+                parent_artifact_id=previous_active.artifact_id if previous_active else None,
+                input_artifact_ids=input_artifact_ids,
+            ),
+            metadata=ArtifactMetadata(
+                template_ref=template.ref.as_string(),
+                provider=active_provider,
+                model=active_model,
+                complexity=complexity_value,
+                methodology_pack_ref=(
+                    active_methodology.ref.as_string() if active_methodology else None
+                ),
+                execution_run_id=execution_run_id,
+                merge_strategy=(template.merge.strategy if template.merge else None),
+                reasoning=reasoning_payload,
+                methodology_trace=methodology_trace_payload,
+                used_position_ids=context_manifest.used_position_ids,
+            ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
-        markdown_render = render_markdown(artifact_role, payload)
+        if previous_active is not None:
+            # Сначала записываем новый, потом помечаем старый — атомарность
+            # не нужна (worst case — оба current, query вернёт latest по
+            # created_at). После этого UI и view-методы видят только новый.
+            self._runtime.mark_artifact_superseded(workspace, previous_active.artifact_id)
+        # Markdown-render может ругаться на неполный payload (часто такое
+        # бывает при структурных merge'ах и тестовых сценариях). JSON
+        # артефакта валидируется отдельно — поэтому фатально валить
+        # задачу из-за визуального рендеринга не стоит. Fallback —
+        # минимальный markdown с заголовком и JSON-снимком.
+        try:
+            markdown_render = render_markdown(artifact_role, payload)
+        except (KeyError, TypeError):
+            markdown_render = (
+                f"# {artifact_role}\n\n"
+                "_Минимальный рендер: расширенный шаблон не смог отрендерить "
+                "содержимое артефакта (вероятно, не все ожидаемые поля "
+                "заполнены). См. JSON-версию артефакта для полного содержимого._\n"
+            )
+        if markdown_render is None:
+            markdown_render = f"# {artifact_role}\n"
         (workspace / markdown_path).parent.mkdir(parents=True, exist_ok=True)
         (workspace / markdown_path).write_text(markdown_render, encoding="utf-8")
 
@@ -113,6 +270,9 @@ class ExecutionService:
                     {
                         "provider": active_provider,
                         "model": active_model,
+                        "complexity": complexity_value,
+                        "complexity_source": complexity_selection.source,
+                        "complexity_rationale": complexity_selection.rationale,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                     }
@@ -126,7 +286,7 @@ class ExecutionService:
             ),
         )
         request = ExecutionRequest(
-            execution_run_id=str(uuid.uuid4()),
+            execution_run_id=execution_run_id,
             project_id=manifest.project_id,
             task_id=task.task_id,
             template_ref=template.ref.as_string(),
@@ -134,51 +294,416 @@ class ExecutionService:
             provider=active_provider,
             model=active_model,
             actor="workflow",
+            complexity=complexity_value,
+            methodology_pack_ref=active_methodology.ref.as_string() if active_methodology else None,
+        )
+        outputs: tuple[ExecutionOutput, ...] = (
+            ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role),
         )
         result = ExecutionResult(
             execution_run_id=request.execution_run_id,
             status="succeeded",
-            outputs=(ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role),),
+            outputs=outputs,
             trace_ids=tuple(trace.trace_id for trace in traces),
             proposed_goal=proposed_goal,
+            methodology_candidates=methodology_candidates,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
+
+    def _execute_structural_merge(
+        self,
+        *,
+        workspace: Path,
+        context_manifest,
+        merge_config,
+    ) -> dict:
+        """Структурная merge-стратегия (Этап 5.1, structural).
+
+        Загружает содержимое каждого input-артефакта из ``context_manifest``
+        (items типа ``artifact``) и объединяет их в один dict через
+        :func:`structural_merge` по политике конфликтов из ``merge_config``.
+
+        Без LLM, детерминированно. Результат должен валидно соответствовать
+        контракту выходного артефакта — это проверяет validation-слой.
+        """
+        prefix = "artifact:"
+        inputs: list[dict] = []
+        for item in context_manifest.items:
+            if item.item_type != "artifact" or not item.source_ref.startswith(prefix):
+                continue
+            artifact_id = item.source_ref[len(prefix):]
+            try:
+                content = self._runtime.load_artifact_content(workspace, artifact_id)
+            except Exception:
+                continue
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                inputs.append(payload)
+        return structural_merge(inputs, conflict_policy=merge_config.conflict_policy)
+
+    @staticmethod
+    def _extract_input_artifact_ids(context_manifest) -> tuple[str, ...]:
+        """Вытащить input_artifact_ids из context_manifest для relations.
+
+        Опирается на конвенцию `context_service`: items типа ``artifact``
+        имеют ``source_ref`` вида ``artifact:<artifact_id>``.
+        """
+        ids: list[str] = []
+        prefix = "artifact:"
+        for item in context_manifest.items:
+            if item.item_type != "artifact":
+                continue
+            if item.source_ref.startswith(prefix):
+                ids.append(item.source_ref[len(prefix):])
+        # Уникальные значения в порядке появления.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for artifact_id in ids:
+            if artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            unique.append(artifact_id)
+        return tuple(unique)
+
+    # ---- LLM execution dispatch ------------------------------------------
+
+    def _chat_json(
+        self,
+        *,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict,
+    ) -> dict:
+        """Единая точка вызова LLM, чтобы execute_task / per-stage / primary
+        ходили одной дорогой и не плодили switch'ей по провайдеру."""
+        if provider == "openrouter":
+            return OpenRouterClient.from_env().chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_sdk":
+            return ClaudeSdkClient.from_env(model=model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        if provider == "claude_subscription":
+            return ClaudeSubscriptionClient.from_env(model=model).chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
+            )
+        raise ConflictError(f"Неподдерживаемый provider: {provider}")
+
+    def _execute_single_call(
+        self,
+        *,
+        provider: str,
+        model: str,
+        base_system_prompt: str,
+        base_user_prompt: str,
+        methodology: MethodologyPackSpec | None,
+        complexity: str | None,
+        primary_schema: dict,
+    ) -> tuple[dict, dict | None]:
+        """`single_call` mode (default): один LLM-вызов, объединённая схема
+        `primary + reasoning` (если есть активная методология) либо просто
+        `primary` (если методология не наложена)."""
+        if methodology is not None:
+            methodology_schema = self._build_methodology_schema(methodology, complexity)
+            combined_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["primary", "reasoning"],
+                "properties": {"primary": primary_schema, "reasoning": methodology_schema},
+            }
+            effective_system = (
+                base_system_prompt
+                + "\n\n"
+                + self._methodology_system_section(methodology, complexity)
+            )
+            full_payload = self._chat_json(
+                provider=provider, model=model,
+                system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
+            )
+            return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"))
+        full_payload = self._chat_json(
+            provider=provider, model=model,
+            system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
+        )
+        return (full_payload, None)
+
+    def _execute_per_stage_cot(
+        self,
+        *,
+        provider: str,
+        model: str,
+        base_system_prompt: str,
+        base_user_prompt: str,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        primary_schema: dict,
+    ) -> tuple[dict, dict]:
+        """`per_stage_cot` mode (W3.1, vision «После MVP» точка #1): отдельный
+        LLM-вызов на каждую активную стадию методологии с накопительным
+        контекстом, плюс финальный вызов на primary с собранным reasoning.
+
+        Зачем: single_call упаковывает все стадии в одну схему и один
+        промпт — LLM подбирает их одним проходом, без фокуса. Per-stage CoT
+        даёт модели по одному вопросу за раз и накапливает структурированный
+        контекст, что особенно помогает на сложных задачах со многими
+        стадиями (например per-domain reasoning packs)."""
+        active_stages = methodology.stages_for_complexity(complexity)
+        stage_outputs: dict[str, dict] = {}
+
+        for stage in active_stages:
+            stage_schema = self._build_single_stage_schema(stage)
+            stage_system = self._stage_system_prompt(methodology, stage, complexity)
+            stage_user = self._stage_user_prompt(
+                base_user_prompt=base_user_prompt,
+                stage=stage,
+                previous_outputs=stage_outputs,
+            )
+            stage_result = self._chat_json(
+                provider=provider, model=model,
+                system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
+            )
+            stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
+
+        # Финальный вызов: primary artifact с reasoning как структурированный контекст.
+        primary_system = (
+            base_system_prompt
+            + "\n\nТы прошёл методологические стадии. Ниже их выводы — используй их как явное "
+            "рассуждение для построения основного артефакта. Не возвращай reasoning ещё раз."
+        )
+        primary_user = (
+            base_user_prompt
+            + "\n\n### Reasoning через стадии (per-stage CoT):\n"
+            + json_dumps(stage_outputs)
+        )
+        primary_payload = self._chat_json(
+            provider=provider, model=model,
+            system_prompt=primary_system, user_prompt=primary_user, schema=primary_schema,
+        )
+        return (primary_payload, stage_outputs)
+
+    def _build_single_stage_schema(self, stage) -> dict:
+        """JSON-schema для одной стадии — только её produces-поля."""
+        properties: dict = {}
+        required: list[str] = []
+        for produces in stage.produces:
+            properties[produces.field_name] = self._field_to_schema(produces)
+            if produces.required:
+                required.append(produces.field_name)
+        result: dict = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": properties,
+        }
+        if required:
+            result["required"] = required
+        return result
+
+    def _stage_system_prompt(
+        self,
+        methodology: MethodologyPackSpec,
+        stage,
+        complexity: str | None,
+    ) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        stage_index = next(
+            (idx for idx, item in enumerate(active_stages) if item.identifier == stage.identifier),
+            0,
+        )
+        return (
+            f"Ты выполняешь стадию {stage_index + 1}/{len(active_stages)} методологии "
+            f"'{methodology.title}' ({methodology.ref.as_string()}). "
+            f"Текущая стадия — '{stage.identifier}': {stage.title}. "
+            f"{stage.description.strip() if stage.description else ''} "
+            "Сфокусируйся ТОЛЬКО на этой стадии. Заполни её поля по схеме. "
+            "Не предугадывай решения следующих стадий и не дублируй уже принятые на предыдущих стадиях. "
+            "Пиши только на русском языке. Верни валидный JSON по схеме."
+        )
+
+    def _stage_user_prompt(
+        self,
+        *,
+        base_user_prompt: str,
+        stage,
+        previous_outputs: dict[str, dict],
+    ) -> str:
+        sections = [base_user_prompt]
+        if previous_outputs:
+            sections.append(
+                "### Уже зафиксированное рассуждение (предыдущие стадии методологии):\n"
+                + json_dumps(previous_outputs)
+            )
+        produces_lines = ", ".join(f"{p.field_name}:{p.field_type}" for p in stage.produces)
+        sections.append(f"### Заполни стадию '{stage.identifier}' с полями: {produces_lines}")
+        return "\n\n".join(sections)
+
+    # ---- prompt building -------------------------------------------------
 
     def _build_prompt(
         self,
         *,
         template_name: str,
-        framework_summary: str,
+        task_summary: str,
         artifact_role: str,
         domain_pack_refs: tuple[str, ...],
         current_step_title: str,
         context_manifest,
     ) -> tuple[str, str]:
+        # B5: system_prompt — Promp Authority Layer.
+        # Без явного указания иерархии источников LLM трактует все данные
+        # одинаково и может проигнорировать ответ пользователя. Здесь мы
+        # фиксируем: USER DECISIONS — обязательные ограничения, ASSUMPTIONS —
+        # рабочие, FACTS — база, GAPS — не утверждать, UPSTREAM — пересмотрим
+        # если противоречит decision.
         system_prompt = (
-            "Ты работаешь как дисциплинированный системный аналитик. "
-            "Пиши только на русском языке. "
-            "Не придумывай факты, которых нет во входах. "
-            "Большинство шагов ты должен выполнять максимально добросовестно на основе имеющейся информации. "
-            "Если информации недостаточно для уверенного вывода, не останавливайся сразу: "
-            "сделай максимально ответственный анализ, но явно снижай поле `confidence` и заполняй `blocking_questions`. "
-            "Эскалация к человеку допустима только если без ответа нельзя продолжать добросовестно. "
-            "Верни только валидный JSON без пояснений вне JSON."
+            "<role>\n"
+            "Ты — senior-консультант, который готовит коммерческую проектную "
+            "документацию (ТЗ, бизнес-кейс, архитектурное предложение). Твоя "
+            "аудитория — технический директор и бизнес-заказчик клиента. Они "
+            "ценят время, не терпят «воды» и решают, запускать ли проект, по "
+            "твоему тексту. Пиши только на русском языке.\n"
+            "</role>\n\n"
+
+            "<writing_principles>\n"
+            "1. ПИРАМИДА МИНТО. Главный вывод раздела — первым предложением; "
+            "затем обоснования и детали.\n\n"
+            "2. MECE. Разделы взаимоисключающие и совокупно исчерпывающие; "
+            "содержимое не дублируется между секциями.\n\n"
+            "3. КОНКРЕТНОЕ — конкретно, абстрактное — абстрактно. Числа, даты, "
+            "имена систем и ролей пиши ИЗ КОНТЕКСТА конкретно. Принципы, цели, "
+            "обобщения, нефункциональные требования формулируй абстрактно ровно "
+            "там, где этого требует природа раздела («Решение устойчиво к отказу "
+            "одной из реплик» — нормально). Запрещена не абстракция как таковая, "
+            "а абстракция-маскировка нехватки данных: «современный подход "
+            "обеспечит эффективность» — это не абстракция, это маркетинг.\n\n"
+            "4. АКТИВНЫЙ ЗАЛОГ. «Команда поставляет решение», не «решение "
+            "поставляется». Субъект действия виден. Исключение — формулировки "
+            "нефункциональных требований, где пассив естественен («данные "
+            "шифруются при передаче»).\n\n"
+            "5. BURSTINESS. Чередуй короткие предложения (5-8 слов) и "
+            "аналитические (20-35 слов). Не пиши 10 предложений одинаковой "
+            "длины подряд.\n\n"
+            "6. СТРУКТУРНЫЙ РИТМ. Абзац → таблица или список → короткий "
+            "абзац-вывод. Не выкладывай 10 одинаковых булет-листов подряд.\n"
+            "</writing_principles>\n\n"
+
+            "<grounding_rule>\n"
+            "Используй только факты, явно зафиксированные в:\n"
+            "  • <context> текущей задачи (бизнес-запрос, upstream-артефакты),\n"
+            "  • 🟢 решениях пользователя,\n"
+            "  • 🔵 фактах, извлечённых из бизнес-запроса.\n\n"
+            "Если факта в контексте нет — НЕ ВЫДУМЫВАЙ. Имена систем, "
+            "конкретные числа, регуляторные акты, технологии вендоров — "
+            "нельзя подмешивать «по аналогии» из других проектов: это "
+            "галлюцинация. Если нужного факта нет, оставь поле незаполненным, "
+            "поставь null, или явно отметь как assumption в reasoning. "
+            "Абстрактные принципы и обоснованные обобщения, не привязанные "
+            "к конкретным фактам, разрешены и нужны (см. writing_principle 3).\n"
+            "</grounding_rule>\n\n"
+
+            "<source_hierarchy>\n"
+            "В блоке «Контекст проекта» источники маркированы значками:\n"
+            "🟢 РЕШЕНИЯ ПОЛЬЗОВАТЕЛЯ — обязательные ограничения; не оспаривай.\n"
+            "🟡 ДОПУЩЕНИЯ — рабочие; при конфликте с решением — решение выше.\n"
+            "🔵 ФАКТЫ — извлечены из бизнес-запроса, база для рассуждений.\n"
+            "⚫ GAPS — пустые области; не утверждай, фиксируй как открытый вопрос.\n"
+            "🔻 АРТЕФАКТЫ ПРЕДЫДУЩИХ ШАГОВ — выводы коллег; при конфликте с "
+            "решением пользователя — решение перевешивает.\n"
+            "</source_hierarchy>\n\n"
+
+            "<two_uncertainty_channels>\n"
+            "1. `open_questions` ВНУТРИ АРТЕФАКТА (если такое поле есть в схеме) — "
+            "нормальный раздел документа. Сюда идёт всё, что «доуточнить на "
+            "этапе детального дизайна», «согласовать с владельцем процесса», "
+            "«зависит от выбора инструмента». Реальное ТЗ ВСЕГДА содержит "
+            "такие пункты.\n\n"
+            "2. `blocking_questions` В МЕТАДАННЫХ — стоп-сигнал «без ответа не "
+            "могу произвести артефакт вообще». Используй ТОЛЬКО когда бизнес-цель "
+            "или скоуп фундаментально неоднозначны, либо данные в контексте "
+            "противоречат друг другу и без выбора артефакт будет вредить.\n\n"
+            "Детали реализации, выбор инструментов, конкретные пороги метрик — "
+            "НЕ blocking_questions. Это open_questions или assumptions.\n\n"
+            "Пустой blocking_questions — нормальное и желаемое состояние.\n"
+            "</two_uncertainty_channels>\n\n"
+
+            "<style_bans>\n"
+            "Не используй вводные мета-фразы: «стоит отметить», «важно отметить», "
+            "«важно понимать», «следует учитывать», «нельзя не заметить», "
+            "«хочется отметить», «крайне важно».\n\n"
+            "Не используй глаголы-связки вместо «это»: «является» (как связка), "
+            "«представляет собой», «выступает в качестве», «служит основой», "
+            "«играет ключевую/важную роль».\n\n"
+            "Не используй кальки с английского: «на сегодняшний день», "
+            "«в современном мире», «в наше время», «в заключение», «подводя итог», "
+            "«давайте рассмотрим», «давайте погрузимся», «таким образом, можно "
+            "сделать вывод».\n\n"
+            "Не используй канцелярит: «осуществление», «реализация», «внедрение» "
+            "как пустые отглагольные; «в рамках», «в целях», «посредством»; "
+            "«данный/данная/данное» — пиши «этот»; «оказывает влияние» — пиши "
+            "«влияет».\n\n"
+            "Не используй промо-лексику: «уникальный», «инновационный», "
+            "«революционный», «комплексный подход», «синергия», «ведущий», "
+            "«передовой».\n\n"
+            "Не используй псевдо-параллелизмы: «не просто X, а Y», «не только X, "
+            "но и Y», «от стартапов до корпораций».\n\n"
+            "Не злоупотребляй em-dash (макс 1 на 5 предложений). Не делай "
+            "перечисления всегда из ровно трёх элементов. Не пиши все "
+            "предложения одинаковой длины.\n\n"
+            "Не используй мета-формулировки про сам процесс ТЗ («система должна "
+            "формировать структурированное ТЗ»). Пиши про продукт, не про процесс.\n\n"
+            "Не пиши «возможно», «при необходимости», «по усмотрению» там, где у "
+            "тебя есть позиция. Если позиции нет — выводи в open_questions.\n"
+            "</style_bans>\n\n"
+
+            "<pre_flight_check>\n"
+            "Перед тем как вернуть ответ, выполни проверки:\n\n"
+            "1. CLICHÉ SCAN. Пройди текст по списку <style_bans>. Если нашёл — "
+            "перепиши предложение, сохранив смысл.\n\n"
+            "2. CONCRETENESS-OR-ABSTRACTION CHECK. Каждое утверждение либо "
+            "подкреплено фактом из контекста, либо является осознанной "
+            "абстракцией (принцип, цель, обобщение)? Если ни то ни другое — "
+            "удали или подкрепи.\n\n"
+            "3. GROUNDING CHECK. Каждый фактический пункт (имя, число, срок) "
+            "подкреплён контекстом? Иначе — null / «требует уточнения» / "
+            "отметка assumption.\n\n"
+            "4. ACTIVE VOICE. Пассивные конструкции переведены в активный залог "
+            "там, где это уместно.\n"
+            "</pre_flight_check>\n\n"
+
+            "<output_contract>\n"
+            "Верни ТОЛЬКО валидный JSON по приложенной схеме. Без markdown-обёрток, "
+            "без префиксов «Вот результат:», без комментариев после JSON. В "
+            "string-полях пиши связной прозой; в array<string>-полях каждый item — "
+            "развёрнутая формулировка из 1-3 предложений с конкретикой (если "
+            "данные позволяют) или с осознанной формулировкой принципа (если "
+            "природа раздела абстрактная), а не телеграфный bullet.\n"
+            "</output_contract>"
         )
         context_sections = []
         for item in context_manifest.items:
             context_sections.append(f"### {item.title}\n{item.content}")
-        user_prompt = "\n\n".join(
+        prompt_lines = [
+            f"Текущий шаг: {current_step_title}",
+            f"Тип работы: {template_name}",
+        ]
+        # B5: task_summary ниже попадает через context_manifest item
+        # «Что должна сделать задача» (priority=1000) — здесь его НЕ
+        # дублируем, чтобы избежать двойного включения и шум.
+        prompt_lines.extend(
             [
-                f"Текущий шаг: {current_step_title}",
-                f"Тип работы: {template_name}",
-                f"Методология шага: {framework_summary}",
                 f"Активные доменные пакеты: {', '.join(domain_pack_refs) if domain_pack_refs else 'нет'}",
                 schema_instruction(artifact_role, domain_pack_refs),
                 "Контекст:",
                 *context_sections,
             ]
         )
+        user_prompt = "\n\n".join(prompt_lines)
         return system_prompt, user_prompt
 
     def _execute_stub(
@@ -197,363 +722,32 @@ class ExecutionService:
                     parsed_inputs[item.title] = json.loads(item.content)
                 except json.JSONDecodeError:
                     parsed_inputs[item.title] = item.content
-        frontend_enabled = "frontend.web_app_requirements@1.0.0" in domain_pack_refs
-        frontend_v2_enabled = any(ref.startswith("frontend.web_app_requirements@2.") for ref in domain_pack_refs)
-        ml_enabled = any(ref.startswith("ml.predictive_analytics_pov_requirements@") for ref in domain_pack_refs)
-        security_enabled = any(ref.startswith("security.enterprise_compliance_requirements@") for ref in domain_pack_refs)
-        integration_enabled = any(ref.startswith("integration.enterprise_delivery_requirements@") for ref in domain_pack_refs)
-        frontend_enabled = frontend_enabled or frontend_v2_enabled
-        if artifact_role == "clarification_notes":
-            return {
-                "clarified_goal": goal or f"Подготовить качественное ТЗ по запросу: {business_request}",
-                "success_criteria": [
-                    "Требования структурированы и непротиворечивы",
-                    "Есть критерии приёмки и список рисков",
-                ],
-                "assumptions": [
-                    "Заказчик готов отвечать на уточняющие вопросы",
-                    "Исходный бизнес-запрос отражает реальную потребность",
-                ],
-                "open_questions": [
-                    "Есть ли жёсткие ограничения по срокам?",
-                    "Нужны ли интеграции с существующими системами?",
-                ],
-            }
-        if artifact_role == "request_fact_sheet":
-            return {
-                "explicit_facts": [
-                    "Инициатива описана как проект по формализации решения и подготовке ТЗ",
-                    "В запросе уже присутствуют ожидания к результату, ограничения и рамка этапа",
-                ],
-                "named_entities": [
-                    "Бизнес-заказчик",
-                    "Команда реализации",
-                    "Корпоративные системы и данные",
-                ],
-                "requested_deliverables": [
-                    "Структурированное техническое задание",
-                    "Зафиксированная рамка текущего этапа",
-                ],
-                "mentioned_systems_and_sources": [
-                    "Источники данных и корпоративные системы, если они названы в запросе",
-                ],
-                "mentioned_metrics_and_targets": [
-                    "Целевые метрики и ожидаемый эффект, если они присутствуют в брифе",
-                ],
-                "confidence": 0.9,
-                "blocking_questions": [],
-            }
-        if artifact_role == "goal_hypothesis":
-            return {
-                "hypothesized_goal": goal or f"Подготовить пригодное к реализации ТЗ по запросу: {business_request}",
-                "expected_effects": [
-                    "Снизить неопределенность в постановке задачи",
-                    "Создать основу для оценки и запуска следующего этапа проекта",
-                ],
-                "project_stage_hypothesis": "Текущий этап следует трактовать как формализацию требований и проверку рамки решения, а не как полноценное промышленное внедрение.",
-                "success_signals": [
-                    "Согласована цель этапа",
-                    "Понятны обязательные результаты этапа и критерии приемки",
-                ],
-                "unresolved_goal_points": [
-                    "Не всегда явно указан горизонт ожидаемого эффекта",
-                    "Может отсутствовать явное разделение целей бизнеса и целей этапа",
-                ],
-                "confidence": 0.84,
-                "blocking_questions": [],
-            }
-        if artifact_role == "constraint_inventory":
-            return {
-                "explicit_constraints": [
-                    "Нельзя придумывать отсутствующие факты",
-                    "Нужно держать рамку текущего этапа отдельно от будущего масштабирования",
-                ],
-                "inferred_constraints": [
-                    "Часть ограничений может быть зашита в описании желаемого решения",
-                    "На проект могут влиять данные, интеграции, безопасность и требования к поставке",
-                ],
-                "stage_constraints": [
-                    "Документ должен быть пригоден для текущего этапа",
-                    "Нельзя обещать полноценный промышленный контур без отдельного этапа",
-                ],
-                "environment_constraints": [
-                    "Возможны ограничения на контур размещения, доступ и обработку данных",
-                ],
-                "dependency_constraints": [
-                    "Ключевые решения могут зависеть от подтверждений со стороны заказчика, ИТ или ИБ",
-                ],
-                "confidence": 0.83,
-                "blocking_questions": [],
-            }
-        if artifact_role == "ambiguity_gap_report":
-            return {
-                "ambiguous_points": [
-                    "В запросе могут быть смешаны бизнес-цель, рамка этапа и детали будущего решения",
-                    "Не всегда явно разделены PoV, пилот и промышленный контур",
-                ],
-                "conflicting_signals": [
-                    "Есть риск одновременно ожидать быстрый пилот и слишком широкую рамку проекта",
-                ],
-                "missing_decisions": [
-                    "Кто утверждает границы текущего этапа",
-                    "Какие результаты обязательны именно сейчас",
-                ],
-                "safe_assumptions": [
-                    "Текущий бриф следует трактовать как запрос на формализацию решения, а не как готовое ТЗ",
-                ],
-                "escalation_candidates": [
-                    "Неопределенный владелец результата",
-                    "Отсутствие решения по критичным ограничениям этапа",
-                ],
-                "confidence": 0.8,
-                "blocking_questions": [],
-            }
-        if artifact_role == "normalized_request":
-            return {
-                "request_summary": f"Запрос нормализован как инициатива по проектированию решения: {business_request[:160]}",
-                "business_problem": "Нужно формализовать бизнес-проблему, целевой эффект, ограничения и рамку проекта, не смешивая PoV с промышленным внедрением.",
-                "requested_solution_elements": [
-                    "Подготовить структурированное техническое задание",
-                    "Зафиксировать ограничения, ожидания и границы этапа",
-                    "Понять, какие доменные требования обязательны",
-                ],
-                "explicit_constraints": [
-                    "Нельзя выдумывать недостающие факты",
-                    "Нужно отделять текущий этап от будущего масштабирования",
-                ],
-                "implicit_risks": [
-                    "В запросе могут быть смешаны бизнес-цель, решение и будущий промышленный контур",
-                    "Часть важных ограничений может быть названа неявно",
-                ],
-                "ambiguous_points": [
-                    "Не до конца понятно, какие результаты обязательны именно на текущем этапе",
-                    "Может отсутствовать ясность по формальному процессу приемки",
-                ],
-                "confidence": 0.88,
-                "blocking_questions": [],
-            }
-        if artifact_role == "business_outcome_model":
-            return {
-                "primary_business_goal": goal or f"Сформировать управляемое и пригодное к реализации ТЗ по запросу: {business_request}",
-                "target_kpis": [
-                    "Сократить неопределённость в постановке задачи",
-                    "Снизить риск передать в реализацию неполную постановку",
-                ],
-                "success_metrics": [
-                    "ТЗ покрывает цели, ограничения, результаты этапа и критерии приемки",
-                    "Документ можно использовать как основание для оценки и запуска работ",
-                ],
-                "business_process_impacts": [
-                    "Ускорение перехода от сырого брифа к проектируемому решению",
-                    "Снижение числа уточнений на поздних этапах проекта",
-                ],
-                "expected_decisions": [
-                    "Можно ли запускать следующий этап проекта",
-                    "Какой вариант решения и какая рамка этапа рекомендуются",
-                ],
-                "value_hypotheses": [
-                    "Чёткая постановка снижает стоимость ошибок на этапах проектирования и реализации",
-                    "Ранняя фиксация ограничений улучшает предсказуемость проекта",
-                ],
-                "assumptions": [
-                    "Бриф отражает реальную потребность бизнеса",
-                    "Заказчик готов уточнять критические пробелы только при реально blocking-вопросах",
-                ],
-                "confidence": 0.86,
-                "blocking_questions": [],
-            }
-        if artifact_role == "scope_boundary_matrix":
-            return {
-                "in_scope": [
-                    "Подготовка структурированного ТЗ для текущего этапа",
-                    "Фиксация ограничений и обязательных входов",
-                    "Определение критериев приемки текущего этапа",
-                ],
-                "out_of_scope": [
-                    "Подробный производственный план внедрения",
-                    "Полноценное сопровождение промышленной системы за пределами текущего этапа",
-                ],
-                "pilot_boundaries": [
-                    "Текущий этап должен быть ограничен рамкой PoV/PoC/пилота, если это следует из брифа",
-                    "Будущее масштабирование фиксируется отдельно как следующая фаза",
-                ],
-                "future_phase_candidates": [
-                    "Промышленное внедрение",
-                    "Расширение интеграций и эксплуатационного контура",
-                ],
-                "mandatory_deliverables": [
-                    "Техническое задание",
-                    "Фиксация критериев приемки и рисков",
-                ],
-                "excluded_deliverables": [
-                    "Полный производственный бэклог",
-                    "Детальный план многолетнего развития",
-                ],
-                "confidence": 0.82,
-                "blocking_questions": [],
-            }
-        if artifact_role == "stakeholder_map":
-            return {
-                "stakeholder_groups": [
-                    {
-                        "name": "Бизнес-заказчик",
-                        "role": "Владелец потребности и ожидаемого эффекта",
-                        "influence": "Высокое",
-                        "expectations": ["Получить полезный результат этапа", "Согласовать рамку проекта"],
-                    },
-                    {
-                        "name": "Команда реализации",
-                        "role": "Исполнитель и оценщик реализуемости",
-                        "influence": "Высокое",
-                        "expectations": ["Получить непротиворечивое ТЗ", "Понять зависимости и ограничения"],
-                    },
-                ],
-                "primary_users": ["Бизнес-заказчик", "Команда реализации"],
-                "data_owners": ["Владельцы данных и корпоративных систем"],
-                "support_teams": ["ИТ", "Архитектура", "Информационная безопасность"],
-                "confidence": 0.81,
-                "blocking_questions": [],
-            }
-        if artifact_role == "decision_ownership_matrix":
-            return {
-                "decisions": [
-                    {
-                        "name": "Подтверждение цели и ценности этапа",
-                        "owner": "Бизнес-заказчик",
-                        "participants": ["Команда реализации"],
-                        "timing": "До финализации ТЗ",
-                    },
-                    {
-                        "name": "Подтверждение границ текущего этапа",
-                        "owner": "Заказчик этапа",
-                        "participants": ["ИТ", "Архитектура"],
-                        "timing": "До оценки работ",
-                    },
-                ],
-                "unowned_decisions": [
-                    "Часть решений о следующей фазе может требовать отдельного владельца",
-                ],
-                "approval_points": [
-                    "Согласование состава результатов этапа",
-                    "Подтверждение критериев приемки",
-                ],
-                "confidence": 0.8,
-                "blocking_questions": [],
-            }
-        if artifact_role == "operating_model_outline":
-            return {
-                "process_flow": [
-                    "Бизнес формулирует потребность и подтверждает цель",
-                    "Команда реализации анализирует ограничения и готовит ТЗ",
-                    "Результат проходит приемку и используется для запуска следующего этапа",
-                ],
-                "producer_roles": ["Бизнес-заказчик", "Владельцы исходных данных и ограничений"],
-                "consumer_roles": ["Команда реализации", "Лица, принимающие решение о продолжении проекта"],
-                "support_roles": ["ИТ", "Архитектура", "Информационная безопасность"],
-                "handoff_risks": [
-                    "Неполная передача контекста между бизнесом и реализацией",
-                    "Размытая ответственность за внешние согласования",
-                ],
-                "confidence": 0.79,
-                "blocking_questions": [],
-            }
-        if artifact_role == "stakeholder_operating_model":
-            return {
-                "stakeholder_groups": [
-                    {
-                        "name": "Бизнес-заказчик",
-                        "role": "Владелец цели и ценности проекта",
-                        "expectations": ["Получить результат, влияющий на бизнес-метрики", "Понять границы текущего этапа"],
-                        "responsibilities": ["Согласовать цель", "Подтвердить критерии приемки"],
-                    },
-                    {
-                        "name": "Команда реализации",
-                        "role": "Исполнитель технического решения",
-                        "expectations": ["Получить непротиворечивое ТЗ", "Понять ограничения и зависимости"],
-                        "responsibilities": ["Оценить реализуемость", "Построить решение в заданной рамке"],
-                    },
-                ],
-                "primary_users": ["Бизнес-заказчик", "Команда реализации"],
-                "decision_owners": ["Заказчик этапа", "Ответственный со стороны ИТ/архитектуры"],
-                "operating_model": [
-                    "Бизнес формулирует потребность и принимает результат этапа",
-                    "Исполнитель готовит решение в согласованной рамке",
-                    "Критические пробелы эскалируются только при низкой уверенности или blocking gaps",
-                ],
-                "adoption_constraints": [
-                    "Разные ожидания у бизнеса и ИТ могут размывать границы этапа",
-                    "Если owner решения не определён, проект становится плохо управляемым",
-                ],
-                "confidence": 0.8,
-                "blocking_questions": [],
-            }
-        if artifact_role == "user_story_map":
-            return {
-                "actors": [
-                    {"name": "Бизнес-заказчик", "needs": ["Понять целевой результат", "Согласовать требования"]},
-                    {"name": "Команда реализации", "needs": ["Получить ясное и проверяемое ТЗ"]},
-                ],
-                "user_stories": [
-                    {
-                        "actor": "Бизнес-заказчик",
-                        "story": "получить структурированное ТЗ по исходному запросу",
-                        "value": "быстро перейти к следующему этапу проекта",
-                    },
-                    {
-                        "actor": "Команда реализации",
-                        "story": "видеть ограничения, риски и критерии приёмки",
-                        "value": "реализовывать решение без лишних догадок",
-                    },
-                ],
-                "edge_cases": [
-                    "Исходный запрос слишком расплывчат",
-                    "У разных стейкхолдеров разные ожидания",
-                ],
-            }
-        if artifact_role == "alternatives_analysis":
-            return {
-                "alternatives": [
-                    {
-                        "name": "Быстрое упрощённое ТЗ",
-                        "description": "Сделать короткое ТЗ с минимальным набором разделов.",
-                        "pros": ["Быстро", "Дешево"],
-                        "cons": ["Высокий риск пропустить важные детали"],
-                    },
-                    {
-                        "name": "Полное структурированное ТЗ",
-                        "description": "Собрать требования, ограничения, риски и критерии приёмки.",
-                        "pros": ["Лучше качество постановки", "Проще передавать в реализацию"],
-                        "cons": ["Нужно больше времени на анализ"],
-                    },
-                ],
-                "recommended_option": "Полное структурированное ТЗ",
-                "rationale": "Для снижения риска ошибок на следующих этапах нужен более полный и проверяемый документ.",
-            }
-        if artifact_role == "solution_option_inventory":
-            return {
-                "options": [
-                    {
-                        "name": "Узкий проверочный этап",
-                        "summary": "Сфокусироваться на проверке ключевой гипотезы и минимальном обязательном контуре.",
-                        "boundary_fit": "Хорошо соответствует раннему этапу с высокой неопределенностью.",
-                        "enabling_conditions": ["Ясная цель этапа", "Готовность не обещать лишний промышленный функционал"],
-                    },
-                    {
-                        "name": "Расширенный пилотный этап",
-                        "summary": "Заложить больше интеграций, требований и операционных ожиданий уже сейчас.",
-                        "boundary_fit": "Подходит, если у заказчика есть ресурс и зрелость для более широкого охвата.",
-                        "enabling_conditions": ["Подтвержденный бюджет", "Определенные владельцы решений и данных"],
-                    },
-                ],
-                "comparison_axes": [
-                    "Соответствие рамке этапа",
-                    "Скорость запуска",
-                    "Риск пропустить критичные требования",
-                    "Сложность внедрения",
-                ],
-                "confidence": 0.82,
-                "blocking_questions": [],
-            }
+        frontend_enabled = any(
+            ref.startswith("frontend.web_workspace@") or ref.startswith("frontend.web_app_requirements@")
+            for ref in domain_pack_refs
+        )
+        ml_enabled = any(
+            ref.startswith("ml.predictive_analytics@") or ref.startswith("ml.predictive_analytics_pov_requirements@")
+            for ref in domain_pack_refs
+        )
+        security_enabled = any(
+            ref.startswith("security.enterprise_compliance@") or ref.startswith("security.enterprise_compliance_requirements@")
+            for ref in domain_pack_refs
+        )
+        integration_enabled = any(
+            ref.startswith("integration.enterprise_integration@") or ref.startswith("integration.enterprise_delivery_requirements@")
+            for ref in domain_pack_refs
+        )
+        # W3.3: статические payload'ы вынесены в `templates/stub_fixtures/`.
+        # Добавление нового task_template со статическим stub'ом теперь — это
+        # JSON-файл + новая запись в реестре, без правки этого Python.
+        # Compose-payload'ы (requirements_spec, review_report,
+        # solution_tradeoff_matrix) — ниже, потому что они зависят от
+        # parsed_inputs и domain flags.
+        fixture_payload = self._load_stub_fixture(artifact_role, business_request, goal)
+        if fixture_payload is not None:
+            return fixture_payload
+
         if artifact_role == "solution_tradeoff_matrix":
             options = [
                 {
@@ -600,289 +794,22 @@ class ExecutionService:
                 "confidence": 0.81,
                 "blocking_questions": [],
             }
-        if artifact_role == "delivery_scope_definition":
-            return {
-                "delivery_items": [
-                    "Структурированное техническое задание",
-                    "Фиксация ограничений, рисков и открытых вопросов",
-                    "Основание для запуска следующего этапа",
-                ],
-                "excluded_items": [
-                    "Полный производственный бэклог",
-                    "Эксплуатационная документация промышленного уровня",
-                ],
-                "demo_expectations": [
-                    "Результат должен быть понятен бизнесу и команде реализации",
-                    "По документу должно быть видно, что входит в текущий этап, а что нет",
-                ],
-                "evidence_artifacts": [
-                    "Техническое задание",
-                    "Ревью-отчёт",
-                ],
-                "confidence": 0.84,
-                "blocking_questions": [],
-            }
-        if artifact_role == "acceptance_model_definition":
-            return {
-                "acceptance_criteria": [
-                    "Документ покрывает цели, ограничения, требования и критерии приемки",
-                    "По документу можно оценивать и запускать следующий этап проекта",
-                ],
-                "success_evidence": [
-                    "Ключевые стейкхолдеры согласны с рамкой этапа",
-                    "Команда реализации может использовать документ без критических догадок",
-                ],
-                "required_customer_inputs": [
-                    "Подтверждение бизнес-цели",
-                    "Подтверждение границ текущего этапа",
-                ],
-                "formal_approvals": [
-                    "Согласование результатов этапа",
-                    "Подтверждение критериев приемки",
-                ],
-                "rejection_conditions": [
-                    "В ТЗ отсутствуют критические ограничения или требования",
-                    "Не определены обязательные входы и владельцы решений",
-                ],
-                "confidence": 0.83,
-                "blocking_questions": [],
-            }
-        if artifact_role == "delivery_acceptance_plan":
-            return {
-                "delivery_items": [
-                    "Структурированное ТЗ",
-                    "Явная фиксация ограничений и рисков",
-                    "Список открытых вопросов и зависимостей",
-                ],
-                "acceptance_criteria": [
-                    "Документ покрывает бизнес-цель, рамку этапа, результаты этапа и ограничения",
-                    "ТЗ можно использовать для оценки и запуска следующего этапа",
-                ],
-                "success_evidence": [
-                    "Стейкхолдеры понимают границы этапа",
-                    "Команда реализации может использовать документ без критических догадок",
-                ],
-                "required_customer_inputs": [
-                    "Подтверждение рамки этапа",
-                    "Подтверждение критических ограничений и требований",
-                ],
-                "formal_approvals": [
-                    "Согласование бизнес-цели",
-                    "Подтверждение критериев приемки",
-                ],
-                "open_dependencies": [
-                    "Скорость ответа заказчика на действительно blocking-вопросы",
-                    "Наличие ответственных лиц со стороны бизнеса и ИТ",
-                ],
-                "confidence": 0.84,
-                "blocking_questions": [],
-            }
-        if artifact_role == "dependency_map":
-            return {
-                "critical_dependencies": [
-                    "Подтверждение цели и рамки этапа со стороны заказчика",
-                    "Доступность ответственных лиц по данным, архитектуре и ИБ",
-                ],
-                "customer_inputs": [
-                    "Ответы на критические блокирующие вопросы",
-                    "Подтверждение ограничений и границ этапа",
-                ],
-                "external_decisions": [
-                    "Решения по следующей фазе за пределами текущего этапа",
-                ],
-                "access_dependencies": [
-                    "Доступ к исходным материалам, системам и корпоративным ограничениям",
-                ],
-                "stop_conditions": [
-                    "Отсутствует подтверждение ключевой рамки этапа",
-                    "Нет владельца обязательного решения или входа",
-                ],
-                "confidence": 0.8,
-                "blocking_questions": [],
-            }
-        if artifact_role == "implementation_dependency_plan":
-            return {
-                "phases": [
-                    {
-                        "name": "Discovery и согласование рамки",
-                        "objectives": ["Зафиксировать цель, границы и ключевые ограничения"],
-                        "dependencies": ["Доступность заказчика для согласований"],
-                        "outputs": ["Подтверждённая рамка этапа"],
-                    },
-                    {
-                        "name": "Подготовка и ревью ТЗ",
-                        "objectives": ["Собрать спецификацию", "Проверить полноту и реализуемость"],
-                        "dependencies": ["Согласованные входы от предыдущей фазы"],
-                        "outputs": ["Черновик ТЗ", "Ревью-отчёт"],
-                    },
-                ],
-                "critical_dependencies": [
-                    "Подтверждение ключевых ограничений бизнеса",
-                    "Своевременные ответы по действительно блокирующим вопросам",
-                ],
-                "project_risks": [
-                    "Смешение ожиданий текущего этапа и будущего промышленного контура",
-                    "Недостаточная вовлечённость владельцев решения",
-                ],
-                "proposed_timeline": [
-                    "Сначала исследование и фиксация рамки",
-                    "Затем сборка ТЗ и ревью",
-                ],
-                "confidence": 0.79,
-                "blocking_questions": [],
-            }
-        if artifact_role == "predictive_problem_definition":
-            return {
-                "prediction_target": "Вероятность увольнения сотрудника в заданном горизонте",
-                "prediction_horizon": "1-3 месяца до потенциального увольнения",
-                "prediction_unit": "Отдельный сотрудник розничной сети",
-                "label_definition": "Факт увольнения сотрудника в пределах согласованного горизонта",
-                "business_actions": [
-                    "Выявлять группы риска и приоритизировать управленческие действия",
-                    "Поддерживать принятие решений по целевой бизнес-задаче",
-                ],
-                "model_outputs": [
-                    "Оценка вероятности целевого события",
-                    "Сегментация риска",
-                    "Ключевые факторы риска в объяснимой форме",
-                ],
-                "evaluation_metrics": [
-                    "ROC-AUC",
-                    "Precision/Recall на релевантном cut-off",
-                    "Пригодность для бизнес-ранжирования и интервенций",
-                ],
-                "baseline_expectations": [
-                    "Качество выше случайного базового уровня",
-                    "Модель полезна для приоритизации действий HR",
-                ],
-                "explainability_requirements": [
-                    "Нужны интерпретируемые факторы риска для HR",
-                    "Требуется объяснимость достаточная для принятия управленческих решений",
-                ],
-                "confidence": 0.77,
-                "blocking_questions": [],
-            }
-        if artifact_role == "data_landscape_assessment":
-            return {
-                "source_systems": ["Названные в запросе системы-источники", "Источники событий и справочников предметной области"],
-                "required_entities": ["Объект прогнозирования", "Организационная структура", "Период", "Целевое событие"],
-                "key_features": [
-                    "Исторические характеристики объекта",
-                    "Операционные и результативные показатели",
-                    "Активность, комментарии или другие неструктурированные сигналы",
-                    "История изменений по объекту",
-                ],
-                "data_quality_risks": [
-                    "Неидеальное качество справочников",
-                    "Разнородность и неполнота данных",
-                    "Шум в неструктурированных комментариях",
-                ],
-                "data_gaps": [
-                    "Нужна явная договорённость о логике целевой метки",
-                    "Может потребоваться уточнение глубины истории и покрытия источников",
-                ],
-                "feasibility_assessment": "На уровне PoV задача реализуема при наличии исторических данных достаточной глубины и согласованной логики целевой метки.",
-                "privacy_notes": [
-                    "Данные могут содержать персональную или чувствительную информацию и требуют защищённого контура либо обезличивания",
-                    "Текстовые данные требуют отдельной оценки допустимости использования",
-                ],
-                "confidence": 0.7,
-                "blocking_questions": [],
-            }
-        if artifact_role == "security_compliance_constraints":
-            return {
-                "deployment_constraints": [
-                    "Решение должно работать в локальном контуре или в защищённом облаке",
-                    "Передача и хранение данных должны быть защищены",
-                ],
-                "privacy_constraints": [
-                    "Необходимо шифрование и/или обезличивание данных",
-                    "Нужно учитывать ограничения на работу с ПДн сотрудников",
-                ],
-                "access_control_constraints": [
-                    "При масштабировании возможны 2FA и ADFS",
-                    "Доступ к результатам должен быть ограничен ролями",
-                ],
-                "integration_security_constraints": [
-                    "Интеграции с корпоративными системами должны соответствовать ИБ-политикам",
-                ],
-                "allowed_ai_usage": [
-                    "Внешние LLM допустимы только при явном разрешении и соблюдении ИБ-ограничений",
-                    "При отсутствии такого разрешения требуется закрытый контур или отказ от внешних сервисов",
-                ],
-                "mandatory_controls": [
-                    "Шифрование передачи данных",
-                    "Контроль доступа и аудит",
-                ],
-                "compliance_risks": [
-                    "Нарушение требований ИБ может заблокировать масштабирование решения",
-                ],
-                "confidence": 0.74,
-                "blocking_questions": [],
-            }
-        if artifact_role == "integration_operating_model":
-            return {
-                "source_integrations": ["Системы-источники, названные в запросе", "Корпоративные данные и сервисы предметной области"],
-                "target_integrations": ["Пользовательский интерфейс", "Аналитическая витрина или BI-слой", "Внутренние точки потребления результатов"],
-                "refresh_model": "Периодическое обновление, например по API или согласованному пакетному процессу",
-                "data_delivery_pattern": [
-                    "На PoV допустимы выгрузки или ограниченные API",
-                    "Для следующего этапа возможен переход к регулярным интеграциям",
-                ],
-                "operating_roles": [
-                    "HR/C&B как основной потребитель результата",
-                    "ИТ как владелец интеграций и инфраструктурной поддержки",
-                ],
-                "support_model": [
-                    "На этапе PoV сопровождение ограничено целями проверки гипотезы",
-                    "Промышленная эксплуатация требует отдельной операционной модели",
-                ],
-                "dependency_risks": [
-                    "Сложность согласования API и доступа к системам",
-                    "Разная скорость готовности источников данных",
-                ],
-                "confidence": 0.76,
-                "blocking_questions": [],
-            }
-        if artifact_role == "ui_requirements_outline":
-            return {
-                "user_roles": ["Основной бизнес-пользователь", "Оператор / аналитик"],
-                "user_flows": [
-                    {"name": "Просмотр приоритетных зон внимания", "steps": ["Открыть дашборд", "Просмотреть сегменты или объекты", "Провалиться в детали"]},
-                    {"name": "Разбор конкретного объекта или сегмента", "steps": ["Выбрать объект", "Посмотреть ключевые факторы", "Зафиксировать выводы"]},
-                ],
-                "screens": [
-                    {"name": "Главный аналитический дашборд", "purpose": "Обзор приоритетных сигналов, сегментов и динамики"},
-                    {"name": "Карточка объекта или сегмента", "purpose": "Подробный анализ факторов и рекомендаций"},
-                ],
-                "analytics_views": [
-                    "Сегментация сигналов по релевантным группировкам",
-                    "Динамика показателей и сравнение периодов",
-                ],
-                "decision_support_needs": [
-                    "Пояснение ключевых факторов и причин",
-                    "Рекомендации по интерпретации сигнала и возможным действиям",
-                ],
-                "ux_constraints": ["Понятные статусы без технического жаргона", "Достаточная объяснимость для бизнес-пользователя"],
-                "confidence": 0.78,
-                "blocking_questions": [],
-            }
         if artifact_role == "requirements_spec":
             clarification = self._find_payload(parsed_inputs, "Уточнение бизнес-цели")
             user_story_map = self._find_payload(parsed_inputs, "Анализ user story")
             alternatives = self._find_payload(parsed_inputs, "Сравнение альтернатив")
-            ui_outline = self._find_payload(parsed_inputs, "Анализ пользовательских потоков")
-            normalized_request = self._find_payload(parsed_inputs, "Нормализация исходного бизнес-запроса")
-            business_outcome = self._find_payload(parsed_inputs, "Формализация бизнес-результата")
-            scope_boundary = self._find_payload(parsed_inputs, "Определение границ этапа")
-            stakeholders = self._find_payload(parsed_inputs, "Карта стейкхолдеров")
-            tradeoff = self._find_payload(parsed_inputs, "Сравнение вариантов решения")
+            ui_outline = self._find_payload(parsed_inputs, "Разобрать пользовательские потоки", "Анализ пользовательских потоков")
+            normalized_request = self._find_payload(parsed_inputs, "Нормализовать запрос", "Нормализация исходного бизнес-запроса")
+            business_outcome = self._find_payload(parsed_inputs, "Определить бизнес-результат", "Формализация бизнес-результата")
+            scope_boundary = self._find_payload(parsed_inputs, "Зафиксировать границы этапа", "Определение границ этапа")
+            stakeholders = self._find_payload(parsed_inputs, "Выделить стейкхолдеров", "Карта стейкхолдеров")
+            tradeoff = self._find_payload(parsed_inputs, "Сформировать варианты решения", "Сравнение вариантов решения")
             acceptance = self._find_payload(parsed_inputs, "Сводная модель поставки и приемки")
             implementation_plan = self._find_payload(parsed_inputs, "План реализации и зависимости")
-            predictive_definition = self._find_payload(parsed_inputs, "Определение предиктивной задачи")
-            data_assessment = self._find_payload(parsed_inputs, "Оценка ландшафта данных и реализуемости")
-            security_constraints = self._find_payload(parsed_inputs, "Оценка ограничений ИБ и комплаенса")
-            integration_model = self._find_payload(parsed_inputs, "Интеграционная и операционная модель")
+            predictive_definition = self._find_payload(parsed_inputs, "Определить предиктивную задачу", "Определение предиктивной задачи")
+            data_assessment = self._find_payload(parsed_inputs, "Оценить данные для аналитики и ML", "Оценка ландшафта данных и реализуемости")
+            security_constraints = self._find_payload(parsed_inputs, "Оценить ограничения ИБ и комплаенса", "Оценка ограничений ИБ и комплаенса")
+            integration_model = self._find_payload(parsed_inputs, "Описать интеграционную и операционную модель", "Интеграционная и операционная модель")
             spec = {
                 "title": "Техническое задание на подготовку решения",
                 "business_goal": (
@@ -1018,7 +945,7 @@ class ExecutionService:
                 }
             return spec
         if artifact_role == "review_report":
-            spec_payload = self._find_payload(parsed_inputs, "Подготовка структурированного ТЗ")
+            spec_payload = self._find_payload(parsed_inputs, "Подготовить структурированное ТЗ", "Подготовка структурированного ТЗ")
             if not spec_payload:
                 spec_payload = self._find_payload(parsed_inputs, "Подготовка черновика ТЗ")
             issues = []
@@ -1058,10 +985,297 @@ class ExecutionService:
             }
         raise ConflictError(f"Stub не умеет генерировать артефакт роли '{artifact_role}'.")
 
-    def _find_payload(self, parsed_inputs: dict[str, object], title_prefix: str) -> dict[str, object]:
+
+
+    def _build_methodology_schema(self, methodology: MethodologyPackSpec, complexity: str | None) -> dict:
+        active_stages = methodology.stages_for_complexity(complexity)
+        properties: dict = {}
+        required: list[str] = []
+        for stage in active_stages:
+            stage_fields: dict = {}
+            stage_required: list[str] = []
+            for produces in stage.produces:
+                schema_fragment = self._field_to_schema(produces)
+                stage_fields[produces.field_name] = schema_fragment
+                if produces.required:
+                    stage_required.append(produces.field_name)
+            stage_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": stage_fields,
+            }
+            if stage_required:
+                stage_schema["required"] = stage_required
+            properties[stage.identifier] = stage_schema
+            if stage.identifier in methodology.reasoning_artifact.required_stages:
+                required.append(stage.identifier)
+        result: dict = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": properties,
+        }
+        if required:
+            result["required"] = required
+        return result
+
+    def _field_to_schema(self, produces) -> dict:
+        type_value = produces.field_type
+        nullable = produces.nullable
+        if type_value == "string":
+            base = {"type": "string"}
+        elif type_value == "number":
+            base = {"type": "number"}
+        elif type_value == "integer":
+            base = {"type": "integer"}
+        elif type_value == "boolean":
+            base = {"type": "boolean"}
+        elif type_value == "array":
+            item_schema = produces.item_schema or {}
+            if isinstance(item_schema, dict) and item_schema:
+                base = {"type": "array", "items": {"type": "object", "properties": {k: {} for k in item_schema}}}
+            else:
+                base = {"type": "array", "items": {}}
+        elif type_value == "object":
+            schema_payload = produces.schema or {}
+            if isinstance(schema_payload, dict) and schema_payload:
+                base = {"type": "object", "properties": {k: {} for k in schema_payload}}
+            else:
+                base = {"type": "object"}
+        else:
+            base = {}
+        if nullable:
+            return {"anyOf": [base, {"type": "null"}]}
+        return base
+
+    def _methodology_system_section(self, methodology: MethodologyPackSpec, complexity: str | None) -> str:
+        active_stages = methodology.stages_for_complexity(complexity)
+        lines = [
+            f"Применяй методологию '{methodology.title}' (ref={methodology.ref.as_string()}).",
+            "Возвращай два блока: 'primary' (основной артефакт по схеме задачи) и 'reasoning' (по схеме методологии).",
+            "Стадии методологии (заполни их выходы в 'reasoning'):",
+        ]
+        for stage in active_stages:
+            fields_desc = ", ".join(f"{p.field_name}:{p.field_type}" for p in stage.produces)
+            lines.append(f"- {stage.identifier} — {stage.title}. Поля: {fields_desc}")
+            if stage.description:
+                lines.append(f"  {stage.description.strip()}")
+        return "\n".join(lines)
+
+    def _build_reasoning_payload(
+        self,
+        *,
+        workspace,
+        task,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        live_reasoning: dict | None = None,
+    ) -> dict[str, object]:
+        """Собрать reasoning payload для метаинформации primary артефакта.
+
+        Этап 1.1: ранее этот payload писался как отдельный артефакт
+        ``reasoning_artifact``. Теперь возвращается как данные для
+        :attr:`ArtifactMetadata.reasoning` основного артефакта.
+        """
+        active_stages = methodology.stages_for_complexity(complexity)
+        if isinstance(live_reasoning, dict) and live_reasoning:
+            stages_payload = []
+            for stage in active_stages:
+                stage_fields = live_reasoning.get(stage.identifier)
+                if not isinstance(stage_fields, dict):
+                    stage_fields = {}
+                stages_payload.append(
+                    {
+                        "stage_id": stage.identifier,
+                        "title": stage.title,
+                        "outputs": dict(stage_fields),
+                        "_source": {
+                            "methodology_pack": methodology.ref.as_string(),
+                            "stage": stage.identifier,
+                        },
+                    }
+                )
+        else:
+            stages_payload = []
+            for stage in active_stages:
+                fields = {}
+                for produces in stage.produces:
+                    if produces.required:
+                        if produces.field_type == "string":
+                            fields[produces.field_name] = (
+                                f"[stub] результат стадии {stage.identifier}: {task.title}"
+                            )
+                        elif produces.field_type == "array":
+                            fields[produces.field_name] = []
+                        elif produces.field_type == "object":
+                            fields[produces.field_name] = {}
+                        else:
+                            fields[produces.field_name] = None
+                    else:
+                        fields[produces.field_name] = None
+                stages_payload.append(
+                    {
+                        "stage_id": stage.identifier,
+                        "title": stage.title,
+                        "outputs": fields,
+                        "_source": {
+                            "methodology_pack": methodology.ref.as_string(),
+                            "stage": stage.identifier,
+                        },
+                    }
+                )
+        # B5: applied_decisions — список decision_id, доступных на момент
+        # исполнения и потенциально учтённых этой задачей. Это даёт явную
+        # трассировку: пользователь видит «вот эти ответы повлияли на
+        # вывод». Заполняем системно по релевантности (LLM не обязан
+        # ничего знать про id'ы — мы их матчим сами по state.decisions
+        # и affected_task_ids источника).
+        applied_decisions = self._collect_applied_decisions(workspace, task.task_id)
+        return {
+            "methodology_pack_ref": methodology.ref.as_string(),
+            "stages": stages_payload,
+            "complexity": complexity,
+            "applied_decisions": applied_decisions,
+        }
+
+    @staticmethod
+    def _build_methodology_trace_payload(
+        *,
+        methodology: MethodologyPackSpec,
+        complexity: str | None,
+        evaluation: MethodologyEvaluation,
+    ) -> dict[str, object]:
+        """Собрать methodology trace payload для метаинформации primary артефакта.
+
+        Этап 1.1: ранее писался отдельным артефактом ``methodology_trace``.
+        Теперь возвращается как данные для
+        :attr:`ArtifactMetadata.methodology_trace`.
+        """
+        active_stages = methodology.stages_for_complexity(complexity)
+        rules_evaluated = [
+            {
+                "stage_id": outcome.stage_id,
+                "rule_id": outcome.rule_id,
+                "fired": outcome.fired,
+                **({"candidate_id": outcome.candidate_id} if outcome.candidate_id else {}),
+            }
+            for outcome in evaluation.rule_outcomes
+        ]
+        candidates_emitted = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "source_id": candidate.source_id,
+                "severity": candidate.severity,
+                "blocking_scope": candidate.blocking_scope,
+            }
+            for candidate in evaluation.candidates
+        ]
+        return {
+            "methodology_pack_ref": methodology.ref.as_string(),
+            "stage_execution_mode": methodology.stage_execution_mode,
+            "complexity": complexity,
+            "stages_executed": [stage.identifier for stage in active_stages],
+            "stage_outputs": evaluation.stage_outputs,
+            "rules_evaluated": rules_evaluated,
+            "candidates_emitted": candidates_emitted,
+        }
+
+    def _collect_applied_decisions(
+        self, workspace: Path, task_id: str
+    ) -> list[dict[str, object]]:
+        """B5: формирует список decisions, релевантных текущей задаче.
+
+        Семантика: если decision из ClarificationRequest, чей
+        `affected_task_ids` содержит task_id — он применим. Также сюда
+        попадают global decisions (не привязанные к конкретной задаче).
+
+        Используется в reasoning_artifact как трассировка: пользователь
+        видит «вот эти ответы повлияли на этот reasoning». Closes M-J6.
+        """
+        try:
+            knowledge = self._runtime.load_knowledge(workspace)
+        except Exception:
+            return []
+        result: list[dict[str, object]] = []
+        clarification_prefix = "clarification."
+        for position in knowledge.by_type("decision"):
+            relevant = True
+            request_id: str | None = None
+            if (
+                position.source == "clarification"
+                and position.identifier.startswith(clarification_prefix)
+            ):
+                request_id = position.identifier[len(clarification_prefix):]
+                try:
+                    request = self._runtime.get_clarification_request(
+                        workspace, request_id
+                    )
+                except Exception:
+                    request = None
+                if request is not None:
+                    affected = request.affected_task_ids or ()
+                    if affected and task_id not in affected:
+                        relevant = False
+            if not relevant:
+                continue
+            result.append(
+                {
+                    "decision_id": position.identifier,
+                    "statement": position.statement,
+                    "source": position.source,
+                    "via_clarification_id": request_id,
+                }
+            )
+        return result
+
+    # W3.3: путь до статических stub-фикстур. Зависит только от расположения
+    # репозитория (templates/stub_fixtures/<artifact_role>.json), не привязан
+    # к runtime_root. Helper кэширует прочитанные шаблоны.
+    _STUB_FIXTURE_ROOT = (
+        Path(__file__).resolve().parents[3] / "templates" / "stub_fixtures"
+    )
+    _STUB_FIXTURE_CACHE: dict[str, str] = {}
+
+    def _load_stub_fixture(
+        self,
+        artifact_role: str,
+        business_request: str,
+        goal: str | None,
+    ) -> dict[str, object] | None:
+        """Читает `templates/stub_fixtures/<artifact_role>.json`, подставляет
+        placeholder'ы и возвращает payload. Возвращает None, если фикстуры
+        для этой роли нет — тогда вызывающий код упадёт на оставшиеся в
+        Python compose-кейсы (requirements_spec, review_report,
+        solution_tradeoff_matrix).
+        """
+        cached = self._STUB_FIXTURE_CACHE.get(artifact_role)
+        if cached is None:
+            path = self._STUB_FIXTURE_ROOT / f"{artifact_role}.json"
+            if not path.exists():
+                return None
+            cached = path.read_text(encoding="utf-8")
+            self._STUB_FIXTURE_CACHE[artifact_role] = cached
+
+        goal_text = goal or f"Подготовить качественное ТЗ по запросу: {business_request}"
+        substituted = (
+            cached
+            .replace("{{goal}}", _json_safe(goal_text))
+            .replace("{{business_request_short}}", _json_safe(business_request[:160]))
+            .replace("{{business_request}}", _json_safe(business_request))
+        )
+        try:
+            payload = json.loads(substituted)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _find_payload(self, parsed_inputs: dict[str, object], *title_prefixes: str) -> dict[str, object]:
         for title, payload in parsed_inputs.items():
-            if title_prefix.lower() in title.lower() and isinstance(payload, dict):
-                return payload
+            normalized_title = title.lower()
+            for title_prefix in title_prefixes:
+                if title_prefix.lower() in normalized_title and isinstance(payload, dict):
+                    return payload
         return {}
 
     def _extract_proposed_goal(self, payload: dict[str, object]) -> str | None:

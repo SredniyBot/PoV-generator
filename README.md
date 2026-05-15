@@ -1,5 +1,51 @@
 # PoV Generator
 
+## Методология, сложность и провайдеры (фаза 0–7)
+
+Система перешла на парадигму, описанную в `specs/`:
+
+- **Methodology pack** — отдельный kind реестра, описывает «как мы думаем» (стадии goal/JTBD/options/decision, правила, политики эскалации). Дефолтный пак — `process.lean_jtbd@1.0.0`, активируется автоматически при создании проекта.
+- **Reasoning artifact и methodology trace** — каждое исполнение leaf-задачи производит три артефакта (`primary` + `reasoning` + `trace`).
+- **Complexity** — поле `complexity` в `task_template` (`trivial | standard | complex`), на нём строится выбор модели для провайдера `claude_sdk`.
+- **Claude SDK** — провайдер `claude_sdk` через Anthropic SDK с tool-use для structured output. Маппинг сложности на модель: trivial → `claude-haiku-4-5-20251001`, standard → `claude-sonnet-4-6`, complex → `claude-opus-4-6`. Конфигурация через env: `POV_ANTHROPIC_API_KEY` (или `ANTHROPIC_API_KEY`), `POV_CLAUDE_MODEL`, `POV_CLAUDE_MODEL_TRIVIAL/STANDARD/COMPLEX`, `POV_CLAUDE_MAX_TOKENS`.
+- **Quality gate** — теперь типизирован: `human_approval`, `external_signoff`, `automated_review`. Цель не считается завершённой до получения `approved`-ответа на human_approval gate.
+- **Project overview (L1)** — `GET /api/projects/{id}/overview`: stage_summary, current_activity, прогресс, критичные уточнения, ключевые артефакты, активная методология.
+- **Methodology view (L2)** — `GET /api/registry/methodology-packs`: карта стадий и правил.
+- **Provenance (L4)** — `GET /api/projects/{id}/tasks/{task_id}/methodology-trace`: реяснение и трасса исполнения методологии для конкретной задачи.
+
+Команды:
+
+- `POST /api/projects/{id}/commands/set-methodology` — сменить активный methodology_pack (только зарегистрированные в реестре).
+
+Запуск через Claude SDK:
+
+```powershell
+$env:POV_EXECUTION_PROVIDER = "claude_sdk"
+$env:POV_ANTHROPIC_API_KEY = "<ключ>"
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo --provider claude_sdk
+```
+
+Запуск через подписку Claude (без API-ключа, через CLI `claude`):
+
+```powershell
+# 1) Установите Claude Code CLI и залогиньтесь:
+# npm install -g @anthropic-ai/claude-code
+# claude login
+
+$env:POV_EXECUTION_PROVIDER = "claude_subscription"
+.\.venv\Scripts\povgen workflow run-until-blocked --workspace runtime\demo --provider claude_subscription
+```
+
+Провайдер `claude_subscription` использует библиотеку `claude-agent-sdk`, которая
+обращается к локальному CLI `claude`. Авторизация выполняется один раз через
+`claude login`, отдельный API-ключ не нужен. Маппинг сложности на модель —
+через те же env-переменные `POV_CLAUDE_MODEL_TRIVIAL/STANDARD/COMPLEX`,
+либо переопределить общую модель `POV_CLAUDE_MODEL` (если CLI поддерживает выбор).
+
+> **Внимание:** термины `recipe` / `recipe_fragment` из старых разделов ниже — историческая терминология, постепенно вытесняемая концепцией objective + composite tasks + slots + domain/methodology contributions. См. актуальную модель в `specs/`.
+
+---
+
 ## Быстрый старт
 
 Если вам нужно просто поднять систему и зайти в UI, делайте так.

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 # Support direct execution of this file from IDEs that run it as a script
 # instead of as a package module (`python -m pov_generator`).

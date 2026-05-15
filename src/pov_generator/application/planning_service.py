@@ -1,96 +1,67 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import uuid
+from pathlib import Path
 
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
-from ..domain.problem_state import SetRecipeCompositionPatch
-from ..domain.registry import (
-    ComposedRecipe,
-    DomainPackSpec,
-    RecipeSpec,
-    RegistrySnapshot,
-    TemplateSpec,
-    compose_recipe,
-)
+from ..domain.process_state import SetRootTaskPatch
+from ..domain.project_state import ProjectState
+from ..domain.registry import RegistrySnapshot, TemplateSpec
 from ..domain.tasks import TaskRecord, initial_task_status
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
-@dataclass(frozen=True)
-class RecipeBootstrap:
-    base_recipe: RecipeSpec
-    composed_recipe: ComposedRecipe
-    template_lookup: dict[str, TemplateSpec]
-    enabled_domain_pack_refs: tuple[str, ...]
-    domain_packs: tuple[DomainPackSpec, ...]
-    gap_labels: dict[str, str]
+def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
+    """Получить значение требуемого «поля состояния» из нового двухслойного state.
+
+    Шаблоны декларируют ``requires.state: [...]`` со старыми именами полей.
+    Здесь мы транслируем эти имена в актуальные источники:
+
+    - ``business_request`` — иммутабельное поле manifest;
+    - ``goal`` — формулировка положения ``project.goal`` в Layer A.
+
+    Возвращает ``None`` или пустую строку, если значения нет — это сигнал
+    admission'у заблокировать задачу.
+    """
+    if field_name == "business_request":
+        return state.manifest.business_request
+    if field_name == "goal":
+        return state.knowledge.goal_statement()
+    return None
 
 
 class PlanningService:
     def __init__(self, runtime: SqliteRuntime) -> None:
         self._runtime = runtime
 
-    def build_recipe_bootstrap(
-        self,
-        snapshot: RegistrySnapshot,
-        recipe_ref: str,
-        enabled_domain_pack_refs: tuple[str, ...] = (),
-    ) -> RecipeBootstrap:
-        base_recipe = snapshot.resolve_recipe(recipe_ref)
-        composed_recipe = compose_recipe(snapshot, recipe_ref, enabled_domain_pack_refs)
-        template_lookup = {
-            step.identifier: snapshot.resolve_template(step.template_ref)
-            for step in composed_recipe.steps
-        }
-        return RecipeBootstrap(
-            base_recipe=base_recipe,
-            composed_recipe=composed_recipe,
-            template_lookup=template_lookup,
-            enabled_domain_pack_refs=tuple(sorted(set(enabled_domain_pack_refs))),
-            domain_packs=tuple(
-                snapshot.resolve_domain_pack(pack_ref)
-                for pack_ref in tuple(sorted(set(enabled_domain_pack_refs)))
-            ),
-            gap_labels={
-                entry.identifier: entry.label
-                for entry in snapshot.vocabularies.get("gap_types", ()).entries.values()
-            }
-            if snapshot.vocabularies.get("gap_types")
-            else {},
-        )
-
-    def _refresh_recipe_composition(self, workspace: Path, snapshot: RegistrySnapshot) -> ComposedRecipe:
+    def expand_graph(self, workspace: Path, snapshot: RegistrySnapshot) -> tuple[TaskRecord, ...]:
         manifest = self._runtime.load_manifest(workspace)
-        state = self._runtime.load_problem_state(workspace)
-        enabled_pack_refs = tuple(sorted(state.enabled_domain_packs.keys()))
-        composed_recipe = compose_recipe(snapshot, manifest.recipe_ref, enabled_pack_refs)
-        composition = state.recipe_composition
-        needs_update = (
-            composition is None
-            or composition.base_recipe_ref != composed_recipe.base_recipe_ref
-            or composition.domain_pack_refs != composed_recipe.domain_pack_refs
-            or composition.recipe_fragment_refs != composed_recipe.recipe_fragment_refs
-            or composition.step_ids != tuple(step.identifier for step in composed_recipe.steps)
-        )
-        if needs_update:
-            self._runtime.apply_problem_patch(
+        objective = snapshot.resolve_objective(manifest.objective_ref)
+        root_template = snapshot.resolve_template(objective.root_task_ref)
+        root_key = f"{manifest.project_id}:root:{objective.root_task_ref.as_string()}"
+        root = self._runtime.find_task_by_stable_key(workspace, root_key)
+        if root is None:
+            root = self._create_task(
                 workspace,
-                SetRecipeCompositionPatch(
-                    base_recipe_ref=composed_recipe.base_recipe_ref,
-                    domain_pack_refs=composed_recipe.domain_pack_refs,
-                    recipe_fragment_refs=composed_recipe.recipe_fragment_refs,
-                    step_ids=tuple(step.identifier for step in composed_recipe.steps),
-                ),
-                actor="planner",
-                reason="refresh composed recipe",
+                project_id=manifest.project_id,
+                objective_ref=manifest.objective_ref,
+                parent_task_id=None,
+                template=root_template,
+                origin_kind="objective_root",
+                origin_ref=objective.ref.as_string(),
+                stable_key=root_key,
+                depth=0,
+                slot_id=None,
             )
-        return composed_recipe
-
-    def current_composed_recipe(self, workspace: Path, snapshot: RegistrySnapshot) -> ComposedRecipe:
-        return self._refresh_recipe_composition(workspace, snapshot)
+            self._runtime.apply_process_patch(
+                workspace,
+                SetRootTaskPatch(task_id=root.task_id),
+                actor="planner",
+                reason="root task created",
+            )
+        self._expand_composites(workspace, snapshot)
+        return tuple(self._runtime.list_tasks(workspace))
 
     def plan(
         self,
@@ -101,156 +72,75 @@ class PlanningService:
         record: bool = True,
         refresh_composition: bool = True,
     ) -> PlanningDecision:
+        del refresh_composition
+        tasks = list(self.expand_graph(workspace, snapshot))
+        self._refresh_composite_completion(workspace)
+        tasks = list(self._runtime.list_tasks(workspace))
+        candidates = self._recompute_admission(workspace, snapshot, tasks)
+        admitted = [candidate for candidate in candidates if candidate.admissible]
+        selected = max(admitted, key=lambda item: item.score, default=None)
         manifest = self._runtime.load_manifest(workspace)
-        recipe = snapshot.resolve_recipe(manifest.recipe_ref)
-        state = self._runtime.load_problem_state(workspace)
-        composed_recipe = (
-            self._refresh_recipe_composition(workspace, snapshot)
-            if refresh_composition
-            else compose_recipe(snapshot, manifest.recipe_ref, tuple(sorted(state.enabled_domain_packs.keys())))
-        )
-        tasks = self._runtime.list_tasks(workspace)
-        recipe_progress = {
-            item.recipe_step_id: item for item in self._runtime.list_recipe_progress(workspace, manifest.recipe_ref)
-        }
-        active_family_keys = {
-            task.task_family_key
-            for task in tasks
-            if task.status not in {"completed", "obsolete"}
-        }
 
-        candidates: list[CandidateEvaluation] = []
-        selected_step = None
-        selected_template = None
-        best_score = -10_000
-
-        completed_steps = {
-            step_id for step_id, progress in recipe_progress.items() if progress.status == "completed"
-        }
-
-        for step in composed_recipe.steps:
-            if step.identifier in completed_steps:
-                continue
-            template = snapshot.resolve_template(step.template_ref)
-            prior_required_incomplete = [
-                previous.identifier
-                for previous in composed_recipe.steps
-                if previous.order < step.order and previous.required and previous.identifier not in completed_steps
-            ]
-            readiness_missing = [
-                dimension
-                for dimension in template.activation.required_readiness
-                if state.readiness.get(dimension) is None
-                or state.readiness[dimension].status not in {"ready", "waived"}
-            ]
-            forbidden_gaps = [gap_id for gap_id in template.activation.forbidden_open_gaps if gap_id in state.active_gaps]
-            duplicate = f"{manifest.project_id}:{step.identifier}" in active_family_keys
-
-            checks = (
-                AdmissionCheck(
-                    name="recipe_obligations",
-                    passed=not prior_required_incomplete,
-                    detail="Есть незавершённые обязательные предыдущие шаги: " + ", ".join(prior_required_incomplete)
-                    if prior_required_incomplete
-                    else "Все обязательные предыдущие шаги выполнены",
-                ),
-                AdmissionCheck(
-                    name="required_readiness",
-                    passed=not readiness_missing,
-                    detail="Не хватает readiness: " + ", ".join(readiness_missing)
-                    if readiness_missing
-                    else "Readiness-предпосылки выполнены",
-                ),
-                AdmissionCheck(
-                    name="forbidden_open_gaps",
-                    passed=not forbidden_gaps,
-                    detail="Есть открытые запрещающие gaps: " + ", ".join(forbidden_gaps)
-                    if forbidden_gaps
-                    else "Запрещающих gaps нет",
-                ),
-                AdmissionCheck(
-                    name="dedup",
-                    passed=not duplicate,
-                    detail="Для этого recipe-шага уже существует активная задача"
-                    if duplicate
-                    else "Активной задачи для этого recipe-шага нет",
-                ),
+        if selected is None:
+            blocked = tuple(
+                {
+                    "task_id": candidate.task_id,
+                    "task_key": candidate.task_key,
+                    "title": candidate.title,
+                    "reasons": list(candidate.reasons),
+                }
+                for candidate in candidates
+                if not candidate.admissible
             )
-            admissible = all(check.passed for check in checks)
-            score = template.planning.priority - step.order
-            reasons = tuple(check.detail for check in checks if not check.passed)
-            evaluation = CandidateEvaluation(
-                recipe_step_id=step.identifier,
-                step_title=step.title,
-                template_ref=step.template_ref.as_string(),
-                step_source_kind=step.source_kind,
-                step_source_ref=step.source_ref,
-                admissible=admissible,
-                score=score,
-                duplicate=duplicate,
-                checks=checks,
-                reasons=reasons,
+            outcome = "objective_completed" if self._objective_completed(workspace, snapshot) else "blocked"
+            reasons = (
+                ("Цель проекта завершена.",)
+                if outcome == "objective_completed"
+                else ("Нет допустимых задач. Проверьте блокировки, входные артефакты и readiness.",)
             )
-            candidates.append(evaluation)
-            if admissible and score > best_score:
-                best_score = score
-                selected_step = step
-                selected_template = template
-
-        if selected_step is None or selected_template is None:
             decision = PlanningDecision(
+                decision_id=str(uuid.uuid4()),
                 project_id=manifest.project_id,
-                recipe_ref=manifest.recipe_ref,
-                domain_pack_refs=composed_recipe.domain_pack_refs,
-                recipe_fragment_refs=composed_recipe.recipe_fragment_refs,
+                objective_ref=manifest.objective_ref,
                 mode=mode,
-                outcome="blocked",
-                selected_step_id=None,
+                outcome=outcome,
+                selected_task_id=None,
+                selected_task_key=None,
                 selected_template_ref=None,
-                created_task_id=None,
+                admitted_task_ids=(),
+                blocked_task_summaries=blocked,
+                ranking_strategy="deterministic",
                 candidates=tuple(candidates),
-                reasons=("Нет допустимых шагов. Проверьте readiness, gaps и обязательные предыдущие шаги.",),
+                reasons=reasons,
                 created_at=utc_now_iso(),
             )
             if record:
                 self._runtime.record_planning_decision(workspace, decision)
             return decision
 
-        created_task_id = None
-        outcome = "selected"
-        if mode == "apply":
-            created_task_id = str(uuid.uuid4())
-            created_task = TaskRecord(
-                task_id=created_task_id,
-                project_id=manifest.project_id,
-                template_id=selected_template.identifier,
-                template_version=selected_template.version,
-                template_type=selected_template.template_type,
-                template_role=selected_template.semantics.template_role,
-                recipe_id=recipe.identifier,
-                recipe_version=recipe.version,
-                recipe_step_id=selected_step.identifier,
-                task_family_key=f"{manifest.project_id}:{selected_step.identifier}",
-                status=initial_task_status(selected_template.template_type),
-                attempt=1,
-                created_at=utc_now_iso(),
-                updated_at=utc_now_iso(),
-            )
-            self._runtime.create_task(workspace, created_task)
-            outcome = "materialized"
-
         decision = PlanningDecision(
+            decision_id=str(uuid.uuid4()),
             project_id=manifest.project_id,
-            recipe_ref=manifest.recipe_ref,
-            domain_pack_refs=composed_recipe.domain_pack_refs,
-            recipe_fragment_refs=composed_recipe.recipe_fragment_refs,
+            objective_ref=manifest.objective_ref,
             mode=mode,
-            outcome=outcome,
-            selected_step_id=selected_step.identifier,
-            selected_template_ref=selected_template.ref.as_string(),
-            created_task_id=created_task_id,
+            outcome="selected",
+            selected_task_id=selected.task_id,
+            selected_task_key=selected.task_key,
+            selected_template_ref=selected.template_ref,
+            admitted_task_ids=tuple(candidate.task_id for candidate in admitted),
+            blocked_task_summaries=tuple(
+                {
+                    "task_id": candidate.task_id,
+                    "task_key": candidate.task_key,
+                    "title": candidate.title,
+                    "reasons": list(candidate.reasons),
+                }
+                for candidate in candidates
+                if not candidate.admissible
+            ),
+            ranking_strategy="deterministic",
             candidates=tuple(candidates),
-            reasons=(f"Выбран допустимый шаг '{selected_step.identifier}'.",),
+            reasons=(f"Выбрана допустимая задача '{selected.title}'.",),
             created_at=utc_now_iso(),
         )
         if record:
@@ -276,5 +166,317 @@ class PlanningService:
     def list_task_events(self, workspace: Path, task_id: str | None = None):
         return self._runtime.list_task_events(workspace, task_id=task_id)
 
-    def list_recipe_progress(self, workspace: Path, recipe_ref: str):
-        return self._runtime.list_recipe_progress(workspace, recipe_ref)
+    def _expand_composites(self, workspace: Path, snapshot: RegistrySnapshot) -> None:
+        changed = True
+        while changed:
+            changed = False
+            process = self._runtime.load_process_state(workspace)
+            active_pack_refs = tuple(sorted(process.active_domain_pack_records.keys()))
+            tasks = self._runtime.list_tasks(workspace)
+            by_id = {task.task_id: task for task in tasks}
+            for task in tasks:
+                if task.template_type != "composite" or task.status in {"obsolete", "skipped"}:
+                    continue
+                template = snapshot.resolve_template(task.template_ref)
+                for child in template.children:
+                    child_template = snapshot.resolve_template(child.task_ref)
+                    stable_key = f"{task.stable_key}:child:{child.identifier}:{child.task_ref.as_string()}"
+                    if self._runtime.find_task_by_stable_key(workspace, stable_key) is None:
+                        self._create_task(
+                            workspace,
+                            project_id=task.project_id,
+                            objective_ref=task.objective_ref,
+                            parent_task_id=task.task_id,
+                            template=child_template,
+                            origin_kind="base_child",
+                            origin_ref=child.identifier,
+                            stable_key=stable_key,
+                            depth=task.depth + 1,
+                            slot_id=None,
+                        )
+                        changed = True
+                for slot in template.slots:
+                    for pack_ref in active_pack_refs:
+                        pack = snapshot.resolve_domain_pack(pack_ref)
+                        for contribution in pack.contributions:
+                            if contribution.slot_id != slot.identifier:
+                                continue
+                            for item in contribution.items:
+                                if item.task_ref is None:
+                                    continue
+                                contribution_template = snapshot.resolve_template(item.task_ref)
+                                stable_key = f"{task.stable_key}:slot:{slot.identifier}:{pack.ref.as_string()}:{item.identifier}"
+                                if self._runtime.find_task_by_stable_key(workspace, stable_key) is None:
+                                    self._create_task(
+                                        workspace,
+                                        project_id=task.project_id,
+                                        objective_ref=task.objective_ref,
+                                        parent_task_id=task.task_id,
+                                        template=contribution_template,
+                                        origin_kind="domain_contribution",
+                                        origin_ref=f"{pack.ref.as_string()}:{item.identifier}",
+                                        stable_key=stable_key,
+                                        depth=task.depth + 1,
+                                        slot_id=slot.identifier,
+                                    )
+                                    changed = True
+            if changed:
+                continue
+            self._refresh_composite_completion_from_tasks(workspace, by_id)
+
+    def _create_task(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        objective_ref: str,
+        parent_task_id: str | None,
+        template: TemplateSpec,
+        origin_kind: str,
+        origin_ref: str,
+        stable_key: str,
+        depth: int,
+        slot_id: str | None,
+    ) -> TaskRecord:
+        now = utc_now_iso()
+        task = TaskRecord(
+            task_id=str(uuid.uuid4()),
+            project_id=project_id,
+            objective_ref=objective_ref,
+            parent_task_id=parent_task_id,
+            template_ref=template.ref.as_string(),
+            template_type=template.template_type,
+            title=template.title,
+            status=initial_task_status(template.template_type),
+            origin_kind=origin_kind,  # type: ignore[arg-type]
+            origin_ref=origin_ref,
+            stable_key=stable_key,
+            depth=depth,
+            slot_id=slot_id,
+            attempt=1,
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+        )
+        return self._runtime.create_task(workspace, task)
+
+    def _recompute_admission(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        tasks: list[TaskRecord],
+    ) -> tuple[CandidateEvaluation, ...]:
+        state = self._runtime.load_project_state(workspace)
+        process = state.process
+        candidates: list[CandidateEvaluation] = []
+        completed_artifact_roles = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
+        leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
+        task_by_id = {task.task_id: task for task in tasks}
+        open_clarifications = self._runtime.list_clarification_requests(workspace, statuses=("open",))
+        for task in leaf_tasks:
+            if task.status in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
+                continue
+            template = snapshot.resolve_template(task.template_ref)
+            checks: list[AdmissionCheck] = []
+
+            missing_fields = [
+                field_name
+                for field_name in template.inputs.required_problem_fields
+                if _resolve_state_field(state, field_name) in (None, "")
+            ]
+            checks.append(
+                AdmissionCheck(
+                    "required_state",
+                    not missing_fields,
+                    "Нет обязательных полей состояния: " + ", ".join(missing_fields)
+                    if missing_fields
+                    else "Обязательные поля состояния доступны",
+                )
+            )
+
+            missing_artifacts = [
+                role for role in template.inputs.required_artifact_roles if role not in completed_artifact_roles
+            ]
+            checks.append(
+                AdmissionCheck(
+                    "required_artifacts",
+                    not missing_artifacts,
+                    "Нет обязательных артефактов: " + ", ".join(missing_artifacts)
+                    if missing_artifacts
+                    else "Обязательные артефакты доступны",
+                )
+            )
+
+            missing_readiness = [
+                dimension
+                for dimension in template.inputs.required_readiness
+                if process.readiness.get(dimension) is None
+                or process.readiness[dimension].status not in {"ready", "waived"}
+            ]
+            checks.append(
+                AdmissionCheck(
+                    "required_readiness",
+                    not missing_readiness,
+                    "Не хватает readiness: " + ", ".join(missing_readiness)
+                    if missing_readiness
+                    else "Readiness-предпосылки выполнены",
+                )
+            )
+
+            forbidden_gaps = [
+                gap_id
+                for gap_id in template.inputs.forbidden_open_gaps
+                if gap_id in process.active_gaps
+            ]
+            checks.append(
+                AdmissionCheck(
+                    "forbidden_open_gaps",
+                    not forbidden_gaps,
+                    "Есть блокирующие gaps: " + ", ".join(forbidden_gaps)
+                    if forbidden_gaps
+                    else "Блокирующих gaps нет",
+                )
+            )
+
+            missing_domain_packs = [
+                pack_ref
+                for pack_ref in template.inputs.required_domain_packs
+                if pack_ref not in process.active_domain_pack_records
+            ]
+            checks.append(
+                AdmissionCheck(
+                    "required_domain_packs",
+                    not missing_domain_packs,
+                    "Не подключены доменные пакеты: " + ", ".join(missing_domain_packs)
+                    if missing_domain_packs
+                    else "Требуемые доменные пакеты подключены",
+                )
+            )
+
+            finalization_blockers = self._finalization_blockers(task, template, leaf_tasks)
+            checks.append(
+                AdmissionCheck(
+                    "active_subtree_completion",
+                    not finalization_blockers,
+                    "Перед финализацией нужно завершить: " + ", ".join(finalization_blockers)
+                    if finalization_blockers
+                    else "Поддерево готово для этой задачи",
+                )
+            )
+
+            clarification_blockers = self._clarification_blockers(task, task_by_id, open_clarifications)
+            checks.append(
+                AdmissionCheck(
+                    "blocking_clarifications",
+                    not clarification_blockers,
+                    "Есть открытые уточнения: " + ", ".join(clarification_blockers)
+                    if clarification_blockers
+                    else "Блокирующих уточнений нет",
+                )
+            )
+
+            admissible = all(check.passed for check in checks)
+            if admissible and task.status != "ready":
+                self._runtime.transition_task(workspace, task.task_id, "mark_ready")
+            if not admissible and task.status != "blocked":
+                self._runtime.transition_task(
+                    workspace,
+                    task.task_id,
+                    "mark_blocked",
+                    payload={"reason": "; ".join(check.detail for check in checks if not check.passed)},
+                )
+
+            reasons = tuple(check.detail for check in checks if not check.passed)
+            candidates.append(
+                CandidateEvaluation(
+                    task_id=task.task_id,
+                    task_key=task.task_key,
+                    title=task.title,
+                    template_ref=task.template_ref,
+                    admissible=admissible,
+                    score=template.planning.priority,
+                    checks=tuple(checks),
+                    reasons=reasons,
+                )
+            )
+        return tuple(candidates)
+
+    def _clarification_blockers(self, task: TaskRecord, task_by_id: dict[str, TaskRecord], clarifications) -> list[str]:
+        blockers: list[str] = []
+        ancestor_ids = set()
+        parent_id = task.parent_task_id
+        while parent_id:
+            ancestor_ids.add(parent_id)
+            parent_id = task_by_id[parent_id].parent_task_id if parent_id in task_by_id else None
+        for clarification in clarifications:
+            if clarification.blocking_scope == "none":
+                continue
+            affected = set(clarification.affected_task_ids)
+            if clarification.blocking_scope == "objective":
+                blockers.append(clarification.title)
+            elif clarification.blocking_scope == "task" and task.task_id in affected:
+                blockers.append(clarification.title)
+            elif clarification.blocking_scope == "subtree" and (task.task_id in affected or ancestor_ids.intersection(affected)):
+                blockers.append(clarification.title)
+        return blockers
+
+    def _finalization_blockers(
+        self,
+        task: TaskRecord,
+        template: TemplateSpec,
+        leaf_tasks: list[TaskRecord],
+    ) -> list[str]:
+        if not template.identifier.startswith("common.requirements_spec_generation"):
+            return []
+        blockers = []
+        for other in leaf_tasks:
+            if other.task_id == task.task_id:
+                continue
+            if other.template_ref.startswith("common.requirements_spec_review@"):
+                continue
+            if other.status not in {"completed", "skipped"}:
+                blockers.append(other.title)
+        return blockers
+
+    def _refresh_composite_completion(self, workspace: Path) -> None:
+        self._refresh_composite_completion_from_tasks(
+            workspace,
+            {task.task_id: task for task in self._runtime.list_tasks(workspace)},
+        )
+
+    def _refresh_composite_completion_from_tasks(self, workspace: Path, by_id: dict[str, TaskRecord]) -> None:
+        children_by_parent: dict[str, list[TaskRecord]] = {}
+        for task in by_id.values():
+            if task.parent_task_id:
+                children_by_parent.setdefault(task.parent_task_id, []).append(task)
+        for task in sorted(by_id.values(), key=lambda item: item.depth, reverse=True):
+            if task.template_type != "composite" or task.status == "completed":
+                continue
+            children = children_by_parent.get(task.task_id, [])
+            if children and all(child.status in {"completed", "skipped"} for child in children):
+                self._runtime.transition_task(workspace, task.task_id, "complete")
+
+    def _objective_completed(self, workspace: Path, snapshot: RegistrySnapshot) -> bool:
+        manifest = self._runtime.load_manifest(workspace)
+        objective = snapshot.resolve_objective(manifest.objective_ref)
+        artifacts = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
+        artifacts_ok = all(
+            artifact_ref.identifier.rsplit(".", 1)[-1] in artifacts
+            for artifact_ref in objective.done_artifact_refs
+        )
+        if not artifacts_ok:
+            return False
+        for gate_ref in objective.done_gate_refs:
+            gate = snapshot.resolve_quality_gate(gate_ref)
+            if gate.check_type == "human_approval":
+                requests = self._runtime.list_clarification_requests(workspace)
+                approved = any(
+                    request.source_type == "quality_gate"
+                    and request.source_id == gate.ref.as_string()
+                    and request.status == "answered"
+                    and "approved" in request.selected_option_ids
+                    for request in requests
+                )
+                if not approved:
+                    return False
+        return True
