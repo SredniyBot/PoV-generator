@@ -47,6 +47,31 @@ def _normalize_decision_owner_role(approver_role: str | None) -> str:
     return aliases.get(role, "client")
 
 
+def _resolve_confidence(
+    overall_confidence: float | None,
+    payload: dict[str, Any],
+) -> float | None:
+    """Унифицированный доступ к уверенности артефакта.
+
+    Уверенность — это метаданные артефакта
+    (``ArtifactMetadata.overall_confidence``). При создании артефакта
+    execution_service автоматически вытягивает её из ``payload['confidence']``
+    и кладёт в метаданные. Эта функция инкапсулирует приоритеты:
+
+    1. Если в метаданных есть конкретное число — берём его.
+    2. Иначе — fallback на ``payload['confidence']`` для backward-compat
+       (legacy-фикстуры, артефакты с прошлых запусков, тестовые мок-payload).
+    3. Если ни там, ни там нет — ``None`` (валидация просто не сработает
+       по правилу confidence, что эквивалентно «уверенности не задана»).
+    """
+    if isinstance(overall_confidence, (int, float)) and not isinstance(overall_confidence, bool):
+        return float(overall_confidence)
+    raw = payload.get("confidence")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
+
+
 class ValidationService:
     def __init__(self, runtime: SqliteRuntime, clarification_service: ClarificationService | None = None) -> None:
         self._runtime = runtime
@@ -109,6 +134,10 @@ class ValidationService:
                         artifact_id=artifact.artifact_id,
                         project_id=manifest.project_id,
                         task_id=task_id,
+                        # Уверенность — это метаданные артефакта, не часть
+                        # бизнес-payload. Достаём из metadata (execution_service
+                        # уже её туда положил при создании артефакта).
+                        overall_confidence=artifact.metadata.overall_confidence,
                     )
                 decisions = self._clarification_service.register_candidates(workspace, tuple(candidates))
                 clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
@@ -259,10 +288,14 @@ class ValidationService:
         artifact_id: str,
         project_id: str,
         task_id: str,
+        overall_confidence: float | None = None,
     ):
         findings: list[ValidationFinding] = []
         candidates = []
-        confidence = payload.get("confidence")
+        # Уверенность приоритетно берём из metadata (overall_confidence).
+        # Fallback на payload['confidence'] — для backward-compat с
+        # уже сохранёнными ранее артефактами и legacy-фикстурами.
+        confidence = _resolve_confidence(overall_confidence, payload)
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.45:
             findings.append(
                 ValidationFinding(
@@ -370,7 +403,9 @@ class ValidationService:
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))
 
         if artifact_role == "review_report" and template_ref == "common.requirements_spec_review@2.0.0":
-            findings.extend(self._validate_review_report(payload, artifact_id))
+            findings.extend(
+                self._validate_review_report(payload, artifact_id, overall_confidence=overall_confidence)
+            )
 
         return findings, candidates
 
@@ -471,9 +506,15 @@ class ValidationService:
             for pack_ref in active_domain_pack_refs
         )
 
-    def _validate_review_report(self, payload: dict[str, Any], artifact_id: str) -> list[ValidationFinding]:
+    def _validate_review_report(
+        self,
+        payload: dict[str, Any],
+        artifact_id: str,
+        *,
+        overall_confidence: float | None = None,
+    ) -> list[ValidationFinding]:
         findings: list[ValidationFinding] = []
-        confidence = payload.get("confidence")
+        confidence = _resolve_confidence(overall_confidence, payload)
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.55:
             findings.append(
                 ValidationFinding(

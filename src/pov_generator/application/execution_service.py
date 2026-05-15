@@ -232,6 +232,11 @@ class ExecutionService:
                 reasoning=reasoning_payload,
                 methodology_trace=methodology_trace_payload,
                 used_position_ids=context_manifest.used_position_ids,
+                # Уверенность вынесена из тела артефакта в метаданные.
+                # Берём из payload['confidence'] для backward-compat (LLM
+                # часто возвращает там, а task-промпт это всё ещё допускает),
+                # клампим в допустимый диапазон [0, 1].
+                overall_confidence=_extract_overall_confidence(payload),
             ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
@@ -1284,3 +1289,29 @@ class ExecutionService:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+
+def _extract_overall_confidence(payload: dict[str, object]) -> float | None:
+    """Достать `confidence` из payload и привести к диапазону [0, 1].
+
+    Уверенность — это метаданные артефакта (см. ArtifactMetadata.
+    overall_confidence), а не часть бизнес-содержимого. LLM по
+    инерции продолжает возвращать число в payload['confidence'],
+    и task-промпты допускают это для backward-compat. Тут мы её
+    извлекаем, чтобы дальше она жила в единственном месте — в
+    метаданных. Если confidence нет / не число / NaN — возвращаем None
+    (метаданные допускают отсутствующее значение).
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("confidence")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if value != value:  # NaN check
+        return None
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
