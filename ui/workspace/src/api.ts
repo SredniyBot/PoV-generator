@@ -65,6 +65,8 @@ export const api = {
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
+  artifactPdfUrl: (projectId: string, artifactId: string) =>
+    `/api/projects/${projectId}/artifacts/${artifactId}/download.pdf`,
   getReview: (projectId: string) => request<ProjectReviewView>(`/api/projects/${projectId}/review`),
   getState: (projectId: string) => request<ProjectStateView>(`/api/projects/${projectId}/state`),
   getDebug: (projectId: string) => request<ProjectDebugView>(`/api/projects/${projectId}/debug`),

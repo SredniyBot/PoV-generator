@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  Download,
   ExternalLink,
   FileJson2,
   Layers3,
@@ -3151,7 +3152,8 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
 
   return (
     <div className="artifact-detail">
-      <div className="segmented">
+      <div className="artifact-detail__toolbar">
+        <div className="segmented">
         <button className={cx("segmented__item", mode === "doc" && "segmented__item--active")} onClick={() => setMode("doc")} type="button">
           Документ
         </button>
@@ -3186,6 +3188,18 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           >
             Provenance
           </button>
+        ) : null}
+        </div>
+        {detail.markdown_content ? (
+          <a
+            className="artifact-detail__download"
+            href={api.artifactPdfUrl(projectId, detail.artifact_id)}
+            download
+            title="Скачать артефакт как PDF"
+          >
+            <Download size={14} />
+            PDF
+          </a>
         ) : null}
       </div>
       {/* Компактная одна строка с самой важной мета-инфой.

@@ -4,13 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
+from ..application.pdf_export import render_artifact_pdf
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.registry_service import RegistryService
@@ -83,6 +84,7 @@ def create_app(
     # задачи возвращаем в ready (admission на следующем планировании
     # пересчитает их).
     from dataclasses import replace as _dc_replace
+
     from ..common.serialization import utc_now_iso as _utc_now
     try:
         for workspace_ref in catalog.list_workspaces():
@@ -210,6 +212,36 @@ def create_app(
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}")
     def project_artifact_detail(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
+
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/download.pdf")
+    def download_artifact_pdf(project_id: str, artifact_id: str) -> Response:
+        """Скачивание артефакта в формате PDF.
+
+        Берёт уже отрендеренный markdown артефакта (см. render_markdown),
+        прогоняет через markdown → HTML → PDF и отдаёт как `application/pdf`
+        с `Content-Disposition: attachment`.
+        """
+        detail = query_service.artifact_detail(project_id, artifact_id)
+        if not detail.markdown_content:
+            raise HTTPException(
+                status_code=404,
+                detail="У артефакта нет markdown-представления для рендера в PDF.",
+            )
+        pdf_bytes = render_artifact_pdf(
+            markdown_content=detail.markdown_content,
+            title=detail.title or detail.artifact_role,
+        )
+        filename = _safe_pdf_filename(detail.title or detail.artifact_role, artifact_id)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                # RFC 5987: ASCII fallback + UTF-8 percent-encoded variant
+                # для имён с кириллицей (HTTP-заголовки — Latin-1 only).
+                "Content-Disposition": _content_disposition_header(filename),
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/projects/{project_id}/review")
     def project_review(project_id: str) -> Any:
@@ -600,6 +632,50 @@ def _required_str(payload: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise PovGeneratorError(f"Ожидалось непустое строковое поле '{key}'.")
     return value.strip()
+
+
+def _content_disposition_header(filename: str) -> str:
+    """Сформировать ``Content-Disposition: attachment`` для скачивания.
+
+    HTTP-заголовки в Starlette кодируются как Latin-1; если в filename есть
+    кириллица (или другие не-ASCII символы), пишем оба варианта по RFC 5987:
+    ``filename="<ascii fallback>"; filename*=UTF-8''<percent-encoded>``.
+    """
+    import unicodedata
+    import urllib.parse
+
+    # ASCII fallback: транслитерация через NFKD-нормализацию + отбрасывание
+    # combining-марок, всё, что не-ASCII, заменяется на '_'.
+    ascii_fallback = (
+        unicodedata.normalize("NFKD", filename)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    if not ascii_fallback.strip("._"):
+        ascii_fallback = "artifact.pdf"
+
+    percent_encoded = urllib.parse.quote(filename, safe="")
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{percent_encoded}"
+    )
+
+
+def _safe_pdf_filename(title: str, artifact_id: str) -> str:
+    """Преобразовать заголовок артефакта в файлово-безопасное имя.
+
+    Латиница / кириллица оставляются, остальное заменяется на `_`.
+    Длина обрезается до 80 символов; ``artifact_id`` (короткая
+    шестнадцатеричная часть) добавляется в конце для уникальности.
+    """
+    import re
+
+    base = (title or "artifact").strip()
+    # Кириллица + латиница + цифры + дефис + пробел; остальное → "_".
+    safe = re.sub(r"[^\w\sа-яА-ЯёЁ-]", "_", base, flags=re.UNICODE)
+    safe = re.sub(r"\s+", "_", safe).strip("._")[:80] or "artifact"
+    short_id = artifact_id.replace("-", "")[:8]
+    return f"{safe}_{short_id}.pdf"
 
 
 def _optional_str(payload: dict[str, object], key: str) -> str | None:
