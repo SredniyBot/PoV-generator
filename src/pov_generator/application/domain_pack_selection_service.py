@@ -52,14 +52,11 @@ class DomainPackSelectionService:
         candidate_packs = self._candidate_packs(snapshot)
 
         # Stub — не LLM-вызов, идёт особняком (regex matcher).
-        # Резолвим имя провайдера, чтобы понять: stub ли это.
-        # Если в env стоит реальный LLM-провайдер — используем его через registry.
-        resolved_provider_name = (
-            provider
-            or _env("POV_DOMAIN_PACK_SELECTION_PROVIDER")
-            or _env("POV_EXECUTION_PROVIDER")
-            or ("openrouter" if _env("POV_OPENROUTER_API_KEY") else "stub")
-        )
+        # env-переменные больше НЕ управляют выбором провайдера для
+        # selector — настройки приходят из settings-store через
+        # resolve_for_purpose("domain_pack_selector"). Параметр `provider`
+        # остаётся как явный override (тесты, CLI).
+        resolved_provider_name = provider or "auto"
 
         if not candidate_packs:
             return DomainPackSelectionResult(
@@ -73,17 +70,12 @@ class DomainPackSelectionService:
         if resolved_provider_name == "stub":
             return self._select_stub(candidate_packs, request_text, model=model or "stub")
 
-        # LLM-провайдер. Три пути:
-        # 1. Явный provider override → registry.get (legacy env-based).
-        # 2. POV_DOMAIN_PACK_SELECTION_PROVIDER в env → registry.get (legacy).
-        # 3. Иначе → resolve_for_purpose("domain_pack_selector") — настройки
-        #    приходят из Settings → Default Models через persistence-слой.
-        if provider is not None or _env("POV_DOMAIN_PACK_SELECTION_PROVIDER"):
-            llm = self._llm.from_env(
-                override_provider=provider,
-                override_model=model,
-                env_provider_var="POV_DOMAIN_PACK_SELECTION_PROVIDER",
-                env_model_var="POV_DOMAIN_PACK_SELECTION_MODEL",
+        # LLM-провайдер. Если задан явный provider override (тесты, CLI) —
+        # legacy env-based путь. Иначе всегда через settings-store.
+        if provider is not None:
+            llm = self._llm.get(
+                provider=provider,
+                model=model,
                 complexity=_LLM_COMPLEXITY,
             )
         else:

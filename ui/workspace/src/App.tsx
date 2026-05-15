@@ -344,8 +344,16 @@ function WorkspaceRoute({
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [provider, setProvider] = useStoredState("povgen.provider", "openrouter");
-  const [model, setModel] = useStoredState("povgen.model", "deepseek/deepseek-v4-flash");
+  // ВАЖНО: provider больше НЕ передаётся из UI — каждый запуск пайплайна
+  // использует системные настройки `/settings` (provider+model подбирается
+  // на сервере через resolve_for_purpose). Раньше localStorage хранил
+  // provider="openrouter" дефолтно и заставлял backend идти через
+  // legacy env-path → ошибка POV_OPENROUTER_API_KEY когда пользователь
+  // не настроил OpenRouter. model передаётся пустой строкой (= использовать
+  // assignment); UI-override модели — TODO в будущей версии.
+  const provider = "";
+  const setProvider = (_: string) => {};
+  const [model, setModel] = useStoredState("povgen.model", "");
   const [flashProjection, setFlashProjection] = useState<ProjectionName | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
 
@@ -3398,8 +3406,9 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   // W4.2 (G1): canvas-based task graph через ReactFlow + dagre.
   // Кликнул на узел → открывается drawer с тем же TaskNodeDetail,
   // что и на L2 Activity, плюс панель «Рассуждение» внутри.
-  const [provider] = useStoredState("povgen.provider", "openrouter");
-  const [model] = useStoredState("povgen.model", "deepseek/deepseek-v4-flash");
+  // provider не передаётся из UI — см. WorkspaceRoute (Bug #3 fix).
+  const provider = "";
+  const [model] = useStoredState("povgen.model", "");
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),

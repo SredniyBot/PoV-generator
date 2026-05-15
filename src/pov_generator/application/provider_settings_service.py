@@ -485,6 +485,58 @@ class ProviderSettingsService:
 
     # --- Internals -----------------------------------------------------------
 
+    def sync_known_routings(self, connection_id: str) -> tuple[ModelRouting, ...]:
+        """Добавить routings для known-моделей провайдера, отсутствующих
+        у этого connection.
+
+        Используется когда:
+        * KNOWN_MODELS_BY_PROVIDER пополнили в новом релизе (например, opus 4.7),
+          а старые connections были созданы до этого.
+        * Админ хочет «обновить каталог» одной кнопкой в UI.
+
+        Возвращает: tuple новых routings (пустой, если всё уже в каталоге).
+        Существующие routings не трогаются — priority остаётся.
+        """
+        connection = self.get_connection(connection_id)
+        known = set(KNOWN_MODELS_BY_PROVIDER.get(connection.provider_type, ()))
+        existing_for_conn = {
+            r.model_name
+            for r in self._store.list_routings()
+            if r.connection_id == connection_id
+        }
+        missing = sorted(known - existing_for_conn)
+        # Для отсутствующих моделей: priority = 100 если у модели нет routings
+        # ни у кого, иначе 50 (backup для существующих primary).
+        all_routed_models = {r.model_name for r in self._store.list_routings()}
+        added: list[ModelRouting] = []
+        for model_name in missing:
+            priority = 50 if model_name in all_routed_models else 100
+            routing = self._store.add_routing(
+                ModelRouting(
+                    routing_id=str(uuid.uuid4()),
+                    connection_id=connection_id,
+                    model_name=model_name,
+                    priority=priority,
+                    enabled=True,
+                )
+            )
+            added.append(routing)
+        return tuple(added)
+
+    def sync_all_connections(self) -> dict[str, int]:
+        """Прогон sync_known_routings по всем connections. Используется при
+        запуске API — чтобы старые connections автоматически подцепляли
+        новые модели из KNOWN_MODELS_BY_PROVIDER (например, opus 4.7).
+
+        Возвращает: ``{connection_id: count_added}``.
+        """
+        summary: dict[str, int] = {}
+        for connection in self.list_connections():
+            added = self.sync_known_routings(connection.connection_id)
+            if added:
+                summary[connection.connection_id] = len(added)
+        return summary
+
     def _seed_default_routings(self, connection: ProviderConnection) -> None:
         """Создать routings для всех known-моделей провайдера.
 

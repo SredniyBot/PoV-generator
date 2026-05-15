@@ -4116,6 +4116,84 @@ code {
   gap: 8px;
 }
 
+/* Список маршрутов модели — упорядоченный, видно primary/backup. */
+.llm-row__routings {
+  list-style: none;
+  margin: 8px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-row__routing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+}
+
+.llm-row__routing-rank {
+  flex: 0 0 auto;
+  min-width: 60px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.llm-row__routing-rank--primary {
+  background: rgba(120, 200, 140, 0.16);
+  color: #7fc99c;
+}
+
+.llm-row__routing-name {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+
+.llm-row__routing-name em {
+  font-style: normal;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.llm-row__routing-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.llm-row__routing-actions .btn-inline {
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.llm-row__routing-actions .btn-inline:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.llm-row__routing-actions .btn-inline:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Подсвечиваем строку с потерянной моделью в таблице назначений. */
+.llm-table__row--warn td {
+  background: rgba(232, 128, 128, 0.06);
+}
+
 .llm-row__side {
   display: flex;
   flex-direction: column;

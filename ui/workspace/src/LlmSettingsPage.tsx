@@ -13,7 +13,16 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  CheckCircle2,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 
 import { api } from "./api";
 import type {
@@ -107,6 +116,11 @@ function ProvidersTab() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] }),
   });
 
+  const syncMutation = useMutation({
+    mutationFn: (id: string) => api.syncKnownModels(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
+  });
+
   if (providersQuery.isLoading) return <p>Загрузка…</p>;
   const providers = providersQuery.data ?? [];
 
@@ -137,10 +151,17 @@ function ProvidersTab() {
                   deleteMutation.mutate(p.connection_id);
                 }
               }}
+              onSync={() => syncMutation.mutate(p.connection_id)}
               testPending={testMutation.isPending && testMutation.variables === p.connection_id}
+              syncPending={syncMutation.isPending && syncMutation.variables === p.connection_id}
               testResult={
                 testMutation.data && testMutation.variables === p.connection_id
                   ? testMutation.data
+                  : null
+              }
+              syncResult={
+                syncMutation.data && syncMutation.variables === p.connection_id
+                  ? syncMutation.data
                   : null
               }
             />
@@ -158,14 +179,20 @@ function ProviderRow({
   provider,
   onTest,
   onDelete,
+  onSync,
   testPending,
+  syncPending,
   testResult,
+  syncResult,
 }: {
   provider: ProviderConnectionView;
   onTest: () => void;
   onDelete: () => void;
+  onSync: () => void;
   testPending: boolean;
+  syncPending: boolean;
   testResult: TestResultView | null;
+  syncResult: { added_count: number; added_models: string[] } | null;
 }) {
   const statusBadge = (() => {
     if (provider.last_test_status === "ok") {
@@ -212,11 +239,27 @@ function ProviderRow({
             {testResult.sample_response ? ` · ответ: "${testResult.sample_response}"` : null}
           </p>
         ) : null}
+        {syncResult ? (
+          <p className="llm-row__hint llm-row__hint--ok">
+            {syncResult.added_count === 0
+              ? "Каталог моделей уже актуален — новых записей нет."
+              : `Добавлено ${syncResult.added_count} модель(-и): ${syncResult.added_models.join(", ")}.`}
+          </p>
+        ) : null}
       </div>
       <div className="llm-row__side">
         {statusBadge}
         <button type="button" className="btn btn--ghost" onClick={onTest} disabled={testPending}>
           {testPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Проверить
+        </button>
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={onSync}
+          disabled={syncPending}
+          title="Добавить routings для известных моделей провайдера, которых ещё нет в каталоге"
+        >
+          {syncPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Обновить каталог
         </button>
         <button type="button" className="btn btn--ghost btn--danger" onClick={onDelete}>
           <Trash2 size={14} /> Удалить
@@ -358,6 +401,23 @@ function ModelsTab() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
   });
 
+  // Перемещение routing вверх/вниз по списку — обмениваем priority с
+  // соседом. Это устраняет «магический» числовой ввод (баг #4): пользователь
+  // видит порядок и двигает стрелками, как в обычных списках.
+  const reorderRoutingMutation = useMutation({
+    mutationFn: async ({
+      routingA,
+      routingB,
+    }: {
+      routingA: { id: string; newPriority: number };
+      routingB: { id: string; newPriority: number };
+    }) => {
+      await api.updateRouting(routingA.id, { priority: routingA.newPriority });
+      await api.updateRouting(routingB.id, { priority: routingB.newPriority });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
+  });
+
   const [addModelFor, setAddModelFor] = useState<string | null>(null);
 
   if (modelsQuery.isLoading) return <p>Загрузка…</p>;
@@ -400,6 +460,20 @@ function ModelsTab() {
                   deleteRoutingMutation.mutate(routingId);
                 }
               }}
+              onMoveRouting={(routingIdToMove, direction) => {
+                const list = m.routings;
+                const idx = list.findIndex((r) => r.routing_id === routingIdToMove);
+                const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+                if (idx < 0 || targetIdx < 0 || targetIdx >= list.length) return;
+                const a = list[idx];
+                const b = list[targetIdx];
+                if (!a || !b) return;
+                reorderRoutingMutation.mutate({
+                  routingA: { id: a.routing_id, newPriority: b.priority },
+                  routingB: { id: b.routing_id, newPriority: a.priority },
+                });
+              }}
+              reorderPending={reorderRoutingMutation.isPending}
             />
           ))}
         </ul>
@@ -423,12 +497,16 @@ function ModelRow({
   testPending,
   testResult,
   onDeleteRouting,
+  onMoveRouting,
+  reorderPending,
 }: {
   entry: ModelCatalogEntry;
   onTest: () => void;
   testPending: boolean;
   testResult: TestResultView | null;
   onDeleteRouting: (routingId: string) => void;
+  onMoveRouting: (routingId: string, direction: "up" | "down") => void;
+  reorderPending: boolean;
 }) {
   return (
     <li className="llm-row">
@@ -437,27 +515,55 @@ function ModelRow({
         <span className="llm-row__sub">
           {entry.routings.length === 1 && entry.routings[0]
             ? `через ${entry.routings[0].connection_display_name}`
-            : `${entry.routings.length} маршрута`}
+            : `${entry.routings.length} источника — порядок задаёт приоритет`}
         </span>
-        <ul className="llm-row__sublist">
-          {entry.routings.map((r) => (
-            <li key={r.routing_id}>
-              <span>
-                {r.connection_display_name} ({humanProviderType(r.provider_type)}) — priority{" "}
-                {r.priority}
-                {!r.enabled ? " · disabled" : ""}
-              </span>
-              <button
-                type="button"
-                className="btn-inline"
-                onClick={() => onDeleteRouting(r.routing_id)}
-                title="Удалить этот маршрут"
-              >
-                <Trash2 size={12} />
-              </button>
-            </li>
-          ))}
-        </ul>
+        <ol className="llm-row__routings">
+          {entry.routings.map((r, idx) => {
+            const isFirst = idx === 0;
+            const isLast = idx === entry.routings.length - 1;
+            const onlyOne = entry.routings.length === 1;
+            return (
+              <li key={r.routing_id} className="llm-row__routing">
+                <span className={"llm-row__routing-rank" + (isFirst ? " llm-row__routing-rank--primary" : "")}>
+                  {isFirst ? "primary" : `#${idx + 1}`}
+                </span>
+                <span className="llm-row__routing-name">
+                  {r.connection_display_name}
+                  <em>({humanProviderType(r.provider_type)})</em>
+                  {!r.enabled ? <span className="llm-badge llm-badge--neutral">disabled</span> : null}
+                </span>
+                <div className="llm-row__routing-actions">
+                  <button
+                    type="button"
+                    className="btn-inline"
+                    onClick={() => onMoveRouting(r.routing_id, "up")}
+                    disabled={onlyOne || isFirst || reorderPending}
+                    title="Сделать приоритетнее"
+                  >
+                    <ArrowUp size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-inline"
+                    onClick={() => onMoveRouting(r.routing_id, "down")}
+                    disabled={onlyOne || isLast || reorderPending}
+                    title="Понизить приоритет"
+                  >
+                    <ArrowDown size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-inline"
+                    onClick={() => onDeleteRouting(r.routing_id)}
+                    title="Удалить этот маршрут"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
         {testResult ? (
           <p
             className={
@@ -624,9 +730,10 @@ function AssignmentsTab() {
           <tbody>
             {purposes.map((p) => {
               const current = assignmentsByPurpose[p.id] ?? "";
-              const missing = current && !availableModels.includes(current);
+              const missing = Boolean(current) && !availableModels.includes(current);
+              const hasValidAssignment = Boolean(current) && !missing;
               return (
-                <tr key={p.id}>
+                <tr key={p.id} className={missing ? "llm-table__row--warn" : undefined}>
                   <td>{p.label}</td>
                   <td>
                     <select
@@ -635,17 +742,28 @@ function AssignmentsTab() {
                         setMutation.mutate({ purpose: p.id, modelName: e.target.value })
                       }
                     >
-                      <option value="" disabled>
-                        {missing
-                          ? `${current} — модель потеряна, выберите другую`
-                          : "не назначено"}
-                      </option>
+                      {/* Заглушка "не назначено" показываем только когда
+                          реально ничего не назначено или назначенная
+                          модель потеряна. Если модель валидна — её и
+                          показываем как selected, заглушку прячем. */}
+                      {!hasValidAssignment ? (
+                        <option value="" disabled>
+                          {missing
+                            ? `${current} — модель потеряна, выберите другую`
+                            : "не назначено"}
+                        </option>
+                      ) : null}
                       {availableModels.map((m) => (
                         <option key={m} value={m}>
                           {m}
                         </option>
                       ))}
                     </select>
+                    {missing ? (
+                      <p className="llm-form__error" style={{ marginTop: 4 }}>
+                        Текущая модель «{current}» больше недоступна — выберите другую.
+                      </p>
+                    ) : null}
                   </td>
                 </tr>
               );

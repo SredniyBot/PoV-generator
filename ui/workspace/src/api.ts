@@ -73,7 +73,9 @@ export const api = {
   runNext: (projectId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/run-next`, {
       method: "POST",
-      body: JSON.stringify({ provider, model: model || undefined }),
+      // Пустые значения не отправляем — backend в этом случае идёт через
+      // resolve_for_purpose из settings-store (а не legacy env-path).
+      body: JSON.stringify({ provider: provider || undefined, model: model || undefined }),
     }),
   runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 1000) =>
     // W4.1 (R1): endpoint асинхронный, возвращает WorkflowRunView (status=pending)
@@ -85,7 +87,11 @@ export const api = {
     // leaf-задач × до 2-3 ретраев = ~50-75 шагов максимум.
     request<WorkflowRunView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
-      body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
+      body: JSON.stringify({
+        provider: provider || undefined,
+        model: model || undefined,
+        max_steps: maxSteps,
+      }),
     }),
   cancelWorkflow: (projectId: string, runId: string) =>
     request<{ status: string; run_id: string }>(`/api/projects/${projectId}/commands/cancel-workflow`, {
@@ -101,7 +107,11 @@ export const api = {
   retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",
-      body: JSON.stringify({ task_id: taskId, provider, model: model || undefined }),
+      body: JSON.stringify({
+        task_id: taskId,
+        provider: provider || undefined,
+        model: model || undefined,
+      }),
     }),
   setGoal: (projectId: string, text: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-goal`, {
@@ -229,6 +239,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(model ? { model } : {}),
     }),
+  syncKnownModels: (connectionId: string) =>
+    request<{ connection_id: string; added_count: number; added_models: string[] }>(
+      `/api/settings/providers/${connectionId}/sync-models`,
+      { method: "POST", body: "{}" },
+    ),
 
   listModels: () => request<import("./types").ModelCatalogEntry[]>("/api/settings/models"),
   addCustomModel: (payload: { connection_id: string; model_name: string; priority?: number }) =>

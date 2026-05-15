@@ -66,7 +66,13 @@ class ExecutionService:
         if len(artifact_roles) != 1:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
-        active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER")
+        # `provider` параметр — ЯВНЫЙ override (CLI/тест). env-переменные
+        # больше НЕ управляют выбором провайдера для основного workflow —
+        # они только bootstrap-помощь для первичного создания connections
+        # в `ensure_default_settings`. Это устранило баг, когда UI шлёт
+        # provider="" (новая семантика) → env-переменная заставляла идти
+        # через legacy путь openrouter и валиться на отсутствующем ключе.
+        active_provider = provider
         # W3.2: pre-selector сложности задачи. Default — off, в этом случае
         # возвращает declared `template.complexity`. С `POV_COMPLEXITY_SELECTOR=on`
         # или `=stub` оценка может перезаписать сложность по фактическому

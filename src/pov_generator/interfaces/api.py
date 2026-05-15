@@ -66,6 +66,15 @@ def create_app(
         # Не критично: settings можно настроить через UI позже.
         pass
 
+    # Sync known-models: добавляем routings для моделей, которые появились
+    # в новом релизе (KNOWN_MODELS_BY_PROVIDER пополнили), но в старых
+    # connections их ещё нет. Например: opus 4.7 → автоматически
+    # появится в каталоге без ручных действий админа.
+    try:
+        provider_settings_service.sync_all_connections()
+    except Exception:  # noqa: BLE001
+        pass
+
     clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
@@ -232,6 +241,23 @@ def create_app(
         test_model_name = _optional_str(payload, "model")
         result = provider_settings_service.test_connection(connection_id, test_model=test_model_name)
         return _test_result_to_dict(result)
+
+    @app.post("/api/settings/providers/{connection_id}/sync-models")
+    def settings_sync_known_models(connection_id: str) -> Any:
+        """Добавить отсутствующие routings для known-моделей провайдера.
+
+        Используется когда в новом релизе пополнили KNOWN_MODELS_BY_PROVIDER
+        (например, opus 4.7), а connection был создан до этого.
+        """
+        try:
+            added = provider_settings_service.sync_known_routings(connection_id)
+        except ValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {
+            "connection_id": connection_id,
+            "added_count": len(added),
+            "added_models": [r.model_name for r in added],
+        }
 
     @app.get("/api/settings/models")
     def settings_list_models() -> Any:
