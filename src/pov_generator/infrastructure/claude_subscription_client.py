@@ -227,6 +227,16 @@ class ClaudeSubscriptionClient:
                     "• Антивирус прибивает CLI subprocess.\n"
                     f"Диагностика: {msg[:200]}"
                 ) from exc
+            if "returned an error result" in msg:
+                raise ConflictError(
+                    "Claude CLI отдал result с пометкой error, но без конкретных "
+                    "сообщений (часто subtype=success — противоречивый ответ "
+                    "подписки). После 3 retry ничего не изменилось. Возможные причины:\n"
+                    "• Транзиентный баг claude.ai — повторите через минуту.\n"
+                    "• Истёк токен сессии — попробуйте `claude login` ещё раз.\n"
+                    "• Превышен rate-limit подписки.\n"
+                    f"Диагностика: {msg[:200]}"
+                ) from exc
             raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
         finally:
             if sp_tmpfile is not None:
@@ -332,6 +342,10 @@ def _is_transient_cli_error(message: str) -> bool:
       (типично для проблем с claude.ai сервером или процессом).
     * "Control request timeout: initialize" — subprocess завис на старте.
     * "Process exited" / "Broken pipe" — обрыв связи.
+    * "Claude Code returned an error result" — CLI отдал result с
+      is_error=true, но без структурированного errors-списка (часто
+      subtype="success" — противоречивая response от подписки).
+      Транзиентный API-баг, повтор обычно проходит.
 
     НЕ retry'им (не транзиентно):
     * "Не задан POV_..." — конфигурация пустая.
@@ -348,6 +362,7 @@ def _is_transient_cli_error(message: str) -> bool:
         "broken pipe",
         "connection reset",
         "timed out",
+        "returned an error result",  # включая абсурдный "error result: success"
     )
     return any(marker in msg for marker in transient_markers)
 
