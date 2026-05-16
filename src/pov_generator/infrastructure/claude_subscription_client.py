@@ -29,7 +29,9 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ..common.errors import ConflictError
@@ -123,8 +125,22 @@ class ClaudeSubscriptionClient:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
+        #
+        # ВАЖНО: длинный system_prompt пишем в файл и передаём через
+        # SystemPromptFile. SDK иначе кладёт его в `--system-prompt <text>`
+        # CLI-аргумент; Windows CreateProcess имеет лимит ~32K символов на
+        # весь command-line, и большие методологические prompt'ы (style bans
+        # + writing principles + …) упираются в этот лимит → CLI зависает
+        # на старте → таймаут initialize. Файл — стандартный обходной путь
+        # самого SDK.
+        sp_for_options: Any = system_prompt
+        sp_tmpfile: Path | None = None
+        if len(system_prompt) > _SYSTEM_PROMPT_FILE_THRESHOLD_CHARS:
+            sp_tmpfile = _write_temp_prompt(system_prompt)
+            sp_for_options = {"type": "file", "path": str(sp_tmpfile)}
+
         options_kwargs: dict[str, Any] = {
-            "system_prompt": system_prompt,
+            "system_prompt": sp_for_options,
             "max_turns": self._config.max_turns,
             "permission_mode": "bypassPermissions",
             "cli_path": self._config.cli_path,
@@ -170,12 +186,23 @@ class ClaudeSubscriptionClient:
                     "• CLI не залогинен в текущей сессии — выполните `claude login`.\n"
                     "• SDK использует bundled CLI вместо системного — задайте "
                     "POV_CLAUDE_CLI_PATH= путь к вашему `claude` (см. `where claude`).\n"
+                    "• Длинный system_prompt — должен передаваться файлом "
+                    "(SDK-режим SystemPromptFile); если этого не произошло — "
+                    "сообщи issue.\n"
                     "• На старте Windows-процесса не хватает default-таймаута 120s "
                     "— увеличьте через POV_CLAUDE_LOAD_TIMEOUT_MS.\n"
                     f"Текущий cli_path: {self._config.cli_path or '<не задан>'}; "
-                    f"load_timeout_ms: {self._config.load_timeout_ms}."
+                    f"load_timeout_ms: {self._config.load_timeout_ms}; "
+                    f"system_prompt_size: {len(system_prompt)} chars; "
+                    f"system_prompt_mode: {'file' if sp_tmpfile else 'inline'}."
                 ) from exc
             raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
+        finally:
+            if sp_tmpfile is not None:
+                try:
+                    sp_tmpfile.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return "".join(chunks)
 
     @staticmethod
@@ -223,6 +250,35 @@ def _resolve_cli_path() -> str | None:
         return override
     found = shutil.which("claude")
     return found  # может быть None — это OK, обработаем в run-time
+
+
+# Порог, после которого system_prompt пишем в файл и передаём через
+# SystemPromptFile вместо --system-prompt <text> CLI-аргумента.
+# Windows CreateProcess лимит ~32K на ВЕСЬ command-line; нам нужен
+# запас на остальные args (cli flags, model name и т.п.).
+# 8K — безопасно: real system_prompt'ы у нас обычно 4-12K, мелкие test
+# вызовы (~50 chars) уйдут inline.
+_SYSTEM_PROMPT_FILE_THRESHOLD_CHARS = 8000
+
+
+def _write_temp_prompt(text: str) -> Path:
+    """Записать system_prompt во временный UTF-8 файл и вернуть путь.
+
+    Файл будет удалён в finally блока вызывающего кода (см. _collect).
+    Используем delete=False, потому что мы держим путь, а не handle —
+    Windows иначе залочит файл от CLI-subprocess'а.
+    """
+    fd, path = tempfile.mkstemp(prefix="pov_claude_sysprompt_", suffix=".txt", text=False)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return Path(path)
 
 
 def _resolve_load_timeout_ms() -> int:

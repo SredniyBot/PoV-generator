@@ -42,11 +42,6 @@ export function LlmSettingsPage() {
     <div className="llm-settings">
       <header className="llm-settings__header">
         <h1>Настройки LLM</h1>
-        <p>
-          Подключите источники моделей, проверьте, что они работают, и назначьте, какие модели
-          использовать в каких сценариях. Менеджеры проектов на эту страницу не заходят — они
-          работают с дефолтами, которые здесь настроены.
-        </p>
       </header>
 
       <div className="llm-settings__tabs">
@@ -127,7 +122,6 @@ function ProvidersTab() {
   return (
     <div>
       <div className="llm-settings__row-head">
-        <span>Подключено источников: {providers.length}</span>
         <button type="button" className="btn btn--primary" onClick={() => setShowForm(true)}>
           <Plus size={14} /> Подключить источник
         </button>
@@ -135,9 +129,7 @@ function ProvidersTab() {
 
       {providers.length === 0 ? (
         <div className="llm-settings__empty">
-          <p>
-            Нет ни одного подключения. Без них workflow не запустится — модель будет некому отдать промпт.
-          </p>
+          <p>Нет подключений. Workflow не запустится без них.</p>
         </div>
       ) : (
         <ul className="llm-settings__list">
@@ -310,9 +302,9 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
           value={providerType}
           onChange={(e) => setProviderType(e.target.value as ProviderType)}
         >
-          <option value="anthropic">Anthropic API (ключ от Anthropic)</option>
-          <option value="openrouter">OpenRouter (агрегатор)</option>
-          <option value="claude_cli">Claude CLI (подписка через локальный `claude`)</option>
+          <option value="anthropic">Anthropic API</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="claude_cli">Claude CLI</option>
         </select>
       </label>
 
@@ -322,7 +314,7 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
           type="text"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="напр. «Anthropic prod» или «OpenRouter dev»"
+          placeholder="напр. Anthropic prod"
           required
         />
       </label>
@@ -339,16 +331,11 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
             required
           />
         </label>
-      ) : (
-        <p className="llm-form__note">
-          CLI работает через локальный <code>claude</code> и авторизуется через{" "}
-          <code>claude login</code>. API-key не нужен.
-        </p>
-      )}
+      ) : null}
 
       {providerType === "openrouter" ? (
         <label>
-          Base URL <span className="llm-form__optional">(необязательно)</span>
+          Base URL <span className="llm-form__optional">(опционально)</span>
           <input
             type="text"
             value={baseUrl}
@@ -368,11 +355,6 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
           {createMutation.isPending ? <Loader2 size={14} className="spin" /> : null} Сохранить
         </button>
       </div>
-
-      <p className="llm-form__hint">
-        После сохранения нажмите «Проверить» у созданного источника — система пошлёт минимальный
-        test-запрос.
-      </p>
     </form>
   );
 }
@@ -427,7 +409,7 @@ function ModelsTab() {
   return (
     <div>
       <div className="llm-settings__row-head">
-        <span>Моделей в каталоге: {models.length}</span>
+        <span />
         <button
           type="button"
           className="btn btn--ghost"
@@ -440,7 +422,7 @@ function ModelsTab() {
 
       {models.length === 0 ? (
         <div className="llm-settings__empty">
-          <p>Каталог пуст — сначала подключите хотя бы один источник на вкладке «Источники».</p>
+          <p>Каталог пуст. Подключите источник на вкладке «Источники».</p>
         </div>
       ) : (
         <ul className="llm-settings__list">
@@ -512,11 +494,6 @@ function ModelRow({
     <li className="llm-row">
       <div className="llm-row__main">
         <strong>{entry.model_name}</strong>
-        <span className="llm-row__sub">
-          {entry.routings.length === 1 && entry.routings[0]
-            ? `через ${entry.routings[0].connection_display_name}`
-            : `${entry.routings.length} источника — порядок задаёт приоритет`}
-        </span>
         <ol className="llm-row__routings">
           {entry.routings.map((r, idx) => {
             const isFirst = idx === 0;
@@ -618,9 +595,6 @@ function AddCustomModelForm({
       }}
     >
       <h3>Добавить кастомную модель</h3>
-      <p className="llm-form__note">
-        Используется, если нужной модели нет в стандартном каталоге провайдера.
-      </p>
 
       <label>
         Источник
@@ -711,11 +685,7 @@ function AssignmentsTab() {
   return (
     <div>
       <div className="llm-settings__row-head">
-        <p className="llm-settings__hint">
-          Какая модель используется в каком сценарии. Менеджеры проектов не выбирают модели
-          на лету — они идут через эти дефолты. Можно вернуться к рекомендуемым значениям
-          одной кнопкой.
-        </p>
+        <span />
         <button
           type="button"
           className="btn btn--ghost"
@@ -787,12 +757,6 @@ function AssignmentsTab() {
               })}
             </tbody>
           </table>
-          <p className="llm-settings__hint" style={{ marginTop: 12 }}>
-            Колонка «Куда пойдёт» показывает реально выбранный маршрут на
-            момент запуска. Это значение пересчитывается из БД каждый раз,
-            когда пайплайн обращается к LLM — изменения здесь применяются
-            мгновенно, без перезапуска сервиса.
-          </p>
         </>
       )}
     </div>
