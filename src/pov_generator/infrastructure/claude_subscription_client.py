@@ -122,8 +122,28 @@ class ClaudeSubscriptionClient:
             + json.dumps(schema, ensure_ascii=False, indent=2)
             + "\n\nНе добавляй пояснений вне JSON. Не используй markdown-обёртку."
         )
-        text = asyncio.run(self._collect(system_prompt, full_prompt))
-        return self._extract_json(text)
+        # Retry с экспоненциальным backoff для транзиентных сбоев CLI.
+        # Типичные транзиенты: "Command failed with exit code 1" (CLI вышел
+        # без явной причины), "Control request timeout" (subprocess завис на
+        # старте). Эти ошибки повторяются ~раз на 5-10 запусков —
+        # сервер/процесс «отваливается», следующий вызов через 1-3 сек
+        # обычно проходит. Без retry падает вся pipeline.
+        attempts = max(int(os.environ.get("POV_CLAUDE_MAX_RETRIES", "3")), 1)
+        last_exc: ConflictError | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                text = asyncio.run(self._collect(system_prompt, full_prompt))
+                return self._extract_json(text)
+            except ConflictError as exc:
+                if not _is_transient_cli_error(str(exc)) or attempt == attempts:
+                    raise
+                last_exc = exc
+                # 1s, 2s, 4s, ... backoff
+                import time as _time
+                _time.sleep(2 ** (attempt - 1))
+        # Недостижимо — последний attempt в except поднимает.
+        assert last_exc is not None
+        raise last_exc
 
     async def _collect(self, system_prompt: str, user_prompt: str) -> str:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
@@ -196,6 +216,16 @@ class ClaudeSubscriptionClient:
                     "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (мс).\n"
                     f"Диагностика: cli_path={self._config.cli_path or '<не задан>'}; "
                     f"system_prompt={len(system_prompt)} chars (file mode)."
+                ) from exc
+            if "Command failed with exit code" in msg:
+                raise ConflictError(
+                    "Claude CLI завершился с ошибкой (exit code != 0). Это часто "
+                    "транзиентный сбой подписочного API или процесса. После 3 retry "
+                    "ничего не помогло. Возможные причины:\n"
+                    "• Временный сбой claude.ai (5xx) — повторите через минуту.\n"
+                    "• Превышен rate-limit подписки.\n"
+                    "• Антивирус прибивает CLI subprocess.\n"
+                    f"Диагностика: {msg[:200]}"
                 ) from exc
             raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
         finally:
@@ -292,6 +322,34 @@ def _resolve_load_timeout_ms() -> int:
         return max(int(raw), 60_000)  # минимум 60s — SDK всё равно округлит до 60.
     except (TypeError, ValueError):
         return 3_600_000
+
+
+def _is_transient_cli_error(message: str) -> bool:
+    """Эвристика: ошибка похожа на транзиентный сбой CLI/подписки?
+
+    На таких ошибках имеет смысл retry с backoff:
+    * "Command failed with exit code N" — CLI вышел без явной причины
+      (типично для проблем с claude.ai сервером или процессом).
+    * "Control request timeout: initialize" — subprocess завис на старте.
+    * "Process exited" / "Broken pipe" — обрыв связи.
+
+    НЕ retry'им (не транзиентно):
+    * "Не задан POV_..." — конфигурация пустая.
+    * "У connection пустой API key" — нужен ввод от админа.
+    * "Не удалось извлечь JSON" — ответ модели не парсится, retry не поможет.
+    """
+    if not message:
+        return False
+    msg = message.lower()
+    transient_markers = (
+        "command failed with exit code",
+        "control request timeout",
+        "process exited",
+        "broken pipe",
+        "connection reset",
+        "timed out",
+    )
+    return any(marker in msg for marker in transient_markers)
 
 
 def _apply_initialize_timeout_env() -> None:
