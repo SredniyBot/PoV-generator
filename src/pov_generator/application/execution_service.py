@@ -11,14 +11,7 @@ from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
-from ..infrastructure.claude_sdk_client import ClaudeSdkClient, model_for_complexity
-from ..infrastructure.claude_subscription_client import (
-    ClaudeSubscriptionClient,
-)
-from ..infrastructure.claude_subscription_client import (
-    model_for_complexity as model_for_complexity_subscription,
-)
-from ..infrastructure.openrouter_client import OpenRouterClient
+from ..infrastructure.llm import LLMProvider, LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
 from .complexity_selector_service import select_complexity
@@ -42,9 +35,16 @@ class ExecutionBundle:
 
 
 class ExecutionService:
-    def __init__(self, runtime: SqliteRuntime, context_service: ContextService) -> None:
+    def __init__(
+        self,
+        runtime: SqliteRuntime,
+        context_service: ContextService,
+        *,
+        llm_registry: LLMProviderRegistry | None = None,
+    ) -> None:
         self._runtime = runtime
         self._context_service = context_service
+        self._llm = llm_registry or LLMProviderRegistry()
 
     def execute_task(
         self,
@@ -66,19 +66,51 @@ class ExecutionService:
         if len(artifact_roles) != 1:
             raise ConflictError(f"Сейчас поддерживается ровно один выходной артефакт на шаблон: {template.ref.as_string()}")
         artifact_role = artifact_roles[0]
-        active_provider = provider or os.environ.get("POV_EXECUTION_PROVIDER", "stub")
+        # `provider` параметр — ЯВНЫЙ override (CLI/тест). env-переменные
+        # больше НЕ управляют выбором провайдера для основного workflow —
+        # они только bootstrap-помощь для первичного создания connections
+        # в `ensure_default_settings`. Это устранило баг, когда UI шлёт
+        # provider="" (новая семантика) → env-переменная заставляла идти
+        # через legacy путь openrouter и валиться на отсутствующем ключе.
+        active_provider = provider
         # W3.2: pre-selector сложности задачи. Default — off, в этом случае
         # возвращает declared `template.complexity`. С `POV_COMPLEXITY_SELECTOR=on`
         # или `=stub` оценка может перезаписать сложность по фактическому
         # контексту проекта (число активных domain packs, бизнес-запрос и т.д.).
-        complexity_selection = select_complexity(template=template, state=state)
+        complexity_selection = select_complexity(template=template, state=state, llm_registry=self._llm)
         complexity_value = complexity_selection.complexity
-        if active_provider == "claude_sdk":
-            active_model = model or model_for_complexity(complexity_value)
-        elif active_provider == "claude_subscription":
-            active_model = model or model_for_complexity_subscription(complexity_value)
+
+        # Резолв LLM-провайдера. Три пути:
+        # 1. ``stub`` или structural-merge — не LLM-вызов, провайдер не нужен.
+        # 2. Явное имя провайдера (claude_sdk / openrouter / ...) — legacy
+        #    env-based путь, оставлен для тестов и обратной совместимости CLI.
+        # 3. Иначе (provider=None) — резолв через settings-store по purpose.
+        #    Это **основной** путь: модель и connection определяются
+        #    конфигурацией системы (Settings → Default Models).
+        llm_provider: LLMProvider | None = None
+        non_llm_path = active_provider == "stub" or (
+            template.merge is not None and template.merge.strategy == "structural"
+        )
+        if non_llm_path:
+            active_model = model or _fallback_model_for_meta(active_provider or "stub", complexity_value)
+        elif active_provider in {"openrouter", "claude_sdk", "claude_subscription"}:
+            # Legacy: явное имя провайдера, кредиты из env.
+            llm_provider = self._llm.get(
+                provider=active_provider,
+                model=model,
+                complexity=complexity_value,
+            )
+            active_model = llm_provider.model or ""
         else:
-            active_model = model or os.environ.get("POV_OPENROUTER_MODEL", "openai/gpt-4.1-mini")
+            # Новый путь: модель из settings-store, connection выбирается
+            # автоматически по приоритету routings.
+            llm_provider = self._llm.resolve_for_purpose(
+                "execution",
+                complexity=complexity_value,
+                override_model=model,
+            )
+            active_provider = llm_provider.name
+            active_model = llm_provider.model or ""
         active_methodology: MethodologyPackSpec | None = None
         for ref in state.process.active_methodology_pack_records.keys():
             try:
@@ -128,13 +160,13 @@ class ExecutionService:
             # на primary с накопительным контекстом). Mode читается из
             # methodology_pack; для задач без активной методологии всегда
             # single_call.
+            assert llm_provider is not None, "llm_provider должен быть собран для LLM-провайдеров"
             if (
                 active_methodology is not None
                 and active_methodology.stage_execution_mode == "per_stage_cot"
             ):
                 payload, live_reasoning = self._execute_per_stage_cot(
-                    provider=active_provider,
-                    model=active_model,
+                    llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
                     methodology=active_methodology,
@@ -143,8 +175,7 @@ class ExecutionService:
                 )
             else:
                 payload, live_reasoning = self._execute_single_call(
-                    provider=active_provider,
-                    model=active_model,
+                    llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
                     methodology=active_methodology,
@@ -232,6 +263,11 @@ class ExecutionService:
                 reasoning=reasoning_payload,
                 methodology_trace=methodology_trace_payload,
                 used_position_ids=context_manifest.used_position_ids,
+                # Уверенность вынесена из тела артефакта в метаданные.
+                # Берём из payload['confidence'] для backward-compat (LLM
+                # часто возвращает там, а task-промпт это всё ещё допускает),
+                # клампим в допустимый диапазон [0, 1].
+                overall_confidence=_extract_overall_confidence(payload),
             ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
@@ -371,36 +407,10 @@ class ExecutionService:
 
     # ---- LLM execution dispatch ------------------------------------------
 
-    def _chat_json(
-        self,
-        *,
-        provider: str,
-        model: str,
-        system_prompt: str,
-        user_prompt: str,
-        schema: dict,
-    ) -> dict:
-        """Единая точка вызова LLM, чтобы execute_task / per-stage / primary
-        ходили одной дорогой и не плодили switch'ей по провайдеру."""
-        if provider == "openrouter":
-            return OpenRouterClient.from_env().chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        if provider == "claude_sdk":
-            return ClaudeSdkClient.from_env(model=model).chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        if provider == "claude_subscription":
-            return ClaudeSubscriptionClient.from_env(model=model).chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
-            )
-        raise ConflictError(f"Неподдерживаемый provider: {provider}")
-
     def _execute_single_call(
         self,
         *,
-        provider: str,
-        model: str,
+        llm: LLMProvider,
         base_system_prompt: str,
         base_user_prompt: str,
         methodology: MethodologyPackSpec | None,
@@ -423,13 +433,11 @@ class ExecutionService:
                 + "\n\n"
                 + self._methodology_system_section(methodology, complexity)
             )
-            full_payload = self._chat_json(
-                provider=provider, model=model,
+            full_payload = llm.chat_json(
                 system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
             )
             return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"))
-        full_payload = self._chat_json(
-            provider=provider, model=model,
+        full_payload = llm.chat_json(
             system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
         )
         return (full_payload, None)
@@ -437,8 +445,7 @@ class ExecutionService:
     def _execute_per_stage_cot(
         self,
         *,
-        provider: str,
-        model: str,
+        llm: LLMProvider,
         base_system_prompt: str,
         base_user_prompt: str,
         methodology: MethodologyPackSpec,
@@ -465,8 +472,7 @@ class ExecutionService:
                 stage=stage,
                 previous_outputs=stage_outputs,
             )
-            stage_result = self._chat_json(
-                provider=provider, model=model,
+            stage_result = llm.chat_json(
                 system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
             )
             stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
@@ -482,8 +488,7 @@ class ExecutionService:
             + "\n\n### Reasoning через стадии (per-stage CoT):\n"
             + json_dumps(stage_outputs)
         )
-        primary_payload = self._chat_json(
-            provider=provider, model=model,
+        primary_payload = llm.chat_json(
             system_prompt=primary_system, user_prompt=primary_user, schema=primary_schema,
         )
         return (primary_payload, stage_outputs)
@@ -658,7 +663,15 @@ class ExecutionService:
             "Не используй мета-формулировки про сам процесс ТЗ («система должна "
             "формировать структурированное ТЗ»). Пиши про продукт, не про процесс.\n\n"
             "Не пиши «возможно», «при необходимости», «по усмотрению» там, где у "
-            "тебя есть позиция. Если позиции нет — выводи в open_questions.\n"
+            "тебя есть позиция. Если позиции нет — выводи в open_questions.\n\n"
+            "НЕ ИСПОЛЬЗУЙ ЭМОДЗИ И ПИКТОГРАММЫ. В тексте артефакта (включая "
+            "заголовки разделов, маркеры списков, статусы, бейджи) запрещены "
+            "🎯 ⚠ ✅ ❌ 🚀 💡 📌 📈 🔥 ✨ и все остальные Unicode-эмодзи / "
+            "символы из ranges U+1F300–U+1FAFF, U+2600–U+27BF, U+2700–U+27BF. "
+            "Деловой документ — текст и числа, не иконки. Визуальные акценты "
+            "только структурой (заголовки, таблицы, списки), не картинками. "
+            "Это правило строгое: ни в одном поле артефакта (заголовки, items, "
+            "rationale, descriptions) эмодзи быть не должно.\n"
             "</style_bans>\n\n"
 
             "<pre_flight_check>\n"
@@ -673,7 +686,12 @@ class ExecutionService:
             "подкреплён контекстом? Иначе — null / «требует уточнения» / "
             "отметка assumption.\n\n"
             "4. ACTIVE VOICE. Пассивные конструкции переведены в активный залог "
-            "там, где это уместно.\n"
+            "там, где это уместно.\n\n"
+            "5. EMOJI SCAN. Просканируй все строковые поля артефакта на "
+            "Unicode-эмодзи / пиктограммы. Любой найденный — удали без замены "
+            "(визуальная функция эмодзи берётся на себя структурой документа). "
+            "Это касается заголовков разделов, маркеров, items списков, "
+            "статусов — везде только текст.\n"
             "</pre_flight_check>\n\n"
 
             "<output_contract>\n"
@@ -1284,3 +1302,43 @@ class ExecutionService:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+
+def _extract_overall_confidence(payload: dict[str, object]) -> float | None:
+    """Достать `confidence` из payload и привести к диапазону [0, 1].
+
+    Уверенность — это метаданные артефакта (см. ArtifactMetadata.
+    overall_confidence), а не часть бизнес-содержимого. LLM по
+    инерции продолжает возвращать число в payload['confidence'],
+    и task-промпты допускают это для backward-compat. Тут мы её
+    извлекаем, чтобы дальше она жила в единственном месте — в
+    метаданных. Если confidence нет / не число / NaN — возвращаем None
+    (метаданные допускают отсутствующее значение).
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("confidence")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if value != value:  # NaN check
+        return None
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def _fallback_model_for_meta(provider: str, complexity: str | None) -> str:
+    """Имя модели, которое попадёт в metadata артефакта, если LLM-вызова
+    не было (stub, structural merge).
+
+    Для stub / structural — чисто косметическая метка; UI её показывает в
+    карточке артефакта. Возвращаем пустую строку или имя провайдера, чтобы
+    в UI не висело устаревшее значение реальной модели.
+    """
+    del complexity  # не используется — модель определяется реальным LLM
+    if provider == "stub":
+        return "stub"
+    return provider

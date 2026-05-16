@@ -37,10 +37,7 @@ from ..common.errors import ConflictError
 from ..common.serialization import json_dumps
 from ..domain.project_state import ProjectState
 from ..domain.registry import TemplateSpec
-from ..infrastructure.claude_sdk_client import ClaudeSdkClient
-from ..infrastructure.claude_sdk_client import model_for_complexity as claude_sdk_model_for_complexity
-from ..infrastructure.claude_subscription_client import ClaudeSubscriptionClient
-from ..infrastructure.openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..infrastructure.llm import LLMProviderRegistry
 
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 
@@ -71,9 +68,15 @@ def select_complexity(
     template: TemplateSpec,
     state: ProjectState,
     open_clarification_count: int = 0,
+    llm_registry: "LLMProviderRegistry | None" = None,
 ) -> ComplexitySelection:
     """Главная точка входа. Решает, нужно ли вообще звать selector,
-    и какой провайдер использовать."""
+    и какой провайдер использовать.
+
+    ``llm_registry`` опционально — если передан и в нём есть привязка к
+    settings-store, selector пойдёт через ``resolve_for_purpose
+    ("complexity_selector")``. Без store будет fallback на env.
+    """
     declared = _coerce_complexity(template.complexity) or "standard"
     mode = (os.environ.get("POV_COMPLEXITY_SELECTOR") or "off").strip().lower()
     if mode in {"off", "false", "0", ""}:
@@ -96,7 +99,13 @@ def select_complexity(
 
     # mode == "on" (или любой непустой провайдерный override)
     try:
-        return _llm_select(template=template, declared=declared, context=selector_context, mode=mode)
+        return _llm_select(
+            template=template,
+            declared=declared,
+            context=selector_context,
+            mode=mode,
+            llm_registry=llm_registry,
+        )
     except ConflictError:
         # LLM-провайдер недоступен — fallback на declared.
         return ComplexitySelection(
@@ -147,6 +156,7 @@ def _llm_select(
     declared: ComplexityLevel,
     context: ComplexitySelectorContext,
     mode: str,
+    llm_registry: "LLMProviderRegistry | None" = None,
 ) -> ComplexitySelection:
     """Зовёт LLM (предпочтительно haiku — самая дешёвая модель). Возвращает
     структурированный JSON или ConflictError, если провайдер недоступен."""
@@ -184,28 +194,27 @@ def _llm_select(
         },
     }
 
-    if provider == "openrouter":
-        api_key = os.environ.get("POV_OPENROUTER_API_KEY")
-        if not api_key:
-            raise ConflictError("POV_OPENROUTER_API_KEY не задан для complexity-selector.")
-        client = OpenRouterClient(
-            OpenRouterConfig(
-                api_key=api_key,
-                model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL") or "openai/gpt-4.1-mini",
-                base_url=os.environ.get("POV_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            )
+    # Резолв провайдера:
+    # * если есть явный override провайдера (POV_COMPLEXITY_SELECTOR_PROVIDER)
+    #   — legacy путь через registry.get с env-кредитами;
+    # * иначе — resolve_for_purpose через settings-store (если registry
+    #   привязан к store), иначе env.
+    registry = llm_registry or LLMProviderRegistry()
+    explicit_model = os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL")
+    explicit_provider = os.environ.get("POV_COMPLEXITY_SELECTOR_PROVIDER")
+    if explicit_provider:
+        llm = registry.get(
+            provider=provider,
+            model=explicit_model,
+            complexity="trivial",
         )
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-    elif provider == "claude_sdk":
-        client = ClaudeSdkClient.from_env(
-            model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL") or claude_sdk_model_for_complexity("trivial"),
-        )
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
-    elif provider == "claude_subscription":
-        client = ClaudeSubscriptionClient.from_env(model=os.environ.get("POV_COMPLEXITY_SELECTOR_MODEL"))
-        payload = client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
     else:
-        raise ConflictError(f"Неподдерживаемый provider для complexity-selector: {provider}")
+        llm = registry.resolve_for_purpose(
+            "complexity_selector",
+            complexity="trivial",
+            override_model=explicit_model,
+        )
+    payload = llm.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
 
     raw_complexity = str(payload.get("complexity") or declared)
     chosen = _coerce_complexity(raw_complexity) or declared

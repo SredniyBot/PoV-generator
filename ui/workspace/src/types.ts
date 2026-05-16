@@ -577,3 +577,47 @@ export interface ProjectFailurePinsView {
   pins: FailurePinView[];
   total_count: number;
 }
+
+// --- LLM Settings ----------------------------------------------------------
+
+export type ProviderType = "openrouter" | "anthropic" | "claude_cli";
+
+export interface ProviderConnectionView {
+  connection_id: string;
+  provider_type: ProviderType;
+  display_name: string;
+  has_api_key: boolean;
+  api_key_preview: string;
+  extras: Record<string, string>;
+  source: string;
+  created_at: string;
+  last_tested_at: string | null;
+  last_test_status: "untested" | "ok" | "error";
+  last_test_message: string;
+}
+
+export interface ModelRoutingView {
+  routing_id: string;
+  connection_id: string;
+  model_name: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export interface ModelCatalogEntry {
+  model_name: string;
+  routings: Array<
+    ModelRoutingView & {
+      connection_display_name: string;
+      provider_type: ProviderType;
+    }
+  >;
+}
+
+export interface TestResultView {
+  status: "ok" | "error";
+  message: string;
+  latency_ms: number;
+  sample_response: string | null;
+  tested_at: string;
+}

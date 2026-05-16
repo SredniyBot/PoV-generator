@@ -152,9 +152,16 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;  /* список тянется, footer прижимается к низу */
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+}
+
+.project-rail__footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .project-item {
@@ -3963,4 +3970,469 @@ code {
   font-size: 0.85rem;
 }
 
+/* === LLM Settings page === */
 
+.rail-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.rail-link:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.llm-settings {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+.llm-settings__header {
+  margin-bottom: 24px;
+}
+
+.llm-settings__header h1 {
+  font-size: 22pt;
+  margin: 0 0 8px 0;
+}
+
+.llm-settings__header p {
+  color: var(--text-secondary);
+  max-width: 720px;
+}
+
+.llm-settings__tabs {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  margin-bottom: 20px;
+}
+
+.llm-settings__tab {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 10px;
+  padding: 9px 16px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.llm-settings__tab--active {
+  background: rgba(95, 167, 184, 0.16);
+  color: var(--text-primary);
+}
+
+.llm-settings__row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.llm-settings__hint {
+  color: var(--text-secondary);
+  margin: 0;
+  max-width: 560px;
+}
+
+.llm-settings__empty {
+  padding: 24px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.llm-settings__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.llm-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.llm-row__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.llm-row__sub {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.llm-row__hint {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.llm-row__hint--ok { color: #6fc28a; }
+.llm-row__hint--err { color: #e36b6b; }
+
+.llm-row__sublist {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.llm-row__sublist li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Список маршрутов модели — упорядоченный, видно primary/backup. */
+.llm-row__routings {
+  list-style: none;
+  margin: 8px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-row__routing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+}
+
+.llm-row__routing-rank {
+  flex: 0 0 auto;
+  min-width: 60px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.llm-row__routing-rank--primary {
+  background: rgba(120, 200, 140, 0.16);
+  color: #7fc99c;
+}
+
+.llm-row__routing-name {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+
+.llm-row__routing-name em {
+  font-style: normal;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.llm-row__routing-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.llm-row__routing-actions .btn-inline {
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.llm-row__routing-actions .btn-inline:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.llm-row__routing-actions .btn-inline:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Подсвечиваем строку с потерянной моделью в таблице назначений. */
+.llm-table__row--warn td {
+  background: rgba(232, 128, 128, 0.06);
+}
+
+/* Колонка «Куда пойдёт» — diagnostic-резолва. */
+.llm-diag-cell {
+  font-size: 12px;
+}
+
+.llm-diag {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.llm-diag--ok {
+  border-left: 2px solid #7fc99c;
+}
+
+.llm-diag--err {
+  border-left: 2px solid #e88080;
+  color: #e88080;
+}
+
+.llm-diag--neutral {
+  color: var(--text-tertiary);
+}
+
+.llm-diag strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.llm-diag__via {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.llm-diag__fallback {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.llm-row__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.llm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.llm-badge--ok { background: rgba(120, 200, 140, 0.18); color: #7fc99c; }
+.llm-badge--err { background: rgba(220, 100, 100, 0.18); color: #e88080; }
+.llm-badge--neutral { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
+
+.llm-form {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.llm-form h3 { margin: 0; font-size: 16px; }
+
+/* Поля формы — переиспользуем общую дизайн-систему .field. */
+.llm-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.llm-form input,
+.llm-form select {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  padding: 11px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.llm-form input:focus,
+.llm-form select:focus {
+  border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+/* Кастомная стрелка у select'ов — как в .field. */
+.llm-form select,
+.llm-table select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 42px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(215, 221, 227, 0.88) 50%),
+    linear-gradient(135deg, rgba(215, 221, 227, 0.88) 50%, transparent 50%);
+  background-position:
+    calc(100% - 19px) calc(50% - 3px),
+    calc(100% - 13px) calc(50% - 3px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.llm-form select option,
+.llm-table select option {
+  background: var(--surface-secondary, #1c222b);
+  color: var(--text-primary);
+}
+
+.llm-form__note {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.llm-form__optional {
+  color: var(--text-disabled);
+  font-size: 11px;
+}
+
+.llm-form__error {
+  color: #e88080;
+  font-size: 13px;
+}
+
+.llm-form__hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 0;
+}
+
+.llm-form__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.llm-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.llm-table th,
+.llm-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 14px;
+}
+
+.llm-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.llm-table select {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.llm-table select:focus {
+  border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn:hover { background: rgba(255, 255, 255, 0.08); }
+
+.btn--primary {
+  background: rgba(95, 167, 184, 0.22);
+  border-color: rgba(95, 167, 184, 0.4);
+}
+
+.btn--ghost { background: transparent; }
+.btn--danger { color: #e88080; }
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-inline {
+  background: transparent;
+  border: 0;
+  color: var(--text-disabled);
+  cursor: pointer;
+}
+
+.btn-inline:hover { color: #e88080; }
+
+.spin {
+  animation: llm-spin 0.8s linear infinite;
+}
+
+@keyframes llm-spin {
+  to { transform: rotate(360deg); }
+}

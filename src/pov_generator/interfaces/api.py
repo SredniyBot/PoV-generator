@@ -14,6 +14,10 @@ from ..application.execution_service import ExecutionService
 from ..application.pdf_export import render_artifact_pdf
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
+from ..application.provider_settings_service import (
+    PURPOSE_LABELS_FOR_UI,
+    ProviderSettingsService,
+)
 from ..application.registry_service import RegistryService
 from ..application.validation_service import ValidationService
 from ..application.workflow_runner_service import WorkflowRunnerService
@@ -22,9 +26,12 @@ from ..application.workspace_catalog import WorkspaceCatalog
 from ..application.workspace_command_service import WorkspaceCommandService
 from ..application.workspace_query_service import WorkspaceQueryService
 from ..common.env import load_repo_env
-from ..common.errors import PovGeneratorError
+from ..common.errors import PovGeneratorError, ValidationError
 from ..common.serialization import to_primitive, utc_now_iso
+from ..domain.llm_settings import ALL_PURPOSES
 from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.llm import LLMProviderRegistry
+from ..infrastructure.llm_settings_store import SqliteSettingsStore
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -43,11 +50,36 @@ def create_app(
 
     registry_service = RegistryService(FilesystemRegistryLoader(resolved_repo_root / "templates"))
     runtime = SqliteRuntime()
-    clarification_service = ClarificationService(runtime)
+    # Persistence слой настроек LLM-провайдеров (system-wide, не per-workspace).
+    settings_store = SqliteSettingsStore(resolved_runtime_root)
+    # Registry — единственное место в коде, где живёт switch по имени
+    # провайдера. Привязан к settings_store, чтобы resolve_for_purpose работал.
+    llm_registry = LLMProviderRegistry(settings_store=settings_store)
+    # Сервис управления настройками: CRUD + test_connection / test_model +
+    # bootstrap из env.
+    provider_settings_service = ProviderSettingsService(settings_store, llm_registry=llm_registry)
+    # Первичный bootstrap: если БД пуста и в env есть кредиты — auto-import.
+    # Идемпотентно — при наличии connections ничего не делает.
+    try:
+        provider_settings_service.ensure_default_settings()
+    except Exception:  # noqa: BLE001
+        # Не критично: settings можно настроить через UI позже.
+        pass
+
+    # Sync known-models: добавляем routings для моделей, которые появились
+    # в новом релизе (KNOWN_MODELS_BY_PROVIDER пополнили), но в старых
+    # connections их ещё нет. Например: opus 4.7 → автоматически
+    # появится в каталоге без ручных действий админа.
+    try:
+        provider_settings_service.sync_all_connections()
+    except Exception:  # noqa: BLE001
+        pass
+
+    clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service)
+    execution_service = ExecutionService(runtime, context_service, llm_registry=llm_registry)
     validation_service = ValidationService(runtime, clarification_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     workflow_runner_service = WorkflowRunnerService(
@@ -55,7 +87,7 @@ def create_app(
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
-    domain_pack_selection_service = DomainPackSelectionService()
+    domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
     command_service = WorkspaceCommandService(
         catalog,
         registry_service,
@@ -68,6 +100,8 @@ def create_app(
 
     app.state.query_service = query_service
     app.state.command_service = command_service
+    app.state.provider_settings_service = provider_settings_service
+    app.state.llm_registry = llm_registry
     app.state.poll_interval = websocket_poll_interval
 
     # ---- Startup recovery: orphan runs/tasks от прошлых процессов -------
@@ -144,6 +178,175 @@ def create_app(
             "time": utc_now_iso(),
             "runtime_root": str(resolved_runtime_root),
         }
+
+    # ----- Settings: LLM-провайдеры и модели -------------------------------
+    #
+    # Управление через UI: см. /settings в фронте.
+    # Один источник истины — `SqliteSettingsStore` (`<runtime>/settings.db`).
+    # API-сервис `ProviderSettingsService` обёртывает store и добавляет
+    # автозаполнение routings + реальные test-вызовы.
+
+    @app.get("/api/settings/purposes")
+    def settings_list_purposes() -> Any:
+        """Каталог сценариев (purpose) для UI Default Models tab."""
+        return [
+            {"id": purpose, "label": PURPOSE_LABELS_FOR_UI.get(purpose, purpose)}
+            for purpose in ALL_PURPOSES
+        ]
+
+    @app.get("/api/settings/providers")
+    def settings_list_providers() -> Any:
+        return [_provider_connection_to_dict(c) for c in provider_settings_service.list_connections()]
+
+    @app.post("/api/settings/providers")
+    def settings_create_provider(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        try:
+            connection = provider_settings_service.add_connection(
+                provider_type=_required_str(payload, "provider_type"),  # type: ignore[arg-type]
+                display_name=_required_str(payload, "display_name"),
+                api_key=_optional_str(payload, "api_key"),
+                extras=_extract_extras(payload.get("extras")),
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _provider_connection_to_dict(connection)
+
+    @app.put("/api/settings/providers/{connection_id}")
+    def settings_update_provider(
+        connection_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        try:
+            updated = provider_settings_service.update_connection(
+                connection_id,
+                display_name=_optional_str(payload, "display_name"),
+                api_key=_optional_str_keep_empty(payload, "api_key"),
+                extras=_extract_extras(payload.get("extras")) if "extras" in payload else None,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=404 if "не найден" in str(exc) else 400, detail=str(exc))
+        return _provider_connection_to_dict(updated)
+
+    @app.delete("/api/settings/providers/{connection_id}")
+    def settings_delete_provider(connection_id: str) -> Any:
+        try:
+            provider_settings_service.delete_connection(connection_id)
+        except ValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {"status": "deleted", "connection_id": connection_id}
+
+    @app.post("/api/settings/providers/{connection_id}/test")
+    def settings_test_provider(
+        connection_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        test_model_name = _optional_str(payload, "model")
+        result = provider_settings_service.test_connection(connection_id, test_model=test_model_name)
+        return _test_result_to_dict(result)
+
+    @app.post("/api/settings/providers/{connection_id}/sync-models")
+    def settings_sync_known_models(connection_id: str) -> Any:
+        """Добавить отсутствующие routings для known-моделей провайдера.
+
+        Используется когда в новом релизе пополнили KNOWN_MODELS_BY_PROVIDER
+        (например, opus 4.7), а connection был создан до этого.
+        """
+        try:
+            added = provider_settings_service.sync_known_routings(connection_id)
+        except ValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {
+            "connection_id": connection_id,
+            "added_count": len(added),
+            "added_models": [r.model_name for r in added],
+        }
+
+    @app.get("/api/settings/models")
+    def settings_list_models() -> Any:
+        return list(provider_settings_service.list_models())
+
+    @app.post("/api/settings/models")
+    def settings_add_model(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        try:
+            routing = provider_settings_service.add_custom_model(
+                connection_id=_required_str(payload, "connection_id"),
+                model_name=_required_str(payload, "model_name"),
+                priority=int(payload.get("priority", 100) or 100),
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {
+            "routing_id": routing.routing_id,
+            "connection_id": routing.connection_id,
+            "model_name": routing.model_name,
+            "priority": routing.priority,
+            "enabled": routing.enabled,
+        }
+
+    @app.put("/api/settings/routings/{routing_id}")
+    def settings_update_routing(
+        routing_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        try:
+            routing = provider_settings_service.update_routing(
+                routing_id,
+                priority=int(payload["priority"]) if "priority" in payload else None,
+                enabled=bool(payload["enabled"]) if "enabled" in payload else None,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {
+            "routing_id": routing.routing_id,
+            "connection_id": routing.connection_id,
+            "model_name": routing.model_name,
+            "priority": routing.priority,
+            "enabled": routing.enabled,
+        }
+
+    @app.delete("/api/settings/routings/{routing_id}")
+    def settings_delete_routing(routing_id: str) -> Any:
+        try:
+            provider_settings_service.delete_routing(routing_id)
+        except ValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {"status": "deleted", "routing_id": routing_id}
+
+    @app.post("/api/settings/models/{model_name:path}/test")
+    def settings_test_model(model_name: str) -> Any:
+        result = provider_settings_service.test_model(model_name=model_name)
+        return _test_result_to_dict(result)
+
+    @app.get("/api/settings/assignments")
+    def settings_list_assignments() -> Any:
+        return [
+            {"purpose": a.purpose, "model_name": a.model_name}
+            for a in provider_settings_service.list_assignments()
+        ]
+
+    @app.put("/api/settings/assignments")
+    def settings_set_assignment(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        try:
+            assignment = provider_settings_service.set_assignment(
+                purpose=_required_str(payload, "purpose"),
+                model_name=_required_str(payload, "model_name"),
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"purpose": assignment.purpose, "model_name": assignment.model_name}
+
+    @app.post("/api/settings/assignments/reset-to-recommended")
+    def settings_reset_assignments() -> Any:
+        applied = provider_settings_service.reset_assignments_to_recommended()
+        return [{"purpose": a.purpose, "model_name": a.model_name} for a in applied]
+
+    @app.get("/api/settings/diagnostics")
+    def settings_diagnostics() -> Any:
+        """Что реально пойдёт в LLM-вызов при текущих настройках.
+
+        Для каждого purpose: имя модели + через какой connection пойдёт
+        + список fallback'ов. Используется в UI как наглядное
+        подтверждение, что переключение модели в Assignments действительно
+        работает.
+        """
+        return list(provider_settings_service.diagnose_resolution())
 
     @app.get("/api/projects")
     def list_projects() -> Any:
@@ -694,6 +897,65 @@ def _required_string_list(values: list[object], key: str) -> list[str]:
             raise PovGeneratorError(f"Каждый элемент поля '{key}' должен быть непустой строкой.")
         normalized.append(value.strip())
     return normalized
+
+
+def _optional_str_keep_empty(payload: dict[str, object], key: str) -> str | None:
+    """Как _optional_str, но допускает пустую строку (для api_key=""→сброс)."""
+    if key not in payload:
+        return None
+    value = payload[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PovGeneratorError(f"Поле '{key}' должно быть строкой.")
+    return value
+
+
+def _extract_extras(raw: object) -> dict[str, str]:
+    """Привести extras-поле к dict[str, str] и обрезать значения."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise PovGeneratorError("Поле 'extras' должно быть объектом.")
+    return {str(k): str(v).strip() for k, v in raw.items() if v is not None}
+
+
+def _provider_connection_to_dict(connection) -> dict[str, object]:
+    """Сериализация ProviderConnection для API. api_key НЕ выводим — только
+    маска и факт наличия."""
+    api_key = connection.credentials.api_key or ""
+    return {
+        "connection_id": connection.connection_id,
+        "provider_type": connection.provider_type,
+        "display_name": connection.display_name,
+        "has_api_key": bool(api_key),
+        "api_key_preview": _mask_secret(api_key),
+        "extras": dict(connection.extras),
+        "source": connection.source,
+        "created_at": connection.created_at,
+        "last_tested_at": connection.last_tested_at,
+        "last_test_status": connection.last_test_status,
+        "last_test_message": connection.last_test_message,
+    }
+
+
+def _mask_secret(secret: str) -> str:
+    """Маска для UI: 'sk-or-v1-d22a0...c945b' → 'sk-…c945b'."""
+    if not secret:
+        return ""
+    if len(secret) <= 8:
+        return "•" * len(secret)
+    return f"{secret[:3]}…{secret[-5:]}"
+
+
+def _test_result_to_dict(result) -> dict[str, object]:
+    return {
+        "status": result.status,
+        "message": result.message,
+        "latency_ms": result.latency_ms,
+        "sample_response": result.sample_response,
+        "tested_at": result.tested_at,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:

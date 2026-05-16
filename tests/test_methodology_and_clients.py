@@ -260,7 +260,10 @@ def test_claude_sdk_client_builds_tool_use_request() -> None:
         )
 
     assert result == expected_payload
-    fake_anthropic_module.Anthropic.assert_called_once_with(api_key="dummy")
+    fake_anthropic_module.Anthropic.assert_called_once()
+    # Конструктор должен получить api_key; timeout — implementation detail.
+    kwargs_anthropic = fake_anthropic_module.Anthropic.call_args.kwargs
+    assert kwargs_anthropic["api_key"] == "dummy"
     fake_client.messages.create.assert_called_once()
     kwargs = fake_client.messages.create.call_args.kwargs
     assert kwargs["model"] == "claude-sonnet-4-6"
@@ -361,23 +364,31 @@ def _build_clarification_service_with_runtime():
 
 
 @pytest.mark.parametrize(
-    "provider_name, client_attr",
-    [
-        ("claude_subscription", "ClaudeSubscriptionClient"),
-        ("claude_sdk", "ClaudeSdkClient"),
-    ],
+    "provider_name",
+    ["claude_subscription", "claude_sdk"],
 )
-def test_clarification_draft_uses_selected_claude_provider(
-    provider_name: str, client_attr: str
-) -> None:
-    """CE11 (LLM-подготовка уточнения) должна работать через claude-провайдеры,
-    а не только через openrouter. Проверяем, что при `provider=<claude...>`
-    сервис вызывает соответствующий client.from_env(...).chat_json(...) с
-    переданными prompt'ами и нашей JSON-схемой."""
+def test_clarification_draft_uses_selected_claude_provider(provider_name: str) -> None:
+    """CE11 (LLM-подготовка уточнения) должна работать через любой LLM-провайдер.
+
+    После рефакторинга на LLMProviderRegistry мокаем не конкретный клиент
+    (`ClaudeSdkClient.from_env`), а сам реестр — это и есть точка
+    интеграции. Контракт: «CE11 берёт у реестра провайдер с нужным именем
+    и вызывает у него chat_json с собранным system/user prompt и JSON-схемой»."""
     from pov_generator.application import clarification_service as cs_module
+    from pov_generator.infrastructure.llm import LLMProviderRegistry
 
     runtime, ServiceCls = _build_clarification_service_with_runtime()
-    service = ServiceCls(runtime, provider=provider_name)
+
+    # Готовим фейковый провайдер, удовлетворяющий протоколу LLMProvider.
+    fake_provider = MagicMock()
+    fake_provider.name = provider_name
+    fake_provider.model = "fake-model"
+    fake_provider.chat_json.return_value = _valid_draft_payload()
+
+    fake_registry = MagicMock(spec=LLMProviderRegistry)
+    fake_registry.get.return_value = fake_provider
+
+    service = ServiceCls(runtime, provider=provider_name, llm_registry=fake_registry)
     candidate = service.candidate_from_question(
         project_id="proj-1",
         source_type="methodology_pack",
@@ -394,16 +405,18 @@ def test_clarification_draft_uses_selected_claude_provider(
         visibility="architectural",
     )
 
-    fake_instance = MagicMock()
-    fake_instance.chat_json.return_value = _valid_draft_payload()
+    draft = service._build_draft(candidate=candidate, context={}, fallback=fallback)
 
-    with patch.object(cs_module, client_attr) as fake_client_class:
-        fake_client_class.from_env.return_value = fake_instance
-        draft = service._build_draft(candidate=candidate, context={}, fallback=fallback)
+    # Реестр был запрошен на нужном провайдере и получил complexity=standard
+    # (CE11 — стандартная задача).
+    fake_registry.get.assert_called_once()
+    registry_kwargs = fake_registry.get.call_args.kwargs
+    assert registry_kwargs["provider"] == provider_name
+    assert registry_kwargs.get("complexity") == "standard"
 
-    fake_client_class.from_env.assert_called_once()
-    fake_instance.chat_json.assert_called_once()
-    kwargs = fake_instance.chat_json.call_args.kwargs
+    # chat_json вызвался с осмысленными prompt/schema.
+    fake_provider.chat_json.assert_called_once()
+    kwargs = fake_provider.chat_json.call_args.kwargs
     assert kwargs["system_prompt"]
     assert kwargs["user_prompt"]
     assert kwargs["schema"]["type"] == "object"

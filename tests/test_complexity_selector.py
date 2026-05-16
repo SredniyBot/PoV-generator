@@ -95,34 +95,36 @@ def test_selector_llm_calls_provider_with_correct_schema(monkeypatch) -> None:
     from pov_generator.application import complexity_selector_service as mod
 
     fake_response = {"complexity": "complex", "rationale": "LLM решил — многомодальный сценарий."}
-    fake_instance = MagicMock()
-    fake_instance.chat_json.return_value = fake_response
+    fake_provider = MagicMock()
+    fake_provider.chat_json.return_value = fake_response
 
-    with patch.object(mod, "ClaudeSdkClient") as fake_class:
-        fake_class.from_env.return_value = fake_instance
+    # После рефакторинга на LLMProviderRegistry мокаем точку резолва
+    # провайдера, а не конкретный клиент.
+    from pov_generator.infrastructure.llm import LLMProviderRegistry
+
+    with patch.object(LLMProviderRegistry, "get", return_value=fake_provider):
         selection = select_complexity(template=_make_template("standard"), state=_make_state())
 
     assert selection.complexity == "complex"
     assert selection.source == "llm"
     assert "LLM" in selection.rationale or "многомодальный" in selection.rationale
-    fake_instance.chat_json.assert_called_once()
-    kwargs = fake_instance.chat_json.call_args.kwargs
+    fake_provider.chat_json.assert_called_once()
+    kwargs = fake_provider.chat_json.call_args.kwargs
     assert "complexity" in kwargs["schema"]["properties"]
     assert kwargs["schema"]["properties"]["complexity"]["enum"] == ["trivial", "standard", "complex"]
 
 
 def test_selector_falls_back_on_provider_error(monkeypatch) -> None:
-    """Если LLM-клиент кинул ConflictError (нет ключа / нет SDK), selector
+    """Если LLM-провайдер кинул ConflictError (нет ключа / нет SDK), selector
     не должен валить workflow — возвращает declared."""
     from pov_generator.common.errors import ConflictError as RealConflictError
 
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR", "on")
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR_PROVIDER", "claude_sdk")
 
-    from pov_generator.application import complexity_selector_service as mod
+    from pov_generator.infrastructure.llm import LLMProviderRegistry
 
-    with patch.object(mod, "ClaudeSdkClient") as fake_class:
-        fake_class.from_env.side_effect = RealConflictError("нет ключа")
+    with patch.object(LLMProviderRegistry, "get", side_effect=RealConflictError("нет ключа")):
         selection = select_complexity(template=_make_template("standard"), state=_make_state())
 
     assert selection.complexity == "standard"
@@ -139,13 +141,13 @@ def test_selector_falls_back_on_provider_error(monkeypatch) -> None:
 def test_selector_coerces_invalid_llm_output(monkeypatch, llm_value: str, expected: str) -> None:
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR", "on")
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR_PROVIDER", "claude_sdk")
-    from pov_generator.application import complexity_selector_service as mod
 
-    fake_instance = MagicMock()
-    fake_instance.chat_json.return_value = {"complexity": llm_value, "rationale": "ok"}
+    fake_provider = MagicMock()
+    fake_provider.chat_json.return_value = {"complexity": llm_value, "rationale": "ok"}
 
-    with patch.object(mod, "ClaudeSdkClient") as fake_class:
-        fake_class.from_env.return_value = fake_instance
+    from pov_generator.infrastructure.llm import LLMProviderRegistry
+
+    with patch.object(LLMProviderRegistry, "get", return_value=fake_provider):
         selection = select_complexity(template=_make_template("standard"), state=_make_state())
 
     assert selection.complexity == expected

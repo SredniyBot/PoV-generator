@@ -93,19 +93,30 @@ povgen --help                              # все команды
 
 ---
 
-## Выбор LLM-провайдера
+## LLM-провайдеры
 
-Управляется переменной `POV_EXECUTION_PROVIDER` в `.env` или окружении.
-По умолчанию — `stub` (детерминированные фикстуры, без сети).
+**Предпочтительный путь — UI:** запустите систему, откройте `/settings`
+(кнопка «⚙ Настройки» в левом рейле) и подключите источники моделей.
+Три типа провайдеров:
 
-| Провайдер | Что нужно |
+| Тип | Что нужно |
 |---|---|
-| `stub` | Ничего; локальные фикстуры в `templates/stub_fixtures/`. |
-| `openrouter` | `POV_OPENROUTER_API_KEY` + опц. `POV_OPENROUTER_MODEL`. |
-| `claude_sdk` | `POV_ANTHROPIC_API_KEY` (Anthropic API). |
-| `claude_subscription` | Локально установленный и залогиненный `claude` CLI. |
+| **OpenRouter** | API key |
+| **Anthropic API** | API key |
+| **Claude CLI** | установленный и залогиненный локальный `claude` (`npm install -g @anthropic-ai/claude-code && claude login`) |
 
-Все доступные переменные описаны в [`.env.example`](.env.example).
+В Settings можно подключить несколько источников одновременно (например,
+Anthropic API + Claude CLI), указать какая модель используется в каждом
+сценарии (`Default Models`) и протестировать подключение в один клик.
+API-ключи шифруются перед записью в `<runtime>/settings.db`.
+
+**Bootstrap из .env:** при первом запуске, если БД настроек пуста и в
+окружении заданы `POV_OPENROUTER_API_KEY` / `POV_ANTHROPIC_API_KEY`,
+система импортирует их как connections с пометкой «из .env». Дальше
+можно править через UI.
+
+Все env-переменные (включая `POV_SECRET_KEY` для шифрования) описаны в
+[`.env.example`](.env.example).
 
 ---
 

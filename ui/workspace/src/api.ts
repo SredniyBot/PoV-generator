@@ -73,7 +73,9 @@ export const api = {
   runNext: (projectId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/run-next`, {
       method: "POST",
-      body: JSON.stringify({ provider, model: model || undefined }),
+      // Пустые значения не отправляем — backend в этом случае идёт через
+      // resolve_for_purpose из settings-store (а не legacy env-path).
+      body: JSON.stringify({ provider: provider || undefined, model: model || undefined }),
     }),
   runUntilBlocked: (projectId: string, provider: string, model: string, maxSteps = 1000) =>
     // W4.1 (R1): endpoint асинхронный, возвращает WorkflowRunView (status=pending)
@@ -85,7 +87,11 @@ export const api = {
     // leaf-задач × до 2-3 ретраев = ~50-75 шагов максимум.
     request<WorkflowRunView>(`/api/projects/${projectId}/commands/run-until-blocked`, {
       method: "POST",
-      body: JSON.stringify({ provider, model: model || undefined, max_steps: maxSteps }),
+      body: JSON.stringify({
+        provider: provider || undefined,
+        model: model || undefined,
+        max_steps: maxSteps,
+      }),
     }),
   cancelWorkflow: (projectId: string, runId: string) =>
     request<{ status: string; run_id: string }>(`/api/projects/${projectId}/commands/cancel-workflow`, {
@@ -101,7 +107,11 @@ export const api = {
   retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",
-      body: JSON.stringify({ task_id: taskId, provider, model: model || undefined }),
+      body: JSON.stringify({
+        task_id: taskId,
+        provider: provider || undefined,
+        model: model || undefined,
+      }),
     }),
   setGoal: (projectId: string, text: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-goal`, {
@@ -195,6 +205,101 @@ export const api = {
       `/api/projects/${projectId}/failure-pins${qs}`,
     );
   },
+
+  // --- Settings: LLM providers / models / assignments --------------------
+  listPurposes: () => request<{ id: string; label: string }[]>("/api/settings/purposes"),
+  listProviders: () => request<import("./types").ProviderConnectionView[]>("/api/settings/providers"),
+  createProvider: (payload: {
+    provider_type: "openrouter" | "anthropic" | "claude_cli";
+    display_name: string;
+    api_key?: string;
+    extras?: Record<string, string>;
+  }) =>
+    request<import("./types").ProviderConnectionView>("/api/settings/providers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateProvider: (
+    connectionId: string,
+    payload: { display_name?: string; api_key?: string; extras?: Record<string, string> },
+  ) =>
+    request<import("./types").ProviderConnectionView>(
+      `/api/settings/providers/${connectionId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+    ),
+  deleteProvider: (connectionId: string) =>
+    request<{ status: string }>(`/api/settings/providers/${connectionId}`, {
+      method: "DELETE",
+    }),
+  testProvider: (connectionId: string, model?: string) =>
+    request<import("./types").TestResultView>(`/api/settings/providers/${connectionId}/test`, {
+      method: "POST",
+      body: JSON.stringify(model ? { model } : {}),
+    }),
+  syncKnownModels: (connectionId: string) =>
+    request<{ connection_id: string; added_count: number; added_models: string[] }>(
+      `/api/settings/providers/${connectionId}/sync-models`,
+      { method: "POST", body: "{}" },
+    ),
+
+  listModels: () => request<import("./types").ModelCatalogEntry[]>("/api/settings/models"),
+  addCustomModel: (payload: { connection_id: string; model_name: string; priority?: number }) =>
+    request<import("./types").ModelRoutingView>("/api/settings/models", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  testModel: (modelName: string) =>
+    request<import("./types").TestResultView>(
+      `/api/settings/models/${encodeURIComponent(modelName)}/test`,
+      { method: "POST", body: "{}" },
+    ),
+  updateRouting: (routingId: string, payload: { priority?: number; enabled?: boolean }) =>
+    request<import("./types").ModelRoutingView>(`/api/settings/routings/${routingId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  deleteRouting: (routingId: string) =>
+    request<{ status: string }>(`/api/settings/routings/${routingId}`, {
+      method: "DELETE",
+    }),
+
+  listAssignments: () =>
+    request<{ purpose: string; model_name: string }[]>("/api/settings/assignments"),
+  setAssignment: (purpose: string, modelName: string) =>
+    request<{ purpose: string; model_name: string }>("/api/settings/assignments", {
+      method: "PUT",
+      body: JSON.stringify({ purpose, model_name: modelName }),
+    }),
+  resetAssignmentsToRecommended: () =>
+    request<{ purpose: string; model_name: string }[]>(
+      "/api/settings/assignments/reset-to-recommended",
+      { method: "POST" },
+    ),
+  // Diagnostics: для каждого purpose показать, что реально будет
+  // использовано при следующем LLM-вызове. Подтверждение того, что
+  // переключение модели в UI действительно работает.
+  getSettingsDiagnostics: () =>
+    request<
+      Array<{
+        purpose: string;
+        label: string;
+        model_name: string | null;
+        resolved: null | {
+          provider_type: "openrouter" | "anthropic" | "claude_cli";
+          connection_id: string;
+          connection_display_name: string;
+          model_name: string;
+          fallback_routings: Array<{
+            connection_display_name: string;
+            provider_type: "openrouter" | "anthropic" | "claude_cli";
+          }>;
+        };
+        error: string | null;
+      }>
+    >("/api/settings/diagnostics"),
 };
 
 export function createProjectSocket(projectId: string, projections?: ProjectionName[]): WebSocket {
