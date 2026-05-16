@@ -126,18 +126,20 @@ class ClaudeSubscriptionClient:
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
         #
-        # ВАЖНО: длинный system_prompt пишем в файл и передаём через
-        # SystemPromptFile. SDK иначе кладёт его в `--system-prompt <text>`
-        # CLI-аргумент; Windows CreateProcess имеет лимит ~32K символов на
-        # весь command-line, и большие методологические prompt'ы (style bans
-        # + writing principles + …) упираются в этот лимит → CLI зависает
-        # на старте → таймаут initialize. Файл — стандартный обходной путь
-        # самого SDK.
-        sp_for_options: Any = system_prompt
-        sp_tmpfile: Path | None = None
-        if len(system_prompt) > _SYSTEM_PROMPT_FILE_THRESHOLD_CHARS:
-            sp_tmpfile = _write_temp_prompt(system_prompt)
-            sp_for_options = {"type": "file", "path": str(sp_tmpfile)}
+        # ВСЕГДА пишем system_prompt в файл. Причина: на Windows CLI
+        # запускается через CMD shim (`claude.CMD`), и cmd.exe ломает
+        # любые аргументы с символами `<`, `>` (redirect), переводами
+        # строк, `%`, `^`, `&`, `|`. Наши system_prompt'ы реально содержат
+        # XML-теги вида `<role>`, `<writing_principles>` и многострочные
+        # секции — `--system-prompt <text>` через CMD не работает. Файл
+        # передаётся через `--system-prompt-file <path>` (это путь, без
+        # спецсимволов) и читается CLI стримом — стопроцентно надёжно.
+        # Накладные расходы на запись/удаление файла — миллисекунды,
+        # размер prompt'а уже не имеет значения.
+        sp_tmpfile = _write_temp_prompt(system_prompt) if system_prompt else None
+        sp_for_options: Any = (
+            {"type": "file", "path": str(sp_tmpfile)} if sp_tmpfile is not None else ""
+        )
 
         options_kwargs: dict[str, Any] = {
             "system_prompt": sp_for_options,
@@ -183,18 +185,13 @@ class ClaudeSubscriptionClient:
             if "Control request timeout" in msg and "initialize" in msg:
                 raise ConflictError(
                     "Claude CLI не отвечает на initialize-запрос. Возможные причины:\n"
-                    "• CLI не залогинен в текущей сессии — выполните `claude login`.\n"
+                    "• CLI не залогинен — выполните `claude login`.\n"
                     "• SDK использует bundled CLI вместо системного — задайте "
-                    "POV_CLAUDE_CLI_PATH= путь к вашему `claude` (см. `where claude`).\n"
-                    "• Длинный system_prompt — должен передаваться файлом "
-                    "(SDK-режим SystemPromptFile); если этого не произошло — "
-                    "сообщи issue.\n"
-                    "• На старте Windows-процесса не хватает default-таймаута 120s "
-                    "— увеличьте через POV_CLAUDE_LOAD_TIMEOUT_MS.\n"
-                    f"Текущий cli_path: {self._config.cli_path or '<не задан>'}; "
-                    f"load_timeout_ms: {self._config.load_timeout_ms}; "
-                    f"system_prompt_size: {len(system_prompt)} chars; "
-                    f"system_prompt_mode: {'file' if sp_tmpfile else 'inline'}."
+                    "POV_CLAUDE_CLI_PATH (см. `where claude`).\n"
+                    "• Сильно медленный старт CLI (антивирус, диск). Увеличьте "
+                    "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (мс).\n"
+                    f"Диагностика: cli_path={self._config.cli_path or '<не задан>'}; "
+                    f"system_prompt={len(system_prompt)} chars (file mode)."
                 ) from exc
             raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
         finally:
@@ -252,21 +249,13 @@ def _resolve_cli_path() -> str | None:
     return found  # может быть None — это OK, обработаем в run-time
 
 
-# Порог, после которого system_prompt пишем в файл и передаём через
-# SystemPromptFile вместо --system-prompt <text> CLI-аргумента.
-# Windows CreateProcess лимит ~32K на ВЕСЬ command-line; нам нужен
-# запас на остальные args (cli flags, model name и т.п.).
-# 8K — безопасно: real system_prompt'ы у нас обычно 4-12K, мелкие test
-# вызовы (~50 chars) уйдут inline.
-_SYSTEM_PROMPT_FILE_THRESHOLD_CHARS = 8000
-
-
 def _write_temp_prompt(text: str) -> Path:
     """Записать system_prompt во временный UTF-8 файл и вернуть путь.
 
-    Файл будет удалён в finally блока вызывающего кода (см. _collect).
-    Используем delete=False, потому что мы держим путь, а не handle —
-    Windows иначе залочит файл от CLI-subprocess'а.
+    Используется ВСЕГДА, не по порогу (см. _collect). Файл будет удалён
+    в finally блока вызывающего кода. Открываем с delete=False, потому
+    что мы держим путь, а не handle — Windows иначе залочит файл от
+    CLI-subprocess'а.
     """
     fd, path = tempfile.mkstemp(prefix="pov_claude_sysprompt_", suffix=".txt", text=False)
     try:
