@@ -45,10 +45,11 @@ class ClaudeSubscriptionConfig:
     # этого нет — поднимаем ConflictError (НЕ используем bundled CLI,
     # потому что он не залогинен).
     cli_path: str | None = None
-    # Таймаут initialize в миллисекундах. По умолчанию 120 сек (вдвое
-    # больше дефолта SDK = 60s). Передаётся в ``ClaudeAgentOptions.load_timeout_ms``;
-    # SDK дополнительно читает env ``CLAUDE_CODE_STREAM_CLOSE_TIMEOUT``.
-    load_timeout_ms: int = 120_000
+    # 1 час по умолчанию. На complex-задачах opus может думать 5-15 мин,
+    # плюс initialize subprocess в Windows — медленный. Лучше big-ceiling.
+    # Override: POV_CLAUDE_LOAD_TIMEOUT_MS (для load) и env
+    # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (для initialize SDK control).
+    load_timeout_ms: int = 3_600_000
 
 
 def model_for_complexity(complexity: str | None) -> str | None:
@@ -73,6 +74,9 @@ class ClaudeSubscriptionClient:
         # уйдёт в bundled CLI.
         if config.cli_path is None:
             config = dataclasses.replace(config, cli_path=_resolve_cli_path())
+        # Подмешиваем env-переменную для SDK initialize timeout
+        # (см. docstring _apply_initialize_timeout_env).
+        _apply_initialize_timeout_env()
         self._config = config
         try:
             import claude_agent_sdk  # type: ignore[import-not-found]
@@ -271,10 +275,30 @@ def _write_temp_prompt(text: str) -> Path:
 
 
 def _resolve_load_timeout_ms() -> int:
-    """Таймаут initialize-запроса. 120s по умолчанию — вдвое больше
-    дефолта SDK (60s). Override через ``POV_CLAUDE_LOAD_TIMEOUT_MS``."""
-    raw = os.environ.get("POV_CLAUDE_LOAD_TIMEOUT_MS", "120000")
+    """Таймаут load_timeout_ms для session_resume и нашей выставленной
+    верхней границы. Дефолт — 1 час (3 600 000 мс), потому что:
+
+    * Complex-задачи opus думают 5-15 мин, бывает и дольше.
+    * Windows initialize-spawn медленный (антивирус, диск).
+    * Лучше большой ceiling, чем пять «retry-кнопок» в UI.
+
+    Override через ``POV_CLAUDE_LOAD_TIMEOUT_MS``. Параллельно мы
+    также подмешиваем env ``CLAUDE_CODE_STREAM_CLOSE_TIMEOUT``, который
+    SDK реально использует для initialize control request (см.
+    ``_apply_initialize_timeout_env``).
+    """
+    raw = os.environ.get("POV_CLAUDE_LOAD_TIMEOUT_MS", "3600000")
     try:
-        return max(int(raw), 30_000)  # минимум 30s — иначе SDK сам поднимет до 60.
+        return max(int(raw), 60_000)  # минимум 60s — SDK всё равно округлит до 60.
     except (TypeError, ValueError):
-        return 120_000
+        return 3_600_000
+
+
+def _apply_initialize_timeout_env() -> None:
+    """Подмешать ``CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`` в env, если не задан.
+
+    SDK читает эту env (в мс) для timeout'а initialize-control-request.
+    Если пользователь не задал явно — ставим 1 час. Не перезатираем
+    существующее значение."""
+    if not os.environ.get("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"):
+        os.environ["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "3600000"

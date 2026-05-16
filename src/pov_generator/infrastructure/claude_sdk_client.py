@@ -38,7 +38,11 @@ class ClaudeSdkClient:
             raise ConflictError(
                 "Не установлен пакет 'anthropic'. Добавьте его в зависимости проекта (.[dev] переустановит)."
             ) from exc
-        self._client = anthropic.Anthropic(api_key=config.api_key)
+        # 1 час HTTP-таймаут — opus на complex думает 5-15 мин; 60s
+        # дефолт Anthropic SDK слишком жёсткий для финального synthesis.
+        # Override через POV_ANTHROPIC_TIMEOUT_SEC.
+        timeout_sec = int(os.environ.get("POV_ANTHROPIC_TIMEOUT_SEC", "3600"))
+        self._client = anthropic.Anthropic(api_key=config.api_key, timeout=float(timeout_sec))
 
     @classmethod
     def from_env(cls, *, model: str | None = None) -> "ClaudeSdkClient":

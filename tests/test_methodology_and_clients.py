@@ -260,7 +260,10 @@ def test_claude_sdk_client_builds_tool_use_request() -> None:
         )
 
     assert result == expected_payload
-    fake_anthropic_module.Anthropic.assert_called_once_with(api_key="dummy")
+    fake_anthropic_module.Anthropic.assert_called_once()
+    # Конструктор должен получить api_key; timeout — implementation detail.
+    kwargs_anthropic = fake_anthropic_module.Anthropic.call_args.kwargs
+    assert kwargs_anthropic["api_key"] == "dummy"
     fake_client.messages.create.assert_called_once()
     kwargs = fake_client.messages.create.call_args.kwargs
     assert kwargs["model"] == "claude-sonnet-4-6"

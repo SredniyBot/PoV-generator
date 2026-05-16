@@ -60,8 +60,12 @@ class OpenRouterClient:
             headers=headers,
             method="POST",
         )
+        # 1 час на ответ модели. На complex-задачах opus может думать
+        # 5-15 мин; 120s было слишком жёстко и валило финальный synthesis.
+        # Override через POV_OPENROUTER_TIMEOUT_SEC если нужно меньше/больше.
+        timeout_sec = int(os.environ.get("POV_OPENROUTER_TIMEOUT_SEC", "3600"))
         try:
-            with request.urlopen(http_request, timeout=120) as response:
+            with request.urlopen(http_request, timeout=timeout_sec) as response:
                 raw = response.read().decode("utf-8")
         except error.HTTPError as exc:
             raw_error = exc.read().decode("utf-8", errors="replace")
