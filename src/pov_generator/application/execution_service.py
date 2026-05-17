@@ -9,13 +9,16 @@ from pathlib import Path
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
+from ..domain.decisions import Decision
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
+from .checkpoint_service import CheckpointService
 from .complexity_selector_service import select_complexity
 from .context_service import ContextService
+from .decision_planning_service import DecisionPlanningService
 from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -41,10 +44,18 @@ class ExecutionService:
         context_service: ContextService,
         *,
         llm_registry: LLMProviderRegistry | None = None,
+        decision_planning_service: DecisionPlanningService | None = None,
+        checkpoint_service: CheckpointService | None = None,
     ) -> None:
         self._runtime = runtime
         self._context_service = context_service
         self._llm = llm_registry or LLMProviderRegistry()
+        # v3.0: pre-flight planning + checkpoint integration. Опциональны
+        # для backward-compat в тестах, в проде всегда инжектируются из api.py.
+        # Если оба None — pre-flight stage пропускается, поведение
+        # эквивалентно pre-v3.0.
+        self._decision_planning = decision_planning_service
+        self._checkpoint = checkpoint_service
 
     def execute_task(
         self,
@@ -128,6 +139,56 @@ class ExecutionService:
             current_step_title=task.title,
             context_manifest=context_manifest,
         )
+
+        # v3.0 — Pre-flight checkpoint stage.
+        # Запускается для всех путей, кроме structural merge (там нет
+        # LLM-вызова, нечего планировать). Для stub-провайдера pre-flight
+        # тоже работает: planning service может быть тоже stub'нут (тест-
+        # фикстуры), но архитектурно поток одинаковый.
+        # Логика:
+        #   1. Есть pending session по task_id → пауза, ждём submit.
+        #   2. Есть finalized session → подтягиваем locked-in decisions,
+        #      они дальше попадут в основной промпт.
+        #   3. Сессии нет → бежим pre-flight планирование. Если оно создаст
+        #      новую сессию (есть surfaced решения) → пауза. Если всё ушло
+        #      silently → идём дальше с decisions из реестра.
+        # Skip целиком если сервисы не инжектированы (test scenarios без
+        # planning_service) или если template = structural merge.
+        is_structural_merge = (
+            template.merge is not None and template.merge.strategy == "structural"
+        )
+        locked_in_decisions: tuple[Decision, ...] = ()
+        if (
+            self._decision_planning is not None
+            and self._checkpoint is not None
+            and not is_structural_merge
+        ):
+            paused_result = self._run_pre_flight_stage(
+                workspace=workspace,
+                state=state,
+                task=task,
+                artifact_role=artifact_role,
+                template=template,
+                user_prompt=user_prompt,
+                execution_run_id_hint=None,  # будет создан ниже при успехе
+            )
+            if paused_result is not None:
+                # Workflow приостанавливается; return до основной генерации.
+                # Не пишем артефакт, не делаем LLM-вызов.
+                return paused_result
+            # Pre-flight прошёл (либо использована старая finalized session,
+            # либо silent-accept всех решений). Подтягиваем locked-in для
+            # встраивания в основной промпт.
+            locked_in_decisions = self._collect_locked_in_decisions(
+                workspace=workspace,
+                project_id=manifest.project_id,
+                task_id=task.task_id,
+            )
+            if locked_in_decisions:
+                user_prompt = self._append_locked_in_decisions(
+                    user_prompt=user_prompt,
+                    decisions=locked_in_decisions,
+                )
 
         # Этап 5: если шаблон помечен как merge-задача со strategy=structural,
         # обходим LLM/stub и собираем результат детерминированно из входных
@@ -346,6 +407,211 @@ class ExecutionService:
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
+
+    # ------------------------------------------------------------------ v3.0
+    # Pre-flight checkpoint stage
+    # ------------------------------------------------------------------------
+
+    def _run_pre_flight_stage(
+        self,
+        *,
+        workspace: Path,
+        state,
+        task,
+        artifact_role: str,
+        template,
+        user_prompt: str,
+        execution_run_id_hint: str | None,
+    ) -> ExecutionBundle | None:
+        """Запустить (или подхватить) pre-flight для задачи.
+
+        Возвращает ``ExecutionBundle`` со статусом ``paused_for_checkpoint``
+        ТОЛЬКО если задача должна остановиться (есть pending checkpoint
+        session). Возвращает ``None`` если можно продолжать к основной
+        генерации (либо silent-accept, либо ранее финализированная сессия).
+
+        Идемпотентен: повторный вызов на той же задаче с finalized сессией
+        не создаёт новых решений — просто возвращает None.
+        """
+        assert self._checkpoint is not None
+        assert self._decision_planning is not None
+
+        # Шаг 1: проверяем существующую сессию.
+        existing = self._runtime.find_pending_checkpoint_for_task(
+            workspace, task.task_id
+        )
+        if existing is not None:
+            # Pending — workflow всё ещё ждёт пользователя.
+            return self._make_paused_bundle(
+                project_id=state.manifest.project_id,
+                task=task,
+                template=template,
+                checkpoint_session_id=existing.session_id,
+            )
+
+        # Шаг 2: ищем finalized session по task_id (была обработана раньше).
+        # Если есть — pre-flight уже выполнялся, повторно не запускаем.
+        prior_sessions = self._runtime.list_checkpoint_sessions(
+            workspace, project_id=state.manifest.project_id
+        )
+        prior_for_task = [
+            s for s in prior_sessions if s.task_id == task.task_id and s.status == "finalized"
+        ]
+        if prior_for_task:
+            return None  # есть финализированная сессия → используем её decisions
+
+        # Шаг 3: проверяем, не было ли silent-accept без сессии для этой задачи.
+        # Если для task_id уже есть Decision-записи со source="pre_flight" —
+        # pre-flight тоже не повторяем.
+        existing_decisions = [
+            d
+            for d in self._runtime.list_decisions(
+                workspace, project_id=state.manifest.project_id
+            )
+            if d.source_task_id == task.task_id and d.source == "pre_flight"
+        ]
+        if existing_decisions:
+            return None
+
+        # Шаг 4: первый запуск — выполняем pre-flight планирование.
+        try:
+            planning = self._decision_planning.plan_for_task(
+                project_id=state.manifest.project_id,
+                task_id=task.task_id,
+                task_title=task.title,
+                artifact_role=artifact_role,
+                task_summary=template.summary,
+                context_text=user_prompt,  # уже включает контекст из manifest
+            )
+        except ConflictError:
+            # Pre-flight упал — не блокируем основной workflow, идём дальше
+            # без participation. Соответствует принципу graceful degradation:
+            # checkpoint — опциональная фича, её отказ не должен ломать
+            # генерацию артефакта.
+            return None
+
+        result = self._checkpoint.process_planned_decisions(
+            workspace,
+            project_id=state.manifest.project_id,
+            task_id=task.task_id,
+            task_title=task.title,
+            artifact_role=artifact_role,
+            decisions=planning.decisions,
+            mode=state.process.clarification_mode,
+        )
+
+        if result.session is not None:
+            # Создалась сессия → нужна пауза.
+            return self._make_paused_bundle(
+                project_id=state.manifest.project_id,
+                task=task,
+                template=template,
+                checkpoint_session_id=result.session.session_id,
+            )
+        # Всё silent → можно продолжать к основной генерации.
+        return None
+
+    def _make_paused_bundle(
+        self,
+        *,
+        project_id: str,
+        task,
+        template,
+        checkpoint_session_id: str,
+    ) -> ExecutionBundle:
+        """Сформировать ExecutionBundle со статусом paused_for_checkpoint.
+
+        НЕ сохраняется в execution_runs (workflow runner это понимает по
+        статусу — это псевдо-результат, не настоящий run). Артефакт не
+        создаётся. По срабатыванию `submit_answers` пользователь
+        ретрайнет задачу — этот код снова отработает, увидит finalized
+        session и пойдёт в нормальную генерацию.
+        """
+        execution_run_id = str(uuid.uuid4())
+        request = ExecutionRequest(
+            execution_run_id=execution_run_id,
+            project_id=project_id,
+            task_id=task.task_id,
+            template_ref=template.ref.as_string(),
+            context_manifest_id="",  # не строим manifest полностью, экономим
+            provider="pre_flight",  # помечаем источник
+            model="",
+            actor="workflow",
+        )
+        result = ExecutionResult(
+            execution_run_id=execution_run_id,
+            status="paused_for_checkpoint",
+            checkpoint_session_id=checkpoint_session_id,
+        )
+        return ExecutionBundle(request=request, result=result, traces=())
+
+    def _collect_locked_in_decisions(
+        self,
+        *,
+        workspace: Path,
+        project_id: str,
+        task_id: str,
+    ) -> tuple[Decision, ...]:
+        """Собрать решения, относящиеся к задаче, готовые ко встраиванию.
+
+        Включает все pre_flight / emergent / user_manual решения этой
+        задачи в любом из «закрытых» статусов: accepted_default,
+        user_overridden, deferred, locked_in. Этих статусов достаточно,
+        чтобы решение считалось «принятым» (даже deferred — это значит
+        «применяется дефолт, помечено»).
+        """
+        all_for_task = [
+            d
+            for d in self._runtime.list_decisions(workspace, project_id=project_id)
+            if d.source_task_id == task_id
+        ]
+        return tuple(
+            d
+            for d in all_for_task
+            if d.status in {"accepted_default", "user_overridden", "deferred", "locked_in"}
+        )
+
+    def _append_locked_in_decisions(
+        self,
+        *,
+        user_prompt: str,
+        decisions: tuple[Decision, ...],
+    ) -> str:
+        """Дописать в user_prompt блок с зафиксированными решениями.
+
+        Формат — XML-секция (визуально отделена от остального контекста)
+        с явным заголовком, чтобы LLM воспринимала это как жёсткие
+        ограничения, а не как «контекстные подсказки».
+        """
+        if not decisions:
+            return user_prompt
+        lines: list[str] = [
+            "",
+            "<locked_in_decisions>",
+            "Перед началом этой задачи зафиксированы следующие решения. "
+            "Используй их как ОБЯЗАТЕЛЬНЫЕ ограничения; не пересматривай, "
+            "не предлагай альтернатив, не оспаривай. Если у пользователя был "
+            "свободный ответ — он имеет приоритет над всеми предложенными вариантами.",
+            "",
+        ]
+        for d in decisions:
+            chosen = d.chosen_alternative
+            user_text = (d.user_free_text_answer or "").strip()
+            if user_text:
+                value_line = f"Выбор пользователя (свободный ответ): {user_text}"
+            elif chosen is not None:
+                value_line = f"Выбрано: {chosen.label} — {chosen.description}".rstrip(" —")
+            else:
+                value_line = f"Выбран option_id={d.chosen_option_id} (без расшифровки)"
+
+            modifier = " (изменено пользователем)" if d.was_user_modified else ""
+            lines.append(f"- **{d.title}**{modifier}")
+            lines.append(f"  {value_line}")
+            if d.rationale:
+                lines.append(f"  Обоснование: {d.rationale}")
+            lines.append("")
+        lines.append("</locked_in_decisions>")
+        return user_prompt + "\n".join(lines)
 
     def _execute_structural_merge(
         self,

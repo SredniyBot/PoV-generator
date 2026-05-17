@@ -216,7 +216,32 @@ class CheckpointService:
             finalized_at=utc_now_iso(),
             finalized_by=actor,
         )
-        return self._runtime.upsert_checkpoint_session(workspace, finalized)
+        saved_session = self._runtime.upsert_checkpoint_session(workspace, finalized)
+
+        # v3.0 — auto-resume: задача, которая была failed из-за паузы,
+        # переводится обратно в ready. Это позволит планнеру при следующем
+        # run_next / start_run немедленно её подобрать; pre-flight в
+        # ExecutionService увидит finalized session и пропустит планирование,
+        # сразу подтянет locked-in decisions в основной промпт.
+        try:
+            task = self._runtime.get_task(workspace, session.task_id)
+            if task.status == "failed":
+                self._runtime.transition_task(
+                    workspace,
+                    session.task_id,
+                    "retry",
+                    payload={
+                        "reason": "auto-retry after checkpoint finalized",
+                        "source": "checkpoint_submit",
+                        "checkpoint_session_id": session.session_id,
+                    },
+                )
+        except Exception:
+            # Не блокируем submit, если транзишн не прошёл — пользователь
+            # сможет вручную ретрайнуть задачу.
+            pass
+
+        return saved_session
 
     def _apply_answer(
         self,

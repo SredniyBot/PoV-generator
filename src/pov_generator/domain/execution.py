@@ -6,7 +6,11 @@ from typing import Literal
 from .clarifications import ClarificationCandidate
 
 ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
-ExecutionStatus = Literal["succeeded", "failed", "cancelled"]
+# v3.0: добавлен статус `paused_for_checkpoint` — задача дошла до точки
+# pre-flight, есть решения на уровне пользователя; workflow ждёт submit
+# сессии в /api/projects/.../checkpoints/.../answer, после чего задача
+# будет ретрайнута и подхватит финализированные решения.
+ExecutionStatus = Literal["succeeded", "failed", "cancelled", "paused_for_checkpoint"]
 
 
 @dataclass(frozen=True)
@@ -52,3 +56,7 @@ class ExecutionResult:
     # execution_service и validation_service: validation регистрирует их через
     # ClarificationService, не пересчитывая правила.
     methodology_candidates: tuple[ClarificationCandidate, ...] = field(default_factory=tuple)
+    # v3.0: ID checkpoint-сессии, если задача приостановлена для участия
+    # пользователя в решениях. Заполняется одновременно со
+    # status="paused_for_checkpoint"; в остальных случаях — None.
+    checkpoint_session_id: str | None = None

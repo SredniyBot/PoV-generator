@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from ..application.checkpoint_service import CheckpointService
 from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
+from ..application.decision_planning_service import DecisionPlanningService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
 from ..application.pdf_export import render_artifact_pdf
@@ -78,10 +79,17 @@ def create_app(
 
     clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     checkpoint_service = CheckpointService(runtime)
+    decision_planning_service = DecisionPlanningService(llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service, llm_registry=llm_registry)
+    execution_service = ExecutionService(
+        runtime,
+        context_service,
+        llm_registry=llm_registry,
+        decision_planning_service=decision_planning_service,
+        checkpoint_service=checkpoint_service,
+    )
     validation_service = ValidationService(runtime, clarification_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     workflow_runner_service = WorkflowRunnerService(
@@ -585,8 +593,15 @@ def create_app(
     def project_artifact_skeleton(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_skeleton(project_id, artifact_id))
 
-    @app.get("/api/projects/{project_id}/decisions")
+    @app.get("/api/projects/{project_id}/decision-log")
     def project_decision_log(project_id: str) -> Any:
+        """Legacy decision log v2.2 (derived from ClarificationRequests).
+
+        Перемещён с ``/decisions`` на ``/decision-log`` в v3.0, потому что
+        ``/decisions`` теперь занят настоящим реестром решений
+        (`Decision` first-class entity). Сохранён для обратной
+        совместимости старого UI tab «Журнал решений».
+        """
         return to_primitive(query_service.project_decision_log(project_id))
 
     @app.get("/api/projects/{project_id}/artifact-versions")
