@@ -140,7 +140,6 @@ Audit event: `assumed_auto` / `deferred_auto` / `created`.
 | Эмиттер | Файл | source_type | decision_owner_role | visibility | blocking_scope | default_assumption |
 |---|---|---|---|---|---|---|
 | Validation: low_confidence | `validation_service.py:279-296` | `validation` | `business` (дефолт) | `principal` (через role-default) | `task` | нет |
-| Validation: blocking_questions (advisory) | `validation_service.py:344-367` | `validation` | `business` | `principal` | `task` если low_confidence, иначе `none` | нет |
 | Quality gate signoff | `validation_service.py:556-580` | `quality_gate` | `_normalize_decision_owner_role(gate.approver_role)` → `client` / `security` | **явно** `"principal"` | `"objective"` | нет |
 | Methodology rule | `methodology_rules.py:248-270` | `methodology_pack` | хардкод `"methodologist"` | дефолт `"technical"`, override через `emit.visibility` в YAML | дефолт `"none"`, override через `emit.blocking_scope` | `_safe_assumption_for_rule(...)` — обычно есть |
 | `candidate_from_question` (общий) | `clarification_service.py:683-742` | любой | дефолт `"business"` | если не передана — `default_visibility_for_role(role)` | `"task"` | опционально |

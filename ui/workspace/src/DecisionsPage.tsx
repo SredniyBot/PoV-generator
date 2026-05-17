@@ -167,11 +167,13 @@ function DecisionCard({
             {sectionTag ? <span className="decision-card__section-tag">§ {sectionTag}</span> : null}
             <span className="decision-card__question">{cleanTitle}</span>
             {decision.is_low_confidence ? (
-              <AlertTriangle
-                size={14}
-                className="decision-card__risky-icon"
-                aria-label="Система не уверена в дефолте"
-              />
+              <span
+                className="decision-card__risky-badge"
+                title="Уверенность системы в предложенном дефолте ниже 0.5 — стоит просмотреть лично"
+              >
+                <AlertTriangle size={12} className="decision-card__risky-icon" />
+                <span className="decision-card__risky-text">система не уверена</span>
+              </span>
             ) : null}
           </h3>
           {!isInteractive && !hideMeta ? (
@@ -448,9 +450,30 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
     return <LoadingPanel title="Загружаем реестр решений…" />;
   }
   const view: ProjectDecisionsView = query.data;
-  const visibleItems = showRiskyOnly
+  const filteredItems = showRiskyOnly
     ? view.items.filter((d) => d.is_low_confidence)
     : view.items;
+  // Сортировка по важности — самые требующие внимания вверху:
+  //   1. status="proposed" (ждут ответа пользователя)
+  //   2. is_low_confidence (LLM не уверена в дефолте)
+  //   3. По уровню: business → architecture → detail
+  //   4. По дате создания (свежее — выше)
+  const levelWeight: Record<DecisionLevel, number> = {
+    business: 0,
+    architecture: 1,
+    detail: 2,
+  };
+  const visibleItems = [...filteredItems].sort((a, b) => {
+    const aPending = a.status === "proposed" ? 0 : 1;
+    const bPending = b.status === "proposed" ? 0 : 1;
+    if (aPending !== bPending) return aPending - bPending;
+    const aRisky = a.is_low_confidence ? 0 : 1;
+    const bRisky = b.is_low_confidence ? 0 : 1;
+    if (aRisky !== bRisky) return aRisky - bRisky;
+    const lw = levelWeight[a.level] - levelWeight[b.level];
+    if (lw !== 0) return lw;
+    return (b.created_at || "").localeCompare(a.created_at || "");
+  });
 
   return (
     <div className="decisions-page">

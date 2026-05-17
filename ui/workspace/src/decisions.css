@@ -178,6 +178,25 @@
   color: #e0c179;
   flex-shrink: 0;
 }
+.decision-card__risky-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(224, 193, 121, 0.14);
+  border: 1px solid rgba(224, 193, 121, 0.35);
+  color: #e0c179;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  white-space: nowrap;
+  cursor: help;
+}
+.decision-card__risky-text {
+  line-height: 1;
+}
 .decision-card__head-status {
   font-size: 0.78rem;
   color: var(--muted-fg, #8a8a98);

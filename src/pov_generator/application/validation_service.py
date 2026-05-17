@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -217,12 +216,10 @@ class ValidationService:
                     decision_inputs=tuple(decision_inputs),
                 )
                 clarification_candidate_ids.extend(d.decision_id for d in created_decisions)
-                # Семантический gate `needs_user_input` создаётся в
-                # `_semantic_analysis` сырым — на основе непустого
-                # `blocking_questions` из LLM. Post-validation эмиссии всегда
-                # forcibly surface (mode="expert" в register_decision_inputs),
-                # поэтому bool(created_decisions) и есть индикатор «есть что
-                # показать пользователю». Если пусто — снимаем needs_user_input.
+                # `needs_user_input`-finding для review_report со статусом
+                # "needs_user_input" остаётся: он сообщает gating-уровень.
+                # Если post-validation не породил ни одного решения для
+                # пользователя — снимаем raw needs_user_input как избыточный.
                 if not bool(created_decisions):
                     semantic_findings = tuple(
                         f for f in semantic_findings if f.finding_type != "needs_user_input"
@@ -353,90 +350,6 @@ class ValidationService:
                     related_artifact_ids=(artifact_id,),
                 )
             )
-            if not payload.get("blocking_questions"):
-                decision_inputs.append(
-                    _build_decision_input(
-                        title="Какой ключевой бизнес-контекст нужно учесть, чтобы повысить уверенность результата?",
-                        description="Какой ключевой бизнес-контекст нужно учесть, чтобы повысить уверенность результата?",
-                        rationale="Результат задачи имеет низкую уверенность, а в контексте недостаточно данных для надежного вывода.",
-                        impact="Ответ поможет перезапустить задачу с более точным пониманием требований.",
-                        visibility="principal",
-                        answer_mode="single",
-                        confidence=float(confidence),
-                        source_type="validation",
-                        affected_task_ids=(task_id,),
-                        related_artifact_ids=(artifact_id,),
-                    )
-                )
-
-        blocking_questions = payload.get("blocking_questions")
-        if isinstance(blocking_questions, list) and blocking_questions:
-            # АРХИТЕКТУРНОЕ РЕШЕНИЕ: blocking_questions от LLM трактуются как
-            # **advisory follow-ups**, а не как стоп-сигнал.
-            #
-            # Причина: LLM с высокой уверенностью (confidence >= 0.45) сам
-            # производит качественный артефакт со всеми разделами + ДОПОЛНИТЕЛЬНО
-            # заполняет blocking_questions деталями, которые «было бы хорошо
-            # уточнить». В реальной консалтинговой работе это нормально:
-            # ТЗ всегда содержит секцию «открытые вопросы» / «допущения»,
-            # это не блокер для поставки документа.
-            #
-            # Старая логика валила задачу на любой непустой blocking_questions,
-            # что приводило к бесконечному циклу:
-            #   task → LLM выдаёт хороший артефакт + 5 вопросов → task failed
-            #   → user отвечает 5 вопросов → retry → LLM выдаёт хороший артефакт
-            #   + 5 новых вопросов → ...
-            #
-            # Новая логика:
-            # • Если confidence < 0.45 (низкая уверенность зафиксирована выше)
-            #   — задача УЖЕ помечена `low_confidence` finding'ом (blocking=True).
-            #   В этом случае blocking_questions ДЕЙСТВИТЕЛЬНО блокируют,
-            #   а finding needs_user_input явно добавляется для прозрачности.
-            # • Если confidence >= 0.45 — артефакт валиден.
-            #   blocking_questions становятся advisory-кандидатами:
-            #   они появляются в реестре решений как post-validation эмиссия,
-            #   но НЕ создают `needs_user_input` finding.
-            is_low_confidence = (
-                isinstance(confidence, (int, float))
-                and not isinstance(confidence, bool)
-                and confidence < 0.45
-            )
-            if is_low_confidence:
-                findings.append(
-                    ValidationFinding(
-                        finding_id=str(uuid.uuid4()),
-                        finding_type="needs_user_input",
-                        severity="error",
-                        blocking=True,
-                        message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
-                        related_artifact_ids=(artifact_id,),
-                    )
-                )
-            for question in blocking_questions:
-                normalized_question = str(question).strip()
-                if not normalized_question:
-                    continue
-                # W6/B2: hash вопроса в источнике даёт стабильный идентификатор
-                # между re-run (порядок blocking_questions может меняться).
-                # Сейчас используется только для отладки/трейса, не передаётся
-                # в DecisionInput.
-                _question_hash = hashlib.sha1(
-                    normalized_question.lower().encode("utf-8")
-                ).hexdigest()[:10]
-                decision_inputs.append(
-                    _build_decision_input(
-                        title=normalized_question,
-                        description=normalized_question,
-                        rationale="LLM запросила уточнение в blocking_questions артефакта.",
-                        impact="Ответ позволит уточнить требования и при необходимости перезапустить задачу.",
-                        visibility="principal" if is_low_confidence else "architectural",
-                        answer_mode="single",
-                        confidence=0.2,
-                        source_type="validation",
-                        affected_task_ids=(task_id,),
-                        related_artifact_ids=(artifact_id,),
-                    )
-                )
 
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))

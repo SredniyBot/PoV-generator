@@ -25,13 +25,9 @@ def _analysis_meta_properties() -> JSONSchema:
     модель так привыкла), но execution_service вытащит значение из
     payload и положит в ``ArtifactMetadata.overall_confidence`` —
     единственное канонично место для уверенности.
-
-    ``blocking_questions`` — содержательная часть артефакта (вопросы,
-    которые модель пометила как блокирующие), остаётся обязательным.
     """
     return {
         "confidence": {"type": "number"},
-        "blocking_questions": _string_array_schema(),
     }
 
 
@@ -45,7 +41,7 @@ def _analysis_object(required: list[str], properties: JSONSchema) -> JSONSchema:
     merged.update(_analysis_meta_properties())
     return {
         "type": "object",
-        "required": required + ["blocking_questions"],
+        "required": list(required),
         "additionalProperties": False,
         "properties": merged,
     }
@@ -922,7 +918,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                     },
                 },
                 "recommendations": _string_array_schema(),
-                "blocking_questions": _string_array_schema(),
             },
         },
     }
@@ -979,10 +974,12 @@ def schema_instruction(role: str, domain_pack_refs: tuple[str, ...]) -> str:
     schema = artifact_schema(role, domain_pack_refs)
     return (
         "Верни строго JSON, соответствующий этой схеме.\n"
-        "Если данных недостаточно для уверенного вывода, не выдумывай: фиксируй "
-        "пробелы в `blocking_questions` и при желании укажи `confidence` (0..1) "
-        "— это поле необязательное и будет вынесено в метаданные артефакта, "
-        "поэтому в самом содержании цифру повторять не нужно.\n"
+        "Если данных недостаточно для уверенного вывода, не выдумывай: оставь "
+        "поле незаполненным или отметь его как assumption. При желании укажи "
+        "`confidence` (0..1) — это поле необязательное и будет вынесено в "
+        "метаданные артефакта, поэтому в самом содержании цифру повторять "
+        "не нужно. Вопросы к пользователю формируются отдельно через "
+        "pre-flight планирование и реестр решений — не записывай их в артефакт.\n"
         f"Роль артефакта: {role}\n"
         f"Схема: {schema}"
     )
@@ -1685,8 +1682,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["implicit_risks"]],
                 "\n## Неоднозначности",
                 *[f"- {item}" for item in payload["ambiguous_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1704,8 +1699,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mentioned_systems_and_sources"]],
                 "\n## Упомянутые метрики и целевые значения",
                 *[f"- {item}" for item in payload["mentioned_metrics_and_targets"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1721,8 +1714,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["success_signals"]],
                 "\n## Непрояснённые части цели",
                 *[f"- {item}" for item in payload["unresolved_goal_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1740,8 +1731,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["environment_constraints"]],
                 "\n## Зависимости и внешние условия",
                 *[f"- {item}" for item in payload["dependency_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1759,8 +1748,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["safe_assumptions"]],
                 "\n## Кандидаты на эскалацию",
                 *[f"- {item}" for item in payload["escalation_candidates"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1781,8 +1768,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["value_hypotheses"]],
                 "\n## Допущения",
                 *[f"- {item}" for item in payload["assumptions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1802,8 +1787,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mandatory_deliverables"]],
                 "\n## Исключённые результаты этапа",
                 *[f"- {item}" for item in payload["excluded_deliverables"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1823,8 +1806,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["data_owners"]],
                 "\n## Поддерживающие команды",
                 *[f"- {item}" for item in payload["support_teams"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1843,8 +1824,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["unowned_decisions"]],
                 "\n## Точки согласования",
                 *[f"- {item}" for item in payload["approval_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1863,8 +1842,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["support_roles"]],
                 "\n## Риски передачи ответственности",
                 *[f"- {item}" for item in payload["handoff_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1887,8 +1864,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["operating_model"]],
                 "\n## Ограничения внедрения",
                 *[f"- {item}" for item in payload["adoption_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1905,8 +1880,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             [
                 "\n## Оси сравнения",
                 *[f"- {item}" for item in payload["comparison_axes"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1930,8 +1903,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 payload["recommendation_rationale"],
                 "\n## Отложенные решения",
                 *[f"- {item}" for item in payload["deferred_decisions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1948,8 +1919,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["demo_expectations"]],
                 "\n## Артефакты-доказательства",
                 *[f"- {item}" for item in payload["evidence_artifacts"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1967,8 +1936,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["formal_approvals"]],
                 "\n## Основания для отклонения результата",
                 *[f"- {item}" for item in payload["rejection_conditions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1988,8 +1955,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["formal_approvals"]],
                 "\n## Открытые зависимости",
                 *[f"- {item}" for item in payload["open_dependencies"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2007,8 +1972,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["access_dependencies"]],
                 "\n## Условия остановки этапа",
                 *[f"- {item}" for item in payload["stop_conditions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2030,8 +1993,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["project_risks"]],
                 "\n## Предлагаемый график",
                 *[f"- {item}" for item in payload["proposed_timeline"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -2054,8 +2015,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["baseline_expectations"]],
                 "\n## Требования к интерпретируемости",
                 *[f"- {item}" for item in payload["explainability_requirements"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2076,8 +2035,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 f"\n## Оценка реализуемости\n{payload['feasibility_assessment']}",
                 "\n## Замечания по приватности данных",
                 *[f"- {item}" for item in payload["privacy_notes"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2099,8 +2056,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mandatory_controls"]],
                 "\n## Комплаенс-риски",
                 *[f"- {item}" for item in payload["compliance_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2121,8 +2076,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["support_model"]],
                 "\n## Риски зависимостей",
                 *[f"- {item}" for item in payload["dependency_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2146,8 +2099,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             [
                 "\n## UX-ограничения",
                 *[f"- {item}" for item in payload["ux_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -2169,8 +2120,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             prefix = f"[{area}] " if area else ""
             user_flag = " (нужен ввод пользователя)" if issue.get("requires_user_input") else ""
             lines.append(f"- [{issue['severity']}] {prefix}{issue['message']}{user_flag}")
-        if payload.get("blocking_questions"):
-            lines.extend(["\n## Блокирующие вопросы", *[f"- {item}" for item in payload["blocking_questions"]]])
         lines.append("\n## Рекомендации")
         lines.extend(f"- {item}" for item in payload["recommendations"])
         return "\n".join(lines)

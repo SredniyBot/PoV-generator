@@ -292,7 +292,6 @@ def test_validation_creates_escalation_for_failed_review_report(tmp_path: Path) 
                 "strengths": ["Структура документа понятна."],
                 "issues": [{"severity": "error", "message": "Нет функциональных требований."}],
                 "recommendations": ["Исправить замечания."],
-                "blocking_questions": [],
             },
             ensure_ascii=False,
         ),
@@ -390,7 +389,6 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
                 "implicit_risks": ["Очень высокая неопределенность"],
                 "ambiguous_points": ["Почти все"],
                 "confidence": 0.2,
-                "blocking_questions": ["Нужна ясная формулировка бизнес-результата."],
             },
             ensure_ascii=False,
         ),
@@ -425,7 +423,10 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
 
     assert validation_run.status == "failed"
     assert any(finding.finding_type == "low_confidence" for finding in validation_run.findings)
-    assert any(finding.finding_type == "needs_user_input" for finding in validation_run.findings)
+    # v3.1: blocking_questions удалены из контрактов; needs_user_input
+    # больше не поднимается из произвольных артефактов — только из
+    # review_report со статусом "needs_user_input". low_confidence сам по
+    # себе остаётся сигналом и валит статус валидации.
 
 
 def test_domain_pack_selector_stub_picks_relevant_packs() -> None:

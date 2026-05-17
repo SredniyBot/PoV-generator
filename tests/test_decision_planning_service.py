@@ -180,8 +180,9 @@ def test_empty_decisions_list_is_valid() -> None:
 
 
 def test_decision_without_alternatives_is_skipped() -> None:
-    """Защитное чтение: decision без альтернатив — это пустой выбор,
-    бесполезен, пропускаем без падения."""
+    """Защитное чтение: decision с < 2 альтернативами — это псевдовыбор
+    (заглушка «принять рекомендацию» или вообще ничего); v3.4 требует
+    минимум 2 содержательных альтернативы, иначе запись пропускается."""
     response = {
         "decisions": [
             {
@@ -195,14 +196,23 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "confidence": 0.5,
             },
             {
-                "title": "Good — has alternatives",
+                "title": "Bad — only one alternative",
                 "description": "",
                 "alternatives": [
-                    {
-                        "option_id": "opt-1",
-                        "label": "One",
-                        "description": "",
-                    },
+                    {"option_id": "opt-only", "label": "Only", "description": ""},
+                ],
+                "proposed_option_id": "opt-only",
+                "rationale": "",
+                "level": "detail",
+                "level_rationale": "",
+                "confidence": 0.5,
+            },
+            {
+                "title": "Good — has two alternatives",
+                "description": "",
+                "alternatives": [
+                    {"option_id": "opt-1", "label": "One", "description": ""},
+                    {"option_id": "opt-2", "label": "Two", "description": ""},
                 ],
                 "proposed_option_id": "opt-1",
                 "rationale": "",
@@ -222,7 +232,7 @@ def test_decision_without_alternatives_is_skipped() -> None:
         context_text="x",
     )
     assert len(result.decisions) == 1
-    assert result.decisions[0].title == "Good — has alternatives"
+    assert result.decisions[0].title == "Good — has two alternatives"
 
 
 def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
@@ -266,7 +276,8 @@ def test_invalid_level_falls_back_to_architecture() -> None:
                 "title": "X",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-1", "label": "L", "description": ""},
+                    {"option_id": "opt-1", "label": "L1", "description": ""},
+                    {"option_id": "opt-2", "label": "L2", "description": ""},
                 ],
                 "proposed_option_id": "opt-1",
                 "rationale": "",

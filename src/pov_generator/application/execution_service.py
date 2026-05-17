@@ -960,20 +960,15 @@ class ExecutionService:
             "решением пользователя — решение перевешивает.\n"
             "</source_hierarchy>\n\n"
 
-            "<two_uncertainty_channels>\n"
-            "1. `open_questions` ВНУТРИ АРТЕФАКТА (если такое поле есть в схеме) — "
-            "нормальный раздел документа. Сюда идёт всё, что «доуточнить на "
-            "этапе детального дизайна», «согласовать с владельцем процесса», "
-            "«зависит от выбора инструмента». Реальное ТЗ ВСЕГДА содержит "
-            "такие пункты.\n\n"
-            "2. `blocking_questions` В МЕТАДАННЫХ — стоп-сигнал «без ответа не "
-            "могу произвести артефакт вообще». Используй ТОЛЬКО когда бизнес-цель "
-            "или скоуп фундаментально неоднозначны, либо данные в контексте "
-            "противоречат друг другу и без выбора артефакт будет вредить.\n\n"
-            "Детали реализации, выбор инструментов, конкретные пороги метрик — "
-            "НЕ blocking_questions. Это open_questions или assumptions.\n\n"
-            "Пустой blocking_questions — нормальное и желаемое состояние.\n"
-            "</two_uncertainty_channels>\n\n"
+            "<questions_to_user>\n"
+            "Вопросы к пользователю формируются отдельно — на pre-flight шаге "
+            "планирования и через реестр решений (Decision/CheckpointSession). "
+            "Не записывай вопросы в сам артефакт. Если в схеме есть поле "
+            "`open_questions` — это нормальный раздел документа для «доуточнить "
+            "на этапе детального дизайна», «согласовать с владельцем процесса», "
+            "«зависит от выбора инструмента»; реальное ТЗ ВСЕГДА содержит такие "
+            "пункты.\n"
+            "</questions_to_user>\n\n"
 
             "<style_bans>\n"
             "Не используй вводные мета-фразы: «стоит отметить», «важно отметить», "
@@ -1208,7 +1203,6 @@ class ExecutionService:
                     "Точный стек промышленного внедрения за пределами текущего этапа",
                 ],
                 "confidence": 0.81,
-                "blocking_questions": [],
             }
         if artifact_role == "requirements_spec":
             clarification = self._find_payload(parsed_inputs, "Уточнение бизнес-цели")
@@ -1365,7 +1359,6 @@ class ExecutionService:
             if not spec_payload:
                 spec_payload = self._find_payload(parsed_inputs, "Подготовка черновика ТЗ")
             issues = []
-            blocking_questions: list[str] = []
             if not isinstance(spec_payload, dict) or not spec_payload.get("functional_requirements"):
                 issues.append({"severity": "error", "message": "В ТЗ отсутствуют функциональные требования."})
             if frontend_enabled and (
@@ -1380,8 +1373,6 @@ class ExecutionService:
                 issues.append({"severity": "critical", "message": "Для проекта с ограничениями ИБ в ТЗ отсутствует раздел безопасности и приватности.", "area": "security", "requires_user_input": False})
             if integration_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("integration_model")):
                 issues.append({"severity": "critical", "message": "Для проекта с интеграциями в ТЗ отсутствует раздел интеграционной модели.", "area": "integration", "requires_user_input": False})
-            if isinstance(spec_payload, dict) and not spec_payload.get("open_questions"):
-                blocking_questions = []
             status = "passed" if not issues else "needs_changes"
             return {
                 "overall_status": status,
@@ -1392,7 +1383,6 @@ class ExecutionService:
                     "Есть связь с целями, рамкой этапа и требованиями к результату",
                 ],
                 "issues": issues,
-                "blocking_questions": blocking_questions,
                 "recommendations": (
                     ["Можно переходить к следующему этапу."]
                     if status == "passed"

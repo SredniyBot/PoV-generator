@@ -239,45 +239,55 @@ def evaluate_methodology_rules(
                 rationale_parts.append(f"Безопасное допущение по умолчанию: {default_assumption}")
             rationale_text = " ".join(rationale_parts)
 
-            # v3.3: если LLM не дала реальных альтернатив:
-            # - если есть default_assumption от правила → ИСПОЛЬЗУЕМ ЕГО
-            #   ТЕКСТ как label (не «Принять рекомендацию» — это выглядело
-            #   как фейк). Один контекстный вариант + escape «свой ответ» в UI.
-            # - если default_assumption тоже нет → free_text mode, пользователь
-            #   пишет сам.
-            if not decision_alts:
-                if default_assumption:
-                    # Label = первые 80 символов default_assumption (читаемо),
-                    # description = полный текст.
-                    label = default_assumption.strip()
-                    if len(label) > 80:
-                        label = label[:77] + "…"
-                    decision_alts = (
-                        DecisionAlternative(
-                            option_id="opt_default",
-                            label=label,
-                            description=default_assumption,
-                            confidence=0.5,
-                        ),
+            # v3.4: каждое решение ДОЛЖНО иметь >=2 реальных альтернатив.
+            # Случаи:
+            # - LLM выдала альтернативы из reasoning + есть default_assumption →
+            #   объединяем: default_assumption становится отдельной альтернативой
+            #   «безопасное допущение», LLM-варианты — остальные. Гарантирован 2+.
+            # - LLM выдала >=2 альтернатив → используем их (default_assumption,
+            #   если есть, добавляем как ещё один безопасный fallback).
+            # - LLM выдала 1 → дополняем default_assumption (если есть).
+            # - LLM ничего не выдала и default_assumption нет → НЕ создаём
+            #   decision вообще (правило просто факт, без выбора).
+            if not decision_alts and not default_assumption:
+                # Truly nothing to decide — skip emit, log rule outcome only
+                outcomes.append(
+                    RuleOutcome(
+                        stage_id=stage.identifier,
+                        rule_id=rule.identifier,
+                        fired=True,
                     )
-                    answer_mode = "single"
-                else:
-                    # Truly no options — free_text mode
-                    answer_mode = "free_text"
-                    recommended_id = ""
-            else:
-                answer_mode = "single"
+                )
+                continue
+            # Если есть default_assumption — добавим его как «безопасное
+            # допущение» альтернативу. Гарантирует наличие 2+ опций даже
+            # когда LLM дал только один вариант.
+            if default_assumption:
+                default_label = default_assumption.strip()
+                if len(default_label) > 80:
+                    default_label = default_label[:77] + "…"
+                default_alt = DecisionAlternative(
+                    option_id="opt_safe_default",
+                    label=default_label,
+                    description=default_assumption,
+                    confidence=0.6,
+                )
+                # Положим в начало списка — это рекомендуемый дефолт
+                decision_alts = (default_alt, *decision_alts)
 
-            # Рекомендация = вариант с максимальной LLM-confidence (только для single).
-            if decision_alts:
-                best_idx = 0
-                best_conf = -1.0
-                for i, opt in enumerate(decision_alts):
-                    c = opt.confidence if opt.confidence is not None else 0.0
-                    if c > best_conf:
-                        best_conf = c
-                        best_idx = i
-                recommended_id = decision_alts[best_idx].option_id
+            # Финальная проверка: должно быть >=1 альтернатива
+            # (формально 2+ норма; если только 1 — оставляем как «выберите
+            # или дайте свой ответ через escape hatch в UI»).
+            answer_mode = "single"
+            # Рекомендация = вариант с максимальной LLM-confidence
+            best_idx = 0
+            best_conf = -1.0
+            for i, opt in enumerate(decision_alts):
+                c = opt.confidence if opt.confidence is not None else 0.0
+                if c > best_conf:
+                    best_conf = c
+                    best_idx = i
+            recommended_id = decision_alts[best_idx].option_id
 
             # Visibility → Level mapping (v3.1)
             level = _VISIBILITY_TO_LEVEL.get(visibility, "detail")
