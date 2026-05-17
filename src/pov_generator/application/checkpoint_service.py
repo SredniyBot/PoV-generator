@@ -400,11 +400,26 @@ class CheckpointService:
             )
             by_task.setdefault(di.source_task_id, []).append(decision)
 
+        # v3.2: используем АКТУАЛЬНЫЙ режим участия пользователя, не
+        # forced "expert". Раньше post-hoc validation/methodology decisions
+        # форсированно поднимались — это ломало обещание autopilot
+        # «никогда не блокировать»: пользователь переключался в autopilot,
+        # тогда set_participation_mode auto-resolve'ил pending decisions,
+        # задача ретрайнилась, и НОВЫЕ pre-flight/validation decisions
+        # снова форсированно поднимались, опять блокируя workflow.
+        try:
+            current_mode = self._runtime.load_process_state(workspace).clarification_mode
+        except Exception:
+            current_mode = "balanced"
+
         saved_decisions: list[Decision] = []
         for task_id, decisions in by_task.items():
             if task_id is not None:
-                # Создаём сессию — forcibly surface через mode="expert".
-                # process_planned_decisions сам сохранит каждый Decision.
+                # process_planned_decisions фильтрует по mode:
+                # - autopilot → все silent_accept (status="accepted_default")
+                # - balanced → только business surface, остальное silent
+                # - control → business + architecture surface
+                # - expert → всё surface
                 self.process_planned_decisions(
                     workspace,
                     project_id=project_id,
@@ -412,7 +427,7 @@ class CheckpointService:
                     task_title=self._task_title(workspace, task_id),
                     artifact_role="",
                     decisions=tuple(decisions),
-                    mode="expert",
+                    mode=current_mode,
                 )
                 # Подтягиваем сохранённые версии (с финальными статусами)
                 for d in decisions:
