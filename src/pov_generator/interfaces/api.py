@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
+from ..application.checkpoint_service import CheckpointService
 from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
@@ -76,6 +77,7 @@ def create_app(
         pass
 
     clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
+    checkpoint_service = CheckpointService(runtime)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
@@ -101,6 +103,7 @@ def create_app(
     app.state.query_service = query_service
     app.state.command_service = command_service
     app.state.provider_settings_service = provider_settings_service
+    app.state.checkpoint_service = checkpoint_service
     app.state.llm_registry = llm_registry
     app.state.poll_interval = websocket_poll_interval
 
@@ -442,6 +445,86 @@ def create_app(
             return to_primitive(query_service.decision_detail(project_id, decision_id))
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+
+    # --- v3.0 — Checkpoint sessions -----------------------------------------
+
+    @app.get("/api/projects/{project_id}/checkpoints")
+    def project_checkpoints(project_id: str) -> Any:
+        """Все checkpoint-сессии проекта + pending_count для UI-бейджа."""
+        return to_primitive(query_service.project_checkpoints(project_id))
+
+    @app.get("/api/projects/{project_id}/checkpoints/{session_id}")
+    def project_checkpoint_detail(project_id: str, session_id: str) -> Any:
+        """Развёрнутая сессия: метаданные + Decision-карточки.
+
+        Returns 404 если сессии нет или она принадлежит другому проекту.
+        """
+        from ..common.errors import NotFoundError
+        try:
+            return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/projects/{project_id}/checkpoints/{session_id}/answer")
+    def project_checkpoint_answer(
+        project_id: str, session_id: str, body: dict[str, Any]
+    ) -> Any:
+        """Применить ответы пользователя на checkpoint-сессию.
+
+        Body:
+            ``{ "answers": [{ "decision_id": "...", "kind": "accept_default" | "select_alternative" | "free_text" | "defer", "selected_option_id": "..." | None, "free_text": "..." | None }] }``
+
+        Все ответы применяются атомарно. На решения сессии, по которым
+        ответа не передано — применяется ``accept_default`` (массовое
+        подтверждение оставшихся при закрытии сессии).
+
+        Returns:
+            Финализированная сессия (status=finalized) с обновлёнными
+            Decision-объектами.
+        """
+        from ..common.errors import NotFoundError
+        from ..domain.checkpoints import CheckpointAnswer
+
+        # Проверяем, что сессия принадлежит проекту, до применения
+        try:
+            session = query_service.checkpoint_session_detail(project_id, session_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        raw_answers = body.get("answers") or []
+        if not isinstance(raw_answers, list):
+            raise HTTPException(status_code=400, detail="'answers' должен быть массивом")
+        answers: list[CheckpointAnswer] = []
+        for raw in raw_answers:
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=400, detail="каждый answer — объект")
+            try:
+                answers.append(
+                    CheckpointAnswer(
+                        decision_id=str(raw["decision_id"]),
+                        kind=str(raw["kind"]),  # type: ignore[arg-type]
+                        selected_option_id=(
+                            str(raw["selected_option_id"])
+                            if raw.get("selected_option_id") is not None
+                            else None
+                        ),
+                        free_text=(
+                            str(raw["free_text"])
+                            if raw.get("free_text") is not None
+                            else None
+                        ),
+                    )
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=f"answer без поля {exc}")
+
+        workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.submit_answers(
+            workspace, session_id=session_id, answers=tuple(answers)
+        )
+        # Перечитываем финализированную сессию через query_service,
+        # чтобы UI получил тот же view-формат, что и при GET
+        return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
 
     @app.get("/api/projects/{project_id}/artifacts")
     def project_artifacts(project_id: str) -> Any:

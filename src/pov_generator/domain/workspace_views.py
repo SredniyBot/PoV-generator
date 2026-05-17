@@ -272,6 +272,44 @@ class ProjectDecisionsView:
     items: tuple[DecisionItemView, ...]
 
 
+# --- v3.0 — Checkpoint session views -----------------------------------------
+
+
+@dataclass(frozen=True)
+class CheckpointSessionView:
+    """View checkpoint-сессии для UI.
+
+    В отличие от доменной CheckpointSession включает развёрнутые
+    Decision-карточки, а не только их id — UI рисует сессию одним
+    запросом, без дополнительных round-trip'ов.
+    """
+
+    session_id: str
+    project_id: str
+    task_id: str
+    task_title: str
+    artifact_role: str
+    status: str
+    created_at: str
+    finalized_at: str | None
+    finalized_by: str | None
+    decisions: tuple[DecisionItemView, ...]
+
+
+@dataclass(frozen=True)
+class ProjectCheckpointsView:
+    """Список checkpoint-сессий проекта.
+
+    pending_count — для бэйджа в навигации проекта («3 решения ждут
+    вашего внимания»). items в обратном хронологическом порядке —
+    свежие сверху.
+    """
+
+    project_id: str
+    pending_count: int
+    items: tuple[CheckpointSessionView, ...]
+
+
 @dataclass(frozen=True)
 class ArtifactSummaryView:
     artifact_id: str

@@ -20,6 +20,7 @@ from ..domain.workspace_views import (
     ClarificationItemView,
     ClarificationOptionView,
     ContextManifestSummaryView,
+    CheckpointSessionView,
     DecisionAlternativeView,
     DecisionItemView,
     DecisionLogEntryView,
@@ -32,6 +33,7 @@ from ..domain.workspace_views import (
     ProjectArtifactVersionsView,
     ProjectClarificationsView,
     ProjectDebugView,
+    ProjectCheckpointsView,
     ProjectDecisionLogView,
     ProjectDecisionsView,
     ProjectFailurePinsView,
@@ -318,6 +320,55 @@ class WorkspaceQueryService:
             from ..common.errors import NotFoundError
             raise NotFoundError(f"decision {decision_id!r} не принадлежит проекту {project_id!r}")
         return self._decision_view(decision)
+
+    # ---- v3.0 — Checkpoint sessions ------------------------------------------
+
+    def project_checkpoints(self, project_id: str) -> ProjectCheckpointsView:
+        """Все checkpoint-сессии проекта с pending_count для бэйджа."""
+        context = self._load_context(project_id)
+        sessions = self._runtime.list_checkpoint_sessions(
+            context.workspace, project_id=project_id
+        )
+        items = tuple(
+            self._checkpoint_session_view(context.workspace, session) for session in sessions
+        )
+        return ProjectCheckpointsView(
+            project_id=project_id,
+            pending_count=sum(1 for s in sessions if s.status == "pending"),
+            items=items,
+        )
+
+    def checkpoint_session_detail(
+        self, project_id: str, session_id: str
+    ) -> CheckpointSessionView:
+        """Детали одной сессии. Scope-protected: id привязан к проекту."""
+        context = self._load_context(project_id)
+        session = self._runtime.get_checkpoint_session(context.workspace, session_id)
+        if session.project_id != project_id:
+            from ..common.errors import NotFoundError
+            raise NotFoundError(
+                f"checkpoint session {session_id!r} не принадлежит проекту {project_id!r}"
+            )
+        return self._checkpoint_session_view(context.workspace, session)
+
+    def _checkpoint_session_view(self, workspace, session) -> CheckpointSessionView:
+        """Развернуть сессию: подтянуть Decision-объекты по id."""
+        decisions = tuple(
+            self._decision_view(self._runtime.get_decision(workspace, decision_id))
+            for decision_id in session.decision_ids
+        )
+        return CheckpointSessionView(
+            session_id=session.session_id,
+            project_id=session.project_id,
+            task_id=session.task_id,
+            task_title=session.task_title,
+            artifact_role=session.artifact_role,
+            status=session.status,
+            created_at=session.created_at,
+            finalized_at=session.finalized_at,
+            finalized_by=session.finalized_by,
+            decisions=decisions,
+        )
 
     def _decision_view(self, decision) -> DecisionItemView:
         chosen = decision.chosen_alternative

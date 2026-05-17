@@ -15,6 +15,7 @@ from ..domain.artifacts import (
     ContextItem,
     ContextManifest,
 )
+from ..domain.checkpoints import CheckpointSession, CheckpointStatus
 from ..domain.clarifications import ClarificationCandidate, ClarificationOption, ClarificationRequest
 from ..domain.decisions import (
     Decision,
@@ -49,6 +50,27 @@ from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, Workflo
 
 
 # --- сериализация Layer A (знания) -------------------------------------------
+
+
+# --- сериализация CheckpointSession (v3.0) ------------------------------------
+
+
+def _checkpoint_from_row(row: sqlite3.Row) -> CheckpointSession:
+    decision_ids = tuple(
+        json_loads(row["decision_ids_json"]) if row["decision_ids_json"] else []
+    )
+    return CheckpointSession(
+        session_id=row["session_id"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        task_title=row["task_title"],
+        artifact_role=row["artifact_role"],
+        status=row["status"],
+        decision_ids=decision_ids,
+        created_at=row["created_at"],
+        finalized_at=row["finalized_at"],
+        finalized_by=row["finalized_by"],
+    )
 
 
 # --- сериализация Decision (v3.0 — реестр решений) ---------------------------
@@ -1855,6 +1877,104 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    # ---- CheckpointSession (v3.0) -----------------------------------------
+    #
+    # Сессии чекпоинта — крошечная сущность, в основном связь
+    # task ↔ decision_ids ↔ status. Хранится отдельной таблицей, потому что
+    # жизненный цикл независим от Decision (статус сессии меняется
+    # атомарно, не привязан к статусу отдельных решений).
+
+    def upsert_checkpoint_session(
+        self, workspace: Path, session: CheckpointSession
+    ) -> CheckpointSession:
+        """Создать или обновить сессию. Идемпотентно по session_id."""
+        now = utc_now_iso()
+        created_at = session.created_at or now
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into checkpoint_sessions (
+                    session_id, project_id, task_id, task_title, artifact_role,
+                    status, decision_ids_json, created_at, finalized_at, finalized_by
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(session_id) do update set
+                    status = excluded.status,
+                    decision_ids_json = excluded.decision_ids_json,
+                    finalized_at = excluded.finalized_at,
+                    finalized_by = excluded.finalized_by
+                """,
+                (
+                    session.session_id,
+                    session.project_id,
+                    session.task_id,
+                    session.task_title,
+                    session.artifact_role,
+                    session.status,
+                    json_dumps(list(session.decision_ids)),
+                    created_at,
+                    session.finalized_at,
+                    session.finalized_by,
+                ),
+            )
+            connection.commit()
+        return replace(session, created_at=created_at)
+
+    def get_checkpoint_session(
+        self, workspace: Path, session_id: str
+    ) -> CheckpointSession:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from checkpoint_sessions where session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"checkpoint session {session_id!r} не найдена")
+        return _checkpoint_from_row(row)
+
+    def list_checkpoint_sessions(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        status: CheckpointStatus | None = None,
+    ) -> list[CheckpointSession]:
+        """Сессии проекта; по умолчанию все, опционально фильтр по статусу."""
+        where = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if status is not None:
+            where.append("status = ?")
+            params.append(status)
+        query = (
+            "select * from checkpoint_sessions where "
+            + " and ".join(where)
+            + " order by created_at desc, rowid desc"
+        )
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_checkpoint_from_row(row) for row in rows]
+
+    def find_pending_checkpoint_for_task(
+        self, workspace: Path, task_id: str
+    ) -> CheckpointSession | None:
+        """Активная сессия по задаче, если есть.
+
+        Per-task one-pending инвариант: задача не должна одновременно
+        иметь две pending-сессии. Если возникнет — сигнал к расследованию,
+        здесь возвращаем самую свежую.
+        """
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select * from checkpoint_sessions
+                where task_id = ? and status = 'pending'
+                order by created_at desc, rowid desc
+                limit 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return _checkpoint_from_row(row) if row is not None else None
+
     # ---- Decision ledger (v3.0) ------------------------------------------
     #
     # CRUD-методы для реестра решений. Стиль соответствует методам
@@ -2313,6 +2433,33 @@ class SqliteRuntime:
                 on clarification_events(request_id, created_at);
             """
         )
+        # v3.0 — CheckpointSession: пауза workflow для участия пользователя.
+        #
+        # Decision_ids хранится JSON-массивом — связь one-to-many от сессии
+        # к решениям. Решения сами уже привязаны к session через source_task_id,
+        # обратная связь нужна для быстрого UI-чтения «какие решения в этой
+        # конкретной сессии». При появлении нагрузки можно вынести в join-таблицу.
+        connection.executescript(
+            """
+            create table if not exists checkpoint_sessions (
+              session_id text primary key,
+              project_id text not null,
+              task_id text not null,
+              task_title text not null default '',
+              artifact_role text not null default '',
+              status text not null,
+              decision_ids_json text not null default '[]',
+              created_at text not null,
+              finalized_at text,
+              finalized_by text
+            );
+            create index if not exists checkpoint_sessions_project_status_idx
+                on checkpoint_sessions(project_id, status);
+            create index if not exists checkpoint_sessions_task_idx
+                on checkpoint_sessions(task_id);
+            """
+        )
+
         # v3.0 — Реестр решений (decision ledger).
         #
         # См. specs/12_clarification_escalation.md раздел «v3.0 — реестр
