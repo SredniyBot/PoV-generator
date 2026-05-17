@@ -104,20 +104,14 @@ def _build_decision_input(
         )
         for opt in options
     )
-    # v3.2: free_text-only вопросы запрещены. Если эмиттер не предоставил
-    # альтернатив — генерируем синтетический «Принять рекомендацию» с
-    # описанием из rationale. UI всё равно даст пользователю «свой ответ»
-    # как escape hatch.
+    # v3.3: если у эмиттера нет реальных альтернатив — НЕ изобретаем
+    # фейковый «Принять рекомендацию системы». Это выглядело как заглушка.
+    # Переключаемся на free_text — пользователь пишет ответ сам или
+    # нажимает «Принять как есть» (accept_default) в UI.
     if not alternatives:
-        alternatives = (
-            DecisionAlternative(
-                option_id="opt_recommended",
-                label="Принять рекомендацию системы",
-                description=rationale or title,
-                confidence=0.5,
-            ),
-        )
-    if recommended_option_id is None:
+        answer_mode = "free_text"
+        recommended = ""
+    elif recommended_option_id is None:
         recommended = alternatives[0].option_id
     else:
         recommended = recommended_option_id

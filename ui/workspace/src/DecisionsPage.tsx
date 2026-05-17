@@ -15,9 +15,9 @@
  */
 
 import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Lock } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
 import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
@@ -48,6 +48,20 @@ const STATUS_LABEL: Record<DecisionStatus, string> = {
   locked_in: "Зафиксировано",
   superseded: "Устарело",
 };
+
+/**
+ * Парсим LLM-сгенерированные заголовки вида «Раздел N.M: subject — question».
+ * Возвращает { sectionTag, cleanTitle } — секция в маленький pill, чистый
+ * заголовок крупнее. Если префикса нет — возвращает оригинал в cleanTitle.
+ */
+function splitSectionPrefix(title: string): { sectionTag: string | null; cleanTitle: string } {
+  // Маска: «Раздел X[.Y][.Z]:» или «Section X[.Y]:» в начале
+  const m = title.match(/^\s*(Раздел|Section)\s+([0-9.]+)\s*:\s*(.+)$/i);
+  if (m && m[2] && m[3]) {
+    return { sectionTag: m[2], cleanTitle: m[3].trim() };
+  }
+  return { sectionTag: null, cleanTitle: title };
+}
 
 /** Текстовое описание уровней, видимых пользователю в режиме (для empty state). */
 function humanLevelsForMode(mode: string): string {
@@ -126,6 +140,10 @@ function DecisionCard({
     selectedAlternativeId ??
     (currentAnswerKind === "accept_default" || currentAnswerKind === null ? proposedId : null);
 
+  // v3.3: парсим LLM-префикс «Раздел N.M:» — выносим в маленький тег
+  const { sectionTag, cleanTitle } = splitSectionPrefix(decision.title);
+  const chosenAlt = decision.alternatives.find((a) => a.option_id === decision.chosen_option_id);
+
   return (
     <div
       className={cx(
@@ -146,7 +164,8 @@ function DecisionCard({
         ) : null}
         <div className="decision-card__head-text">
           <h3 className="decision-card__title">
-            {decision.title}
+            {sectionTag ? <span className="decision-card__section-tag">§ {sectionTag}</span> : null}
+            <span className="decision-card__question">{cleanTitle}</span>
             {decision.is_low_confidence ? (
               <AlertTriangle
                 size={14}
@@ -176,181 +195,227 @@ function DecisionCard({
 
       {showBody ? (
         <div className="decision-card__body">
-          {decision.description ? (
+          {decision.description && decision.description !== decision.title ? (
             <p className="decision-card__description">{decision.description}</p>
           ) : null}
 
-          {decision.alternatives.length > 0 ? (
+          {/* INTERACTIVE РЕЖИМ (checkpoint): radio/checkbox для выбора */}
+          {isInteractive && decision.alternatives.length > 0 ? (
             <ul
               className="decision-card__options"
               role={decision.answer_mode === "multiple" ? "group" : "radiogroup"}
             >
               {decision.alternatives.map((alt) => {
                 const isProposed = alt.option_id === proposedId;
-                // v3.1: multi-select — независимо выбираем по чекбоксу
                 const isMulti = decision.answer_mode === "multiple";
                 let isSelected: boolean;
                 if (isMulti) {
-                  // Multi: checked если в interactive selected_option_ids,
-                  // или в read-only — есть в chosen_option_ids
-                  if (isInteractive) {
-                    const ids =
-                      interactive?.currentAnswer?.kind === "select_alternative"
-                        ? interactive.currentAnswer.selected_option_ids ?? []
-                        : decision.chosen_option_ids ?? [];
-                    isSelected = ids.includes(alt.option_id);
-                  } else {
-                    isSelected = (decision.chosen_option_ids ?? []).includes(alt.option_id);
-                  }
+                  const ids =
+                    interactive?.currentAnswer?.kind === "select_alternative"
+                      ? interactive.currentAnswer.selected_option_ids ?? []
+                      : decision.chosen_option_ids ?? [];
+                  isSelected = ids.includes(alt.option_id);
                 } else {
                   isSelected = effectiveSelectedId === alt.option_id;
                 }
                 return (
                   <li key={alt.option_id} className="decision-card__option">
-                    {isInteractive ? (
-                      <label className="decision-card__option-label">
-                        <input
-                          type={isMulti ? "checkbox" : "radio"}
-                          name={`alt-${decision.decision_id}`}
-                          checked={isSelected}
-                          onChange={(e) => {
-                            setFreeTextOpen(false);
-                            if (isMulti) {
-                              // Toggle option_id in selected_option_ids
-                              const prevIds =
-                                interactive?.currentAnswer?.kind === "select_alternative"
-                                  ? interactive.currentAnswer.selected_option_ids ?? []
-                                  : decision.chosen_option_ids ?? [];
-                              const nextIds = e.target.checked
-                                ? [...prevIds.filter((x) => x !== alt.option_id), alt.option_id]
-                                : prevIds.filter((x) => x !== alt.option_id);
-                              handleAnswer({
-                                decision_id: decision.decision_id,
-                                kind: "select_alternative",
-                                selected_option_ids: nextIds,
-                              });
-                            } else {
-                              // Single radio — как раньше
-                              if (alt.option_id === proposedId) {
-                                handleAnswer({
-                                  decision_id: decision.decision_id,
-                                  kind: "accept_default",
-                                });
-                              } else {
-                                handleAnswer({
-                                  decision_id: decision.decision_id,
-                                  kind: "select_alternative",
-                                  selected_option_id: alt.option_id,
-                                });
-                              }
-                            }
-                          }}
-                        />
-                        <span className="decision-card__option-content">
-                          <span className="decision-card__option-title">
-                            {alt.label}
-                            {isProposed && !isMulti ? (
-                              <span className="decision-card__option-hint">(по умолчанию)</span>
-                            ) : null}
-                          </span>
-                          {alt.description ? (
-                            <span className="decision-card__option-desc">{alt.description}</span>
-                          ) : null}
-                        </span>
-                      </label>
-                    ) : (
+                    <label className="decision-card__option-label">
+                      <input
+                        type={isMulti ? "checkbox" : "radio"}
+                        name={`alt-${decision.decision_id}`}
+                        checked={isSelected}
+                        onChange={(e) => {
+                          setFreeTextOpen(false);
+                          if (isMulti) {
+                            const prevIds =
+                              interactive?.currentAnswer?.kind === "select_alternative"
+                                ? interactive.currentAnswer.selected_option_ids ?? []
+                                : decision.chosen_option_ids ?? [];
+                            const nextIds = e.target.checked
+                              ? [...prevIds.filter((x) => x !== alt.option_id), alt.option_id]
+                              : prevIds.filter((x) => x !== alt.option_id);
+                            handleAnswer({
+                              decision_id: decision.decision_id,
+                              kind: "select_alternative",
+                              selected_option_ids: nextIds,
+                            });
+                          } else if (alt.option_id === proposedId) {
+                            handleAnswer({
+                              decision_id: decision.decision_id,
+                              kind: "accept_default",
+                            });
+                          } else {
+                            handleAnswer({
+                              decision_id: decision.decision_id,
+                              kind: "select_alternative",
+                              selected_option_id: alt.option_id,
+                            });
+                          }
+                        }}
+                      />
                       <span className="decision-card__option-content">
-                        <span
-                          className={cx(
-                            "decision-card__option-title",
-                            isSelected && "decision-card__option-title--chosen",
-                          )}
-                        >
+                        <span className="decision-card__option-title">
                           {alt.label}
-                          {isSelected ? (
-                            <span className="decision-card__option-hint">(выбрано)</span>
+                          {isProposed && !isMulti ? (
+                            <span className="decision-card__option-hint">(по умолчанию)</span>
                           ) : null}
                         </span>
                         {alt.description ? (
                           <span className="decision-card__option-desc">{alt.description}</span>
                         ) : null}
                       </span>
-                    )}
+                    </label>
                   </li>
                 );
               })}
             </ul>
           ) : null}
-          {/* v3.2: free_text-only режим устранён в эмиттерах. Бэкенд
-              всегда даёт минимум одну альтернативу. Раньше здесь была
-              ветка для answer_mode==="free_text" → primary textarea;
-              теперь «свой ответ» доступен через нижний toggle ниже,
-              как универсальный escape hatch. */}
 
-          {decision.user_free_text_answer ? (
-            <div className="decision-card__user-text">
-              <span className="decision-card__user-text-label">Ваш ответ:</span>
-              <p>{decision.user_free_text_answer}</p>
+          {/* READ-ONLY РЕЖИМ (реестр): выбранный вариант — prominent */}
+          {!isInteractive ? (
+            <div className="decision-card__chosen-box">
+              <div className="decision-card__chosen-head">
+                <span className="decision-card__chosen-icon" aria-hidden="true">✓</span>
+                <span className="decision-card__chosen-label">Выбрано:</span>
+                <span className="decision-card__chosen-value">
+                  {chosenAlt ? chosenAlt.label : decision.chosen_option_label || (decision.user_free_text_answer ? "Свой ответ" : "—")}
+                </span>
+              </div>
+              {chosenAlt?.description ? (
+                <p className="decision-card__chosen-desc">{chosenAlt.description}</p>
+              ) : null}
+              {decision.rationale && decision.rationale !== chosenAlt?.description ? (
+                <p className="decision-card__chosen-rationale">{decision.rationale}</p>
+              ) : null}
+              {decision.user_free_text_answer ? (
+                <p className="decision-card__chosen-freetext">«{decision.user_free_text_answer}»</p>
+              ) : null}
             </div>
           ) : null}
 
+          {/* INTERACTIVE: свой ответ + free_text mode (когда нет альтернатив) */}
           {isInteractive ? (
             <div className="decision-card__free">
-              <button
-                type="button"
-                className="decision-card__free-toggle"
-                onClick={() => setFreeTextOpen((v) => !v)}
-              >
-                {freeTextOpen ? "Скрыть свой ответ" : "Дать свой ответ"}
-              </button>
-              {freeTextOpen ? (
-                <textarea
-                  className="decision-card__free-input"
-                  placeholder="Сформулируйте свой вариант. Он будет применён в неизменном виде."
-                  value={
-                    currentAnswerKind === "free_text"
-                      ? interactive.currentAnswer?.free_text ?? ""
-                      : freeTextDraft
-                  }
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setFreeTextDraft(v);
-                    if (v.trim()) {
-                      handleAnswer({
-                        decision_id: decision.decision_id,
-                        kind: "free_text",
-                        free_text: v,
-                      });
-                    } else if (currentAnswerKind === "free_text") {
+              {decision.alternatives.length === 0 || decision.answer_mode === "free_text" ? (
+                /* Чистый free_text — textarea + «Принять как есть» */
+                <div className="decision-card__free--primary">
+                  <textarea
+                    className="decision-card__free-input"
+                    placeholder="Ваш ответ…"
+                    value={
+                      currentAnswerKind === "free_text"
+                        ? interactive.currentAnswer?.free_text ?? ""
+                        : freeTextDraft
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setFreeTextDraft(v);
+                      if (v.trim()) {
+                        handleAnswer({
+                          decision_id: decision.decision_id,
+                          kind: "free_text",
+                          free_text: v,
+                        });
+                      } else if (currentAnswerKind === "free_text") {
+                        handleAnswer({
+                          decision_id: decision.decision_id,
+                          kind: "accept_default",
+                        });
+                      }
+                    }}
+                    rows={4}
+                  />
+                  <button
+                    type="button"
+                    className="decision-card__free-skip"
+                    onClick={() => {
+                      setFreeTextDraft("");
                       handleAnswer({
                         decision_id: decision.decision_id,
                         kind: "accept_default",
                       });
-                    }
-                  }}
-                  rows={3}
-                />
-              ) : null}
+                    }}
+                  >
+                    Не знаю · принять как есть
+                  </button>
+                </div>
+              ) : (
+                /* Опции есть, но даём escape hatch */
+                <>
+                  <button
+                    type="button"
+                    className="decision-card__free-toggle"
+                    onClick={() => setFreeTextOpen((v) => !v)}
+                  >
+                    {freeTextOpen ? "Скрыть свой ответ" : "Дать свой ответ"}
+                  </button>
+                  {freeTextOpen ? (
+                    <textarea
+                      className="decision-card__free-input"
+                      placeholder="Свой вариант — будет применён в неизменном виде."
+                      value={
+                        currentAnswerKind === "free_text"
+                          ? interactive.currentAnswer?.free_text ?? ""
+                          : freeTextDraft
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setFreeTextDraft(v);
+                        if (v.trim()) {
+                          handleAnswer({
+                            decision_id: decision.decision_id,
+                            kind: "free_text",
+                            free_text: v,
+                          });
+                        } else if (currentAnswerKind === "free_text") {
+                          handleAnswer({
+                            decision_id: decision.decision_id,
+                            kind: "accept_default",
+                          });
+                        }
+                      }}
+                      rows={3}
+                    />
+                  ) : null}
+                </>
+              )}
             </div>
           ) : null}
 
-          {/* Дополнительная меторматация в реестре — collapsed по умолчанию */}
-          {!isInteractive && (decision.rationale || decision.level_rationale) ? (
-            <details className="decision-card__more">
-              <summary>Подробнее</summary>
-              {decision.rationale ? (
-                <p className="decision-card__more-line">
-                  <span className="decision-card__more-label">Почему:</span>
-                  {decision.rationale}
-                </p>
+          {/* META-БЛОК в режиме реестра: артефакт + альтернативы dropdown */}
+          {!isInteractive ? (
+            <div className="decision-card__meta-row">
+              {decision.affected_artifact_ids.length > 0 ? (
+                <Link
+                  to={`/projects/${decision.project_id}/artifacts/${decision.affected_artifact_ids[0]}`}
+                  className="decision-card__artifact-link"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <FileText size={13} />
+                  Артефакт
+                </Link>
               ) : null}
-              {decision.level_rationale ? (
-                <p className="decision-card__more-line">
-                  <span className="decision-card__more-label">Уровень:</span>
-                  {decision.level_rationale}
-                </p>
+              {decision.alternatives.length > 1 ? (
+                <details className="decision-card__alts-drop">
+                  <summary>
+                    Альтернативы ({decision.alternatives.length - 1})
+                  </summary>
+                  <ul className="decision-card__alts-list">
+                    {decision.alternatives
+                      .filter((a) => a.option_id !== decision.chosen_option_id)
+                      .map((alt) => (
+                        <li key={alt.option_id}>
+                          <span className="decision-card__alt-title">{alt.label}</span>
+                          {alt.description ? (
+                            <span className="decision-card__alt-desc">{alt.description}</span>
+                          ) : null}
+                        </li>
+                      ))}
+                  </ul>
+                </details>
               ) : null}
-            </details>
+            </div>
           ) : null}
         </div>
       ) : null}

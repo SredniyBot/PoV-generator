@@ -239,32 +239,45 @@ def evaluate_methodology_rules(
                 rationale_parts.append(f"Безопасное допущение по умолчанию: {default_assumption}")
             rationale_text = " ".join(rationale_parts)
 
-            # v3.2: free_text-only вопросы запрещены. Если у эмиттера нет
-            # реальных альтернатив — генерируем синтетическую «принять
-            # рекомендацию» с описанием из default_assumption или base_need.
-            # Это даёт пользователю один-клик-accept; «свой ответ»
-            # остаётся универсальным escape hatch в UI DecisionCard.
+            # v3.3: если LLM не дала реальных альтернатив:
+            # - если есть default_assumption от правила → ИСПОЛЬЗУЕМ ЕГО
+            #   ТЕКСТ как label (не «Принять рекомендацию» — это выглядело
+            #   как фейк). Один контекстный вариант + escape «свой ответ» в UI.
+            # - если default_assumption тоже нет → free_text mode, пользователь
+            #   пишет сам.
             if not decision_alts:
-                fallback_desc = default_assumption or base_need
-                decision_alts = (
-                    DecisionAlternative(
-                        option_id="opt_recommended",
-                        label="Принять рекомендацию системы",
-                        description=fallback_desc,
-                        confidence=0.5,
-                    ),
-                )
+                if default_assumption:
+                    # Label = первые 80 символов default_assumption (читаемо),
+                    # description = полный текст.
+                    label = default_assumption.strip()
+                    if len(label) > 80:
+                        label = label[:77] + "…"
+                    decision_alts = (
+                        DecisionAlternative(
+                            option_id="opt_default",
+                            label=label,
+                            description=default_assumption,
+                            confidence=0.5,
+                        ),
+                    )
+                    answer_mode = "single"
+                else:
+                    # Truly no options — free_text mode
+                    answer_mode = "free_text"
+                    recommended_id = ""
+            else:
+                answer_mode = "single"
 
-            answer_mode = "single"
-            # Рекомендация = вариант с максимальной LLM-confidence.
-            best_idx = 0
-            best_conf = -1.0
-            for i, opt in enumerate(decision_alts):
-                c = opt.confidence if opt.confidence is not None else 0.0
-                if c > best_conf:
-                    best_conf = c
-                    best_idx = i
-            recommended_id = decision_alts[best_idx].option_id
+            # Рекомендация = вариант с максимальной LLM-confidence (только для single).
+            if decision_alts:
+                best_idx = 0
+                best_conf = -1.0
+                for i, opt in enumerate(decision_alts):
+                    c = opt.confidence if opt.confidence is not None else 0.0
+                    if c > best_conf:
+                        best_conf = c
+                        best_idx = i
+                recommended_id = decision_alts[best_idx].option_id
 
             # Visibility → Level mapping (v3.1)
             level = _VISIBILITY_TO_LEVEL.get(visibility, "detail")
