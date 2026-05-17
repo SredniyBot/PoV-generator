@@ -104,10 +104,23 @@ def _build_decision_input(
         )
         for opt in options
     )
-    if recommended_option_id is None and alternatives:
+    # v3.2: free_text-only вопросы запрещены. Если эмиттер не предоставил
+    # альтернатив — генерируем синтетический «Принять рекомендацию» с
+    # описанием из rationale. UI всё равно даст пользователю «свой ответ»
+    # как escape hatch.
+    if not alternatives:
+        alternatives = (
+            DecisionAlternative(
+                option_id="opt_recommended",
+                label="Принять рекомендацию системы",
+                description=rationale or title,
+                confidence=0.5,
+            ),
+        )
+    if recommended_option_id is None:
         recommended = alternatives[0].option_id
     else:
-        recommended = recommended_option_id or ""
+        recommended = recommended_option_id
     # rationale + impact склейка: impact дополняет почему этот ответ важен.
     if impact:
         full_rationale = f"{rationale} {impact}".strip()
@@ -354,7 +367,7 @@ class ValidationService:
                         rationale="Результат задачи имеет низкую уверенность, а в контексте недостаточно данных для надежного вывода.",
                         impact="Ответ поможет перезапустить задачу с более точным пониманием требований.",
                         visibility="principal",
-                        answer_mode="free_text",
+                        answer_mode="single",
                         confidence=float(confidence),
                         source_type="validation",
                         affected_task_ids=(task_id,),
@@ -423,7 +436,7 @@ class ValidationService:
                         rationale="LLM запросила уточнение в blocking_questions артефакта.",
                         impact="Ответ позволит уточнить требования и при необходимости перезапустить задачу.",
                         visibility="principal" if is_low_confidence else "architectural",
-                        answer_mode="free_text",
+                        answer_mode="single",
                         confidence=0.2,
                         source_type="validation",
                         affected_task_ids=(task_id,),

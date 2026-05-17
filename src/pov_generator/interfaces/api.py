@@ -741,7 +741,32 @@ def create_app(
         mode = _required_str(payload, "mode")
         if mode not in {"autopilot", "balanced", "control", "expert"}:
             raise PovGeneratorError("Режим уточнений должен быть одним из: autopilot, balanced, control, expert.")
-        return to_primitive(command_service.set_clarification_mode(project_id, mode=mode))
+        result = command_service.set_clarification_mode(project_id, mode=mode)
+
+        # v3.2 auto-continue: если смена режима разблокировала задачи —
+        # сразу стартуем workflow run, чтобы пользователь не жал «Run» вручную.
+        # Той же логикой пользуется submit-answers endpoint.
+        try:
+            workspace_ref = catalog.resolve_workspace(project_id)
+            ws = workspace_ref.workspace
+            already_active = workflow_runner_service.latest_active_run(ws, project_id)
+            if already_active is None:
+                # Эвристика: «есть смысл запустить» = есть failed-tasks
+                # (mode change их auto-retry'ит на ready) или просто что-то
+                # есть в очереди. start_run_until_blocked сам поймёт.
+                runs = workflow_runner_service.list_runs(ws, project_id=project_id, limit=1)
+                last_run = runs[0] if runs else None
+                workflow_runner_service.start_run_until_blocked(
+                    ws,
+                    project_id,
+                    provider=last_run.provider if last_run else None,
+                    model=last_run.model if last_run else None,
+                    max_steps=1000,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        return to_primitive(result)
 
     @app.post("/api/projects/{project_id}/commands/set-methodology")
     def set_methodology(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:

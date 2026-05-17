@@ -48,6 +48,20 @@ from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
 @dataclass(frozen=True)
+class ModeChangeResult:
+    """v3.2: что произошло после смены режима участия.
+
+    Используется UI/API для отображения toast'а после переключения:
+    «Принято автоматически: N, продолжается M задач».
+    """
+
+    mode: str
+    auto_accepted_count: int
+    finalized_session_count: int
+    resumed_task_count: int
+
+
+@dataclass(frozen=True)
 class CheckpointCreationResult:
     """Что вернул сервис после обработки результата planning.
 
@@ -418,20 +432,105 @@ class CheckpointService:
 
     # ---- mode (participation level) ------------------------------------------
 
-    def set_participation_mode(self, workspace: Path, mode: str):
-        """Сменить режим участия пользователя.
+    def set_participation_mode(self, workspace: Path, mode: str) -> "ModeChangeResult":
+        """Сменить режим участия + реэвалюировать существующие pending решения.
 
-        В v3.1 mode определяет какие уровни Decision показываются в
-        checkpoint-сессиях. Это простая запись в ProcessState — никакой
-        реевалюации существующих сессий не происходит (изменение
-        применяется к следующим pre-flight планированиям).
+        v3.2: при понижении уровня вовлечения (например, balanced → autopilot)
+        все proposed-решения, которые в новом режиме УЖЕ не должны
+        показываться пользователю, автоматически принимаются с дефолтом
+        (status='accepted_default', user_action='not_shown').
+
+        Если у pending CheckpointSession все её decisions после этого
+        стали закрытыми — сессия финализируется, а связанная failed-task
+        переводится в ready (тот же auto-resume, что в submit_answers).
+
+        Это позволяет переключение в autopilot мгновенно разблокировать
+        workflow — все ждущие решения принимаются дефолтами, задачи
+        возобновляются, пользователь больше ничего не должен делать.
+
+        При повышении уровня (autopilot → expert) — обратной реэвалюации
+        нет (решения уже приняты как accepted_default; пользователь может
+        переоткрыть их вручную в реестре).
         """
         from ..domain.process_state import SetClarificationModePatch
-        return self._runtime.apply_process_patch(
+        state = self._runtime.apply_process_patch(
             workspace,
             SetClarificationModePatch(mode=mode),
             actor="operator",
             reason="participation mode changed",
+        )
+
+        project_id = state.manifest.project_id
+        auto_accepted_ids: list[str] = []
+        finalized_sessions: list[str] = []
+        resumed_tasks: list[str] = []
+
+        # 1. Auto-accept все proposed-решения, что новому режиму не нужны
+        proposed = self._runtime.list_decisions(
+            workspace, project_id=project_id, status="proposed"
+        )
+        for d in proposed:
+            if not should_surface_to_user(d, mode):
+                updated = replace(
+                    d,
+                    status="accepted_default",
+                    user_action="not_shown",
+                    updated_at=utc_now_iso(),
+                )
+                self._runtime.upsert_decision(workspace, updated)
+                auto_accepted_ids.append(d.decision_id)
+
+        # 2. Финализация sessions, у которых все decisions закрыты, +
+        #    авто-резюм связанных failed-задач (тот же путь, что в submit_answers).
+        if auto_accepted_ids:
+            pending_sessions = self._runtime.list_checkpoint_sessions(
+                workspace, project_id=project_id, status="pending"
+            )
+            for session in pending_sessions:
+                # Перечитываем decisions в актуальных статусах
+                still_proposed = False
+                for did in session.decision_ids:
+                    try:
+                        if self._runtime.get_decision(workspace, did).status == "proposed":
+                            still_proposed = True
+                            break
+                    except Exception:
+                        continue
+                if still_proposed:
+                    continue
+                # Все resolved → финализируем сессию
+                finalized = replace(
+                    session,
+                    status="finalized",
+                    finalized_at=utc_now_iso(),
+                    finalized_by="mode_change",
+                )
+                self._runtime.upsert_checkpoint_session(workspace, finalized)
+                finalized_sessions.append(session.session_id)
+                # Auto-resume failed task
+                try:
+                    task = self._runtime.get_task(workspace, session.task_id)
+                    if task.status == "failed":
+                        self._runtime.transition_task(
+                            workspace,
+                            session.task_id,
+                            "retry",
+                            payload={
+                                "reason": "auto-retry after mode change",
+                                "source": "set_participation_mode",
+                                "new_mode": mode,
+                            },
+                        )
+                        resumed_tasks.append(session.task_id)
+                except Exception:
+                    # Не блокируем mode change при ошибке retry
+                    pass
+
+        return ModeChangeResult(
+            mode=mode,
+            auto_accepted_count=len(auto_accepted_ids),
+            finalized_session_count=len(finalized_sessions),
+            resumed_task_count=len(resumed_tasks),
         )
 
     # ---- helpers ----------------------------------------------------------

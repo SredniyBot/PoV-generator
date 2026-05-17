@@ -280,32 +280,12 @@ function DecisionCard({
                 );
               })}
             </ul>
-          ) : decision.answer_mode === "free_text" && isInteractive ? (
-            // free_text-only: альтернатив нет, сразу textarea как primary input
-            <div className="decision-card__free decision-card__free--primary">
-              <textarea
-                className="decision-card__free-input"
-                placeholder="Введите свой ответ"
-                value={
-                  currentAnswerKind === "free_text"
-                    ? interactive.currentAnswer?.free_text ?? ""
-                    : freeTextDraft
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setFreeTextDraft(v);
-                  if (v.trim()) {
-                    handleAnswer({
-                      decision_id: decision.decision_id,
-                      kind: "free_text",
-                      free_text: v,
-                    });
-                  }
-                }}
-                rows={4}
-              />
-            </div>
           ) : null}
+          {/* v3.2: free_text-only режим устранён в эмиттерах. Бэкенд
+              всегда даёт минимум одну альтернативу. Раньше здесь была
+              ветка для answer_mode==="free_text" → primary textarea;
+              теперь «свой ответ» доступен через нижний toggle ниже,
+              как универсальный escape hatch. */}
 
           {decision.user_free_text_answer ? (
             <div className="decision-card__user-text">
@@ -314,7 +294,7 @@ function DecisionCard({
             </div>
           ) : null}
 
-          {isInteractive && decision.answer_mode !== "free_text" ? (
+          {isInteractive ? (
             <div className="decision-card__free">
               <button
                 type="button"

@@ -183,20 +183,39 @@ class WorkspaceCommandService:
         )
 
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
-        """Сменить режим участия пользователя (v3.1).
+        """Сменить режим участия пользователя (v3.2).
 
-        Теперь идёт через `CheckpointService.set_participation_mode`, который
-        просто записывает новый mode в ProcessState. Реевалюации legacy
-        clarifications больше нет — все decision-сессии создаются заново под
-        текущий mode при следующем pre-flight планировании.
+        Делегирует в `CheckpointService.set_participation_mode`, который:
+        - применяет SetClarificationModePatch к ProcessState;
+        - реэвалюирует существующие proposed-decisions: те, что больше
+          не должны показываться в новом режиме — auto-accept default;
+        - финализирует pending checkpoint-сессии, у которых все
+          decisions стали закрытыми;
+        - переводит соответствующие failed-задачи обратно в ready.
+
+        Этот endpoint возвращает понятный пользователю summary
+        («приняты автоматически X, разблокированы Y задач»).
         """
         workspace_ref = self._catalog.resolve_workspace(project_id)
-        self._checkpoint_service.set_participation_mode(workspace_ref.workspace, mode)
+        result = self._checkpoint_service.set_participation_mode(workspace_ref.workspace, mode)
+        if result.resumed_task_count > 0:
+            summary = (
+                f"Режим участия изменён на «{mode}». "
+                f"Автоматически приняты {result.auto_accepted_count} решений, "
+                f"разблокированы {result.resumed_task_count} задач."
+            )
+        elif result.auto_accepted_count > 0:
+            summary = (
+                f"Режим участия изменён на «{mode}». "
+                f"Автоматически приняты {result.auto_accepted_count} решений."
+            )
+        else:
+            summary = f"Режим участия изменён на «{mode}»."
         return CommandResultView(
             status="accepted",
             command_name="set-clarification-mode",
-            summary=f"Режим уточнений изменён на «{mode}».",
-            changed_projections=("shell", "clarifications", "situation", "timeline", "state"),
+            summary=summary,
+            changed_projections=("shell", "situation", "timeline", "state", "task_graph", "overview"),
             resource_id=mode,
         )
 

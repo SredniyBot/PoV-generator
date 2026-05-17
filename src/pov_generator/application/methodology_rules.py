@@ -239,18 +239,32 @@ def evaluate_methodology_rules(
                 rationale_parts.append(f"Безопасное допущение по умолчанию: {default_assumption}")
             rationale_text = " ".join(rationale_parts)
 
-            answer_mode = "single" if decision_alts else "free_text"
-            recommended_id: str = ""
-            if decision_alts:
-                # Рекомендация = вариант с максимальной LLM-confidence.
-                best_idx = 0
-                best_conf = -1.0
-                for i, opt in enumerate(decision_alts):
-                    c = opt.confidence if opt.confidence is not None else 0.0
-                    if c > best_conf:
-                        best_conf = c
-                        best_idx = i
-                recommended_id = decision_alts[best_idx].option_id
+            # v3.2: free_text-only вопросы запрещены. Если у эмиттера нет
+            # реальных альтернатив — генерируем синтетическую «принять
+            # рекомендацию» с описанием из default_assumption или base_need.
+            # Это даёт пользователю один-клик-accept; «свой ответ»
+            # остаётся универсальным escape hatch в UI DecisionCard.
+            if not decision_alts:
+                fallback_desc = default_assumption or base_need
+                decision_alts = (
+                    DecisionAlternative(
+                        option_id="opt_recommended",
+                        label="Принять рекомендацию системы",
+                        description=fallback_desc,
+                        confidence=0.5,
+                    ),
+                )
+
+            answer_mode = "single"
+            # Рекомендация = вариант с максимальной LLM-confidence.
+            best_idx = 0
+            best_conf = -1.0
+            for i, opt in enumerate(decision_alts):
+                c = opt.confidence if opt.confidence is not None else 0.0
+                if c > best_conf:
+                    best_conf = c
+                    best_idx = i
+            recommended_id = decision_alts[best_idx].option_id
 
             # Visibility → Level mapping (v3.1)
             level = _VISIBILITY_TO_LEVEL.get(visibility, "detail")
