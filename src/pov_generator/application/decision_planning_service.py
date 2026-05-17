@@ -24,11 +24,15 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import logging
+
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import Decision, DecisionAlternative
-from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
+from ..domain.llm_settings import PURPOSE_DECISION_PLANNING, PURPOSE_EXECUTION_STANDARD
 from ..infrastructure.llm import LLMProviderRegistry
+
+logger = logging.getLogger(__name__)
 
 
 # Сложность задачи для resolve_for_purpose. Planning — это структурное
@@ -228,11 +232,31 @@ class DecisionPlanningService:
                 complexity=_PLANNING_COMPLEXITY,
             )
         else:
-            llm = self._llm.resolve_for_purpose(
-                PURPOSE_DECISION_PLANNING,
-                complexity=_PLANNING_COMPLEXITY,
-                override_model=model,
-            )
+            # Резолв: сначала пробуем purpose decision_planning, при его
+            # отсутствии тихо падаем на execution.standard (т.е. на ту
+            # модель, которая всё равно будет генерить артефакт).
+            # Это даёт работающее «из коробки» поведение для пользователей,
+            # которые не настроили отдельную модель под planning.
+            try:
+                llm = self._llm.resolve_for_purpose(
+                    PURPOSE_DECISION_PLANNING,
+                    complexity=_PLANNING_COMPLEXITY,
+                    override_model=model,
+                )
+            except ConflictError as primary_exc:
+                logger.info(
+                    "PURPOSE_DECISION_PLANNING не настроен (%s); fallback на "
+                    "execution.standard для pre-flight планирования",
+                    primary_exc,
+                )
+                # standard complexity — потому что planning не требует
+                # opus-уровня; для пользователя это та же модель, на которой
+                # потом будет сгенерирован артефакт.
+                llm = self._llm.resolve_for_purpose(
+                    "execution",
+                    complexity="standard",
+                    override_model=model,
+                )
 
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(
@@ -244,15 +268,14 @@ class DecisionPlanningService:
         schema = _build_planning_schema()
 
         try:
+            # tool_name/tool_description — опциональные kwargs, есть только
+            # в claude_sdk_client.chat_json. Subscription и openrouter
+            # провайдеры их не принимают. Дефолты у claude_sdk_client
+            # достаточны: structured output работает через JSON schema.
             response = llm.chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
-                tool_name="plan_decisions",
-                tool_description=(
-                    "Перечислить решения, которые исполнитель задачи "
-                    "собирается принять при сборке артефакта."
-                ),
             )
         except Exception as exc:  # noqa: BLE001
             raise ConflictError(

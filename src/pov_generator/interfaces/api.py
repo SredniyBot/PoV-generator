@@ -77,6 +77,15 @@ def create_app(
     except Exception:  # noqa: BLE001
         pass
 
+    # v3.0: sync новых purpose-assignments. При добавлении нового purpose
+    # в RECOMMENDED_BY_PURPOSE (например, decision_planning) — назначаем
+    # рекомендуемую модель для существующих пользователей. Без этого
+    # пользователь видит «не назначено» для нового сценария.
+    try:
+        provider_settings_service.sync_missing_purpose_assignments()
+    except Exception:  # noqa: BLE001
+        pass
+
     clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     checkpoint_service = CheckpointService(runtime)
     decision_planning_service = DecisionPlanningService(llm_registry=llm_registry)

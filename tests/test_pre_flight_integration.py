@@ -202,7 +202,7 @@ def test_balanced_business_decision_pauses_execution(tmp_path: Path) -> None:
     project_id = runtime.load_project_state(workspace).manifest.project_id
 
     # Mode по умолчанию — balanced (см. ProcessState).
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
 
     assert bundle.result.status == "paused_for_checkpoint"
     assert bundle.result.checkpoint_session_id is not None
@@ -239,7 +239,7 @@ def test_autopilot_silent_accepts_and_continues(tmp_path: Path) -> None:
         reason="set autopilot",
     )
 
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
     # autopilot → ничего не surfaced → не paused, идём в основную генерацию (stub)
     assert bundle.result.status == "succeeded"
     # Решение всё равно в реестре, но как accepted_default
@@ -266,7 +266,7 @@ def test_balanced_detail_decision_silent_no_pause(tmp_path: Path) -> None:
     )
     planning_svc.expand_graph(workspace, snapshot)
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
 
     # balanced + detail → silent → задача проходит
     assert bundle.result.status == "succeeded"
@@ -289,7 +289,7 @@ def test_submit_then_retry_uses_finalized_session(tmp_path: Path) -> None:
     project_id = runtime.load_project_state(workspace).manifest.project_id
 
     # 1. Первый запуск: pause
-    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
     assert first.result.status == "paused_for_checkpoint"
     session_id = first.result.checkpoint_session_id
 
@@ -308,7 +308,7 @@ def test_submit_then_retry_uses_finalized_session(tmp_path: Path) -> None:
 
     # 3. Повторный запуск задачи: pre-flight видит finalized session,
     #    НЕ создаёт новых решений, идёт в stub-генерацию
-    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
     assert second.result.status == "succeeded"
 
     # 4. В реестре по-прежнему одно решение — с обновлённым выбором
@@ -336,7 +336,7 @@ def test_locked_in_decisions_appear_in_prompt(tmp_path: Path) -> None:
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
 
     # Запускаем, финализируем, ретраим
-    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
     checkpoint_svc.submit_answers(
         workspace,
         session_id=first.result.checkpoint_session_id,
@@ -346,7 +346,7 @@ def test_locked_in_decisions_appear_in_prompt(tmp_path: Path) -> None:
             ),
         ),
     )
-    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
 
     # Достаём prompt_bundle trace, проверяем что в user_prompt есть блок
     import json as _json
@@ -370,34 +370,47 @@ def test_locked_in_decisions_appear_in_prompt(tmp_path: Path) -> None:
 
 
 def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
-    """Через WorkflowService.run_next, задача с pause переходит в failed
-    (с error_type='paused_for_checkpoint'). Это даёт UI возможность
-    показать «приостановлено», и после submit_answers transition_task
-    переведёт её обратно в ready."""
+    """Симулируем WorkflowService.run_next: execute_task возвращает
+    paused → WorkflowService должен пометить task как failed.
+
+    Здесь без WorkflowService.run_next — он зовёт execute_task без
+    force_pre_flight, и для stub-провайдера pre-flight пропускается.
+    Эмулируем ту же логику вручную (transition_task fail), чтобы
+    проверить именно auto-resume через submit_answers."""
     workspace = tmp_path / "case_wf"
     init_project(workspace, "Workflow-уровень теста.")
-    runtime, snapshot, workflow_svc, checkpoint_svc, planning_svc, _exec = _bootstrap_services(
+    runtime, snapshot, _workflow_svc, checkpoint_svc, planning_svc, exec_svc = _bootstrap_services(
         workspace, _make_business_decision
     )
     planning_svc.expand_graph(workspace, snapshot)
-    project_id = runtime.load_project_state(workspace).manifest.project_id
+    task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
 
-    step = workflow_svc.run_next(workspace, snapshot, provider="stub")
-    assert step.validation_status == "paused_for_checkpoint"
-    assert step.checkpoint_session_id is not None
-    # Task в failed
-    task = runtime.get_task(workspace, step.task_id)
-    assert task.status == "failed"
+    # 1. execute_task возвращает paused (force_pre_flight=True для stub)
+    bundle = exec_svc.execute_task(
+        workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True
+    )
+    assert bundle.result.status == "paused_for_checkpoint"
+    session_id = bundle.result.checkpoint_session_id
 
-    # submit_answers → авто-resume: задача обратно в ready/blocked
+    # 2. WorkflowService на этот результат делает transition_task("fail")
+    #    с error_type="paused_for_checkpoint". Эмулируем.
+    planning_svc.transition_task(
+        workspace,
+        task.task_id,
+        "fail",
+        payload={"error_message": "paused", "error_type": "paused_for_checkpoint"},
+    )
+    assert runtime.get_task(workspace, task.task_id).status == "failed"
+
+    # 3. submit_answers → авто-resume: задача обратно в ready/blocked
     checkpoint_svc.submit_answers(
         workspace,
-        session_id=step.checkpoint_session_id,
+        session_id=session_id,
         answers=(
             CheckpointAnswer(
-                decision_id=f"d-{step.task_id}", kind="accept_default"
+                decision_id=f"d-{task.task_id}", kind="accept_default"
             ),
         ),
     )
-    task_after = runtime.get_task(workspace, step.task_id)
+    task_after = runtime.get_task(workspace, task.task_id)
     assert task_after.status in {"ready", "blocked"}

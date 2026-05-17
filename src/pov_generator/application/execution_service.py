@@ -65,6 +65,7 @@ class ExecutionService:
         *,
         provider: str | None = None,
         model: str | None = None,
+        force_pre_flight: bool = False,
     ) -> ExecutionBundle:
         state = self._runtime.load_project_state(workspace)
         manifest = state.manifest
@@ -141,28 +142,28 @@ class ExecutionService:
         )
 
         # v3.0 — Pre-flight checkpoint stage.
-        # Запускается для всех путей, кроме structural merge (там нет
-        # LLM-вызова, нечего планировать). Для stub-провайдера pre-flight
-        # тоже работает: planning service может быть тоже stub'нут (тест-
-        # фикстуры), но архитектурно поток одинаковый.
-        # Логика:
-        #   1. Есть pending session по task_id → пауза, ждём submit.
-        #   2. Есть finalized session → подтягиваем locked-in decisions,
-        #      они дальше попадут в основной промпт.
-        #   3. Сессии нет → бежим pre-flight планирование. Если оно создаст
-        #      новую сессию (есть surfaced решения) → пауза. Если всё ушло
-        #      silently → идём дальше с decisions из реестра.
-        # Skip целиком если сервисы не инжектированы (test scenarios без
-        # planning_service) или если template = structural merge.
+        # Skip-условия:
+        #   - structural merge: нет LLM-вызова в принципе, нечего планировать.
+        #   - stub-провайдер: stub нужен для быстрых dev/test сценариев без
+        #     реальных LLM-вызовов; если бы pre-flight через fallback
+        #     резолвился в реальный LLM (что он умеет), stub перестал бы
+        #     быть быстрым. `force_pre_flight=True` отключает этот skip —
+        #     это test-only flag для интеграционных тестов, которые
+        #     инжектят stub-планировщик через DecisionPlanningService и
+        #     должны видеть всю pre-flight логику без LLM-зависимостей.
+        #   - planning/checkpoint сервисы не инжектированы (legacy / тесты
+        #     без участия).
         is_structural_merge = (
             template.merge is not None and template.merge.strategy == "structural"
         )
-        locked_in_decisions: tuple[Decision, ...] = ()
-        if (
+        pre_flight_eligible = (
             self._decision_planning is not None
             and self._checkpoint is not None
             and not is_structural_merge
-        ):
+            and (active_provider != "stub" or force_pre_flight)
+        )
+        locked_in_decisions: tuple[Decision, ...] = ()
+        if pre_flight_eligible:
             paused_result = self._run_pre_flight_stage(
                 workspace=workspace,
                 state=state,
@@ -474,6 +475,13 @@ class ExecutionService:
             return None
 
         # Шаг 4: первый запуск — выполняем pre-flight планирование.
+        # При фатальной ошибке резолвера (ни decision_planning, ни
+        # execution.standard не настроены) — graceful degrade С ЛОГОМ.
+        # При других ошибках (битый промпт, network, парсинг) — пробрасываем
+        # наверх: это реальная поломка, пользователь должен её видеть, а не
+        # получать тихо отсутствие реестра.
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             planning = self._decision_planning.plan_for_task(
                 project_id=state.manifest.project_id,
@@ -483,12 +491,24 @@ class ExecutionService:
                 task_summary=template.summary,
                 context_text=user_prompt,  # уже включает контекст из manifest
             )
-        except ConflictError:
-            # Pre-flight упал — не блокируем основной workflow, идём дальше
-            # без participation. Соответствует принципу graceful degradation:
-            # checkpoint — опциональная фича, её отказ не должен ломать
-            # генерацию артефакта.
-            return None
+        except ConflictError as exc:
+            msg = str(exc)
+            # «Не назначена модель» означает: пользователь не настроил
+            # ни decision_planning, ни execution.standard. Это admin-issue,
+            # не runtime — workflow всё равно должен пройти.
+            if "Не назначена модель" in msg or "нет рабочих маршрутов" in msg:
+                logger.warning(
+                    "Pre-flight планирование skip'нуто для task %s: %s. "
+                    "Реестр решений не пополнится. Откройте Settings → "
+                    "Default Models, чтобы назначить модель для сценария.",
+                    task.task_id,
+                    msg,
+                )
+                return None
+            # Иначе — это реальный сбой (LLM-ошибка, парсинг и т. п.).
+            # Пробрасываем — пользователь увидит сообщение, поправит или
+            # сообщит. Без этого мы повторим багу «всё молча работает».
+            raise
 
         result = self._checkpoint.process_planned_decisions(
             workspace,

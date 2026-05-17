@@ -30,6 +30,7 @@ from ..domain.llm_settings import (
     ALL_PURPOSES,
     PURPOSE_CLARIFICATION_CE11,
     PURPOSE_COMPLEXITY_SELECTOR,
+    PURPOSE_DECISION_PLANNING,
     PURPOSE_DOMAIN_PACK_SELECTOR,
     PURPOSE_EXECUTION_COMPLEX,
     PURPOSE_EXECUTION_STANDARD,
@@ -83,6 +84,10 @@ RECOMMENDED_BY_PURPOSE: dict[str, tuple[str, ...]] = {
     PURPOSE_DOMAIN_PACK_SELECTOR: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_CLARIFICATION_CE11: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_COMPLEXITY_SELECTOR: ("claude-haiku-4-5", "openai/gpt-4o-mini"),
+    # v3.0: pre-flight планирование решений. Структурная задача
+    # (перечисление выборов), не глубокий анализ — поэтому быстрая/дешёвая
+    # модель. Sonnet как fallback, если haiku нет.
+    PURPOSE_DECISION_PLANNING: ("claude-haiku-4-5", "claude-sonnet-4-5", "openai/gpt-4o-mini"),
 }
 
 
@@ -482,6 +487,37 @@ class ProviderSettingsService:
             self.reset_assignments_to_recommended()
 
         return tuple(created)
+
+    def sync_missing_purpose_assignments(self) -> tuple[ModelAssignment, ...]:
+        """Достроить assignments для purposes, появившихся после установки.
+
+        Для существующих пользователей (у которых БД уже не пустая, поэтому
+        ``ensure_default_settings`` ничего не делает) — этот метод ловит
+        случай, когда мы добавили новый purpose (например, decision_planning
+        в v3.0), но в их settings.db для него нет назначения.
+
+        Логика:
+        - Идём по RECOMMENDED_BY_PURPOSE.
+        - Для каждого purpose без assignment пробуем назначить первую
+          рекомендуемую модель из доступных. Если ни одна не доступна —
+          purpose остаётся без назначения (как и было).
+
+        Существующие assignments НЕ переписываются — пользователь мог
+        выбрать другую модель осознанно.
+
+        Возвращает список созданных назначений (пустой, если все уже на месте).
+        """
+        existing_purposes = {a.purpose for a in self._store.list_assignments()}
+        available_models = {entry["model_name"] for entry in self.list_models()}
+        applied: list[ModelAssignment] = []
+        for purpose, recommended in RECOMMENDED_BY_PURPOSE.items():
+            if purpose in existing_purposes:
+                continue
+            for model_name in recommended:
+                if model_name in available_models:
+                    applied.append(self.set_assignment(purpose=purpose, model_name=model_name))
+                    break
+        return tuple(applied)
 
     # --- Internals -----------------------------------------------------------
 
