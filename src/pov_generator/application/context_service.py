@@ -31,21 +31,6 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
     return None
 
 
-def _clarification_request_id_from_position(position: Position) -> str | None:
-    """Извлечь request_id из identifier'а положения, привязанного к уточнению.
-
-    Положения, рождённые координатором уточнений, имеют стабильный префикс
-    ``clarification.`` в identifier'е. Это позволяет связать положение
-    обратно с источником без хранения дополнительного поля.
-    """
-    if position.source != "clarification":
-        return None
-    prefix = "clarification."
-    if not position.identifier.startswith(prefix):
-        return None
-    return position.identifier[len(prefix):]
-
-
 def estimate_tokens(content: str) -> int:
     return max(1, len(content) // 4)
 
@@ -528,25 +513,14 @@ class ContextService:
         task,
         template_roles: set[str],
     ) -> bool:
-        """Положение считается relevant к task если:
-        - источник — clarification, чей affected_task_ids содержит task.task_id, ИЛИ
-        - related_artifact_ids этого clarification пересекаются с ролями задачи.
-
-        Для прочих источников — relevant по умолчанию, чтобы случайно не
-        отфильтровать важное.
+        """v3.1: после миграции на Decision-модель положения с префиксом
+        ``clarification.`` больше не создаются. Все положения попадают в
+        relevant-категорию по умолчанию — фильтрация по affinity больше не
+        применяется на уровне контекста (Layer A знаниями уже отвечает
+        реестр Decisions, у каждого ответа есть source_task_id).
         """
-        request_id = _clarification_request_id_from_position(position)
-        if request_id is None:
-            return True
-        try:
-            request = self._runtime.get_clarification_request(workspace, request_id)
-        except Exception:
-            return True
-        if task.task_id in (request.affected_task_ids or ()):
-            return True
-        if template_roles and set(request.related_artifact_ids or ()) & template_roles:
-            return True
-        return False
+        del workspace, position, task, template_roles
+        return True
 
     # ------------------------------------------------------------------
     # B4: Previous attempt context (для retry задач)

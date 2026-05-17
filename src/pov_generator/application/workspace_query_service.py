@@ -17,13 +17,10 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ArtifactVersionItemView,
-    ClarificationItemView,
-    ClarificationOptionView,
     ContextManifestSummaryView,
     CheckpointSessionView,
     DecisionAlternativeView,
     DecisionItemView,
-    DecisionLogEntryView,
     DomainPackCatalogItemView,
     FailurePinView,
     ObjectiveCatalogItemView,
@@ -31,10 +28,8 @@ from ..domain.workspace_views import (
     OverviewArtifactItem,
     OverviewClarificationItem,
     ProjectArtifactVersionsView,
-    ProjectClarificationsView,
     ProjectDebugView,
     ProjectCheckpointsView,
-    ProjectDecisionLogView,
     ProjectDecisionsView,
     ProjectFailurePinsView,
     ProjectListItemView,
@@ -75,7 +70,6 @@ class WorkspaceQueryService:
         "situation",
         "timeline",
         "artifacts",
-        "clarifications",
         "review",
         "state",
         "debug",
@@ -227,26 +221,6 @@ class WorkspaceQueryService:
         entries = self._build_timeline(context)
         filtered = tuple(entry for entry in entries if entry.sequence > after_sequence)
         return ProjectTimelineView(project_id=context.manifest.project_id, entries=filtered, total_entries=len(entries))
-
-    def project_clarifications(self, project_id: str) -> ProjectClarificationsView:
-        context = self._load_context(project_id)
-        items = tuple(
-            self._clarification_view(item)
-            for item in self._runtime.list_clarification_requests(context.workspace)
-        )
-        return ProjectClarificationsView(
-            project_id=context.manifest.project_id,
-            mode=context.state.process.clarification_mode,
-            open_count=sum(1 for item in items if item.status == "open"),
-            answered_count=sum(1 for item in items if item.status == "answered"),
-            assumed_count=sum(1 for item in items if item.status == "assumed"),
-            blocking_count=sum(1 for item in items if item.status == "open" and item.blocking_scope != "none"),
-            items=items,
-        )
-
-    def clarification_detail(self, project_id: str, clarification_id: str) -> ClarificationItemView:
-        context = self._load_context(project_id)
-        return self._clarification_view(self._runtime.get_clarification_request(context.workspace, clarification_id))
 
     # ---- v3.0 — Decision ledger -----------------------------------------------
 
@@ -511,7 +485,24 @@ class WorkspaceQueryService:
             1 for ref in objective.done_artifact_refs
             if ref.identifier.rsplit(".", 1)[-1] in artifact_roles_present
         )
-        requests = list(self._runtime.list_clarification_requests(context.workspace))
+        # v3.1: вместо ClarificationRequest читаем реестр Decisions.
+        # Для UI важны два набора:
+        #   * open_decisions — proposed-решения (нужны для critical-блок и
+        #     для current_activity);
+        #   * approval_decisions — финализированные sign-off решения для
+        #     human-approval gates (нужны для gates_passed).
+        all_decisions = list(
+            self._runtime.list_decisions(
+                context.workspace, project_id=manifest.project_id
+            )
+        )
+        open_decisions = [d for d in all_decisions if d.status == "proposed"]
+        approval_decisions = [
+            d
+            for d in all_decisions
+            if d.source == "reactive_validation"
+            and d.status in {"accepted_default", "user_overridden", "locked_in"}
+        ]
         gates_required = len(objective.done_gate_refs)
         gates_passed = 0
         # Артефакты по ролям — нужны для проверки прохождения automated-gate'ов.
@@ -526,13 +517,17 @@ class WorkspaceQueryService:
                 continue
 
             if gate.check_type == "human_approval":
-                # Засчитывается только если есть approved-clarification на этот gate.
+                # v3.1: gate sign-off ищется в Decisions по совпадению title
+                # gate'а и approved-выбору. См. валидацию ниже — менее
+                # точно, чем legacy source_id-матчинг, но достаточно для
+                # счётчика «N gates пройдено».
                 if any(
-                    r.source_type == "quality_gate"
-                    and r.source_id == gate.ref.as_string()
-                    and r.status == "answered"
-                    and "approved" in r.selected_option_ids
-                    for r in requests
+                    gate.title in d.title
+                    and any(
+                        choice in {"approved", "approved_with_comments"}
+                        for choice in d.effective_chosen_ids
+                    )
+                    for d in approval_decisions
                 ):
                     gates_passed += 1
                 continue
@@ -571,22 +566,36 @@ class WorkspaceQueryService:
             if review_ok:
                 gates_passed += 1
 
-        # Критичные открытые уточнения
+        # v3.1: «критичные открытые уточнения» = proposed-Decisions
+        # business-уровня (= наивысший приоритет в decision-модели) или
+        # low-confidence. Маппинг level → priority выбран так:
+        #   business → critical, architecture → high, detail → medium.
+        level_to_priority = {
+            "business": "critical",
+            "architecture": "high",
+            "detail": "medium",
+        }
         priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        critical = [
-            r for r in requests
-            if r.status == "open" and r.priority in {"high", "critical"}
+        critical_decisions = [
+            d
+            for d in open_decisions
+            if d.effective_level in {"business", "architecture"}
+            or d.is_low_confidence
         ]
-        critical.sort(key=lambda r: priority_order.get(r.priority, 9))
+        critical_decisions.sort(
+            key=lambda d: priority_order.get(
+                level_to_priority.get(d.effective_level, "medium"), 9
+            )
+        )
         critical_items = tuple(
             OverviewClarificationItem(
-                clarification_id=r.request_id,
-                title=r.title,
-                priority=r.priority,
-                blocking_scope=r.blocking_scope,
-                source_type=r.source_type,
+                clarification_id=d.decision_id,
+                title=d.title,
+                priority=level_to_priority.get(d.effective_level, "medium"),
+                blocking_scope="task" if d.source_task_id else "none",
+                source_type=d.source,
             )
-            for r in critical[:5]
+            for d in critical_decisions[:5]
         )
 
         # Ключевые артефакты — последние primary
@@ -724,8 +733,13 @@ class WorkspaceQueryService:
             context_manifests=context_manifests,
             validation_runs=tuple(to_primitive(item) for item in self._runtime.list_validation_runs(context.workspace)),
             escalations=tuple(to_primitive(item) for item in self._runtime.list_escalations(context.workspace)),
-            clarification_candidates=tuple(to_primitive(item) for item in self._runtime.list_clarification_candidates(context.workspace)),
-            clarification_requests=tuple(to_primitive(item) for item in self._runtime.list_clarification_requests(context.workspace)),
+            # v3.1: вместо двух legacy-полей clarification_* — единый список Decisions.
+            decisions=tuple(
+                to_primitive(item)
+                for item in self._runtime.list_decisions(
+                    context.workspace, project_id=context.manifest.project_id
+                )
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -766,59 +780,6 @@ class WorkspaceQueryService:
             sections_total=len(sections),
             has_markdown=markdown_path.exists(),
             created_at=artifact.created_at,
-        )
-
-    def project_decision_log(self, project_id: str) -> ProjectDecisionLogView:
-        """P7: журнал решений проекта.
-
-        Агрегируется из ClarificationRequest со статусом answered/assumed.
-        Один request = одно решение. Альтернативы — options, которые не
-        выбраны. Сортировка — по `updated_at` descending (свежее сверху).
-        """
-        context = self._load_context(project_id)
-        requests = list(self._runtime.list_clarification_requests(context.workspace))
-        decisions = [r for r in requests if r.status in ("answered", "assumed")]
-        decisions.sort(key=lambda r: r.updated_at or "", reverse=True)
-        entries = tuple(
-            DecisionLogEntryView(
-                decision_id=r.request_id,
-                kind=r.status,
-                title=r.title,
-                question=r.question,
-                resolution_summary=r.resolution_summary,
-                selected_option_ids=r.selected_option_ids,
-                free_text=r.free_text,
-                rationale=r.reason,
-                impact=r.impact,
-                blocking_scope=r.blocking_scope,
-                decision_owner_role=r.decision_owner_role,
-                source_type=r.source_type,
-                source_id=r.source_id,
-                affected_task_ids=r.affected_task_ids,
-                related_artifact_ids=r.related_artifact_ids,
-                alternatives=tuple(
-                    ClarificationOptionView(
-                        option_id=opt.option_id,
-                        label=opt.label,
-                        description=opt.description,
-                        effect_preview=opt.effect_preview,
-                        confidence=opt.confidence,
-                    )
-                    for opt in r.options
-                    if opt.option_id not in r.selected_option_ids
-                ),
-                auto_resolved=r.auto_resolved,
-                decided_at=r.updated_at,
-                created_at=r.created_at,
-            )
-            for r in decisions
-        )
-        return ProjectDecisionLogView(
-            project_id=context.manifest.project_id,
-            entries=entries,
-            total_count=len(entries),
-            answered_count=sum(1 for e in entries if e.kind == "answered"),
-            assumed_count=sum(1 for e in entries if e.kind == "assumed"),
         )
 
     def project_artifact_versions(self, project_id: str) -> ProjectArtifactVersionsView:
@@ -1023,58 +984,63 @@ class WorkspaceQueryService:
     def _failure_pins_for_project(
         self, workspace: Path, artifact_id_filter: str | None
     ) -> list[FailurePinView]:
+        """v3.1: failure-pins строятся из реестра Decisions:
+            * ``proposed`` + ``is_low_confidence`` → kind="candidate_open"
+              (раньше: open clarification_candidate с низкой уверенностью);
+            * ``accepted_default`` / ``locked_in`` с user_action="not_shown"
+              и низкой уверенностью → kind="assumption" (раньше: assumed
+              ClarificationRequest, т.е. авто-решение).
+        """
         pins: list[FailurePinView] = []
-        # 1. Open candidates with low confidence — подозрительные места
-        for cand in self._runtime.list_clarification_candidates(workspace):
-            status = getattr(cand, "status", "open")
-            if status != "open":
-                continue
-            confidence = getattr(cand, "confidence_without_user", None)
-            if confidence is not None and confidence >= self._CONFIDENCE_PIN_THRESHOLD:
-                continue
-            related = getattr(cand, "related_artifact_ids", ()) or ()
+        # Без project_id Decisions нельзя выбрать — поднимаем manifest.
+        try:
+            manifest = self._runtime.load_manifest(workspace)
+        except Exception:
+            return pins
+        decisions = self._runtime.list_decisions(
+            workspace, project_id=manifest.project_id
+        )
+        level_to_priority = {
+            "business": "critical",
+            "architecture": "high",
+            "detail": "medium",
+        }
+        for decision in decisions:
+            related = decision.affected_artifact_ids or ()
             if not related:
                 continue
-            severity = self._severity_from_priority(getattr(cand, "priority", "medium"))
+            severity = self._severity_from_priority(
+                level_to_priority.get(decision.effective_level, "medium")
+            )
+            if decision.status == "proposed":
+                if not decision.is_low_confidence:
+                    continue
+                kind = "candidate_open"
+            elif (
+                decision.status in {"accepted_default", "locked_in"}
+                and decision.user_action == "not_shown"
+                and decision.is_low_confidence
+            ):
+                kind = "assumption"
+            else:
+                continue
             for art_id in related:
                 if artifact_id_filter is not None and art_id != artifact_id_filter:
                     continue
                 pins.append(
                     FailurePinView(
-                        pin_id=getattr(cand, "candidate_id", ""),
-                        artifact_id=art_id,
-                        section_id=getattr(cand, "section_id", None),
-                        severity=severity,
-                        kind="candidate_open",
-                        message=getattr(cand, "title", ""),
-                        source_type=getattr(cand, "source_type", "unknown"),
-                        source_id=getattr(cand, "source_id", None),
-                        confidence_without_user=confidence,
-                        related_clarification_id=None,
-                    )
-                )
-        # 2. Assumptions — авто-решения, требующие точечной проверки
-        for r in self._runtime.list_clarification_requests(workspace):
-            if r.status != "assumed":
-                continue
-            if not r.related_artifact_ids:
-                continue
-            severity = self._severity_from_priority(r.priority)
-            for art_id in r.related_artifact_ids:
-                if artifact_id_filter is not None and art_id != artifact_id_filter:
-                    continue
-                pins.append(
-                    FailurePinView(
-                        pin_id=r.request_id,
+                        pin_id=decision.decision_id,
                         artifact_id=art_id,
                         section_id=None,
                         severity=severity,
-                        kind="assumption",
-                        message=r.title,
-                        source_type=r.source_type,
-                        source_id=r.source_id,
-                        confidence_without_user=None,
-                        related_clarification_id=r.request_id,
+                        kind=kind,
+                        message=decision.title,
+                        source_type=decision.source,
+                        source_id=None,
+                        confidence_without_user=decision.confidence,
+                        related_clarification_id=(
+                            decision.decision_id if kind == "assumption" else None
+                        ),
                     )
                 )
         return pins
@@ -1103,8 +1069,6 @@ class WorkspaceQueryService:
                 values[name] = self.project_timeline(project_id)
             elif name == "artifacts":
                 values[name] = self.project_artifacts(project_id)
-            elif name == "clarifications":
-                values[name] = self.project_clarifications(project_id)
             elif name == "review":
                 values[name] = self.project_review(project_id)
             elif name == "state":
@@ -1146,51 +1110,25 @@ class WorkspaceQueryService:
             snapshot=snapshot,
         )
 
-    def _clarification_view(self, request) -> ClarificationItemView:
-        return ClarificationItemView(
-            clarification_id=request.request_id,
-            status=request.status,
-            priority=request.priority,
-            title=request.title,
-            question=request.question,
-            description=request.description,
-            reason=request.reason,
-            impact=request.impact,
-            answer_mode=request.answer_mode,
-            options=tuple(
-                ClarificationOptionView(
-                    option_id=option.option_id,
-                    label=option.label,
-                    description=option.description,
-                    effect_preview=option.effect_preview,
-                    confidence=option.confidence,
-                )
-                for option in request.options
-            ),
-            recommended_option_id=request.recommended_option_id,
-            visibility=request.visibility,
-            default_assumption=request.default_assumption,
-            blocking_scope=request.blocking_scope,
-            decision_owner_role=request.decision_owner_role,
-            auto_resolved=request.auto_resolved,
-            affected_task_ids=request.affected_task_ids,
-            related_artifact_ids=request.related_artifact_ids,
-            selected_option_ids=request.selected_option_ids,
-            free_text=request.free_text,
-            resolution_summary=request.resolution_summary,
-            created_at=request.created_at,
-            updated_at=request.updated_at,
-        )
-
     def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None) -> tuple[TaskNodeView, ...]:
         children_by_parent: dict[str | None, list[TaskRecord]] = {}
         for task in tasks:
             children_by_parent.setdefault(task.parent_task_id, []).append(task)
-        open_clarifications = self._runtime.list_clarification_requests(workspace, statuses=("open",))
+        # v3.1: счётчик «блокирующих уточнений» = число open Decisions с
+        # source_task_id == task_id.
+        try:
+            manifest = self._runtime.load_manifest(workspace)
+            open_decisions = self._runtime.list_decisions(
+                workspace, project_id=manifest.project_id, status="proposed"
+            )
+        except Exception:
+            open_decisions = []
         clarification_counts: dict[str, int] = {}
-        for clarification in open_clarifications:
-            for task_id in clarification.affected_task_ids:
-                clarification_counts[task_id] = clarification_counts.get(task_id, 0) + 1
+        for decision in open_decisions:
+            if decision.source_task_id:
+                clarification_counts[decision.source_task_id] = (
+                    clarification_counts.get(decision.source_task_id, 0) + 1
+                )
 
         def build(task: TaskRecord) -> TaskNodeView:
             return TaskNodeView(
@@ -1245,20 +1183,33 @@ class WorkspaceQueryService:
                     related_id=gap.identifier,
                 )
             )
-        open_clarifications = [
-            item
-            for item in self._runtime.list_clarification_requests(context.workspace, statuses=("open",))
-            if item.blocking_scope != "none"
-        ]
-        for clarification in open_clarifications[:3]:
+        # v3.1: «открытые блокирующие уточнения» = proposed-Decisions,
+        # привязанные к задаче (source_task_id != None). Decision не имеет
+        # понятия blocking_scope, поэтому используем наличие task-привязки
+        # как proxy «эта запись блокирует конкретную задачу».
+        level_to_severity = {
+            "business": "critical",
+            "architecture": "high",
+            "detail": "medium",
+        }
+        try:
+            open_decisions = self._runtime.list_decisions(
+                context.workspace,
+                project_id=context.manifest.project_id,
+                status="proposed",
+            )
+        except Exception:
+            open_decisions = []
+        blocking_decisions = [d for d in open_decisions if d.source_task_id]
+        for decision in blocking_decisions[:3]:
             blockers.append(
                 SituationBlockerView(
                     kind="clarification",
-                    title=clarification.title,
-                    summary=clarification.question,
-                    severity=clarification.priority,
+                    title=decision.title,
+                    summary=decision.description or decision.title,
+                    severity=level_to_severity.get(decision.effective_level, "medium"),
                     detail_view="clarification",
-                    related_id=clarification.request_id,
+                    related_id=decision.decision_id,
                 )
             )
         if failed or blockers:
@@ -1408,32 +1359,50 @@ class WorkspaceQueryService:
                         ),
                     )
                 )
-        for clarification in self._runtime.list_clarification_requests(context.workspace):
-            if clarification.status == "open":
+        # v3.1: события «уточнений» в timeline теперь приходят из реестра
+        # Decisions. Маппинг статус → визуальный label:
+        #   proposed → «Система запросила уточнение» (warning, если есть source_task_id)
+        #   accepted_default → «Принят дефолт» (info)
+        #   user_overridden → «Пользователь ответил на уточнение» (success)
+        #   locked_in → «Решение зафиксировано» (success)
+        try:
+            timeline_decisions = self._runtime.list_decisions(
+                context.workspace, project_id=context.manifest.project_id
+            )
+        except Exception:
+            timeline_decisions = []
+        for decision in timeline_decisions:
+            if decision.status == "proposed":
                 title = "Система запросила уточнение"
-                status = "warning" if clarification.blocking_scope != "none" else "info"
-            elif clarification.status == "assumed":
-                title = "Принято рабочее допущение"
+                status = "warning" if decision.source_task_id else "info"
+            elif decision.status == "accepted_default":
+                title = "Принят дефолт по умолчанию"
                 status = "info"
-            elif clarification.status == "answered":
+            elif decision.status == "user_overridden":
                 title = "Пользователь ответил на уточнение"
                 status = "success"
+            elif decision.status == "locked_in":
+                title = "Решение зафиксировано"
+                status = "success"
+            elif decision.status == "deferred":
+                title = "Решение отложено"
+                status = "info"
             else:
-                title = "Уточнение обновлено"
+                title = "Решение обновлено"
                 status = "info"
             entries.append(
                 (
-                    (clarification.updated_at or clarification.created_at, 4),
+                    (decision.updated_at or decision.created_at, 4),
                     TimelineEntryView(
                         sequence=0,
-                        kind=f"clarification_{clarification.status}",
+                        kind=f"clarification_{decision.status}",
                         title=title,
-                        summary=clarification.resolution_summary or clarification.question,
+                        summary=decision.description or decision.title,
                         status=status,
-                        created_at=clarification.updated_at or clarification.created_at,
+                        created_at=decision.updated_at or decision.created_at,
                         detail_view="clarification",
                         entity_type="clarification",
-                        entity_id=clarification.request_id,
+                        entity_id=decision.decision_id,
                     ),
                 )
             )

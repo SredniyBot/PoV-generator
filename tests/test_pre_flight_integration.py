@@ -33,7 +33,6 @@ from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.validation_service import ValidationService
-from pov_generator.application.clarification_service import ClarificationService
 from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.decisions import Decision, DecisionAlternative
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
@@ -145,7 +144,6 @@ def _bootstrap_services(workspace: Path, planning_factory):
     registry_service = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates"))
     context_service = ContextService(runtime)
     planning = PlanningService(runtime)
-    clarification = ClarificationService(runtime, provider="stub")
     checkpoint = CheckpointService(runtime)
     stub_planning = _StubPlanningService(planning_factory)
     execution = ExecutionService(
@@ -154,7 +152,7 @@ def _bootstrap_services(workspace: Path, planning_factory):
         decision_planning_service=stub_planning,
         checkpoint_service=checkpoint,
     )
-    validation = ValidationService(runtime, clarification)
+    validation = ValidationService(runtime, checkpoint)
     workflow = WorkflowService(runtime, planning, execution, validation)
     snapshot, _ = registry_service.validate()
     return runtime, snapshot, workflow, checkpoint, planning, execution

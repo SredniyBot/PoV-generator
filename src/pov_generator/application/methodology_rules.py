@@ -14,16 +14,22 @@
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..domain.clarifications import ClarificationCandidate, ClarificationOption
+from ..domain.decisions import DecisionAlternative, DecisionInput, DecisionLevel
 from ..domain.registry import MethodologyPackSpec
 from .methodology_rule_eval import evaluate_rule
 
 
 _VALID_VISIBILITY = {"principal", "architectural", "technical"}
+
+# v3.1: visibility (legacy emit YAML schema) → level (new domain)
+_VISIBILITY_TO_LEVEL: dict[str, DecisionLevel] = {
+    "principal": "business",
+    "architectural": "architecture",
+    "technical": "detail",
+}
 
 
 def _resolve_options_from(
@@ -66,17 +72,17 @@ def _resolve_options_from(
     return []
 
 
-def _llm_options_to_clarification_options(
+def _llm_options_to_decision_alternatives(
     raw_options: list[Any],
-) -> tuple[ClarificationOption, ...]:
+) -> tuple[DecisionAlternative, ...]:
     """Конвертирует объекты `{label, rationale, tradeoffs, confidence}` из
-    reasoning-стадии в `ClarificationOption`, которые увидит пользователь.
+    reasoning-стадии в `DecisionAlternative`, которые увидит пользователь.
 
     rationale + tradeoffs склеиваются в description, чтобы менеджер
     увидел не только название варианта, но и его обоснование и
-    компромиссы — это и есть осмысленный выбор, а не «принять / нет».
+    компромиссы.
     """
-    out: list[ClarificationOption] = []
+    out: list[DecisionAlternative] = []
     for idx, item in enumerate(raw_options):
         if not isinstance(item, dict):
             continue
@@ -96,13 +102,10 @@ def _llm_options_to_clarification_options(
         if isinstance(confidence_raw, (int, float)) and not isinstance(confidence_raw, bool):
             confidence = max(0.0, min(1.0, float(confidence_raw)))
         out.append(
-            ClarificationOption(
+            DecisionAlternative(
                 option_id=f"opt_{idx}",
                 label=label,
                 description=description,
-                effect_preview="Этот вариант ляжет в основу финального артефакта задачи."
-                if idx == 0
-                else "Альтернативный вариант — будет переработан reasoning + результирующий артефакт.",
                 confidence=confidence,
             )
         )
@@ -111,19 +114,27 @@ def _llm_options_to_clarification_options(
 
 @dataclass(frozen=True)
 class RuleOutcome:
-    """Один результат проверки правила одной стадии методологии."""
+    """Один результат проверки правила одной стадии методологии.
+
+    v3.1: убран candidate_id (legacy ClarificationCandidate id).
+    Если нужна привязка решения к правилу для аудита — она доступна
+    через Decision.source = "emergent" + наличие в выходе той же задачи.
+    """
 
     stage_id: str
     rule_id: str
     fired: bool
-    candidate_id: str | None = None
 
 
 @dataclass(frozen=True)
 class MethodologyEvaluation:
-    """Полный результат прогона правил методологии по reasoning."""
+    """Полный результат прогона правил методологии по reasoning.
 
-    candidates: tuple[ClarificationCandidate, ...] = field(default_factory=tuple)
+    v3.1: вместо ClarificationCandidate выдаются готовые DecisionInput —
+    эмиттер сразу формирует payload в новой архитектуре.
+    """
+
+    decision_inputs: tuple[DecisionInput, ...] = field(default_factory=tuple)
     rule_outcomes: tuple[RuleOutcome, ...] = field(default_factory=tuple)
     stage_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -151,7 +162,7 @@ def evaluate_methodology_rules(
     active_stages = methodology.stages_for(complexity, methodology_mode)
     stage_outputs = _stage_outputs_from_reasoning(reasoning)
 
-    candidates: list[ClarificationCandidate] = []
+    decision_inputs: list[DecisionInput] = []
     outcomes: list[RuleOutcome] = []
 
     for stage in active_stages:
@@ -169,19 +180,9 @@ def evaluate_methodology_rules(
                 continue
 
             emit = rule.emit_candidate or {}
-            severity = str(emit.get("severity", "medium"))
-            if severity not in {"low", "medium", "high", "critical"}:
-                severity = "medium"
-            # Методологические правила — advisory: «система заметила
-            # развилку в рассуждении». По умолчанию они НЕ блокируют
-            # pipeline — пользователь увидит вопрос в инбоксе, но workflow
-            # продолжается с default_assumption.
-            #
-            # Для настоящих gate-ов методолог-пак ЯВНО ставит
-            # blocking_scope в emit_candidate.
-            blocking_scope = str(emit.get("blocking_scope", "none"))
-            if blocking_scope not in {"none", "task", "subtree", "objective"}:
-                blocking_scope = "none"
+            # v3.1: severity и blocking_scope больше не используются — режим
+            # участия пользователя (см. ProcessState.clarification_mode)
+            # решает, surfacing или silent_accept для решения этого уровня.
 
             # Visibility: по умолчанию `technical` — методологические
             # развилки шумные и неинтересны менеджеру в обычных режимах.
@@ -203,83 +204,84 @@ def evaluate_methodology_rules(
             llm_alternatives: list[Any] = []
             if isinstance(options_from_spec, str):
                 llm_alternatives = _resolve_options_from(options_from_spec, stage_outputs)
-            clarification_options = _llm_options_to_clarification_options(llm_alternatives)
+            decision_alts = _llm_options_to_decision_alternatives(llm_alternatives)
 
             # Строим текст вопроса: если есть конкретные альтернативы —
             # упоминаем их в вопросе, чтобы пользователь сразу видел, о
             # чём идёт речь, без необходимости открывать описание.
             base_need = str(emit.get("need") or f"Сработало правило {rule.identifier}.").strip()
-            if clarification_options:
-                titles = " · ".join(opt.label[:60] for opt in clarification_options[:3])
+            if decision_alts:
+                titles = " · ".join(opt.label[:60] for opt in decision_alts[:3])
                 question_text = f"{base_need} Сравниваются: {titles}"
             else:
                 question_text = base_need
 
             # Описание: если есть реальные альтернативы, строим внятный
-            # абзац-introduction из stage-контекста. Заполняем заранее,
-            # чтобы `_enrich_candidate` не дёргал LLM для подготовки
-            # описания (description.empty → LLM call).
+            # абзац-introduction из stage-контекста.
             stage_title = (stage.title or stage.identifier).strip()
-            description_text = ""
-            if clarification_options:
+            description_text = base_need
+            if decision_alts:
                 description_text = (
                     f"На стадии «{stage_title}» при разборе задачи LLM нашёл "
-                    f"{len(clarification_options)} сопоставимых по уверенности "
+                    f"{len(decision_alts)} сопоставимых по уверенности "
                     "альтернативы. Выберите ту, которую следует положить в основу "
                     "финального артефакта; альтернативные варианты записаны для "
                     "истории решения."
                 )
 
+            # default_assumption (v2.2) → склейка в rationale (v3.1 не имеет
+            # отдельного поля; пользователь видит дефолтный выбор + обоснование)
             default_assumption = _safe_assumption_for_rule(rule.identifier, outputs, stage_outputs)
+            rationale_parts: list[str] = [
+                f"Сработало правило {rule.identifier} стадии {stage.identifier}.",
+            ]
+            if default_assumption:
+                rationale_parts.append(f"Безопасное допущение по умолчанию: {default_assumption}")
+            rationale_text = " ".join(rationale_parts)
 
-            answer_mode = "single" if clarification_options else "free_text"
-            recommended_id: str | None = None
-            if clarification_options:
+            answer_mode = "single" if decision_alts else "free_text"
+            recommended_id: str = ""
+            if decision_alts:
                 # Рекомендация = вариант с максимальной LLM-confidence.
                 best_idx = 0
                 best_conf = -1.0
-                for i, opt in enumerate(clarification_options):
+                for i, opt in enumerate(decision_alts):
                     c = opt.confidence if opt.confidence is not None else 0.0
                     if c > best_conf:
                         best_conf = c
                         best_idx = i
-                recommended_id = clarification_options[best_idx].option_id
+                recommended_id = decision_alts[best_idx].option_id
 
-            candidate = ClarificationCandidate(
-                candidate_id=str(uuid.uuid4()),
-                project_id=project_id,
-                source_type="methodology_pack",
-                source_id=f"{methodology.ref.as_string()}#{stage.identifier}.{rule.identifier}",
-                need=base_need,
-                question=question_text,
-                description=description_text,
-                rationale=f"Сработало правило {rule.identifier} стадии {stage.identifier}.",
-                impact="Без решения этой развилки методология рекомендует не продолжать.",
-                severity=severity,  # type: ignore[arg-type]
-                confidence_without_user=0.4,
-                visibility=visibility,  # type: ignore[arg-type]
-                default_assumption=default_assumption,
-                recommended_answer=recommended_id,
-                answer_mode=answer_mode,  # type: ignore[arg-type]
-                options=clarification_options,
-                affected_task_ids=(task_id,),
-                related_artifact_ids=(),
-                blocking_scope=blocking_scope,  # type: ignore[arg-type]
-                decision_owner_role="methodologist",
-                created_at="",
+            # Visibility → Level mapping (v3.1)
+            level = _VISIBILITY_TO_LEVEL.get(visibility, "detail")
+            # severity / blocking_scope больше не передаются — v3.1 mode
+            # определяет surface/auto. Игнорируем оба.
+
+            decision_inputs.append(
+                DecisionInput(
+                    title=question_text,
+                    description=description_text,
+                    alternatives=decision_alts,
+                    recommended_option_id=recommended_id,
+                    rationale=rationale_text,
+                    level=level,
+                    answer_mode=answer_mode,  # type: ignore[arg-type]
+                    confidence=0.4,
+                    source="emergent",
+                    source_task_id=task_id,
+                    affected_artifact_ids=(),
+                )
             )
-            candidates.append(candidate)
             outcomes.append(
                 RuleOutcome(
                     stage_id=stage.identifier,
                     rule_id=rule.identifier,
                     fired=True,
-                    candidate_id=candidate.candidate_id,
                 )
             )
 
     return MethodologyEvaluation(
-        candidates=tuple(candidates),
+        decision_inputs=tuple(decision_inputs),
         rule_outcomes=tuple(outcomes),
         stage_outputs=stage_outputs,
     )

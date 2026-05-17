@@ -255,7 +255,7 @@ class ExecutionService:
         execution_run_id = str(uuid.uuid4())
         reasoning_payload: dict[str, object] = {}
         methodology_trace_payload: dict[str, object] = {}
-        methodology_candidates: tuple = ()
+        methodology_decisions: tuple = ()
         if active_methodology is not None:
             reasoning_payload = self._build_reasoning_payload(
                 workspace=workspace,
@@ -277,7 +277,7 @@ class ExecutionService:
                 complexity=complexity_value,
                 evaluation=evaluation,
             )
-            methodology_candidates = evaluation.candidates
+            methodology_decisions = evaluation.decision_inputs
 
         input_artifact_ids = self._extract_input_artifact_ids(context_manifest)
 
@@ -422,7 +422,7 @@ class ExecutionService:
             outputs=outputs,
             trace_ids=tuple(trace.trace_id for trace in traces),
             proposed_goal=proposed_goal,
-            methodology_candidates=methodology_candidates,
+            methodology_decisions=methodology_decisions,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
         return ExecutionBundle(request=request, result=result, traces=traces)
@@ -1572,18 +1572,17 @@ class ExecutionService:
                 "stage_id": outcome.stage_id,
                 "rule_id": outcome.rule_id,
                 "fired": outcome.fired,
-                **({"candidate_id": outcome.candidate_id} if outcome.candidate_id else {}),
             }
             for outcome in evaluation.rule_outcomes
         ]
-        candidates_emitted = [
+        # v3.1: вместо candidate_id фиксируем title (читаемо в audit-логе)
+        decisions_emitted = [
             {
-                "candidate_id": candidate.candidate_id,
-                "source_id": candidate.source_id,
-                "severity": candidate.severity,
-                "blocking_scope": candidate.blocking_scope,
+                "title": di.title,
+                "level": di.level,
+                "source_task_id": di.source_task_id,
             }
-            for candidate in evaluation.candidates
+            for di in evaluation.decision_inputs
         ]
         return {
             "methodology_pack_ref": methodology.ref.as_string(),
@@ -1592,53 +1591,35 @@ class ExecutionService:
             "stages_executed": [stage.identifier for stage in active_stages],
             "stage_outputs": evaluation.stage_outputs,
             "rules_evaluated": rules_evaluated,
-            "candidates_emitted": candidates_emitted,
+            "decisions_emitted": decisions_emitted,
         }
 
     def _collect_applied_decisions(
         self, workspace: Path, task_id: str
     ) -> list[dict[str, object]]:
-        """B5: формирует список decisions, релевантных текущей задаче.
+        """B5: формирует список decisions из Layer A (knowledge) для
+        трассировки в reasoning_artifact.
 
-        Семантика: если decision из ClarificationRequest, чей
-        `affected_task_ids` содержит task_id — он применим. Также сюда
-        попадают global decisions (не привязанные к конкретной задаче).
+        v3.1: положения с префиксом ``clarification.`` больше не создаются
+        (legacy-координатор уточнений удалён). Все decision-положения
+        Layer A считаются применимыми — реальная связка с конкретной
+        задачей живёт в реестре Decisions (`source_task_id`).
 
         Используется в reasoning_artifact как трассировка: пользователь
         видит «вот эти ответы повлияли на этот reasoning». Closes M-J6.
         """
+        del task_id
         try:
             knowledge = self._runtime.load_knowledge(workspace)
         except Exception:
             return []
         result: list[dict[str, object]] = []
-        clarification_prefix = "clarification."
         for position in knowledge.by_type("decision"):
-            relevant = True
-            request_id: str | None = None
-            if (
-                position.source == "clarification"
-                and position.identifier.startswith(clarification_prefix)
-            ):
-                request_id = position.identifier[len(clarification_prefix):]
-                try:
-                    request = self._runtime.get_clarification_request(
-                        workspace, request_id
-                    )
-                except Exception:
-                    request = None
-                if request is not None:
-                    affected = request.affected_task_ids or ()
-                    if affected and task_id not in affected:
-                        relevant = False
-            if not relevant:
-                continue
             result.append(
                 {
                     "decision_id": position.identifier,
                     "statement": position.statement,
                     "source": position.source,
-                    "via_clarification_id": request_id,
                 }
             )
         return result

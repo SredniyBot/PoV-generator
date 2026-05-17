@@ -7,7 +7,7 @@ from pathlib import Path
 from ..common.errors import ConflictError
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
-from .clarification_service import ClarificationService
+from .checkpoint_service import CheckpointService
 from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
 from .project_service import ProjectService
@@ -27,7 +27,7 @@ class WorkspaceCommandService:
         planning_service: PlanningService,
         workflow_service: WorkflowService,
         domain_pack_selection_service: DomainPackSelectionService,
-        clarification_service: ClarificationService,
+        checkpoint_service: CheckpointService,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
@@ -35,7 +35,7 @@ class WorkspaceCommandService:
         self._planning_service = planning_service
         self._workflow_service = workflow_service
         self._domain_pack_selection_service = domain_pack_selection_service
-        self._clarification_service = clarification_service
+        self._checkpoint_service = checkpoint_service
 
     def run_next(self, project_id: str, *, provider: str | None = None, model: str | None = None) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
@@ -182,64 +182,20 @@ class WorkspaceCommandService:
             resource_id=pack_ref,
         )
 
-    def answer_clarification(
-        self,
-        project_id: str,
-        *,
-        clarification_id: str,
-        selected_option_ids: tuple[str, ...] = (),
-        free_text: str | None = None,
-    ) -> CommandResultView:
-        workspace_ref = self._catalog.resolve_workspace(project_id)
-        snapshot = self._validated_snapshot()
-        request = self._clarification_service.answer_clarification(
-            workspace_ref.workspace,
-            request_id=clarification_id,
-            selected_option_ids=selected_option_ids,
-            free_text=free_text,
-        )
-        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
-        return CommandResultView(
-            status="accepted",
-            command_name="answer-clarification",
-            summary="Ответ на уточнение сохранен. Система пересчитает доступные следующие действия.",
-            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
-            resource_id=request.request_id,
-        )
-
-    def accept_assumption(self, project_id: str, *, clarification_id: str) -> CommandResultView:
-        workspace_ref = self._catalog.resolve_workspace(project_id)
-        snapshot = self._validated_snapshot()
-        request = self._clarification_service.accept_assumption(
-            workspace_ref.workspace,
-            request_id=clarification_id,
-        )
-        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
-        return CommandResultView(
-            status="accepted",
-            command_name="accept-assumption",
-            summary="Предложенное допущение принято и зафиксировано в состоянии проекта.",
-            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
-            resource_id=request.request_id,
-        )
-
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
+        """Сменить режим участия пользователя (v3.1).
+
+        Теперь идёт через `CheckpointService.set_participation_mode`, который
+        просто записывает новый mode в ProcessState. Реевалюации legacy
+        clarifications больше нет — все decision-сессии создаются заново под
+        текущий mode при следующем pre-flight планировании.
+        """
         workspace_ref = self._catalog.resolve_workspace(project_id)
-        # W6/B1: set_mode теперь пере-оценивает все open candidates под новый
-        # mode. Возвращает ReevaluationSummary с counts; экранируем их в UI
-        # через summary string, чтобы пользователь увидел toast «авто-закрыто N».
-        reeval = self._clarification_service.set_mode(workspace_ref.workspace, mode)  # type: ignore[arg-type]
-        summary_lines = [f"Режим уточнений изменён на «{mode}»."]
-        if reeval.auto_assumed:
-            summary_lines.append(f"Автоматически принято допущений: {reeval.auto_assumed}.")
-        if reeval.auto_deferred:
-            summary_lines.append(f"Авто-отложено: {reeval.auto_deferred}.")
-        if reeval.kept_open:
-            summary_lines.append(f"Остались открытыми (требуют решения): {reeval.kept_open}.")
+        self._checkpoint_service.set_participation_mode(workspace_ref.workspace, mode)
         return CommandResultView(
             status="accepted",
             command_name="set-clarification-mode",
-            summary=" ".join(summary_lines),
+            summary=f"Режим уточнений изменён на «{mode}».",
             changed_projections=("shell", "clarifications", "situation", "timeline", "state"),
             resource_id=mode,
         )

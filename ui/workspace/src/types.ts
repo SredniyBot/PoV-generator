@@ -133,50 +133,6 @@ export interface ProjectTimelineView {
   total_entries: number;
 }
 
-export interface ClarificationOptionView {
-  option_id: string;
-  label: string;
-  description: string;
-  effect_preview: string;
-  confidence: number | null;
-}
-
-export interface ClarificationItemView {
-  clarification_id: string;
-  status: string;
-  priority: string;
-  title: string;
-  question: string;
-  description: string;
-  reason: string;
-  impact: string;
-  answer_mode: string;
-  options: ClarificationOptionView[];
-  recommended_option_id: string | null;
-  min_participation_mode: string;
-  default_assumption: string | null;
-  blocking_scope: string;
-  decision_owner_role: string;
-  auto_resolved: boolean;
-  affected_task_ids: string[];
-  related_artifact_ids: string[];
-  selected_option_ids: string[];
-  free_text: string | null;
-  resolution_summary: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ProjectClarificationsView {
-  project_id: string;
-  mode: string;
-  open_count: number;
-  answered_count: number;
-  assumed_count: number;
-  blocking_count: number;
-  items: ClarificationItemView[];
-}
-
 export interface ArtifactSummaryView {
   artifact_id: string;
   artifact_role: string;
@@ -504,38 +460,6 @@ export interface ArtifactSkeletonView {
   sections_total: number;
   has_markdown: boolean;
   created_at: string;
-}
-
-export type DecisionKind = "answered" | "assumed";
-
-export interface DecisionLogEntryView {
-  decision_id: string;
-  kind: DecisionKind;
-  title: string;
-  question: string;
-  resolution_summary: string | null;
-  selected_option_ids: string[];
-  free_text: string | null;
-  rationale: string;
-  impact: string;
-  blocking_scope: string;
-  decision_owner_role: string;
-  source_type: string;
-  source_id: string | null;
-  affected_task_ids: string[];
-  related_artifact_ids: string[];
-  alternatives: ClarificationOptionView[];
-  auto_resolved: boolean;
-  decided_at: string;
-  created_at: string;
-}
-
-export interface ProjectDecisionLogView {
-  project_id: string;
-  entries: DecisionLogEntryView[];
-  total_count: number;
-  answered_count: number;
-  assumed_count: number;
 }
 
 export interface ArtifactVersionItemView {

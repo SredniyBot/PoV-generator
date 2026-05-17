@@ -152,53 +152,6 @@ class ProjectTimelineView:
     total_entries: int
 
 
-@dataclass(frozen=True)
-class ClarificationOptionView:
-    option_id: str
-    label: str
-    description: str
-    effect_preview: str
-    confidence: float | None = None
-
-
-@dataclass(frozen=True)
-class ClarificationItemView:
-    clarification_id: str
-    status: str
-    priority: str
-    title: str
-    question: str
-    description: str
-    reason: str
-    impact: str
-    answer_mode: str
-    options: tuple[ClarificationOptionView, ...]
-    recommended_option_id: str | None
-    visibility: str
-    default_assumption: str | None
-    blocking_scope: str
-    decision_owner_role: str
-    auto_resolved: bool
-    affected_task_ids: tuple[str, ...]
-    related_artifact_ids: tuple[str, ...]
-    selected_option_ids: tuple[str, ...]
-    free_text: str | None
-    resolution_summary: str | None
-    created_at: str
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class ProjectClarificationsView:
-    project_id: str
-    mode: str
-    open_count: int
-    answered_count: int
-    assumed_count: int
-    blocking_count: int
-    items: tuple[ClarificationItemView, ...]
-
-
 # --- v3.0 — Decision ledger views --------------------------------------------
 #
 # Эти view зеркалируют доменную модель Decision из
@@ -415,8 +368,8 @@ class ProjectDebugView:
     context_manifests: tuple[ContextManifestSummaryView, ...]
     validation_runs: tuple[dict[str, object], ...]
     escalations: tuple[dict[str, object], ...]
-    clarification_candidates: tuple[dict[str, object], ...] = ()
-    clarification_requests: tuple[dict[str, object], ...] = ()
+    # v3.1: единый реестр решений вместо двух legacy-полей clarification_*.
+    decisions: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -507,45 +460,6 @@ class ArtifactSkeletonView:
     sections_total: int
     has_markdown: bool
     created_at: str
-
-
-@dataclass(frozen=True)
-class DecisionLogEntryView:
-    """Запись в журнале решений проекта (P7).
-
-    Агрегируется из ClarificationRequest со статусом answered/assumed.
-    Один request = одно решение. Альтернативы — options, которые НЕ
-    выбраны. Источник — source_type + source_id.
-    """
-
-    decision_id: str  # = request_id
-    kind: str  # "answered" | "assumed"
-    title: str
-    question: str
-    resolution_summary: str | None
-    selected_option_ids: tuple[str, ...]
-    free_text: str | None
-    rationale: str  # reason
-    impact: str
-    blocking_scope: str
-    decision_owner_role: str
-    source_type: str
-    source_id: str | None
-    affected_task_ids: tuple[str, ...]
-    related_artifact_ids: tuple[str, ...]
-    alternatives: tuple[ClarificationOptionView, ...]  # все options кроме выбранных
-    auto_resolved: bool
-    decided_at: str  # updated_at request'а
-    created_at: str
-
-
-@dataclass(frozen=True)
-class ProjectDecisionLogView:
-    project_id: str
-    entries: tuple[DecisionLogEntryView, ...]
-    total_count: int
-    answered_count: int
-    assumed_count: int
 
 
 @dataclass(frozen=True)

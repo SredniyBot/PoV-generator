@@ -274,6 +274,47 @@ class Decision:
         return self.status == "user_overridden" or self.user_action == "modified"
 
 
+@dataclass(frozen=True)
+class DecisionInput:
+    """Lightweight payload, который эмиттер передаёт в CheckpointService
+    для регистрации нового Decision (v3.1 — replaces ClarificationCandidate).
+
+    Используется эмиттерами:
+    - validation_service (когда валидация артефакта нашла пробел)
+    - methodology_rules (когда правило методологии выпало)
+    - quality_gate signoff
+    - любые будущие источники (domain_pack, user_manual)
+
+    CheckpointService переводит DecisionInput → Decision, сохраняет в
+    реестр и при необходимости создаёт CheckpointSession.
+
+    Args:
+        title: краткая формулировка вопроса для UI (1 строка).
+        description: развёрнутое описание (для CheckpointSession).
+        alternatives: возможные варианты ответа (≥0; для free_text может быть 0).
+        recommended_option_id: какой вариант предложен по умолчанию (опционально).
+        rationale: почему предложен именно этот дефолт.
+        level: уровень вовлечения (business/architecture/detail).
+        answer_mode: формат ответа (single/multiple/free_text/confirmation).
+        confidence: уверенность системы в дефолте (0..1).
+        source: откуда возникло решение ("reactive_validation" / "emergent" / ...).
+        source_task_id: id задачи, которая привела к появлению решения.
+        affected_artifact_ids: артефакты, на которые повлияет это решение.
+    """
+
+    title: str
+    description: str
+    alternatives: tuple[DecisionAlternative, ...]
+    recommended_option_id: str
+    rationale: str
+    level: DecisionLevel
+    answer_mode: DecisionAnswerMode = "single"
+    confidence: float = 0.5
+    source: DecisionSource = "reactive_validation"
+    source_task_id: str | None = None
+    affected_artifact_ids: tuple[str, ...] = field(default_factory=tuple)
+
+
 # ---------------------------------------------------------------------------
 # Режим участия → набор уровней (cumulative)
 # ---------------------------------------------------------------------------

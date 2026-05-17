@@ -1,7 +1,6 @@
 import type {
   ArtifactDetailView,
   ArtifactSummaryView,
-  ClarificationItemView,
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
@@ -10,7 +9,6 @@ import type {
   WorkflowRunView,
   ObjectiveCatalogItemView,
   ProjectCreatedView,
-  ProjectClarificationsView,
   ProjectDebugView,
   ProjectListItemView,
   ProjectReviewView,
@@ -59,9 +57,6 @@ export const api = {
   getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
-  getClarifications: (projectId: string) => request<ProjectClarificationsView>(`/api/projects/${projectId}/clarifications`),
-  getClarificationDetail: (projectId: string, clarificationId: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/clarifications/${clarificationId}`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
@@ -136,49 +131,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
-  answerClarification: (
-    projectId: string,
-    payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string },
-  ) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/answer-clarification`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  acceptAssumption: (projectId: string, clarificationId: string) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/accept-assumption`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId }),
-    }),
   setClarificationMode: (projectId: string, mode: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-clarification-mode`, {
       method: "POST",
       body: JSON.stringify({ mode }),
     }),
-  // W5.1: clarification flow operations + audit events
-  deferClarification: (projectId: string, clarificationId: string, reason?: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/commands/defer-clarification`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId, reason }),
-    }),
-  reopenClarification: (projectId: string, clarificationId: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/commands/reopen-clarification`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId }),
-    }),
-  getClarificationEvents: (projectId: string, clarificationId: string) =>
-    request<Array<{
-      event_id: string;
-      request_id: string;
-      project_id: string;
-      event_type: string;
-      payload: Record<string, unknown>;
-      actor: string;
-      created_at: string;
-    }>>(`/api/projects/${projectId}/clarifications/${clarificationId}/events`),
-  getNextOpenClarification: (projectId: string, afterId?: string) =>
-    request<ClarificationItemView | null>(
-      `/api/projects/${projectId}/clarifications/next${afterId ? `?after_id=${encodeURIComponent(afterId)}` : ""}`,
-    ),
   setMethodology: (projectId: string, packRef: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-methodology`, {
       method: "POST",
@@ -193,10 +150,6 @@ export const api = {
     request<import("./types").ArtifactSkeletonView>(
       `/api/projects/${projectId}/artifacts/${artifactId}/skeleton`,
     ),
-  getDecisionLog: (projectId: string) =>
-    // v3.0: переехал с /decisions на /decision-log — теперь /decisions
-    // занят настоящим реестром решений (см. getDecisionsRegistry).
-    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decision-log`),
   getArtifactVersions: (projectId: string) =>
     request<import("./types").ProjectArtifactVersionsView>(
       `/api/projects/${projectId}/artifact-versions`,

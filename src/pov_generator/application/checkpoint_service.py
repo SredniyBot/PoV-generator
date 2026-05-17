@@ -27,6 +27,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..domain.process_state import ProcessState  # noqa: F401
 
 from ..common.errors import ConflictError, NotFoundError
 from ..common.serialization import utc_now_iso
@@ -36,6 +40,7 @@ from ..domain.checkpoints import (
 )
 from ..domain.decisions import (
     Decision,
+    DecisionInput,
     levels_for_mode,
     should_surface_to_user,
 )
@@ -332,6 +337,102 @@ class CheckpointService:
             raise ConflictError(f"неизвестный CheckpointAnswerKind: {answer.kind!r}")
 
         self._runtime.upsert_decision(workspace, saved)
+
+    # ---- v3.1: регистрация решений из эмиттеров ------------------------------
+
+    def register_decision_inputs(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        decision_inputs: tuple[DecisionInput, ...],
+    ) -> tuple[Decision, ...]:
+        """Создать Decision-записи из payload эмиттеров (validation,
+        methodology, gates).
+
+        Группирует по source_task_id; для каждой группы создаётся отдельная
+        CheckpointSession в режиме "expert" (post-validation decisions —
+        forcibly surface, пользователь должен их видеть). Если task_id
+        отсутствует — Decision просто сохраняется в реестр без сессии.
+
+        Returns:
+            Tuple созданных Decision-объектов.
+        """
+        if not decision_inputs:
+            return ()
+        now = utc_now_iso()
+        # Группировка по task_id
+        by_task: dict[str | None, list[Decision]] = {}
+        for di in decision_inputs:
+            decision = Decision(
+                decision_id=str(uuid.uuid4()),
+                project_id=project_id,
+                title=di.title,
+                description=di.description,
+                chosen_option_id=di.recommended_option_id,
+                chosen_option_ids=(),
+                alternatives=di.alternatives,
+                rationale=di.rationale,
+                level=di.level,
+                level_rationale="",
+                confidence=max(0.0, min(1.0, float(di.confidence))),
+                status="proposed",
+                source=di.source,
+                source_task_id=di.source_task_id,
+                affected_artifact_ids=di.affected_artifact_ids,
+                answer_mode=di.answer_mode,
+                created_at=now,
+                updated_at=now,
+            )
+            by_task.setdefault(di.source_task_id, []).append(decision)
+
+        saved_decisions: list[Decision] = []
+        for task_id, decisions in by_task.items():
+            if task_id is not None:
+                # Создаём сессию — forcibly surface через mode="expert".
+                # process_planned_decisions сам сохранит каждый Decision.
+                self.process_planned_decisions(
+                    workspace,
+                    project_id=project_id,
+                    task_id=task_id,
+                    task_title=self._task_title(workspace, task_id),
+                    artifact_role="",
+                    decisions=tuple(decisions),
+                    mode="expert",
+                )
+                # Подтягиваем сохранённые версии (с финальными статусами)
+                for d in decisions:
+                    saved_decisions.append(self._runtime.get_decision(workspace, d.decision_id))
+            else:
+                # task_id неизвестен — сохраняем без сессии (видимо только в реестре)
+                for d in decisions:
+                    self._runtime.upsert_decision(workspace, d)
+                    saved_decisions.append(self._runtime.get_decision(workspace, d.decision_id))
+        return tuple(saved_decisions)
+
+    def _task_title(self, workspace: Path, task_id: str) -> str:
+        try:
+            return self._runtime.get_task(workspace, task_id).title or task_id
+        except Exception:
+            return task_id
+
+    # ---- mode (participation level) ------------------------------------------
+
+    def set_participation_mode(self, workspace: Path, mode: str):
+        """Сменить режим участия пользователя.
+
+        В v3.1 mode определяет какие уровни Decision показываются в
+        checkpoint-сессиях. Это простая запись в ProcessState — никакой
+        реевалюации существующих сессий не происходит (изменение
+        применяется к следующим pre-flight планированиям).
+        """
+        from ..domain.process_state import SetClarificationModePatch
+        return self._runtime.apply_process_patch(
+            workspace,
+            SetClarificationModePatch(mode=mode),
+            actor="operator",
+            reason="participation mode changed",
+        )
 
     # ---- helpers ----------------------------------------------------------
 

@@ -8,7 +8,6 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..application.checkpoint_service import CheckpointService
-from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
 from ..application.decision_planning_service import DecisionPlanningService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
@@ -86,13 +85,7 @@ def create_app(
     except Exception:  # noqa: BLE001
         pass
 
-    # v3.1: clarification_service создаётся ДО checkpoint_service, чтобы
-    # сначала иметь ссылку на runtime, но потом ему передаётся checkpoint_service
-    # отдельно (через сеттер ниже) — это разрывает циклическую инициализацию.
-    clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     checkpoint_service = CheckpointService(runtime)
-    # Inject: теперь clarification_service может вызывать register_as_decisions.
-    clarification_service._checkpoint_service = checkpoint_service  # noqa: SLF001
     decision_planning_service = DecisionPlanningService(llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
@@ -104,7 +97,7 @@ def create_app(
         decision_planning_service=decision_planning_service,
         checkpoint_service=checkpoint_service,
     )
-    validation_service = ValidationService(runtime, clarification_service)
+    validation_service = ValidationService(runtime, checkpoint_service=checkpoint_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     workflow_runner_service = WorkflowRunnerService(
         runtime, registry_service, workflow_service, planning_service
@@ -119,7 +112,7 @@ def create_app(
         planning_service,
         workflow_service,
         domain_pack_selection_service,
-        clarification_service,
+        checkpoint_service,
     )
 
     app.state.query_service = query_service
@@ -425,14 +418,6 @@ def create_app(
     def project_timeline(project_id: str, after_sequence: int = 0) -> Any:
         return to_primitive(query_service.project_timeline(project_id, after_sequence=after_sequence))
 
-    @app.get("/api/projects/{project_id}/clarifications")
-    def project_clarifications(project_id: str) -> Any:
-        return to_primitive(query_service.project_clarifications(project_id))
-
-    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}")
-    def project_clarification_detail(project_id: str, clarification_id: str) -> Any:
-        return to_primitive(query_service.clarification_detail(project_id, clarification_id))
-
     # --- v3.0 — Decision ledger ---------------------------------------------
 
     @app.get("/api/projects/{project_id}/decisions")
@@ -642,17 +627,6 @@ def create_app(
     def project_artifact_skeleton(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_skeleton(project_id, artifact_id))
 
-    @app.get("/api/projects/{project_id}/decision-log")
-    def project_decision_log(project_id: str) -> Any:
-        """Legacy decision log v2.2 (derived from ClarificationRequests).
-
-        Перемещён с ``/decisions`` на ``/decision-log`` в v3.0, потому что
-        ``/decisions`` теперь занят настоящим реестром решений
-        (`Decision` first-class entity). Сохранён для обратной
-        совместимости старого UI tab «Журнал решений».
-        """
-        return to_primitive(query_service.project_decision_log(project_id))
-
     @app.get("/api/projects/{project_id}/artifact-versions")
     def project_artifact_versions(project_id: str) -> Any:
         return to_primitive(query_service.project_artifact_versions(project_id))
@@ -762,99 +736,6 @@ def create_app(
             command_service.enable_domain_pack(project_id, pack_ref=_required_str(payload, "pack_ref"))
         )
 
-    def _autoresume_workflow_if_unblocked(project_id: str) -> None:
-        """Авто-продолжает workflow когда у проекта не осталось blocking
-        clarifications в статусе open. Идемпотентно: если запущен
-        активный run, ничего не делает.
-
-        Решает жалобу: после ответа на последний вопрос workflow стоял
-        пока пользователь не нажмёт «Run» вручную.
-
-        Особенности:
-        - Provider/model берём из последнего workflow_run этого проекта,
-          чтобы auto-resume использовал ту же модель, что и manual «Run».
-          Иначе runner мог свалиться в stub-провайдер из env и выдать
-          мусор, который проваливал валидацию.
-        - `continue_past_validation_failure=True`: одна валящаяся задача
-          (например, низкоуверенный goal_hypothesis) не должна
-          блокировать весь pipeline. Planner после её failed-статуса
-          сам перейдёт к следующей готовой задаче (например,
-          request_normalization).
-        """
-        try:
-            workspace_ref = catalog.resolve_workspace(project_id)
-        except Exception:
-            return
-        if workflow_runner_service.latest_active_run(workspace_ref.workspace, project_id) is not None:
-            return
-        runtime_local = workflow_runner_service._runtime  # type: ignore[attr-defined]
-        try:
-            blocking = [
-                req
-                for req in runtime_local.list_clarification_requests(
-                    workspace_ref.workspace, statuses=("open",)
-                )
-                if req.blocking_scope != "none"
-            ]
-        except Exception:
-            return
-        if blocking:
-            return
-
-        # Подхватываем provider/model из последнего run проекта —
-        # пользователь явно выбрал их через UI, не теряем настройку.
-        provider: str | None = None
-        model: str | None = None
-        try:
-            recent_runs = workflow_runner_service.list_runs(
-                workspace_ref.workspace, project_id=project_id, limit=1
-            )
-            if recent_runs:
-                provider = recent_runs[0].provider
-                model = recent_runs[0].model
-        except Exception:
-            pass
-
-        try:
-            workflow_runner_service.start_run_until_blocked(
-                workspace_ref.workspace,
-                project_id,
-                provider=provider,
-                model=model,
-                max_steps=1000,
-                continue_past_validation_failure=True,
-            )
-        except Exception:
-            # Best-effort: ошибка авто-resume не должна ломать ответ пользователя.
-            pass
-
-    @app.post("/api/projects/{project_id}/commands/answer-clarification")
-    def answer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        selected_option_ids = payload.get("selected_option_ids", [])
-        if not isinstance(selected_option_ids, list):
-            raise PovGeneratorError("Поле 'selected_option_ids' должно быть списком.")
-        result = to_primitive(
-            command_service.answer_clarification(
-                project_id,
-                clarification_id=_required_str(payload, "clarification_id"),
-                selected_option_ids=tuple(_required_string_list(selected_option_ids, "selected_option_ids")),
-                free_text=_optional_str(payload, "free_text"),
-            )
-        )
-        _autoresume_workflow_if_unblocked(project_id)
-        return result
-
-    @app.post("/api/projects/{project_id}/commands/accept-assumption")
-    def accept_assumption(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        result = to_primitive(
-            command_service.accept_assumption(
-                project_id,
-                clarification_id=_required_str(payload, "clarification_id"),
-            )
-        )
-        _autoresume_workflow_if_unblocked(project_id)
-        return result
-
     @app.post("/api/projects/{project_id}/commands/set-clarification-mode")
     def set_clarification_mode(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         mode = _required_str(payload, "mode")
@@ -866,53 +747,6 @@ def create_app(
     def set_methodology(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         pack_ref = _required_str(payload, "pack_ref")
         return to_primitive(command_service.set_methodology(project_id, pack_ref=pack_ref))
-
-    # ---- W5.1: defer / reopen / events / next ---------------------------
-
-    @app.post("/api/projects/{project_id}/commands/defer-clarification")
-    def defer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        request_id = _required_str(payload, "clarification_id")
-        reason = _optional_str(payload, "reason")
-        return to_primitive(
-            clarification_service.defer_clarification(
-                workspace_ref.workspace, request_id=request_id, reason=reason,
-            )
-        )
-
-    @app.post("/api/projects/{project_id}/commands/reopen-clarification")
-    def reopen_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        request_id = _required_str(payload, "clarification_id")
-        return to_primitive(
-            clarification_service.reopen_clarification(workspace_ref.workspace, request_id=request_id)
-        )
-
-    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}/events")
-    def clarification_events(project_id: str, clarification_id: str) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        return to_primitive(
-            clarification_service.list_events(workspace_ref.workspace, clarification_id)
-        )
-
-    @app.get("/api/projects/{project_id}/clarifications/next")
-    def clarification_next(project_id: str, after_id: str | None = None) -> Any:
-        """Возвращает следующий открытый вопрос (по приоритету), отличный
-        от `after_id`. Это flow-навигация UI wizard'а после ответа."""
-        workspace_ref = catalog.resolve_workspace(project_id)
-        opens = [
-            req for req in runtime.list_clarification_requests(
-                workspace_ref.workspace, statuses=("open",),
-            )
-            if req.request_id != after_id
-        ]
-        # Сортируем по priority desc, потом по created_at asc — старые более
-        # приоритетные сверху.
-        priority_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
-        opens.sort(
-            key=lambda r: (-priority_rank.get(r.priority, 0), r.created_at)
-        )
-        return to_primitive(opens[0]) if opens else None
 
     @app.websocket("/ws/projects/{project_id}")
     async def project_updates(websocket: WebSocket, project_id: str) -> None:
@@ -927,7 +761,6 @@ def create_app(
                 "situation",
                 "timeline",
                 "artifacts",
-                "clarifications",
                 "review",
                 "state",
                 # Aggregated L1 / L2 projections (W2 UI). realtime_token tracks

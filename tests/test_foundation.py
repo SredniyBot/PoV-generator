@@ -222,7 +222,7 @@ def test_execution_emits_primary_artifact_with_reasoning_and_trace_metadata(
 
 
 def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> None:
-    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.checkpoint_service import CheckpointService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
@@ -233,7 +233,7 @@ def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> No
     workspace, snapshot, runtime, project_service, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)
     execution = ExecutionService(runtime, context)
-    cl = ClarificationService(runtime)
+    cl = CheckpointService(runtime)
     val = ValidationService(runtime, cl)
     wf = WorkflowService(runtime, planning_service, execution, val)
     wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
@@ -254,7 +254,7 @@ def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_pat
     """W2.3: methodology-trace должен возвращать execution_run_id /
     provider / model / context_manifest_id, чтобы UI L4 ProvenanceViewer
     мог показать «откуда это» без отдельного запроса к /debug."""
-    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.checkpoint_service import CheckpointService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
@@ -265,7 +265,7 @@ def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_pat
     workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)
     execution = ExecutionService(runtime, context)
-    cl = ClarificationService(runtime)
+    cl = CheckpointService(runtime)
     val = ValidationService(runtime, cl)
     wf = WorkflowService(runtime, planning_service, execution, val)
     wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
@@ -287,7 +287,7 @@ def test_task_methodology_trace_returns_execution_summary_for_provenance(tmp_pat
 
 
 def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> None:
-    from pov_generator.application.clarification_service import ClarificationService
+    from pov_generator.application.checkpoint_service import CheckpointService
     from pov_generator.application.context_service import ContextService
     from pov_generator.application.execution_service import ExecutionService
     from pov_generator.application.validation_service import ValidationService
@@ -298,7 +298,7 @@ def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> N
     workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
     context = ContextService(runtime)
     execution = ExecutionService(runtime, context)
-    cl = ClarificationService(runtime)
+    cl = CheckpointService(runtime)
     val = ValidationService(runtime, cl)
     wf = WorkflowService(runtime, planning_service, execution, val)
     wf.run_until_blocked(workspace, snapshot, provider="stub", max_steps=2)
