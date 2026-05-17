@@ -262,24 +262,54 @@ class CheckpointService:
                 updated_at=utc_now_iso(),
             )
         elif answer.kind == "select_alternative":
-            if answer.selected_option_id is None:
-                raise ConflictError(
-                    f"answer.kind=select_alternative требует selected_option_id"
-                )
             valid_options = {alt.option_id for alt in decision.alternatives}
-            if answer.selected_option_id not in valid_options:
-                raise ConflictError(
-                    f"option_id {answer.selected_option_id!r} нет среди альтернатив "
-                    f"решения {decision_id!r}"
+            # v3.1: multi-select поддержка. Если decision.answer_mode == "multiple",
+            # ожидаем selected_option_ids (tuple). Иначе single — selected_option_id.
+            if decision.answer_mode == "multiple":
+                ids = answer.selected_option_ids
+                if not ids:
+                    # Fallback: single option_id обёрнут в tuple
+                    if answer.selected_option_id is not None:
+                        ids = (answer.selected_option_id,)
+                    else:
+                        raise ConflictError(
+                            "answer.kind=select_alternative для multi-mode "
+                            "требует selected_option_ids (tuple)"
+                        )
+                invalid = [oid for oid in ids if oid not in valid_options]
+                if invalid:
+                    raise ConflictError(
+                        f"option_id {invalid!r} нет среди альтернатив решения {decision_id!r}"
+                    )
+                saved = replace(
+                    decision,
+                    chosen_option_ids=tuple(ids),
+                    # Для multi-mode chosen_option_id — первый из выбранных (UI compat)
+                    chosen_option_id=ids[0] if ids else "",
+                    original_chosen_option_id=original_choice,
+                    status="user_overridden",
+                    user_action="modified",
+                    updated_at=utc_now_iso(),
                 )
-            saved = replace(
-                decision,
-                chosen_option_id=answer.selected_option_id,
-                original_chosen_option_id=original_choice,
-                status="user_overridden",
-                user_action="modified",
-                updated_at=utc_now_iso(),
-            )
+            else:
+                if answer.selected_option_id is None:
+                    raise ConflictError(
+                        "answer.kind=select_alternative требует selected_option_id"
+                    )
+                if answer.selected_option_id not in valid_options:
+                    raise ConflictError(
+                        f"option_id {answer.selected_option_id!r} нет среди альтернатив "
+                        f"решения {decision_id!r}"
+                    )
+                saved = replace(
+                    decision,
+                    chosen_option_id=answer.selected_option_id,
+                    chosen_option_ids=(),  # single mode — не используем
+                    original_chosen_option_id=original_choice,
+                    status="user_overridden",
+                    user_action="modified",
+                    updated_at=utc_now_iso(),
+                )
         elif answer.kind == "free_text":
             if not answer.free_text:
                 raise ConflictError("answer.kind=free_text требует непустой free_text")

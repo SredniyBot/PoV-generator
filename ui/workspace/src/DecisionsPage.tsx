@@ -181,40 +181,75 @@ function DecisionCard({
           ) : null}
 
           {decision.alternatives.length > 0 ? (
-            <ul className="decision-card__options" role="radiogroup">
+            <ul
+              className="decision-card__options"
+              role={decision.answer_mode === "multiple" ? "group" : "radiogroup"}
+            >
               {decision.alternatives.map((alt) => {
                 const isProposed = alt.option_id === proposedId;
-                const isSelected = effectiveSelectedId === alt.option_id;
+                // v3.1: multi-select — независимо выбираем по чекбоксу
+                const isMulti = decision.answer_mode === "multiple";
+                let isSelected: boolean;
+                if (isMulti) {
+                  // Multi: checked если в interactive selected_option_ids,
+                  // или в read-only — есть в chosen_option_ids
+                  if (isInteractive) {
+                    const ids =
+                      interactive?.currentAnswer?.kind === "select_alternative"
+                        ? interactive.currentAnswer.selected_option_ids ?? []
+                        : decision.chosen_option_ids ?? [];
+                    isSelected = ids.includes(alt.option_id);
+                  } else {
+                    isSelected = (decision.chosen_option_ids ?? []).includes(alt.option_id);
+                  }
+                } else {
+                  isSelected = effectiveSelectedId === alt.option_id;
+                }
                 return (
                   <li key={alt.option_id} className="decision-card__option">
                     {isInteractive ? (
                       <label className="decision-card__option-label">
                         <input
-                          type="radio"
+                          type={isMulti ? "checkbox" : "radio"}
                           name={`alt-${decision.decision_id}`}
                           checked={isSelected}
-                          onChange={() => {
+                          onChange={(e) => {
                             setFreeTextOpen(false);
-                            // Если выбран дефолтный — это accept_default
-                            // (чтобы при submit не дёргать ненужный override).
-                            if (alt.option_id === proposedId) {
-                              handleAnswer({
-                                decision_id: decision.decision_id,
-                                kind: "accept_default",
-                              });
-                            } else {
+                            if (isMulti) {
+                              // Toggle option_id in selected_option_ids
+                              const prevIds =
+                                interactive?.currentAnswer?.kind === "select_alternative"
+                                  ? interactive.currentAnswer.selected_option_ids ?? []
+                                  : decision.chosen_option_ids ?? [];
+                              const nextIds = e.target.checked
+                                ? [...prevIds.filter((x) => x !== alt.option_id), alt.option_id]
+                                : prevIds.filter((x) => x !== alt.option_id);
                               handleAnswer({
                                 decision_id: decision.decision_id,
                                 kind: "select_alternative",
-                                selected_option_id: alt.option_id,
+                                selected_option_ids: nextIds,
                               });
+                            } else {
+                              // Single radio — как раньше
+                              if (alt.option_id === proposedId) {
+                                handleAnswer({
+                                  decision_id: decision.decision_id,
+                                  kind: "accept_default",
+                                });
+                              } else {
+                                handleAnswer({
+                                  decision_id: decision.decision_id,
+                                  kind: "select_alternative",
+                                  selected_option_id: alt.option_id,
+                                });
+                              }
                             }
                           }}
                         />
                         <span className="decision-card__option-content">
                           <span className="decision-card__option-title">
                             {alt.label}
-                            {isProposed ? (
+                            {isProposed && !isMulti ? (
                               <span className="decision-card__option-hint">(по умолчанию)</span>
                             ) : null}
                           </span>
@@ -228,11 +263,11 @@ function DecisionCard({
                         <span
                           className={cx(
                             "decision-card__option-title",
-                            isProposed && "decision-card__option-title--chosen",
+                            isSelected && "decision-card__option-title--chosen",
                           )}
                         >
                           {alt.label}
-                          {isProposed ? (
+                          {isSelected ? (
                             <span className="decision-card__option-hint">(выбрано)</span>
                           ) : null}
                         </span>
@@ -245,6 +280,31 @@ function DecisionCard({
                 );
               })}
             </ul>
+          ) : decision.answer_mode === "free_text" && isInteractive ? (
+            // free_text-only: альтернатив нет, сразу textarea как primary input
+            <div className="decision-card__free decision-card__free--primary">
+              <textarea
+                className="decision-card__free-input"
+                placeholder="Введите свой ответ"
+                value={
+                  currentAnswerKind === "free_text"
+                    ? interactive.currentAnswer?.free_text ?? ""
+                    : freeTextDraft
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setFreeTextDraft(v);
+                  if (v.trim()) {
+                    handleAnswer({
+                      decision_id: decision.decision_id,
+                      kind: "free_text",
+                      free_text: v,
+                    });
+                  }
+                }}
+                rows={4}
+              />
+            </div>
           ) : null}
 
           {decision.user_free_text_answer ? (
@@ -254,7 +314,7 @@ function DecisionCard({
             </div>
           ) : null}
 
-          {isInteractive ? (
+          {isInteractive && decision.answer_mode !== "free_text" ? (
             <div className="decision-card__free">
               <button
                 type="button"
@@ -326,7 +386,6 @@ type LevelFilter = "all" | DecisionLevel;
 type StatusFilter = "all" | DecisionStatus;
 
 export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
-  const navigate = useNavigate();
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
@@ -339,13 +398,6 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
         status: statusFilter === "all" ? undefined : statusFilter,
       }),
   });
-  // v3.0: показываем banner со ссылкой на legacy /clarifications, если
-  // там есть открытые вопросы (fallback-путь для случаев, когда pre-flight
-  // не предусмотрел вопрос).
-  const clarificationsQuery = useQuery({
-    queryKey: ["clarifications-open-banner", projectId],
-    queryFn: () => api.getClarifications(projectId),
-  });
 
   if (query.isLoading || !query.data) {
     return <LoadingPanel title="Загружаем реестр решений…" />;
@@ -355,26 +407,8 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
     ? view.items.filter((d) => d.is_low_confidence)
     : view.items;
 
-  const openClarCount = clarificationsQuery.data?.open_count ?? 0;
-
   return (
     <div className="decisions-page">
-      {openClarCount > 0 ? (
-        <div className="decisions-page__legacy-banner">
-          <div>
-            <strong>{openClarCount}</strong>{" "}
-            {openClarCount === 1 ? "вопрос ждёт ответа" : "вопросов ждут ответа"} в старом потоке
-            (fallback от валидации). Он не попал в pre-flight, но требует вашего внимания.
-          </div>
-          <Button
-            tone="secondary"
-            onClick={() => navigate(`/projects/${projectId}/clarifications`)}
-          >
-            Открыть
-          </Button>
-        </div>
-      ) : null}
-
       <SectionCard title="Реестр решений">
         <p className="decisions-page__intro">
           Все решения, которые система приняла или собирается принять при сборке артефактов проекта.

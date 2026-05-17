@@ -88,6 +88,20 @@ DecisionUserAction = Literal[
     "pending",
 ]
 
+#: Режим ответа: как пользователь может ответить.
+#:
+#: - ``single`` — выбор одного варианта из альтернатив (radio).
+#: - ``multiple`` — выбор нескольких вариантов (checkboxes).
+#: - ``free_text`` — только свободный ответ, альтернатив нет (или они
+#:   опциональны как подсказки).
+#: - ``confirmation`` — да/нет / подтверждение действия (рендерится как
+#:   одна кнопка с описанием в title).
+#:
+#: По умолчанию ``single`` — самый частый кейс. Пришёл из legacy
+#: ``ClarificationCandidate.answer_mode``; миграция v3.1 расширила Decision
+#: до полного покрытия answer-mode space.
+DecisionAnswerMode = Literal["single", "multiple", "free_text", "confirmation"]
+
 
 # ---------------------------------------------------------------------------
 # Доменные структуры
@@ -196,6 +210,17 @@ class Decision:
     free_form_level_override: DecisionLevel | None = None
     created_at: str = ""
     updated_at: str = ""
+    # v3.1 — миграция legacy clarifications в Decision.
+    # ``answer_mode`` определяет UI:
+    #   single → radio (chosen_option_id заполнен)
+    #   multiple → checkboxes (chosen_option_ids заполнен, может быть пустым)
+    #   free_text → textarea (user_free_text_answer заполнен)
+    #   confirmation → одна кнопка «подтвердить»
+    # Для single-mode `chosen_option_ids` остаётся пустым tuple, использовать
+    # `chosen_option_id`. Для multi — наоборот. Свойство `effective_chosen_ids`
+    # унифицирует доступ.
+    answer_mode: DecisionAnswerMode = "single"
+    chosen_option_ids: tuple[str, ...] = field(default_factory=tuple)
 
     # ---- удобные производные свойства -------------------------------------
 
@@ -205,10 +230,31 @@ class Decision:
         return self.free_form_level_override or self.level
 
     @property
+    def effective_chosen_ids(self) -> tuple[str, ...]:
+        """Унифицированный доступ к выбранным option_id вне зависимости от mode.
+
+        - single + non-empty chosen_option_id → (chosen_option_id,)
+        - multiple → chosen_option_ids
+        - free_text → пустой tuple (выбор не через option_id)
+        """
+        if self.answer_mode == "multiple":
+            return self.chosen_option_ids
+        if self.chosen_option_id:
+            return (self.chosen_option_id,)
+        return ()
+
+    @property
     def chosen_alternative(self) -> DecisionAlternative | None:
-        """Текущий выбранный вариант (если есть и валиден)."""
+        """Текущий выбранный вариант для single-mode (если есть и валиден).
+
+        Для multi-mode возвращает первый из chosen_option_ids.
+        Для free_text — None.
+        """
+        primary_ids = self.effective_chosen_ids
+        if not primary_ids:
+            return None
         for alt in self.alternatives:
-            if alt.option_id == self.chosen_option_id:
+            if alt.option_id == primary_ids[0]:
                 return alt
         return None
 

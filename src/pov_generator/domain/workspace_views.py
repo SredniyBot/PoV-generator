@@ -244,6 +244,9 @@ class DecisionItemView:
     user_free_text_answer: str | None
     created_at: str
     updated_at: str
+    # v3.1: миграция clarifications → decisions
+    answer_mode: str = "single"
+    chosen_option_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

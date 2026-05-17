@@ -423,6 +423,8 @@ class WorkspaceQueryService:
             user_free_text_answer=decision.user_free_text_answer,
             created_at=decision.created_at,
             updated_at=decision.updated_at,
+            answer_mode=decision.answer_mode,
+            chosen_option_ids=decision.chosen_option_ids,
         )
 
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:

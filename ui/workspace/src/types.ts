@@ -644,6 +644,8 @@ export type DecisionUserAction =
   | "modified"
   | "deferred"
   | "pending";
+// v3.1: пришёл из legacy ClarificationCandidate.answer_mode после миграции
+export type DecisionAnswerMode = "single" | "multiple" | "free_text" | "confirmation";
 export type CheckpointStatus = "pending" | "finalized" | "expired" | "cancelled";
 export type CheckpointAnswerKind =
   | "accept_default"
@@ -685,6 +687,9 @@ export interface DecisionItemView {
   user_free_text_answer: string | null;
   created_at: string;
   updated_at: string;
+  // v3.1: режим ответа + multi-select поддержка
+  answer_mode: DecisionAnswerMode;
+  chosen_option_ids: string[];
 }
 
 export interface ProjectDecisionsView {
@@ -728,5 +733,7 @@ export interface CheckpointAnswerPayload {
   decision_id: string;
   kind: CheckpointAnswerKind;
   selected_option_id?: string | null;
+  // v3.1: multi-select. Если задано — используется (selected_option_id игнор)
+  selected_option_ids?: string[] | null;
   free_text?: string | null;
 }

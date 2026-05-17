@@ -71,14 +71,18 @@ class CheckpointAnswer:
     Args:
         decision_id: к какому решению относится ответ.
         kind: тип ответа (см. CheckpointAnswerKind).
-        selected_option_id: если kind == "select_alternative" — какой
+        selected_option_id: для single-mode select_alternative — какой
             option_id выбран. None в остальных случаях.
+        selected_option_ids: v3.1 для multi-mode select_alternative —
+            множество выбранных option_id. Если задано — используется
+            оно (selected_option_id игнорируется).
         free_text: если kind == "free_text" — свободный ответ.
     """
 
     decision_id: str
     kind: CheckpointAnswerKind
     selected_option_id: str | None = None
+    selected_option_ids: tuple[str, ...] | None = None
     free_text: str | None = None
 
 

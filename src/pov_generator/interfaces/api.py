@@ -86,8 +86,13 @@ def create_app(
     except Exception:  # noqa: BLE001
         pass
 
+    # v3.1: clarification_service создаётся ДО checkpoint_service, чтобы
+    # сначала иметь ссылку на runtime, но потом ему передаётся checkpoint_service
+    # отдельно (через сеттер ниже) — это разрывает циклическую инициализацию.
     clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
     checkpoint_service = CheckpointService(runtime)
+    # Inject: теперь clarification_service может вызывать register_as_decisions.
+    clarification_service._checkpoint_service = checkpoint_service  # noqa: SLF001
     decision_planning_service = DecisionPlanningService(llm_registry=llm_registry)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)

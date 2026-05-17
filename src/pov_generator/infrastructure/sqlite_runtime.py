@@ -105,6 +105,8 @@ def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) ->
         "free_form_level_override": decision.free_form_level_override,
         "created_at": created_at,
         "updated_at": updated_at,
+        "answer_mode": decision.answer_mode,
+        "chosen_option_ids_json": json_dumps(list(decision.chosen_option_ids)),
     }
 
 
@@ -140,6 +142,16 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         if row["depends_on_decision_ids_json"]
         else []
     )
+    # v3.1 поля. Защитный access — БД могла быть создана до миграции.
+    try:
+        answer_mode = row["answer_mode"] or "single"
+    except (KeyError, IndexError):
+        answer_mode = "single"
+    try:
+        chosen_ids_raw = row["chosen_option_ids_json"]
+        chosen_option_ids = tuple(json_loads(chosen_ids_raw)) if chosen_ids_raw else ()
+    except (KeyError, IndexError):
+        chosen_option_ids = ()
     return Decision(
         decision_id=row["decision_id"],
         project_id=row["project_id"],
@@ -162,6 +174,8 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         free_form_level_override=row["free_form_level_override"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        answer_mode=answer_mode,
+        chosen_option_ids=chosen_option_ids,
     )
 
 
@@ -2495,7 +2509,9 @@ class SqliteRuntime:
               user_free_text_answer text,
               free_form_level_override text,
               created_at text not null,
-              updated_at text not null
+              updated_at text not null,
+              answer_mode text not null default 'single',
+              chosen_option_ids_json text not null default '[]'
             );
             create index if not exists decisions_project_idx
                 on decisions(project_id, created_at);
@@ -2504,6 +2520,18 @@ class SqliteRuntime:
             create index if not exists decisions_project_status_idx
                 on decisions(project_id, status);
             """
+        )
+
+        # v3.1: миграция existing БД — добавление answer_mode/chosen_option_ids
+        # для legacy decisions, созданных до v3.1 (single-mode по умолчанию).
+        self._ensure_column(
+            connection, "decisions", "answer_mode", "text not null default 'single'"
+        )
+        self._ensure_column(
+            connection,
+            "decisions",
+            "chosen_option_ids_json",
+            "text not null default '[]'",
         )
 
         # W4.1 (R1): async workflow runs.

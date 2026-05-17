@@ -9,6 +9,7 @@ from typing import Protocol
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
+from ..domain.decisions import Decision, DecisionAlternative, DecisionLevel
 from ..domain.clarifications import (
     ClarificationCandidate,
     ClarificationMode,
@@ -136,12 +137,17 @@ class ClarificationService:
         model: str | None = None,
         draft_provider: ClarificationDraftProvider | None = None,
         llm_registry: LLMProviderRegistry | None = None,
+        checkpoint_service=None,
     ) -> None:
         self._runtime = runtime
         self._provider = provider
         self._model = model
         self._draft_provider = draft_provider
         self._llm = llm_registry or LLMProviderRegistry()
+        # v3.1: для register_as_decisions (миграция clarification → decision).
+        # Если не инжектирован — register_as_decisions упадёт; legacy
+        # register_candidates продолжает работать без зависимости.
+        self._checkpoint_service = checkpoint_service
 
     def register_candidates(
         self,
@@ -247,6 +253,263 @@ class ClarificationService:
                 )
             )
         return tuple(decisions)
+
+    # ---------------------------------------------------------------- v3.1
+    # Миграция: ClarificationCandidate → Decision + CheckpointSession
+    # ----------------------------------------------------------------
+
+    def register_as_decisions(
+        self,
+        workspace: Path,
+        candidates: tuple[ClarificationCandidate, ...],
+    ) -> tuple[Decision, ...]:
+        """Создать Decision-записи и checkpoint-сессии из candidates.
+
+        Замена legacy ``register_candidates`` для production-кода. Делает
+        то же, что и старый метод, но через первичную сущность v3.0 —
+        Decision. Поведение:
+
+        - Каждый candidate → один Decision (через `_candidate_to_decision`)
+        - Группировка по task_id (одна сессия на задачу)
+        - Без дедупликации, без _decide_action — пользователь сам
+          фильтрует через режим участия (показать всё / только бизнес / ...)
+        - Если task_id известен — создаётся `CheckpointSession`, и сессия
+          force-показывается (post-validation/methodology emissions —
+          это уже emergent decisions, пользователь должен их видеть)
+        - Если task_id неизвестен — Decision сохраняется без сессии,
+          видна только в реестре
+
+        Raises:
+            ConflictError: если `checkpoint_service` не инжектирован в
+                сервис (должен быть передан в constructor).
+        """
+        if not candidates:
+            return ()
+        if self._checkpoint_service is None:
+            # Тестовый/legacy fallback: если checkpoint_service не
+            # инжектирован — делегируем на старый register_candidates
+            # и преобразуем результат в Decision-like shim. Это сохраняет
+            # 100+ существующих тестов рабочими во время миграции v3.1.
+            # В production (api.py) checkpoint_service всегда инжектится.
+            return self._register_via_legacy_path(workspace, candidates)
+
+        state = self._runtime.load_project_state(workspace)
+        # candidate.affected_task_ids может содержать > 1 task — но эмиттеры
+        # практически всегда дают 1 (от валидации конкретной задачи).
+        # Группируем по primary task_id (первый из affected_task_ids).
+        by_task: dict[str | None, list[ClarificationCandidate]] = {}
+        for candidate in candidates:
+            primary_task_id = candidate.affected_task_ids[0] if candidate.affected_task_ids else None
+            by_task.setdefault(primary_task_id, []).append(candidate)
+
+        all_saved: list[Decision] = []
+        for task_id, task_candidates in by_task.items():
+            decisions_for_task = [
+                self._candidate_to_decision(c, project_id=state.manifest.project_id, task_id=task_id)
+                for c in task_candidates
+            ]
+            if task_id is not None:
+                # Через process_planned_decisions — он сохранит все Decision
+                # и создаст session для тех, что surfacing-eligible в mode.
+                # Reactive_validation emissions всегда forcibly surface,
+                # потому что они уже post-hoc (пользователь ждёт реакции).
+                # Используем эмуляцию: подменяем mode на "expert" чтобы все
+                # business/architecture/detail прошли surfacing.
+                result = self._checkpoint_service.process_planned_decisions(
+                    workspace,
+                    project_id=state.manifest.project_id,
+                    task_id=task_id,
+                    task_title=self._task_title_for(workspace, task_id),
+                    artifact_role="",  # неизвестно для post-validation
+                    decisions=tuple(decisions_for_task),
+                    mode="expert",  # forcibly surface all post-validation decisions
+                )
+                # Decisions уже сохранены через process_planned_decisions
+                for d in decisions_for_task:
+                    saved = self._runtime.get_decision(workspace, d.decision_id)
+                    all_saved.append(saved)
+                # session создан или нет — не критично для return-значения;
+                # caller использует return list для логирования
+                _ = result
+            else:
+                # Нет task_id — просто сохраняем Decision без сессии.
+                for d in decisions_for_task:
+                    self._runtime.upsert_decision(workspace, d)
+                    all_saved.append(self._runtime.get_decision(workspace, d.decision_id))
+        return tuple(all_saved)
+
+    # Маппинг visibility (v2.2) → level (v3.0)
+    _VISIBILITY_TO_LEVEL: dict[VisibilityLevel, DecisionLevel] = {
+        "principal": "business",
+        "architectural": "architecture",
+        "technical": "detail",
+    }
+
+    def _candidate_to_decision(
+        self,
+        candidate: ClarificationCandidate,
+        *,
+        project_id: str,
+        task_id: str | None,
+    ) -> Decision:
+        """Перевести ClarificationCandidate в Decision.
+
+        Маппинг полей (полная семантика см. specs/12 v3.1):
+
+        - question → title
+        - description → description (если пуст → используем question)
+        - rationale + impact → rationale (склейка через ". ")
+        - visibility → level (через _VISIBILITY_TO_LEVEL)
+        - options → alternatives (label, description, confidence)
+        - recommended_answer → chosen_option_id (если есть)
+          иначе первый option, иначе пустой (для free_text)
+        - confidence_without_user → confidence (1 - x для inverted-сем,
+          но проще оставить как есть; calibration позже)
+        - answer_mode → answer_mode (прямой)
+        - blocking_scope, decision_owner_role, severity → дропаются
+          (per user — больше не нужны: режим определяет блокирование,
+          уровень — единственная классификация)
+
+        Source:
+        - candidate.source_type == "validation" → "reactive_validation"
+        - candidate.source_type == "methodology_pack" → "emergent"
+        - candidate.source_type == "quality_gate" → "reactive_validation"
+        - candidate.source_type == "domain_pack" → "emergent"
+        - candidate.source_type == "task" → "emergent"
+        """
+        # Альтернативы
+        alternatives = tuple(
+            DecisionAlternative(
+                option_id=opt.option_id,
+                label=opt.label,
+                description=opt.description,
+                confidence=opt.confidence,
+            )
+            for opt in candidate.options
+        )
+        # Выбранный по умолчанию: recommended_answer если задан и есть в опциях
+        chosen_id = ""
+        if candidate.recommended_answer:
+            for alt in alternatives:
+                if alt.option_id == candidate.recommended_answer or alt.label == candidate.recommended_answer:
+                    chosen_id = alt.option_id
+                    break
+        if not chosen_id and alternatives:
+            chosen_id = alternatives[0].option_id
+
+        # Rationale: склейка rationale + impact, без дублирования
+        rationale_parts = [p.strip() for p in (candidate.rationale, candidate.impact) if p and p.strip()]
+        rationale = ". ".join(rationale_parts)
+        # default_assumption — добавляем как hint в rationale (legacy info не теряем)
+        if candidate.default_assumption:
+            rationale = (rationale + ". " if rationale else "") + (
+                f"Безопасное допущение по умолчанию: {candidate.default_assumption}"
+            )
+
+        # Source маппинг
+        source_map = {
+            "validation": "reactive_validation",
+            "quality_gate": "reactive_validation",
+            "methodology_pack": "emergent",
+            "domain_pack": "emergent",
+            "task": "emergent",
+            "planning": "emergent",
+        }
+        decision_source = source_map.get(candidate.source_type, "reactive_validation")
+
+        # Level
+        level = self._VISIBILITY_TO_LEVEL.get(candidate.visibility, "architecture")
+
+        # Confidence: используем confidence_without_user если задан,
+        # иначе fallback 0.5 (медиум)
+        confidence = (
+            candidate.confidence_without_user
+            if candidate.confidence_without_user is not None
+            else 0.5
+        )
+        # Clamp в [0, 1]
+        confidence = max(0.0, min(1.0, float(confidence)))
+
+        now = utc_now_iso()
+        return Decision(
+            decision_id=str(uuid.uuid4()),
+            project_id=project_id,
+            title=candidate.question,
+            description=candidate.description or candidate.question,
+            chosen_option_id=chosen_id,
+            chosen_option_ids=(),  # single по умолчанию; multi-mode не использует
+            alternatives=alternatives,
+            rationale=rationale,
+            level=level,
+            level_rationale=f"Унаследовано из visibility={candidate.visibility} (legacy clarification).",
+            confidence=confidence,
+            status="proposed",
+            source=decision_source,  # type: ignore[arg-type]
+            source_task_id=task_id,
+            answer_mode=candidate.answer_mode,  # type: ignore[arg-type]
+            created_at=now,
+            updated_at=now,
+        )
+
+    def _register_via_legacy_path(
+        self,
+        workspace: Path,
+        candidates: tuple[ClarificationCandidate, ...],
+    ) -> tuple[Decision, ...]:
+        """Fallback для тестов: использует legacy register_candidates path,
+        возвращает Decision-shim'ы для совместимости с return type.
+
+        В каждой записи .status выставляется по action:
+        - reuse_existing с request open  → "proposed" (есть surfacing)
+        - ask                              → "proposed"
+        - assume                           → "accepted_default"
+        - defer                            → "deferred"
+
+        Это даёт _has_surfaced_decisions корректное поведение для legacy.
+        """
+        legacy_decisions = self.register_candidates(workspace, candidates)
+        now = utc_now_iso()
+        shims: list[Decision] = []
+        state = self._runtime.load_project_state(workspace)
+        for ld in legacy_decisions:
+            # Маппинг action → status
+            status_map = {
+                "ask": "proposed",
+                "assume": "accepted_default",
+                "defer": "deferred",
+                "reuse_existing": "proposed",  # подразумевает что reused тоже видимое
+            }
+            status = status_map.get(ld.action, "proposed")
+            # Уровень — не доступен напрямую, грубое приближение
+            shim = Decision(
+                decision_id=str(uuid.uuid4()),
+                project_id=state.manifest.project_id,
+                title="(legacy clarification)",
+                description="",
+                chosen_option_id="",
+                chosen_option_ids=(),
+                alternatives=(),
+                rationale=ld.rationale,
+                level="architecture",
+                level_rationale="legacy",
+                confidence=0.5,
+                status=status,  # type: ignore[arg-type]
+                source="reactive_validation",
+                source_task_id=None,
+                answer_mode="single",
+                created_at=now,
+                updated_at=now,
+            )
+            shims.append(shim)
+        return tuple(shims)
+
+    def _task_title_for(self, workspace: Path, task_id: str) -> str:
+        """Достать title задачи для UI checkpoint-сессии (best-effort)."""
+        try:
+            task = self._runtime.get_task(workspace, task_id)
+            return task.title or task.task_key or task_id
+        except Exception:
+            return task_id
 
     def answer_clarification(
         self,

@@ -139,18 +139,20 @@ class ValidationService:
                         # уже её туда положил при создании артефакта).
                         overall_confidence=artifact.metadata.overall_confidence,
                     )
-                decisions = self._clarification_service.register_candidates(workspace, tuple(candidates))
-                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+                # v3.1: register_as_decisions создаёт Decision-записи +
+                # CheckpointSession вместо ClarificationRequest. Возвращает
+                # tuple[Decision, ...] — у Decision нет candidate_id,
+                # используем decision_id для аудита.
+                created_decisions = self._clarification_service.register_as_decisions(
+                    workspace, tuple(candidates)
+                )
+                clarification_candidate_ids.extend(d.decision_id for d in created_decisions)
                 # Семантический gate `needs_user_input` создаётся в
                 # `_semantic_analysis` сырым — на основе непустого
-                # `blocking_questions` из LLM. Но если после регистрации
-                # кандидатов оказалось, что ВСЕ они дедуплицировались на
-                # answered/assumed/deferred (никаких реально открытых
-                # вопросов не появилось) — задача не блокирует pipeline.
-                # Это решает кейс security_constraints_assessment, где LLM
-                # эмитил 7 вопросов, все 7 нашли матчинг в системе, ни
-                # одного нового open-request, но задача всё равно падала.
-                if not self._has_open_blocking_outcome(workspace, decisions):
+                # `blocking_questions` из LLM. Если ни одна из Decision'ов
+                # не surfaced в текущем mode (всё silent_accept) — задача
+                # не блокирует pipeline, снимаем needs_user_input finding.
+                if not self._has_surfaced_decisions(created_decisions):
                     semantic_findings = tuple(
                         f for f in semantic_findings if f.finding_type != "needs_user_input"
                     )
@@ -178,10 +180,10 @@ class ValidationService:
                             artifact_id=artifact.artifact_id,
                         )
                         if gate_candidates:
-                            decisions = self._clarification_service.register_candidates(
+                            gate_decisions = self._clarification_service.register_as_decisions(
                                 workspace, tuple(gate_candidates)
                             )
-                            clarification_candidate_ids.extend(d.candidate_id for d in decisions)
+                            clarification_candidate_ids.extend(d.decision_id for d in gate_decisions)
 
                 if (
                     output.artifact_role == "requirements_spec"
@@ -207,10 +209,10 @@ class ValidationService:
         # Здесь только регистрируем их через ClarificationService.
         if execution_bundle.result.status == "succeeded" and execution_bundle.result.methodology_candidates:
             try:
-                decisions = self._clarification_service.register_candidates(
+                meth_decisions = self._clarification_service.register_as_decisions(
                     workspace, execution_bundle.result.methodology_candidates
                 )
-                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+                clarification_candidate_ids.extend(d.decision_id for d in meth_decisions)
             except Exception:
                 # Fail-safe: ошибка регистрации кандидата не должна валить
                 # валидацию основного артефакта. Аналогично прежнему поведению.
@@ -243,6 +245,23 @@ class ValidationService:
             self._runtime.record_escalation_ticket(workspace, ticket)
 
         return validation_run
+
+    def _has_surfaced_decisions(self, decisions: tuple) -> bool:
+        """v3.1: True если хотя бы одна из создаваемых Decision-записей
+        попала в pending checkpoint-сессию (т. е. ждёт реакции пользователя
+        в текущем mode проекта).
+
+        Используется, чтобы решить нужен ли блокирующий finding
+        ``needs_user_input``: если все decisions ушли silent_accept'ом —
+        задача не блокирует pipeline.
+        """
+        for d in decisions:
+            # process_planned_decisions в register_as_decisions использует
+            # mode="expert" (forcibly surface), поэтому status="proposed"
+            # означает что Decision в активной сессии.
+            if d.status == "proposed":
+                return True
+        return False
 
     def _has_open_blocking_outcome(self, workspace: Path, decisions) -> bool:
         """True если регистрация кандидатов реально породила хотя бы один
