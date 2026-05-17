@@ -199,6 +199,79 @@ class ProjectClarificationsView:
     items: tuple[ClarificationItemView, ...]
 
 
+# --- v3.0 — Decision ledger views --------------------------------------------
+#
+# Эти view зеркалируют доменную модель Decision из
+# `domain/decisions.py`, но «уплощают» вложенные альтернативы и
+# добавляют производные поля для UI (на каком уровне находится, что
+# выбрано, нужно ли подсветить рискованным). Сериализуются как dict
+# через `to_primitive` в REST endpoint.
+
+
+@dataclass(frozen=True)
+class DecisionAlternativeView:
+    option_id: str
+    label: str
+    description: str
+    pros: tuple[str, ...]
+    cons: tuple[str, ...]
+    confidence: float | None
+    is_chosen: bool
+
+
+@dataclass(frozen=True)
+class DecisionItemView:
+    decision_id: str
+    project_id: str
+    title: str
+    description: str
+    level: str  # effective_level (с учётом возможной user-переклассификации)
+    raw_level: str  # исходный уровень от LLM, если был переопределён
+    level_rationale: str
+    rationale: str
+    chosen_option_id: str
+    chosen_option_label: str  # для UI: «PostgreSQL», не option_id
+    alternatives: tuple[DecisionAlternativeView, ...]
+    confidence: float
+    is_low_confidence: bool  # маркер для подсветки рискованного
+    status: str
+    source: str
+    source_task_id: str | None
+    affected_artifact_ids: tuple[str, ...]
+    depends_on_decision_ids: tuple[str, ...]
+    user_action: str
+    was_user_modified: bool
+    user_free_text_answer: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ProjectDecisionsView:
+    """Реестр решений проекта с агрегатами для UI.
+
+    Counts по уровням нужны для бэйджей в навигации; counts по статусу —
+    для разделения «требует моего внимания» vs «решено само». Items в
+    том же порядке, что в БД (хронология появления решений).
+    """
+
+    project_id: str
+    mode: str
+    # Счётчики «сколько решений на твоём уровне» для текущего mode.
+    surfaced_total: int
+    surfaced_pending: int
+    # По уровням (всегда все три, даже если 0).
+    business_count: int
+    architecture_count: int
+    detail_count: int
+    # По статусам.
+    proposed_count: int
+    accepted_count: int
+    overridden_count: int
+    low_confidence_count: int  # для индикатора «X рискованных решений»
+    items: tuple[DecisionItemView, ...]
+
+
 @dataclass(frozen=True)
 class ArtifactSummaryView:
     artifact_id: str

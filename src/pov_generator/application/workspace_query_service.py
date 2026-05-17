@@ -20,6 +20,8 @@ from ..domain.workspace_views import (
     ClarificationItemView,
     ClarificationOptionView,
     ContextManifestSummaryView,
+    DecisionAlternativeView,
+    DecisionItemView,
     DecisionLogEntryView,
     DomainPackCatalogItemView,
     FailurePinView,
@@ -31,6 +33,7 @@ from ..domain.workspace_views import (
     ProjectClarificationsView,
     ProjectDebugView,
     ProjectDecisionLogView,
+    ProjectDecisionsView,
     ProjectFailurePinsView,
     ProjectListItemView,
     ProjectOverviewView,
@@ -242,6 +245,118 @@ class WorkspaceQueryService:
     def clarification_detail(self, project_id: str, clarification_id: str) -> ClarificationItemView:
         context = self._load_context(project_id)
         return self._clarification_view(self._runtime.get_clarification_request(context.workspace, clarification_id))
+
+    # ---- v3.0 — Decision ledger -----------------------------------------------
+
+    def project_decisions(
+        self,
+        project_id: str,
+        *,
+        level: str | None = None,
+        status: str | None = None,
+    ) -> ProjectDecisionsView:
+        """Реестр решений проекта с агрегатами по уровням и статусам.
+
+        Опциональные фильтры ``level`` / ``status`` сужают ``items``,
+        но **не** меняют агрегатные счётчики — они всегда считаются по
+        полному реестру проекта. Это даёт UI стабильные счётчики в
+        навигации независимо от текущего фильтра.
+
+        ``surfaced_total`` / ``surfaced_pending`` — счётчики «на твоём
+        уровне» в текущем режиме проекта. Это основной индикатор для
+        пользователя: «N решений ждут моего внимания».
+        """
+        from ..domain.decisions import levels_for_mode, should_surface_to_user
+
+        context = self._load_context(project_id)
+        mode = context.state.process.clarification_mode
+
+        # Полный реестр для счётчиков
+        all_decisions = self._runtime.list_decisions(
+            context.workspace, project_id=project_id
+        )
+        # Отфильтрованный для items
+        if level is not None or status is not None:
+            filtered = self._runtime.list_decisions(
+                context.workspace,
+                project_id=project_id,
+                level=level,  # type: ignore[arg-type]
+                status=status,  # type: ignore[arg-type]
+            )
+        else:
+            filtered = all_decisions
+
+        # «На твоём уровне в этом режиме» — это про режим, не про фильтр
+        # пользователя. Поэтому считается от all_decisions.
+        surfaced_total = sum(1 for d in all_decisions if should_surface_to_user(d, mode))
+        surfaced_pending = sum(
+            1
+            for d in all_decisions
+            if should_surface_to_user(d, mode) and d.status == "proposed"
+        )
+
+        return ProjectDecisionsView(
+            project_id=project_id,
+            mode=mode,
+            surfaced_total=surfaced_total,
+            surfaced_pending=surfaced_pending,
+            business_count=sum(1 for d in all_decisions if d.effective_level == "business"),
+            architecture_count=sum(1 for d in all_decisions if d.effective_level == "architecture"),
+            detail_count=sum(1 for d in all_decisions if d.effective_level == "detail"),
+            proposed_count=sum(1 for d in all_decisions if d.status == "proposed"),
+            accepted_count=sum(1 for d in all_decisions if d.status == "accepted_default"),
+            overridden_count=sum(1 for d in all_decisions if d.status == "user_overridden"),
+            low_confidence_count=sum(1 for d in all_decisions if d.is_low_confidence),
+            items=tuple(self._decision_view(d) for d in filtered),
+        )
+
+    def decision_detail(self, project_id: str, decision_id: str) -> DecisionItemView:
+        context = self._load_context(project_id)
+        decision = self._runtime.get_decision(context.workspace, decision_id)
+        if decision.project_id != project_id:
+            # Защита от scope-confusion: id не должен открывать чужой проект
+            from ..common.errors import NotFoundError
+            raise NotFoundError(f"decision {decision_id!r} не принадлежит проекту {project_id!r}")
+        return self._decision_view(decision)
+
+    def _decision_view(self, decision) -> DecisionItemView:
+        chosen = decision.chosen_alternative
+        return DecisionItemView(
+            decision_id=decision.decision_id,
+            project_id=decision.project_id,
+            title=decision.title,
+            description=decision.description,
+            level=decision.effective_level,
+            raw_level=decision.level,
+            level_rationale=decision.level_rationale,
+            rationale=decision.rationale,
+            chosen_option_id=decision.chosen_option_id,
+            chosen_option_label=chosen.label if chosen else "",
+            alternatives=tuple(
+                DecisionAlternativeView(
+                    option_id=alt.option_id,
+                    label=alt.label,
+                    description=alt.description,
+                    pros=alt.pros,
+                    cons=alt.cons,
+                    confidence=alt.confidence,
+                    is_chosen=(alt.option_id == decision.chosen_option_id),
+                )
+                for alt in decision.alternatives
+            ),
+            confidence=decision.confidence,
+            is_low_confidence=decision.is_low_confidence,
+            status=decision.status,
+            source=decision.source,
+            source_task_id=decision.source_task_id,
+            affected_artifact_ids=decision.affected_artifact_ids,
+            depends_on_decision_ids=decision.depends_on_decision_ids,
+            user_action=decision.user_action,
+            was_user_modified=decision.was_user_modified,
+            user_free_text_answer=decision.user_free_text_answer,
+            created_at=decision.created_at,
+            updated_at=decision.updated_at,
+        )
 
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
         context = self._load_context(project_id)

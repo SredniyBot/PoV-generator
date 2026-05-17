@@ -16,6 +16,14 @@ from ..domain.artifacts import (
     ContextManifest,
 )
 from ..domain.clarifications import ClarificationCandidate, ClarificationOption, ClarificationRequest
+from ..domain.decisions import (
+    Decision,
+    DecisionAlternative,
+    DecisionLevel,
+    DecisionSource,
+    DecisionStatus,
+    DecisionUserAction,
+)
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.positions import Position, PositionAlternative
@@ -41,6 +49,98 @@ from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, Workflo
 
 
 # --- сериализация Layer A (знания) -------------------------------------------
+
+
+# --- сериализация Decision (v3.0 — реестр решений) ---------------------------
+
+
+def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) -> dict[str, object]:
+    """Превратить Decision в dict для bind в SQL.
+
+    Tuple-коллекции (alternatives, affected_artifact_ids, depends_on_decision_ids)
+    сериализуются в JSON-строки. Это упрощение оправдано на v3.0 — см.
+    комментарий к схеме в ``_ensure_schema``.
+    """
+    return {
+        "decision_id": decision.decision_id,
+        "project_id": decision.project_id,
+        "title": decision.title,
+        "description": decision.description,
+        "chosen_option_id": decision.chosen_option_id,
+        "alternatives_json": json_dumps([to_primitive(alt) for alt in decision.alternatives]),
+        "rationale": decision.rationale,
+        "level": decision.level,
+        "level_rationale": decision.level_rationale,
+        "confidence": float(decision.confidence),
+        "status": decision.status,
+        "source": decision.source,
+        "source_task_id": decision.source_task_id,
+        "affected_artifact_ids_json": json_dumps(list(decision.affected_artifact_ids)),
+        "depends_on_decision_ids_json": json_dumps(list(decision.depends_on_decision_ids)),
+        "user_action": decision.user_action,
+        "original_chosen_option_id": decision.original_chosen_option_id,
+        "user_free_text_answer": decision.user_free_text_answer,
+        "free_form_level_override": decision.free_form_level_override,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def _decision_from_row(row: sqlite3.Row) -> Decision:
+    """Десериализовать строку из таблицы decisions.
+
+    Защитное чтение коллекций: пустая JSON-строка или null → пустой tuple.
+    Это спасает от мусора в существующих базах при миграции.
+    """
+    raw_alts = json_loads(row["alternatives_json"]) if row["alternatives_json"] else []
+    alternatives = tuple(
+        DecisionAlternative(
+            option_id=str(item["option_id"]),
+            label=str(item.get("label", "")),
+            description=str(item.get("description", "")),
+            pros=tuple(item.get("pros", ()) or ()),
+            cons=tuple(item.get("cons", ()) or ()),
+            confidence=(
+                float(item["confidence"])
+                if item.get("confidence") is not None
+                else None
+            ),
+        )
+        for item in raw_alts
+    )
+    affected = tuple(
+        json_loads(row["affected_artifact_ids_json"])
+        if row["affected_artifact_ids_json"]
+        else []
+    )
+    depends_on = tuple(
+        json_loads(row["depends_on_decision_ids_json"])
+        if row["depends_on_decision_ids_json"]
+        else []
+    )
+    return Decision(
+        decision_id=row["decision_id"],
+        project_id=row["project_id"],
+        title=row["title"],
+        description=row["description"],
+        chosen_option_id=row["chosen_option_id"],
+        alternatives=alternatives,
+        rationale=row["rationale"],
+        level=row["level"],
+        level_rationale=row["level_rationale"],
+        confidence=float(row["confidence"]),
+        status=row["status"],
+        source=row["source"],
+        source_task_id=row["source_task_id"],
+        affected_artifact_ids=affected,
+        depends_on_decision_ids=depends_on,
+        user_action=row["user_action"],
+        original_chosen_option_id=row["original_chosen_option_id"],
+        user_free_text_answer=row["user_free_text_answer"],
+        free_form_level_override=row["free_form_level_override"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 def _position_to_dict(position: Position) -> dict[str, object]:
@@ -1755,6 +1855,143 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    # ---- Decision ledger (v3.0) ------------------------------------------
+    #
+    # CRUD-методы для реестра решений. Стиль соответствует методам
+    # `clarification_*` выше: list/get/upsert + helpers для фильтрации.
+    # Хранилище — единственный source of truth, никакого in-memory кэша.
+
+    def upsert_decision(self, workspace: Path, decision: Decision) -> Decision:
+        """Создать или обновить запись о решении.
+
+        Идемпотентно по ``decision_id``. Поле ``updated_at`` перезаписывается
+        текущим временем; ``created_at`` сохраняется при апдейте (insert
+        выставляет, если пусто).
+        """
+        now = utc_now_iso()
+        created_at = decision.created_at or now
+        payload = _decision_to_row(decision, created_at=created_at, updated_at=now)
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into decisions (
+                    decision_id, project_id, title, description, chosen_option_id,
+                    alternatives_json, rationale, level, level_rationale, confidence,
+                    status, source, source_task_id,
+                    affected_artifact_ids_json, depends_on_decision_ids_json,
+                    user_action, original_chosen_option_id, user_free_text_answer,
+                    free_form_level_override, created_at, updated_at
+                )
+                values (
+                    :decision_id, :project_id, :title, :description, :chosen_option_id,
+                    :alternatives_json, :rationale, :level, :level_rationale, :confidence,
+                    :status, :source, :source_task_id,
+                    :affected_artifact_ids_json, :depends_on_decision_ids_json,
+                    :user_action, :original_chosen_option_id, :user_free_text_answer,
+                    :free_form_level_override, :created_at, :updated_at
+                )
+                on conflict(decision_id) do update set
+                    title = excluded.title,
+                    description = excluded.description,
+                    chosen_option_id = excluded.chosen_option_id,
+                    alternatives_json = excluded.alternatives_json,
+                    rationale = excluded.rationale,
+                    level = excluded.level,
+                    level_rationale = excluded.level_rationale,
+                    confidence = excluded.confidence,
+                    status = excluded.status,
+                    source = excluded.source,
+                    source_task_id = excluded.source_task_id,
+                    affected_artifact_ids_json = excluded.affected_artifact_ids_json,
+                    depends_on_decision_ids_json = excluded.depends_on_decision_ids_json,
+                    user_action = excluded.user_action,
+                    original_chosen_option_id = excluded.original_chosen_option_id,
+                    user_free_text_answer = excluded.user_free_text_answer,
+                    free_form_level_override = excluded.free_form_level_override,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            connection.commit()
+        return replace(decision, created_at=created_at, updated_at=now)
+
+    def get_decision(self, workspace: Path, decision_id: str) -> Decision:
+        """Достать одно решение по id. Бросает NotFoundError при отсутствии."""
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from decisions where decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"decision {decision_id!r} не найдено")
+        return _decision_from_row(row)
+
+    def list_decisions(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        level: DecisionLevel | None = None,
+        status: DecisionStatus | None = None,
+        source: DecisionSource | None = None,
+        source_task_id: str | None = None,
+    ) -> list[Decision]:
+        """Получить отфильтрованный список решений проекта.
+
+        Все фильтры опциональны и AND-комбинируются. Результат отсортирован
+        по ``created_at asc`` (стабильный порядок появления), что позволяет
+        UI показывать решения в хронологии работы LLM.
+        """
+        where_clauses = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if level is not None:
+            where_clauses.append("level = ?")
+            params.append(level)
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status)
+        if source is not None:
+            where_clauses.append("source = ?")
+            params.append(source)
+        if source_task_id is not None:
+            where_clauses.append("source_task_id = ?")
+            params.append(source_task_id)
+        query = (
+            "select * from decisions where "
+            + " and ".join(where_clauses)
+            + " order by created_at asc, rowid asc"
+        )
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_decision_from_row(row) for row in rows]
+
+    def count_decisions(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        level: DecisionLevel | None = None,
+        status: DecisionStatus | None = None,
+    ) -> int:
+        """Подсчёт решений с теми же фильтрами что у list_decisions.
+
+        Нужно для UI-badge'ей («N решений на твоём уровне ждут»).
+        Реализован отдельным методом, чтобы не тянуть весь датасет в
+        память ради счёта.
+        """
+        where_clauses = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if level is not None:
+            where_clauses.append("level = ?")
+            params.append(level)
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status)
+        query = "select count(*) as cnt from decisions where " + " and ".join(where_clauses)
+        with self._connect(workspace) as connection:
+            row = connection.execute(query, params).fetchone()
+        return int(row["cnt"]) if row is not None else 0
+
     def _insert_task_event(
         self,
         connection: sqlite3.Connection,
@@ -2076,6 +2313,52 @@ class SqliteRuntime:
                 on clarification_events(request_id, created_at);
             """
         )
+        # v3.0 — Реестр решений (decision ledger).
+        #
+        # См. specs/12_clarification_escalation.md раздел «v3.0 — реестр
+        # решений + checkpoint» и docs/decision_level_criteria.md.
+        #
+        # Структурный выбор: alternatives, dependencies, affected_artifact_ids
+        # храним как JSON-поля в самой строке, не вынося в отдельные таблицы.
+        # На v3.0 это упрощение оправдано: реестр читается всегда целиком
+        # для проекта (через filter, не через join), таблица растёт в десятки—
+        # сотни записей на проект, оптимизация запросов через индексы на
+        # выделенные FK не окупает усложнение схемы. При появлении нагрузки
+        # на per-alternative выборки — мигрировать в отдельную таблицу.
+        connection.executescript(
+            """
+            create table if not exists decisions (
+              decision_id text primary key,
+              project_id text not null,
+              title text not null,
+              description text not null default '',
+              chosen_option_id text not null default '',
+              alternatives_json text not null default '[]',
+              rationale text not null default '',
+              level text not null,
+              level_rationale text not null default '',
+              confidence real not null default 0.0,
+              status text not null,
+              source text not null,
+              source_task_id text,
+              affected_artifact_ids_json text not null default '[]',
+              depends_on_decision_ids_json text not null default '[]',
+              user_action text not null default 'not_shown',
+              original_chosen_option_id text,
+              user_free_text_answer text,
+              free_form_level_override text,
+              created_at text not null,
+              updated_at text not null
+            );
+            create index if not exists decisions_project_idx
+                on decisions(project_id, created_at);
+            create index if not exists decisions_project_level_idx
+                on decisions(project_id, level);
+            create index if not exists decisions_project_status_idx
+                on decisions(project_id, status);
+            """
+        )
+
         # W4.1 (R1): async workflow runs.
         connection.executescript(
             """

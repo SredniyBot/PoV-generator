@@ -408,6 +408,41 @@ def create_app(
     def project_clarification_detail(project_id: str, clarification_id: str) -> Any:
         return to_primitive(query_service.clarification_detail(project_id, clarification_id))
 
+    # --- v3.0 — Decision ledger ---------------------------------------------
+
+    @app.get("/api/projects/{project_id}/decisions")
+    def project_decisions(
+        project_id: str,
+        level: str | None = None,
+        status: str | None = None,
+    ) -> Any:
+        """Реестр решений проекта.
+
+        Опциональные query-параметры:
+        - ``level``: business | architecture | detail
+        - ``status``: proposed | accepted_default | user_overridden | deferred | locked_in | superseded
+
+        Возвращает items + агрегаты по уровням и статусам (агрегаты
+        считаются по всему реестру, не по отфильтрованному виду).
+        """
+        return to_primitive(
+            query_service.project_decisions(project_id, level=level, status=status)
+        )
+
+    @app.get("/api/projects/{project_id}/decisions/{decision_id}")
+    def project_decision_detail(project_id: str, decision_id: str) -> Any:
+        """Детали решения по id.
+
+        Возвращает 404 при отсутствии (внутренний NotFoundError по
+        дефолту даёт 409 через глобальный handler, но для GET по id 404
+        семантически правильнее — повторяем паттерн download.pdf).
+        """
+        from ..common.errors import NotFoundError
+        try:
+            return to_primitive(query_service.decision_detail(project_id, decision_id))
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     @app.get("/api/projects/{project_id}/artifacts")
     def project_artifacts(project_id: str) -> Any:
         return to_primitive(query_service.project_artifacts(project_id))
