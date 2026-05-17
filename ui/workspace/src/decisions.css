@@ -1,0 +1,489 @@
+/* =====================================================================
+   v3.0 — Decision ledger + checkpoint sessions
+   ===================================================================== */
+
+/* danger-вариант для бэйджа pending-checkpoint (workflow приостановлен) */
+.meta-chip--danger {
+  background: rgba(215, 95, 95, 0.13);
+  border-color: rgba(215, 95, 95, 0.5);
+  color: #e58a8a;
+}
+.meta-chip--danger:hover, .meta-chip--danger:focus-visible {
+  background: rgba(215, 95, 95, 0.22);
+  border-color: rgba(215, 95, 95, 0.7);
+}
+
+/* ---- Decisions registry page (DecisionsRegistryPage) --------------- */
+
+.decisions-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.decisions-page__intro {
+  color: var(--muted-fg, #a0a0b0);
+  line-height: 1.55;
+  margin: 0 0 1rem 0;
+}
+.decisions-hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+.decision-counter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+.decision-counter--emphasis {
+  background: rgba(98, 145, 235, 0.08);
+  border-color: rgba(98, 145, 235, 0.3);
+}
+.decision-counter__value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.decision-counter__value--active { color: #79a7f0; }
+.decision-counter__value--danger { color: #e58a8a; }
+.decision-counter__value--warning { color: #e0c179; }
+.decision-counter__value--success { color: #7fc18a; }
+.decision-counter__value--muted { color: #888896; }
+.decision-counter__label {
+  font-size: 0.78rem;
+  color: var(--muted-fg, #a0a0b0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.decision-counter__sub {
+  font-size: 0.75rem;
+  color: var(--muted-fg, #8a8a98);
+  margin-top: 0.1rem;
+}
+
+.decisions-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.2rem;
+  padding: 0.75rem 0;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.decisions-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.decisions-filter__label {
+  font-size: 0.85rem;
+  color: var(--muted-fg, #9090a0);
+}
+.decisions-filter__check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted-fg, #a0a0b0);
+  cursor: pointer;
+}
+.decisions-filter__check input { cursor: pointer; }
+
+.decisions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ---- DecisionCard ------------------------------------------------- */
+
+.decision-card {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+.decision-card:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+}
+.decision-card--risky {
+  border-left: 3px solid rgba(214, 173, 89, 0.65);
+}
+.decision-card--answered {
+  border-left: 3px solid rgba(127, 193, 138, 0.7);
+  background: rgba(127, 193, 138, 0.04);
+}
+.decision-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+.decision-card__head-text {
+  flex: 1;
+  min-width: 0;
+}
+.decision-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+.decision-card__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg, #e8e8f0);
+  margin: 0 0 0.35rem 0;
+  line-height: 1.35;
+}
+.decision-card__description {
+  font-size: 0.88rem;
+  color: var(--muted-fg, #b0b0c0);
+  margin: 0;
+  line-height: 1.5;
+}
+.decision-card__toggle {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: var(--muted-fg, #a0a0b0);
+  cursor: pointer;
+  padding: 0.3rem 0.4rem;
+  display: flex;
+  align-items: center;
+}
+.decision-card__toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.decision-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.decision-card__proposed {
+  background: rgba(98, 145, 235, 0.06);
+  border: 1px solid rgba(98, 145, 235, 0.2);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+}
+.decision-card__proposed-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #79a7f0;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.decision-card__proposed-value {
+  font-size: 1rem;
+  color: var(--fg, #e8e8f0);
+}
+.decision-card__rationale {
+  margin: 0.45rem 0 0 0;
+  font-size: 0.85rem;
+  color: var(--muted-fg, #b8b8c8);
+  line-height: 1.5;
+}
+
+.decision-card__alternatives {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.decision-card__alternatives-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-fg, #8a8a98);
+}
+.decision-card__alternatives-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.decision-alt {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
+  padding: 0.6rem 0.8rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+.decision-alt--proposed {
+  border-color: rgba(98, 145, 235, 0.3);
+}
+.decision-alt--selected {
+  background: rgba(127, 193, 138, 0.08);
+  border-color: rgba(127, 193, 138, 0.5);
+}
+.decision-alt__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+.decision-alt__label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  color: var(--fg, #e8e8f0);
+}
+.decision-alt__radio {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+.decision-alt__radio input { cursor: pointer; }
+.decision-alt__hint {
+  font-size: 0.72rem;
+  color: #79a7f0;
+  background: rgba(98, 145, 235, 0.12);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+.decision-alt__confidence {
+  font-size: 0.75rem;
+  color: var(--muted-fg, #8a8a98);
+}
+.decision-alt__description {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.85rem;
+  color: var(--muted-fg, #b0b0c0);
+  line-height: 1.5;
+}
+.decision-alt__props {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+}
+@media (max-width: 600px) {
+  .decision-alt__props { grid-template-columns: 1fr; }
+}
+.decision-alt__props-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.decision-alt__props-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-fg, #8a8a98);
+}
+.decision-alt__props-col ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: var(--muted-fg, #a8a8b8);
+  line-height: 1.45;
+}
+
+.decision-card__meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.82rem;
+  color: var(--muted-fg, #9090a0);
+  padding: 0.5rem 0.7rem;
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 6px;
+}
+.decision-card__meta-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-fg, #707080);
+  white-space: nowrap;
+}
+.decision-card__meta-value {
+  color: var(--muted-fg, #b0b0c0);
+  line-height: 1.5;
+}
+
+.decision-card__user-text {
+  background: rgba(127, 193, 138, 0.06);
+  border: 1px solid rgba(127, 193, 138, 0.25);
+  border-radius: 7px;
+  padding: 0.55rem 0.8rem;
+}
+.decision-card__user-text-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #7fc18a;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.decision-card__user-text p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--fg, #e8e8f0);
+  line-height: 1.5;
+}
+
+.decision-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+.decision-card__free-text {
+  padding: 0.5rem 0;
+}
+.decision-card__free-text summary {
+  cursor: pointer;
+  color: var(--muted-fg, #9090a0);
+  font-size: 0.85rem;
+  user-select: none;
+  padding: 0.25rem 0;
+}
+.decision-card__free-text summary:hover {
+  color: var(--fg, #e8e8f0);
+}
+.decision-card__free-input {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--fg, #e8e8f0);
+  font-family: inherit;
+  font-size: 0.9rem;
+  resize: vertical;
+}
+.decision-card__free-input:focus {
+  outline: none;
+  border-color: rgba(98, 145, 235, 0.5);
+}
+
+/* ---- CheckpointSessionPage ----------------------------------------- */
+
+.checkpoint-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.checkpoint-page__title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.checkpoint-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.2rem;
+  background: rgba(98, 145, 235, 0.05);
+  border: 1px solid rgba(98, 145, 235, 0.2);
+  border-radius: 10px;
+  margin-bottom: 1.2rem;
+}
+.checkpoint-intro__lead {
+  font-size: 0.95rem;
+  color: var(--fg, #e8e8f0);
+  line-height: 1.55;
+}
+.checkpoint-progress {
+  position: relative;
+  height: 28px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.checkpoint-progress__bar {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(98, 145, 235, 0.5), rgba(127, 193, 138, 0.65));
+  transition: width 0.3s ease;
+  border-radius: 14px;
+}
+.checkpoint-progress__text {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 0.82rem;
+  color: var(--fg, #f0f0f5);
+  font-weight: 500;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.checkpoint-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.checkpoint-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 0 0 0;
+  margin-top: 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.checkpoint-footer__hint {
+  font-size: 0.85rem;
+  color: var(--muted-fg, #9090a0);
+  line-height: 1.45;
+}
+
+/* ---- CheckpointsListPage ------------------------------------------- */
+
+.checkpoint-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.checkpoint-list__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+.checkpoint-list__item--muted { opacity: 0.6; }
+.checkpoint-list__title {
+  font-weight: 500;
+  color: var(--fg, #e8e8f0);
+}
+.checkpoint-list__meta {
+  font-size: 0.8rem;
+  color: var(--muted-fg, #909098);
+  margin-top: 0.15rem;
+}
+.checkpoint-list__archive summary {
+  cursor: pointer;
+  margin: 1rem 0 0.5rem 0;
+  color: var(--muted-fg, #909098);
+  font-size: 0.85rem;
+  user-select: none;
+}
+.checkpoint-list__archive summary:hover {
+  color: var(--fg, #e8e8f0);
+}

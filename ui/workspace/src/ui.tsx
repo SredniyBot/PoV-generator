@@ -11,6 +11,7 @@ import {
   CircleDot,
   FileCog,
   FileText,
+  GitBranch,
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
@@ -169,7 +170,10 @@ export function SectionCard({
   className,
   children,
 }: PropsWithChildren<{
-  title: string;
+  // ReactNode (а не только string) — чтобы в title можно было передать
+  // композицию с кнопкой возврата / иконкой (v3.0 CheckpointSessionPage).
+  // h2 принимает любой children, обратной несовместимости не возникает.
+  title: ReactNode;
   subtitle?: string;
   actions?: ReactNode;
   tone?: "default" | "warning" | "danger" | "accent";
@@ -357,12 +361,15 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   // прошлого таба (Состояние / Замечания / Технические детали) — это
   // диагностические страницы; доступ к ним остаётся через прямые
   // URL `/state`, `/review`, `/debug` для bookmarks / power-users.
+  // v3.0: «Журнал решений» → «Решения» (теперь это реестр решений
+  // первого класса, не legacy-производное от clarification-ответов).
+  // Старый журнал доступен напрямую по URL /decision-log.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
     { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Журнал решений" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
   return (
@@ -425,6 +432,9 @@ export function WorkspaceHeader({
   openClarificationCount,
   blockingClarificationCount,
   onOpenClarifications,
+  pendingCheckpointCount,
+  pendingCheckpointSessionId,
+  onOpenCheckpoints,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
@@ -436,6 +446,12 @@ export function WorkspaceHeader({
   openClarificationCount?: number;
   blockingClarificationCount?: number;
   onOpenClarifications?: () => void;
+  // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
+  // Если > 0 — показываем красный бэйдж рядом с вопросами; клик ведёт на
+  // /checkpoints (список) или сразу на /checkpoints/{id} если одна.
+  pendingCheckpointCount?: number;
+  pendingCheckpointSessionId?: string | null;
+  onOpenCheckpoints?: () => void;
 }) {
   const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
   const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
@@ -476,6 +492,17 @@ export function WorkspaceHeader({
               {blockingClarificationCount && blockingClarificationCount > 0
                 ? ` (${blockingClarificationCount} блок.)`
                 : null}
+            </button>
+          ) : null}
+          {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
+            <button
+              type="button"
+              className="meta-chip meta-chip--button meta-chip--danger"
+              onClick={onOpenCheckpoints}
+              title="Workflow приостановлен — нужны ваши решения перед сборкой артефакта"
+            >
+              <GitBranch size={14} />
+              Решения ждут: {pendingCheckpointCount}
             </button>
           ) : null}
         </div>

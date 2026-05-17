@@ -34,6 +34,11 @@ import { marked } from "marked";
 
 import { api } from "./api";
 import { DecisionLogPage } from "./DecisionLogPage";
+import {
+  CheckpointSessionPage,
+  CheckpointsListPage,
+  DecisionsRegistryPage,
+} from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
@@ -384,6 +389,14 @@ function WorkspaceRoute({
     queryFn: () => api.getClarifications(projectId),
     enabled: Boolean(projectId),
   });
+  // v3.0: pending-checkpoint бэйдж в header'е.
+  const headerCheckpointsQuery = useQuery({
+    queryKey: ["checkpoints-list", projectId],
+    queryFn: () => api.getCheckpoints(projectId),
+    enabled: Boolean(projectId),
+    // Pollим раз в 5 сек чтобы бэйдж появился даже при отсутствии WS-события.
+    refetchInterval: 5000,
+  });
 
   const commandRequest = async (promiseFactory: () => Promise<CommandResultView>) => {
     setCommandBusy(true);
@@ -488,6 +501,18 @@ function WorkspaceRoute({
         openClarificationCount={headerClarificationsQuery.data?.open_count}
         blockingClarificationCount={headerClarificationsQuery.data?.blocking_count}
         onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
+        pendingCheckpointCount={headerCheckpointsQuery.data?.pending_count}
+        pendingCheckpointSessionId={
+          headerCheckpointsQuery.data?.items.find((s) => s.status === "pending")?.session_id ?? null
+        }
+        onOpenCheckpoints={() => {
+          const pending = headerCheckpointsQuery.data?.items.filter((s) => s.status === "pending") ?? [];
+          if (pending.length === 1 && pending[0]) {
+            navigate(`/projects/${projectId}/checkpoints/${pending[0].session_id}`);
+          } else {
+            navigate(`/projects/${projectId}/checkpoints`);
+          }
+        }}
         actions={<CommandBar projectId={projectId} />}
       />
       {/* Workflow-блок выше табов: пользователь сразу видит, что идёт
@@ -539,7 +564,15 @@ function WorkspaceRoute({
           path="clarifications"
           element={<ClarificationsPage projectId={projectId} commands={commandMutations} />}
         />
-        <Route path="decisions" element={<DecisionLogPage projectId={projectId} />} />
+        {/* v3.0: /decisions теперь — реестр решений (новая модель).
+            Старый «журнал решений» доступен по /decision-log для обратной совместимости. */}
+        <Route path="decisions" element={<DecisionsRegistryPage projectId={projectId} />} />
+        <Route path="decision-log" element={<DecisionLogPage projectId={projectId} />} />
+        <Route path="checkpoints" element={<CheckpointsListPage projectId={projectId} />} />
+        <Route
+          path="checkpoints/:sessionId"
+          element={<CheckpointSessionPage projectId={projectId} />}
+        />
         <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
         {/* Диагностические страницы — прямой доступ по URL.
             Вкладки в WorkspaceTabs больше нет: эти разделы (Состояние /

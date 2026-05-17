@@ -194,7 +194,9 @@ export const api = {
       `/api/projects/${projectId}/artifacts/${artifactId}/skeleton`,
     ),
   getDecisionLog: (projectId: string) =>
-    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decisions`),
+    // v3.0: переехал с /decisions на /decision-log — теперь /decisions
+    // занят настоящим реестром решений (см. getDecisionsRegistry).
+    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decision-log`),
   getArtifactVersions: (projectId: string) =>
     request<import("./types").ProjectArtifactVersionsView>(
       `/api/projects/${projectId}/artifact-versions`,
@@ -205,6 +207,44 @@ export const api = {
       `/api/projects/${projectId}/failure-pins${qs}`,
     );
   },
+
+  // --- v3.0 — Decision ledger + checkpoint sessions ----------------------
+  getDecisionsRegistry: (
+    projectId: string,
+    filters?: { level?: string; status?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (filters?.level) qs.set("level", filters.level);
+    if (filters?.status) qs.set("status", filters.status);
+    const qstr = qs.toString() ? `?${qs.toString()}` : "";
+    return request<import("./types").ProjectDecisionsView>(
+      `/api/projects/${projectId}/decisions${qstr}`,
+    );
+  },
+  getDecisionDetail: (projectId: string, decisionId: string) =>
+    request<import("./types").DecisionItemView>(
+      `/api/projects/${projectId}/decisions/${decisionId}`,
+    ),
+  getCheckpoints: (projectId: string) =>
+    request<import("./types").ProjectCheckpointsView>(
+      `/api/projects/${projectId}/checkpoints`,
+    ),
+  getCheckpointDetail: (projectId: string, sessionId: string) =>
+    request<import("./types").CheckpointSessionView>(
+      `/api/projects/${projectId}/checkpoints/${sessionId}`,
+    ),
+  submitCheckpointAnswers: (
+    projectId: string,
+    sessionId: string,
+    answers: import("./types").CheckpointAnswerPayload[],
+  ) =>
+    request<import("./types").CheckpointSessionView>(
+      `/api/projects/${projectId}/checkpoints/${sessionId}/answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers }),
+      },
+    ),
 
   // --- Settings: LLM providers / models / assignments --------------------
   listPurposes: () => request<{ id: string; label: string }[]>("/api/settings/purposes"),
