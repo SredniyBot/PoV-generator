@@ -453,14 +453,16 @@ class CheckpointService:
         переоткрыть их вручную в реестре).
         """
         from ..domain.process_state import SetClarificationModePatch
-        state = self._runtime.apply_process_patch(
+        # apply_process_patch возвращает ProcessState (без manifest);
+        # project_id берём из manifest напрямую.
+        self._runtime.apply_process_patch(
             workspace,
             SetClarificationModePatch(mode=mode),
             actor="operator",
             reason="participation mode changed",
         )
-
-        project_id = state.manifest.project_id
+        manifest = self._runtime.load_manifest(workspace)
+        project_id = manifest.project_id
         auto_accepted_ids: list[str] = []
         finalized_sessions: list[str] = []
         resumed_tasks: list[str] = []
