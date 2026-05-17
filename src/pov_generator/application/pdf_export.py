@@ -27,9 +27,12 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import sys
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import markdown as md_lib
 from reportlab.pdfbase import pdfmetrics
@@ -46,6 +49,26 @@ logger = logging.getLogger(__name__)
 _PDF_FONT_NAME = "PovBodyFont"
 _PDF_FONT_NAME_BOLD = "PovBodyFont-Bold"
 _PDF_FONT_FALLBACK = "Helvetica"  # core PDF font; для Cyrillic непригоден
+
+# --- размеры страниц (для оценки «лезет ли таблица в portrait») -------------
+# A4 = 21.0 × 29.7 cm; 1 cm ≈ 28.346 pt; внешние поля задаются в @page (1.8 cm).
+# Доступная под контент ширина:
+#   portrait  = (21.0 − 2×1.8) cm ≈ 493 pt
+#   landscape = (29.7 − 2×1.8) cm ≈ 738 pt
+_PORTRAIT_CONTENT_WIDTH_PT = 493.0
+_LANDSCAPE_CONTENT_WIDTH_PT = 738.0
+
+# Грубая оценка средней ширины символа в шрифте таблицы (9.5pt). Для
+# пропорциональных шрифтов средняя ширина строчной кириллической буквы
+# составляет около 0.55 em (≈5.2pt). Берём с запасом — лучше переоценить
+# ширину и уйти в landscape лишний раз, чем недооценить и обрезать таблицу.
+_TABLE_CHAR_WIDTH_PT = 5.5
+# Горизонтальный padding ячейки (4pt × 2) + бордеры (~1pt). Каждая колонка
+# добавляет это к натуральной ширине, независимо от текста.
+_TABLE_CELL_CHROME_PT = 13.0
+# Порог: при какой доле от portrait-ширины уже разворачиваем в landscape.
+# 0.95 — оставляем небольшой буфер на округление и неточность оценки.
+_PORTRAIT_USE_THRESHOLD = 0.95
 
 
 def render_artifact_pdf(
@@ -75,8 +98,13 @@ def render_artifact_pdf(
         output_format="xhtml",
     )
 
+    # Auto-size колонок таблиц по содержимому + landscape-разворот для тех,
+    # что не помещаются в portrait. Если HTML по какой-то причине не
+    # парсится — функция возвращает исходник без правок, экспорт не падает.
+    html_body, landscape_used = _enhance_tables_in_html(html_body)
+
     body_font = _ensure_body_font_registered()
-    css = _build_base_css(body_font)
+    css = _build_base_css(body_font, include_landscape_page=landscape_used)
 
     page_title = (title or "Artifact").replace("<", "&lt;").replace(">", "&gt;")
     html_document = (
@@ -101,6 +129,252 @@ def render_artifact_pdf(
             f"Не удалось сгенерировать PDF (xhtml2pdf ошибок: {pisa_status.err})."
         )
     return buffer.getvalue()
+
+
+# --- внутреннее: пост-обработка таблиц (auto-width + landscape) ---------------
+
+
+@dataclass(frozen=True)
+class _ColumnMetrics:
+    """Натуральная ширина колонки в условных «символах».
+
+    - ``longest_word``: длина самого длинного неразрывного слова. Это нижняя
+      граница ширины колонки: уже сделать нельзя, иначе слово вылетит за
+      пределы ячейки.
+    - ``mean_text_len``: средняя длина текста по строкам — приближение к
+      «комфортной» ширине, при которой большинство строк не нуждается в
+      переносе.
+
+    Эффективный вес = max(longest_word, mean_text_len). Так колонка с одним
+    длинным URL и пустыми остальными ячейками всё равно получит достаточно
+    места, а колонка с равномерно длинным текстом не «съест» соседей за
+    счёт одной аномальной строки.
+    """
+
+    longest_word: int
+    mean_text_len: float
+
+    @property
+    def weight(self) -> float:
+        return float(max(self.longest_word, self.mean_text_len, 1))
+
+
+def _enhance_tables_in_html(html_body: str) -> tuple[str, bool]:
+    """Пост-обработка HTML: auto-width колонок + landscape для широких таблиц.
+
+    Возвращает ``(modified_html, landscape_used)``. ``landscape_used`` нужен,
+    чтобы CSS выдавал именованную @page-rule только когда она реально
+    используется — иначе xhtml2pdf может зарезервировать пустую страницу.
+
+    Если HTML не парсится (markdown с output_format="xhtml" в норме даёт
+    валидный XML, но рисковать экспортом не стоит) — возвращаем исходник
+    без правок.
+    """
+    try:
+        # Markdown даёт фрагмент; оборачиваем в единственный root.
+        root = ET.fromstring(f"<root>{html_body}</root>")
+    except ET.ParseError as exc:
+        logger.warning(
+            "PDF export: не удалось распарсить HTML для autosize таблиц: %s. "
+            "Таблицы пойдут с дефолтными равными колонками.",
+            exc,
+        )
+        return html_body, False
+
+    landscape_used = False
+
+    # Снимок таблиц ДО мутаций. ET.iter — генератор; мутация структуры
+    # параллельно с обходом приводит к пропуску элементов.
+    tables = list(root.iter("table"))
+    if not tables:
+        return html_body, False
+
+    # parent_map нужен для wrap-в-div, потому что у ET нет навигации child→parent.
+    parent_map = {child: parent for parent in root.iter() for child in parent}
+
+    for table in tables:
+        metrics = _compute_column_metrics(table)
+        if not metrics:
+            continue
+        _inject_colgroup(table, metrics)
+        natural_pt = _estimate_table_width_pt(metrics)
+        if natural_pt > _PORTRAIT_CONTENT_WIDTH_PT * _PORTRAIT_USE_THRESHOLD:
+            _wrap_in_landscape(table, parent_map)
+            landscape_used = True
+
+    # Сериализуем содержимое root обратно в HTML-фрагмент. Сам тег <root>
+    # не отдаём наружу — он был только обёрткой для парсера.
+    pieces: list[str] = []
+    if root.text:
+        pieces.append(root.text)
+    for child in root:
+        # method="xml" гарантирует self-closed <col/> — это валидный XHTML и
+        # xhtml2pdf корректно разбирает оба варианта (с / без слеша).
+        pieces.append(ET.tostring(child, encoding="unicode", method="xml"))
+        if child.tail:
+            pieces.append(child.tail)
+    serialized = "".join(pieces)
+
+    # Финальная подмена placeholder-div'ов (см. _wrap_in_landscape) на
+    # настоящие reportlab-теги <pdf:nextpage>. CSS-переключение @page
+    # через свойство `page: name` в xhtml2pdf работает капризно;
+    # <pdf:nextpage name="..." /> — официально поддерживаемый способ
+    # сменить page template посередине документа (см. tags.py:
+    # pisaTagPDFNEXTPAGE → NextPageTemplate(name) + PageBreak()).
+    serialized = _PLACEHOLDER_PAGE_OPEN.sub(
+        r'<pdf:nextpage name="\1" />', serialized
+    )
+    return serialized, landscape_used
+
+
+def _compute_column_metrics(table: ET.Element) -> list[_ColumnMetrics]:
+    """Собрать натуральные ширины колонок по содержимому ячеек."""
+    # Собираем строки: учитываем <tr> и в <thead>, и в <tbody>, и прямо
+    # внутри <table> (Markdown extra кладёт их под thead/tbody).
+    rows: list[list[ET.Element]] = []
+    for tr in table.iter("tr"):
+        cells = [cell for cell in tr if cell.tag in ("td", "th")]
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return []
+
+    # Если строки разной ширины (битый markdown / colspan) — берём максимум.
+    num_cols = max(len(r) for r in rows)
+    if num_cols == 0:
+        return []
+
+    per_col_words: list[list[int]] = [[] for _ in range(num_cols)]
+    per_col_lengths: list[list[int]] = [[] for _ in range(num_cols)]
+
+    for row in rows:
+        for col_idx, cell in enumerate(row):
+            text = "".join(cell.itertext())
+            # Нормализуем пробелы — markdown добавляет \n внутри ячеек.
+            text = " ".join(text.split())
+            per_col_lengths[col_idx].append(len(text))
+            longest = max((len(w) for w in text.split()), default=0)
+            per_col_words[col_idx].append(longest)
+
+    metrics: list[_ColumnMetrics] = []
+    for col_idx in range(num_cols):
+        lengths = per_col_lengths[col_idx] or [0]
+        words = per_col_words[col_idx] or [0]
+        mean_len = sum(lengths) / len(lengths)
+        longest_word = max(words)
+        metrics.append(_ColumnMetrics(longest_word=longest_word, mean_text_len=mean_len))
+    return metrics
+
+
+def _inject_colgroup(table: ET.Element, metrics: list[_ColumnMetrics]) -> None:
+    """Вставить ``<colgroup>`` с пропорциональными процентами в начало table.
+
+    Проценты вычисляются от суммы весов колонок — это даёт «справедливое»
+    распределение горизонтального места: колонка с длинным контентом
+    получает больше, чем колонка с двумя символами.
+
+    Минимальная ширина любой колонки — 5%, чтобы узкие столбцы (status,
+    приоритет) не сжимались до нечитаемой ширины из-за соседей-гигантов.
+    """
+    weights = [m.weight for m in metrics]
+    total = sum(weights) or 1.0
+    raw_percents = [w / total * 100.0 for w in weights]
+
+    # Min-floor 5%: если колонка получила меньше — поднимаем; излишек
+    # вычитаем пропорционально из колонок выше floor.
+    min_pct = 5.0
+    floored = [max(p, min_pct) for p in raw_percents]
+    over = sum(floored) - 100.0
+    if over > 0:
+        eligible_total = sum(p for p in floored if p > min_pct)
+        if eligible_total > 0:
+            floored = [
+                (p - over * (p - min_pct) / eligible_total) if p > min_pct else p
+                for p in floored
+            ]
+
+    # Удаляем существующий colgroup, если markdown почему-то его вставил.
+    for existing in list(table.findall("colgroup")):
+        table.remove(existing)
+
+    colgroup = ET.Element("colgroup")
+    for pct in floored:
+        col = ET.SubElement(colgroup, "col")
+        col.set("style", f"width: {pct:.2f}%;")
+    # ET вставляет в начало через insert(0, ...) — это правильное место для colgroup.
+    table.insert(0, colgroup)
+
+
+def _estimate_table_width_pt(metrics: list[_ColumnMetrics]) -> float:
+    """Оценка натуральной ширины таблицы в pt.
+
+    Натуральная = ширина, при которой текст не нуждается в переносе. Если
+    она превышает доступную в portrait — таблицу разворачиваем.
+    """
+    if not metrics:
+        return 0.0
+    chars_total = sum(m.weight for m in metrics)
+    text_width = chars_total * _TABLE_CHAR_WIDTH_PT
+    chrome_width = len(metrics) * _TABLE_CELL_CHROME_PT
+    return text_width + chrome_width
+
+
+def _wrap_in_landscape(table: ET.Element, parent_map: dict) -> None:
+    """Перевести таблицу на landscape-страницу через placeholder'ы.
+
+    Стратегия: ставим перед таблицей и (если есть последующий контент)
+    после — placeholder-div'ы. На этапе финальной сериализации они
+    превращаются в reportlab-теги ``<pdf:nextpage name="..." />``,
+    которые вставляют PageBreak + переключают активный page template.
+
+    Альтернатива — CSS-свойство ``page: name`` или class с @page-rule —
+    в xhtml2pdf отрабатывает непредсказуемо (часто игнорируется и обе
+    страницы выходят portrait). Через нативный <pdf:nextpage> работает
+    надёжно.
+
+    Почему не вставляем reportlab-тег напрямую: ET не умеет создавать
+    XML-элементы с двоеточием в имени без полноценного xmlns-объявления,
+    а xhtml2pdf-парсер ищет именно литерал ``pdf:nextpage``. Подмена
+    placeholder'ов на сериализованной строке — самый надёжный способ.
+    """
+    parent = parent_map.get(table)
+    if parent is None:
+        # Корень не оборачиваем — это привело бы к рекурсии в xhtml2pdf.
+        return
+    siblings = list(parent)
+    try:
+        idx = siblings.index(table)
+    except ValueError:
+        return
+
+    open_placeholder = ET.Element(
+        "div",
+        {"data-pov-pdf-page": "landscape_page"},
+    )
+    parent.insert(idx, open_placeholder)
+    parent_map[open_placeholder] = parent
+
+    # Индекс таблицы после вставки open_placeholder сдвинулся на +1.
+    table_idx = idx + 1
+    new_siblings = list(parent)
+    has_next_content = (table_idx + 1) < len(new_siblings)
+    if has_next_content:
+        close_placeholder = ET.Element(
+            "div",
+            {"data-pov-pdf-page": "body_page"},
+        )
+        parent.insert(table_idx + 1, close_placeholder)
+        parent_map[close_placeholder] = parent
+
+
+# Regex для подмены placeholder-div'ов на reportlab-теги <pdf:nextpage>.
+# ET сериализует атрибуты в виде data-pov-pdf-page="value" (двойные кавычки)
+# и закрывает div самозакрывающимся слэшем или парой <div ...></div>.
+# Покрываем оба варианта.
+_PLACEHOLDER_PAGE_OPEN = re.compile(
+    r'<div\s+data-pov-pdf-page="([^"]+)"\s*(?:/>|>\s*</div>)'
+)
 
 
 # --- внутреннее: регистрация шрифта ------------------------------------------
@@ -276,7 +550,7 @@ def _resolve_font_paths() -> tuple[Path | None, Path | None]:
 # --- внутреннее: CSS ---------------------------------------------------------
 
 
-def _build_base_css(body_font: str) -> str:
+def _build_base_css(body_font: str, *, include_landscape_page: bool = False) -> str:
     """Базовый CSS для PDF.
 
     Важно: ``font-family`` задаётся на ``body`` И на всех ключевых
@@ -287,12 +561,47 @@ def _build_base_css(body_font: str) -> str:
     Mono-шрифт (code / pre) — оставляем Courier как core PDF font;
     латиница в коде покрыта, а если в коде встречается кириллица —
     переключаем на body_font тоже.
+
+    Args:
+        include_landscape_page: добавить ли именованную @page rule для
+            landscape-блоков. Подаём только когда в HTML действительно есть
+            широкая таблица, обёрнутая в ``.pdf-landscape-page`` — иначе
+            xhtml2pdf может зарезервировать пустую страницу в конце.
+
+    Заметки про таблицы:
+        - ``table-layout: fixed`` — обязательно, чтобы xhtml2pdf уважал
+          ширины из ``<col style="width: X%">``. Без fixed движок
+          переключается в auto-layout и игнорирует наш ``<colgroup>``,
+          возвращаясь к равному делению.
+        - ``word-wrap: break-word`` на ``th/td`` — страховка от ячейки с
+          одним очень длинным URL: даже в landscape она не должна
+          растягивать колонку за границы страницы.
     """
+    # body_page и landscape_page — именованные @page-rules. На них ссылается
+    # <pdf:nextpage name="..." />, вставляемый при wrap-в-landscape (см.
+    # _wrap_in_landscape). landscape-rule добавляется только когда в
+    # документе реально есть широкая таблица — чтобы не плодить лишних
+    # @page-templates без необходимости.
+    landscape_rules = (
+        """
+        @page landscape_page {
+            size: A4 landscape;
+            margin: 1.6cm 1.8cm;
+        }
+        """
+        if include_landscape_page
+        else ""
+    )
     return f"""
-        @page {{
-            size: A4;
+        @page body_page {{
+            size: A4 portrait;
             margin: 2cm 1.8cm;
         }}
+        @page {{
+            size: A4 portrait;
+            margin: 2cm 1.8cm;
+        }}
+        {landscape_rules}
         body {{
             font-family: {body_font};
             font-size: 10.5pt;
@@ -320,6 +629,7 @@ def _build_base_css(body_font: str) -> str:
         em, i {{ font-family: {body_font}; font-style: italic; }}
         table {{
             border-collapse: collapse;
+            table-layout: fixed;
             width: 100%;
             margin: 6pt 0 10pt 0;
             font-size: 9.5pt;
@@ -330,6 +640,7 @@ def _build_base_css(body_font: str) -> str:
             padding: 4pt 6pt;
             vertical-align: top;
             text-align: left;
+            word-wrap: break-word;
         }}
         th {{ background-color: #eef0f3; font-weight: bold; }}
         code {{
