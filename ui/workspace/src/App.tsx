@@ -3206,7 +3206,7 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
 }
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
-  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations">("doc");
+  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const html = useMemo(
     () => (detail.markdown_content ? marked.parse(detail.markdown_content) : "<p>Markdown-представление отсутствует.</p>"),
@@ -3217,6 +3217,12 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     queryFn: () => api.getMethodologyTrace(projectId, detail.created_by_task_id!),
     enabled: provenanceOpen && Boolean(detail.created_by_task_id),
   });
+  // v3.0: решения, принятые при сборке этого артефакта.
+  const decisionsQuery = useQuery({
+    queryKey: ["artifact-decisions", projectId, detail.artifact_id],
+    queryFn: () => api.getDecisionsForArtifact(projectId, detail.artifact_id),
+  });
+  const decisionsCount = decisionsQuery.data?.length ?? 0;
 
   return (
     <div className="artifact-detail">
@@ -3246,6 +3252,16 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           type="button"
         >
           Проверки
+        </button>
+        {/* v3.0: Решения, принятые при сборке этого артефакта. Вкладка
+            показывается всегда (даже если 0), чтобы пользователь видел
+            наличие концепта; счётчик подсказывает наполненность. */}
+        <button
+          className={cx("segmented__item", mode === "decisions" && "segmented__item--active")}
+          onClick={() => setMode("decisions")}
+          type="button"
+        >
+          Решения{decisionsCount > 0 ? ` (${decisionsCount})` : ""}
         </button>
         {detail.created_by_task_id ? (
           <button
@@ -3395,6 +3411,68 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           )}
         </div>
       ) : null}
+      {mode === "decisions" ? (
+        <ArtifactDecisionsTab
+          projectId={projectId}
+          decisions={decisionsQuery.data ?? []}
+          loading={decisionsQuery.isLoading}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** v3.0: рендер вкладки «Решения» внутри артефакта. */
+function ArtifactDecisionsTab({
+  projectId,
+  decisions,
+  loading,
+}: {
+  projectId: string;
+  decisions: import("./types").DecisionItemView[];
+  loading: boolean;
+}) {
+  const navigate = useNavigate();
+  if (loading) return <LoadingPanel title="Загружаем решения…" />;
+  if (decisions.length === 0) {
+    return (
+      <EmptyState
+        title="Решений по этому артефакту нет"
+        description="Реестр пополняется по мере прохождения задач. Если артефакт собран до v3.0, решения для него не зафиксированы."
+      />
+    );
+  }
+  return (
+    <div className="artifact-decisions">
+      <div className="artifact-decisions__head">
+        <span>{decisions.length} {decisions.length === 1 ? "решение" : "решений"} принято при сборке</span>
+        <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/decisions`)}>
+          В полный реестр
+        </Button>
+      </div>
+      <ul className="artifact-decisions__list">
+        {decisions.map((d) => (
+          <li key={d.decision_id} className="artifact-decisions__item">
+            <div className="artifact-decisions__title">
+              <span
+                className={cx(
+                  "artifact-decisions__level-dot",
+                  `artifact-decisions__level-dot--${d.level}`,
+                )}
+                title={`Уровень: ${d.level}`}
+              />
+              <strong>{d.title}</strong>
+            </div>
+            <div className="artifact-decisions__chosen">
+              <span className="artifact-decisions__chosen-label">Выбрано:</span>
+              {d.chosen_option_label || "—"}
+              {d.was_user_modified ? (
+                <span className="artifact-decisions__user-mark"> · вами</span>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

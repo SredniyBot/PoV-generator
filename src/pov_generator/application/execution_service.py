@@ -3,7 +3,7 @@
 import json
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..common.errors import ConflictError
@@ -334,6 +334,24 @@ class ExecutionService:
         )
         markdown_path = f"artifacts/{artifact_id}.md"
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
+        # v3.0: связываем все Decision-записи этой задачи с свежесозданным
+        # артефактом — это даёт UI «решения этого артефакта» (вкладка в
+        # ArtifactDetail). Делается после store_artifact, потому что нужен
+        # artifact_id. Не falls'ом — если ошибка, просто пропускаем.
+        if locked_in_decisions:
+            for d in locked_in_decisions:
+                try:
+                    # Re-fetch чтобы не перетереть status/user_action, которые
+                    # могли поменяться после нашего snapshot (race protection).
+                    fresh = self._runtime.get_decision(workspace, d.decision_id)
+                    if artifact_id not in fresh.affected_artifact_ids:
+                        updated = replace(
+                            fresh,
+                            affected_artifact_ids=fresh.affected_artifact_ids + (artifact_id,),
+                        )
+                        self._runtime.upsert_decision(workspace, updated)
+                except Exception:  # noqa: BLE001
+                    pass
         if previous_active is not None:
             # Сначала записываем новый, потом помечаем старый — атомарность
             # не нужна (worst case — оба current, query вернёт latest по

@@ -250,6 +250,22 @@ class WorkspaceQueryService:
 
     # ---- v3.0 — Decision ledger -----------------------------------------------
 
+    def decisions_for_artifact(
+        self,
+        project_id: str,
+        artifact_id: str,
+    ) -> tuple["DecisionItemView", ...]:
+        """Решения, которые были приняты при сборке этого артефакта.
+
+        Связь определяется через ``Decision.affected_artifact_ids``,
+        которое формирует ExecutionService при сохранении (см. также
+        scenario «решение → артефакт» в spec v3.0).
+        """
+        context = self._load_context(project_id)
+        all_decisions = self._runtime.list_decisions(context.workspace, project_id=project_id)
+        relevant = [d for d in all_decisions if artifact_id in d.affected_artifact_ids]
+        return tuple(self._decision_view(d) for d in relevant)
+
     def project_decisions(
         self,
         project_id: str,

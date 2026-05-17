@@ -449,6 +449,15 @@ def create_app(
             query_service.project_decisions(project_id, level=level, status=status)
         )
 
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/decisions")
+    def project_artifact_decisions(project_id: str, artifact_id: str) -> Any:
+        """Решения, принятые при сборке конкретного артефакта (v3.0).
+
+        Связь — через ``Decision.affected_artifact_ids``. Используется в
+        ArtifactDetailPage для отдельной вкладки «Решения».
+        """
+        return to_primitive(query_service.decisions_for_artifact(project_id, artifact_id))
+
     @app.get("/api/projects/{project_id}/decisions/{decision_id}")
     def project_decision_detail(project_id: str, decision_id: str) -> Any:
         """Детали решения по id.

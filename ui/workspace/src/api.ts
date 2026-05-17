@@ -225,6 +225,10 @@ export const api = {
     request<import("./types").DecisionItemView>(
       `/api/projects/${projectId}/decisions/${decisionId}`,
     ),
+  getDecisionsForArtifact: (projectId: string, artifactId: string) =>
+    request<import("./types").DecisionItemView[]>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/decisions`,
+    ),
   getCheckpoints: (projectId: string) =>
     request<import("./types").ProjectCheckpointsView>(
       `/api/projects/${projectId}/checkpoints`,

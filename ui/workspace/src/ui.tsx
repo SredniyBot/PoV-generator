@@ -361,15 +361,16 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   // прошлого таба (Состояние / Замечания / Технические детали) — это
   // диагностические страницы; доступ к ним остаётся через прямые
   // URL `/state`, `/review`, `/debug` для bookmarks / power-users.
-  // v3.0: «Журнал решений» → «Решения» (теперь это реестр решений
-  // первого класса, не legacy-производное от clarification-ответов).
-  // Старый журнал доступен напрямую по URL /decision-log.
+  // v3.0: «Вопросы» и «Журнал решений» — обе legacy. Унифицированы в
+  // одной вкладке «Решения» (реестр решений первого класса). Старые
+  // URL остаются доступны: /clarifications для legacy fallback-вопросов
+  // (banner со ссылкой появится в Решениях если они есть), /decision-log
+  // для архивного журнала.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
-    { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
   return (

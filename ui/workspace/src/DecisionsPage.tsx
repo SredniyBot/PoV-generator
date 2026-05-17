@@ -14,22 +14,14 @@
  * Стилистика согласована с styles.css (`.decision-card`, `.checkpoint-*`).
  */
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, AlertTriangle, Lock, Hourglass, ChevronDown, ChevronUp, ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Lock } from "lucide-react";
 
 import { api } from "./api";
-import {
-  Button,
-  EmptyState,
-  LoadingPanel,
-  SectionCard,
-  StatusPill,
-  cx,
-} from "./ui";
+import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
 import type {
-  CheckpointAnswerKind,
   CheckpointAnswerPayload,
   CheckpointSessionView,
   DecisionItemView,
@@ -48,12 +40,6 @@ const LEVEL_LABEL: Record<DecisionLevel, string> = {
   detail: "Детали",
 };
 
-const LEVEL_TONE: Record<DecisionLevel, "danger" | "warning" | "muted"> = {
-  business: "danger",
-  architecture: "warning",
-  detail: "muted",
-};
-
 const STATUS_LABEL: Record<DecisionStatus, string> = {
   proposed: "Ожидает ответа",
   accepted_default: "Принят дефолт",
@@ -63,14 +49,21 @@ const STATUS_LABEL: Record<DecisionStatus, string> = {
   superseded: "Устарело",
 };
 
-const STATUS_TONE: Record<DecisionStatus, "active" | "success" | "warning" | "muted"> = {
-  proposed: "active",
-  accepted_default: "success",
-  user_overridden: "success",
-  deferred: "warning",
-  locked_in: "muted",
-  superseded: "muted",
-};
+/** Текстовое описание уровней, видимых пользователю в режиме (для empty state). */
+function humanLevelsForMode(mode: string): string {
+  switch (mode) {
+    case "autopilot":
+      return "ничего (всё решается автоматически)";
+    case "balanced":
+      return "бизнес";
+    case "control":
+      return "бизнес и архитектура";
+    case "expert":
+      return "бизнес, архитектура и детали";
+    default:
+      return "бизнес";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DecisionCard — переиспользуемая карточка решения
@@ -78,20 +71,40 @@ const STATUS_TONE: Record<DecisionStatus, "active" | "success" | "warning" | "mu
 
 interface DecisionCardProps {
   decision: DecisionItemView;
-  /** Если задано — карточка в интерактивном режиме (для checkpoint). */
+  /** Интерактивный режим (для checkpoint-сессии). */
   interactive?: {
     currentAnswer: CheckpointAnswerPayload | null;
     onAnswerChange: (answer: CheckpointAnswerPayload | null) => void;
   };
-  /** В реестре — компактный режим, в чекпоинте — развёрнутый. */
+  /** В реестре — компактный (свёрнутый), в checkpoint — развёрнутый. */
   defaultExpanded?: boolean;
+  /** Скрыть level/status-маркеры (например, в контексте артефакта). */
+  hideMeta?: boolean;
 }
 
-function DecisionCard({ decision, interactive, defaultExpanded = false }: DecisionCardProps) {
+/**
+ * Карточка решения. Минималистичная: вопрос → описание → опции.
+ *
+ * Дизайн-принципы:
+ * - В checkpoint-режиме видны ТОЛЬКО: вопрос, описание, варианты, кнопка
+ *   собственного ответа. Никаких ярлыков, статусов, проценов уверенности.
+ * - Вариант, предложенный системой, помечен «(по умолчанию)» — мягко,
+ *   не как баннер.
+ * - Описание каждого варианта — одна строка, без двух-колонок pros/cons.
+ *   Если очень нужны pros/cons — они идут как inline-текст, через тире.
+ * - В режиме реестра — компактная плашка, разворачивается по клику.
+ * - Уровень показывается малозаметным indicator (точка-цвет), не плашкой.
+ */
+function DecisionCard({
+  decision,
+  interactive,
+  defaultExpanded = false,
+  hideMeta = false,
+}: DecisionCardProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [freeTextDraft, setFreeTextDraft] = useState<string>("");
+  const [freeTextOpen, setFreeTextOpen] = useState(false);
 
-  const chosen = decision.alternatives.find((alt) => alt.is_chosen);
   const currentAnswerKind = interactive?.currentAnswer?.kind ?? null;
   const selectedAlternativeId =
     currentAnswerKind === "select_alternative"
@@ -102,155 +115,136 @@ function DecisionCard({ decision, interactive, defaultExpanded = false }: Decisi
     interactive?.onAnswerChange(answer);
   };
 
-  // В интерактивном режиме — карточка всегда видна развёрнутой,
-  // в реестре — переключаемая.
-  const showBody = expanded || interactive !== undefined;
+  const isInteractive = interactive !== undefined;
+  const showBody = expanded || isInteractive;
+
+  // Дефолтное состояние interactive: выбран предложенный вариант (radio
+  // позиция там), но в ответе пользователя ничего нет (null) — это значит
+  // «принимаю по умолчанию» при submit.
+  const proposedId = decision.chosen_option_id;
+  const effectiveSelectedId =
+    selectedAlternativeId ??
+    (currentAnswerKind === "accept_default" || currentAnswerKind === null ? proposedId : null);
 
   return (
     <div
       className={cx(
         "decision-card",
-        decision.is_low_confidence && "decision-card--risky",
-        interactive && currentAnswerKind && "decision-card--answered",
+        isInteractive && "decision-card--interactive",
+        isInteractive && currentAnswerKind && "decision-card--answered",
       )}
     >
-      <div className="decision-card__head">
+      <header
+        className={cx("decision-card__head", !isInteractive && "decision-card__head--clickable")}
+        onClick={!isInteractive ? () => setExpanded((v) => !v) : undefined}
+      >
+        {!hideMeta ? (
+          <span
+            className={cx("decision-card__level-dot", `decision-card__level-dot--${decision.level}`)}
+            title={`Уровень: ${LEVEL_LABEL[decision.level]}${decision.is_low_confidence ? " · Система не уверена" : ""}`}
+          />
+        ) : null}
         <div className="decision-card__head-text">
-          <div className="decision-card__badges">
-            <StatusPill tone={LEVEL_TONE[decision.level]}>
-              {LEVEL_LABEL[decision.level]}
-            </StatusPill>
-            {interactive === undefined ? (
-              <StatusPill tone={STATUS_TONE[decision.status]}>
-                {STATUS_LABEL[decision.status]}
-              </StatusPill>
-            ) : null}
+          <h3 className="decision-card__title">
+            {decision.title}
             {decision.is_low_confidence ? (
-              <StatusPill tone="warning">
-                <AlertTriangle size={12} /> Система не уверена
-              </StatusPill>
+              <AlertTriangle
+                size={14}
+                className="decision-card__risky-icon"
+                aria-label="Система не уверена в дефолте"
+              />
             ) : null}
-            {decision.was_user_modified ? (
-              <StatusPill tone="success">
-                <CheckCircle2 size={12} /> Изменено вами
-              </StatusPill>
-            ) : null}
-          </div>
-          <h3 className="decision-card__title">{decision.title}</h3>
-          {decision.description ? (
-            <p className="decision-card__description">{decision.description}</p>
+          </h3>
+          {!isInteractive && !hideMeta ? (
+            <span className="decision-card__head-status">{STATUS_LABEL[decision.status]}</span>
           ) : null}
         </div>
-        {interactive === undefined ? (
+        {!isInteractive ? (
           <button
             type="button"
             className="decision-card__toggle"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
             aria-label={expanded ? "Свернуть" : "Развернуть"}
           >
             {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
         ) : null}
-      </div>
+      </header>
 
       {showBody ? (
         <div className="decision-card__body">
-          <div className="decision-card__proposed">
-            <span className="decision-card__proposed-label">Предложено системой:</span>
-            <strong className="decision-card__proposed-value">
-              {chosen ? chosen.label : decision.chosen_option_label || "—"}
-            </strong>
-            {decision.rationale ? (
-              <p className="decision-card__rationale">{decision.rationale}</p>
-            ) : null}
-          </div>
-
-          {decision.alternatives.length > 0 ? (
-            <div className="decision-card__alternatives">
-              <div className="decision-card__alternatives-label">Альтернативы</div>
-              <div className="decision-card__alternatives-list">
-                {decision.alternatives.map((alt) => {
-                  const isProposed = alt.option_id === decision.chosen_option_id;
-                  const isSelected = selectedAlternativeId === alt.option_id;
-                  return (
-                    <div
-                      key={alt.option_id}
-                      className={cx(
-                        "decision-alt",
-                        isProposed && "decision-alt--proposed",
-                        isSelected && "decision-alt--selected",
-                      )}
-                    >
-                      <div className="decision-alt__head">
-                        <div className="decision-alt__label">
-                          {interactive !== undefined ? (
-                            <label className="decision-alt__radio">
-                              <input
-                                type="radio"
-                                name={`alt-${decision.decision_id}`}
-                                checked={isSelected || (currentAnswerKind === null && isProposed === false ? false : false)}
-                                onChange={() =>
-                                  handleAnswer({
-                                    decision_id: decision.decision_id,
-                                    kind: "select_alternative",
-                                    selected_option_id: alt.option_id,
-                                  })
-                                }
-                              />
-                              <span>{alt.label}</span>
-                            </label>
-                          ) : (
-                            <span>{alt.label}</span>
-                          )}
-                          {isProposed ? (
-                            <span className="decision-alt__hint">по умолчанию</span>
-                          ) : null}
-                        </div>
-                        {alt.confidence !== null ? (
-                          <span className="decision-alt__confidence">
-                            уверенность {Math.round(alt.confidence * 100)}%
-                          </span>
-                        ) : null}
-                      </div>
-                      {alt.description ? (
-                        <p className="decision-alt__description">{alt.description}</p>
-                      ) : null}
-                      {alt.pros.length > 0 || alt.cons.length > 0 ? (
-                        <div className="decision-alt__props">
-                          {alt.pros.length > 0 ? (
-                            <div className="decision-alt__props-col">
-                              <span className="decision-alt__props-label">Плюсы</span>
-                              <ul>
-                                {alt.pros.map((p, i) => (
-                                  <li key={i}>{p}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ) : null}
-                          {alt.cons.length > 0 ? (
-                            <div className="decision-alt__props-col">
-                              <span className="decision-alt__props-label">Минусы</span>
-                              <ul>
-                                {alt.cons.map((c, i) => (
-                                  <li key={i}>{c}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+          {decision.description ? (
+            <p className="decision-card__description">{decision.description}</p>
           ) : null}
 
-          {decision.level_rationale ? (
-            <div className="decision-card__meta">
-              <span className="decision-card__meta-label">Почему этот уровень:</span>
-              <span className="decision-card__meta-value">{decision.level_rationale}</span>
-            </div>
+          {decision.alternatives.length > 0 ? (
+            <ul className="decision-card__options" role="radiogroup">
+              {decision.alternatives.map((alt) => {
+                const isProposed = alt.option_id === proposedId;
+                const isSelected = effectiveSelectedId === alt.option_id;
+                return (
+                  <li key={alt.option_id} className="decision-card__option">
+                    {isInteractive ? (
+                      <label className="decision-card__option-label">
+                        <input
+                          type="radio"
+                          name={`alt-${decision.decision_id}`}
+                          checked={isSelected}
+                          onChange={() => {
+                            setFreeTextOpen(false);
+                            // Если выбран дефолтный — это accept_default
+                            // (чтобы при submit не дёргать ненужный override).
+                            if (alt.option_id === proposedId) {
+                              handleAnswer({
+                                decision_id: decision.decision_id,
+                                kind: "accept_default",
+                              });
+                            } else {
+                              handleAnswer({
+                                decision_id: decision.decision_id,
+                                kind: "select_alternative",
+                                selected_option_id: alt.option_id,
+                              });
+                            }
+                          }}
+                        />
+                        <span className="decision-card__option-content">
+                          <span className="decision-card__option-title">
+                            {alt.label}
+                            {isProposed ? (
+                              <span className="decision-card__option-hint">(по умолчанию)</span>
+                            ) : null}
+                          </span>
+                          {alt.description ? (
+                            <span className="decision-card__option-desc">{alt.description}</span>
+                          ) : null}
+                        </span>
+                      </label>
+                    ) : (
+                      <span className="decision-card__option-content">
+                        <span
+                          className={cx(
+                            "decision-card__option-title",
+                            isProposed && "decision-card__option-title--chosen",
+                          )}
+                        >
+                          {alt.label}
+                          {isProposed ? (
+                            <span className="decision-card__option-hint">(выбрано)</span>
+                          ) : null}
+                        </span>
+                        {alt.description ? (
+                          <span className="decision-card__option-desc">{alt.description}</span>
+                        ) : null}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           ) : null}
 
           {decision.user_free_text_answer ? (
@@ -260,77 +254,61 @@ function DecisionCard({ decision, interactive, defaultExpanded = false }: Decisi
             </div>
           ) : null}
 
-          {/* Interactive controls — только в режиме checkpoint */}
-          {interactive !== undefined ? (
-            <div className="decision-card__actions">
-              <Button
-                tone={currentAnswerKind === "accept_default" ? "primary" : "ghost"}
-                onClick={() =>
-                  handleAnswer({
-                    decision_id: decision.decision_id,
-                    kind: "accept_default",
-                  })
-                }
+          {isInteractive ? (
+            <div className="decision-card__free">
+              <button
+                type="button"
+                className="decision-card__free-toggle"
+                onClick={() => setFreeTextOpen((v) => !v)}
               >
-                <CheckCircle2 size={14} /> Принять предложение
-              </Button>
-              <Button
-                tone={currentAnswerKind === "defer" ? "secondary" : "ghost"}
-                onClick={() =>
-                  handleAnswer({
-                    decision_id: decision.decision_id,
-                    kind: "defer",
-                  })
-                }
-              >
-                <Hourglass size={14} /> Отложить
-              </Button>
-              {currentAnswerKind !== null ? (
-                <Button tone="ghost" onClick={() => handleAnswer(null)}>
-                  Сбросить
-                </Button>
+                {freeTextOpen ? "Скрыть свой ответ" : "Дать свой ответ"}
+              </button>
+              {freeTextOpen ? (
+                <textarea
+                  className="decision-card__free-input"
+                  placeholder="Сформулируйте свой вариант. Он будет применён в неизменном виде."
+                  value={
+                    currentAnswerKind === "free_text"
+                      ? interactive.currentAnswer?.free_text ?? ""
+                      : freeTextDraft
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFreeTextDraft(v);
+                    if (v.trim()) {
+                      handleAnswer({
+                        decision_id: decision.decision_id,
+                        kind: "free_text",
+                        free_text: v,
+                      });
+                    } else if (currentAnswerKind === "free_text") {
+                      handleAnswer({
+                        decision_id: decision.decision_id,
+                        kind: "accept_default",
+                      });
+                    }
+                  }}
+                  rows={3}
+                />
               ) : null}
             </div>
           ) : null}
 
-          {/* Свободный ответ */}
-          {interactive !== undefined ? (
-            <details className="decision-card__free-text">
-              <summary>Или дать свой ответ</summary>
-              <textarea
-                className="decision-card__free-input"
-                placeholder="Сформулируйте ваш вариант. Он будет применён в неизменном виде."
-                value={
-                  currentAnswerKind === "free_text"
-                    ? interactive.currentAnswer?.free_text ?? ""
-                    : freeTextDraft
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setFreeTextDraft(v);
-                  if (currentAnswerKind === "free_text") {
-                    handleAnswer({
-                      decision_id: decision.decision_id,
-                      kind: "free_text",
-                      free_text: v,
-                    });
-                  }
-                }}
-                rows={3}
-              />
-              {currentAnswerKind !== "free_text" && freeTextDraft.trim() ? (
-                <Button
-                  tone="primary"
-                  onClick={() =>
-                    handleAnswer({
-                      decision_id: decision.decision_id,
-                      kind: "free_text",
-                      free_text: freeTextDraft.trim(),
-                    })
-                  }
-                >
-                  Применить свой ответ
-                </Button>
+          {/* Дополнительная меторматация в реестре — collapsed по умолчанию */}
+          {!isInteractive && (decision.rationale || decision.level_rationale) ? (
+            <details className="decision-card__more">
+              <summary>Подробнее</summary>
+              {decision.rationale ? (
+                <p className="decision-card__more-line">
+                  <span className="decision-card__more-label">Почему:</span>
+                  {decision.rationale}
+                </p>
+              ) : null}
+              {decision.level_rationale ? (
+                <p className="decision-card__more-line">
+                  <span className="decision-card__more-label">Уровень:</span>
+                  {decision.level_rationale}
+                </p>
               ) : null}
             </details>
           ) : null}
@@ -348,6 +326,7 @@ type LevelFilter = "all" | DecisionLevel;
 type StatusFilter = "all" | DecisionStatus;
 
 export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
+  const navigate = useNavigate();
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
@@ -360,6 +339,13 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
         status: statusFilter === "all" ? undefined : statusFilter,
       }),
   });
+  // v3.0: показываем banner со ссылкой на legacy /clarifications, если
+  // там есть открытые вопросы (fallback-путь для случаев, когда pre-flight
+  // не предусмотрел вопрос).
+  const clarificationsQuery = useQuery({
+    queryKey: ["clarifications-open-banner", projectId],
+    queryFn: () => api.getClarifications(projectId),
+  });
 
   if (query.isLoading || !query.data) {
     return <LoadingPanel title="Загружаем реестр решений…" />;
@@ -369,8 +355,26 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
     ? view.items.filter((d) => d.is_low_confidence)
     : view.items;
 
+  const openClarCount = clarificationsQuery.data?.open_count ?? 0;
+
   return (
     <div className="decisions-page">
+      {openClarCount > 0 ? (
+        <div className="decisions-page__legacy-banner">
+          <div>
+            <strong>{openClarCount}</strong>{" "}
+            {openClarCount === 1 ? "вопрос ждёт ответа" : "вопросов ждут ответа"} в старом потоке
+            (fallback от валидации). Он не попал в pre-flight, но требует вашего внимания.
+          </div>
+          <Button
+            tone="secondary"
+            onClick={() => navigate(`/projects/${projectId}/clarifications`)}
+          >
+            Открыть
+          </Button>
+        </div>
+      ) : null}
+
       <SectionCard title="Реестр решений">
         <p className="decisions-page__intro">
           Все решения, которые система приняла или собирается принять при сборке артефактов проекта.
@@ -446,7 +450,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
             title="Решений по этому фильтру нет"
             description={
               view.items.length === 0
-                ? "Реестр пополнится по мере прохождения задач workflow. В autopilot решения принимаются молча и сразу попадают сюда; в остальных режимах часть из них вы увидите в checkpoint-сессиях."
+                ? `Реестр пополнится по мере прохождения задач workflow. В режиме «${view.mode}» вам будут показаны решения уровней: ${humanLevelsForMode(view.mode)}. Остальное система примет автоматически и тоже разместит здесь — для просмотра постфактум.`
                 : "Снимите фильтры выше, чтобы увидеть остальные решения."
             }
           />
@@ -539,20 +543,13 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
     );
   }
 
-  const answeredCount = Object.keys(answers).length;
   const totalCount = session.decisions.length;
-  const allAnsweredDefault =
-    answeredCount === 0 ? null : answeredCount === totalCount;
+  const overriddenCount = Object.values(answers).filter(
+    (a) => a.kind !== "accept_default",
+  ).length;
 
   const handleSubmit = () => {
     submitMutation.mutate(Object.values(answers));
-  };
-  const acceptAll = () => {
-    const map: Record<string, CheckpointAnswerPayload> = {};
-    session.decisions.forEach((d) => {
-      map[d.decision_id] = { decision_id: d.decision_id, kind: "accept_default" };
-    });
-    setAnswers(map);
   };
 
   return (
@@ -567,27 +564,10 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
           </div>
         }
       >
-        <div className="checkpoint-intro">
-          <div className="checkpoint-intro__lead">
-            <strong>{totalCount} {totalCount === 1 ? "решение" : totalCount < 5 ? "решения" : "решений"}</strong>{" "}
-            ждёт ответа на вашем уровне вовлечения. Подтвердите дефолты или скорректируйте — после
-            submit задача продолжится с зафиксированными выборами.
-          </div>
-          <div className="checkpoint-progress">
-            <div
-              className="checkpoint-progress__bar"
-              style={{ width: `${(answeredCount / Math.max(1, totalCount)) * 100}%` }}
-            />
-            <span className="checkpoint-progress__text">
-              {answeredCount} / {totalCount} отвечено
-            </span>
-          </div>
-          {allAnsweredDefault === null ? (
-            <Button tone="primary" onClick={acceptAll}>
-              <CheckCircle2 size={14} /> Принять все дефолты
-            </Button>
-          ) : null}
-        </div>
+        <p className="checkpoint-intro__lead">
+          {totalCount === 1 ? "1 вопрос" : `${totalCount} вопросов`} перед продолжением.
+          Все ответы уже выбраны системой по умолчанию — измените те, по которым не согласны, и отправьте.
+        </p>
 
         <div className="checkpoint-decisions">
           {session.decisions.map((decision) => (
@@ -615,19 +595,13 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
 
         <div className="checkpoint-footer">
           <div className="checkpoint-footer__hint">
-            {answeredCount < totalCount
-              ? `На оставшиеся ${totalCount - answeredCount} ${
-                  totalCount - answeredCount === 1 ? "решение" : "решения"
-                } применятся дефолты при отправке.`
-              : "Все решения проработаны — можно отправлять."}
+            {overriddenCount === 0
+              ? "Будут применены варианты по умолчанию."
+              : `Изменено: ${overriddenCount} из ${totalCount}.`}
           </div>
-          <Button
-            tone="primary"
-            disabled={submitMutation.isPending}
-            onClick={handleSubmit}
-          >
+          <Button tone="primary" disabled={submitMutation.isPending} onClick={handleSubmit}>
             <Lock size={14} />
-            {submitMutation.isPending ? "Отправка…" : "Подтвердить и продолжить"}
+            {submitMutation.isPending ? "Отправка…" : "Отправить и продолжить"}
           </Button>
         </div>
       </SectionCard>
