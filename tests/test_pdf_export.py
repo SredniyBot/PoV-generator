@@ -52,6 +52,71 @@ def test_render_artifact_pdf_handles_empty_title() -> None:
     assert pdf_bytes.startswith(b"%PDF-")
 
 
+def test_wide_table_produces_landscape_page_in_pdf() -> None:
+    """E2E: широкая 7-колоночная таблица реально приводит к landscape-странице.
+
+    Проверяем MediaBox в финальных PDF-байтах. A4 portrait = 595×842 pt,
+    landscape = 842×595. Если landscape не сработал, обе страницы будут
+    одинаковой ориентации.
+    """
+    import re
+
+    md = (
+        "# Реестр рисков\n\n"
+        "| ID | Описание риска | Вероятность | Влияние | Митигация | Владелец | Срок |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| R-001 | Поставщик данных задерживает интеграцию из-за реорганизации в их департаменте | "
+        "Средняя | Высокое | Закрепить SLA в контракте; держать буфер 2 недели в плане | "
+        "Архитектор интеграций | 2026-06-01 |\n"
+        "| R-002 | Регуляторное требование по локализации данных меняется в течение проекта | "
+        "Низкая | Критическое | Юридическая проверка раз в квартал; гибкая архитектура | "
+        "DPO | непрерывно |\n\n"
+        "## Следующий раздел\n\n"
+        "После таблицы — обычный портретный текст.\n"
+    )
+
+    pdf_bytes = render_artifact_pdf(markdown_content=md, title="Risk Register")
+    data_str = pdf_bytes.decode("latin-1", errors="replace")
+    mediaboxes = re.findall(r'/MediaBox\s*\[([^\]]+)\]', data_str)
+
+    orientations = []
+    for mb in mediaboxes:
+        parts = mb.strip().split()
+        width, height = float(parts[2]), float(parts[3])
+        orientations.append("landscape" if width > height else "portrait")
+
+    assert "landscape" in orientations, (
+        f"Широкая таблица не привела к landscape-странице. Ориентации страниц: {orientations}"
+    )
+    assert "portrait" in orientations, (
+        f"После landscape-таблицы следующий раздел должен вернуться в portrait. "
+        f"Ориентации страниц: {orientations}"
+    )
+
+
+def test_narrow_table_keeps_portrait_only() -> None:
+    """Регрессия: маленькая таблица (2 колонки) не должна триггерить landscape."""
+    import re
+
+    md = (
+        "# Простая таблица\n\n"
+        "| Поле | Значение |\n"
+        "|---|---|\n"
+        "| Имя | Альфа |\n"
+        "| Тип | Запрос |\n"
+    )
+    pdf_bytes = render_artifact_pdf(markdown_content=md, title="Narrow")
+    data_str = pdf_bytes.decode("latin-1", errors="replace")
+    mediaboxes = re.findall(r'/MediaBox\s*\[([^\]]+)\]', data_str)
+
+    for mb in mediaboxes:
+        parts = mb.strip().split()
+        width, height = float(parts[2]), float(parts[3])
+        assert width < height, (
+            f"Узкая таблица ушла в landscape ({width}x{height}) — ложное срабатывание порога"
+        )
+
+
 def test_render_artifact_pdf_embeds_unicode_font_for_cyrillic() -> None:
     """Регрессия: кириллица не должна рендериться через core-PDF Helvetica
     (она не имеет Cyrillic-глифов → чёрные квадраты в PDF-вьюверах).
