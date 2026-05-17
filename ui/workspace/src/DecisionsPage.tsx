@@ -512,12 +512,17 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
     mutationFn: (payload: CheckpointAnswerPayload[]) =>
       api.submitCheckpointAnswers(projectId, sessionId!, payload),
     onSuccess: () => {
-      // Инвалидируем затронутые проекции
+      // Инвалидируем все затронутые проекции — backend сразу же стартует
+      // новый workflow run, нам нужно подхватить прогресс в шапке.
       queryClient.invalidateQueries({ queryKey: ["checkpoint", projectId, sessionId] });
       queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
       queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
-      // Назад на обзор
+      queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "artifacts"] });
+      // Назад на обзор — там пользователь видит свежий workflow run progress
       navigate(`/projects/${projectId}/overview`);
     },
   });

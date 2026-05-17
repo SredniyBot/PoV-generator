@@ -548,6 +548,32 @@ def create_app(
         checkpoint_service.submit_answers(
             workspace, session_id=session_id, answers=tuple(answers)
         )
+
+        # v3.0 auto-continue: после финализации сессии задача переведена в
+        # ready (см. CheckpointService.submit_answers). Сразу запускаем новый
+        # workflow run, чтобы пользователь не нажимал «Run» вручную.
+        #
+        # Если active run уже есть — не запускаем повторный (он сам подхватит
+        # ready-task на следующей итерации планировщика). Provider/model берём
+        # из последнего запущенного run проекта (если нет — None = режим
+        # «из настроек»).
+        try:
+            already_active = workflow_runner_service.latest_active_run(workspace, project_id)
+            if already_active is None:
+                runs = workflow_runner_service.list_runs(workspace, project_id=project_id, limit=1)
+                last_run = runs[0] if runs else None
+                workflow_runner_service.start_run_until_blocked(
+                    workspace,
+                    project_id,
+                    provider=last_run.provider if last_run else None,
+                    model=last_run.model if last_run else None,
+                    max_steps=1000,
+                )
+        except Exception:  # noqa: BLE001
+            # Не блокируем submit, если auto-continue не сработал — пользователь
+            # сможет вручную нажать «Run». Логирование внутри runner'а.
+            pass
+
         # Перечитываем финализированную сессию через query_service,
         # чтобы UI получил тот же view-формат, что и при GET
         return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
