@@ -375,9 +375,27 @@ class CheckpointService:
         if not decision_inputs:
             return ()
         now = utc_now_iso()
+        # v3.4: defensive filter — DecisionInput без минимум 2 реальных
+        # альтернатив (или с пустым recommended) выбрасываем как мусор.
+        # Источник: legacy-эмиттеры из старого validation-пути,
+        # blocking_questions-конвертация, кэшированные LLM-output'ы.
+        # В реестре такие записи отображались с "-" как дефолтным
+        # ответом — это заглушка, а не решение.
+        filtered_inputs: list[DecisionInput] = []
+        for di in decision_inputs:
+            if len(di.alternatives) < 2:
+                continue
+            if not di.recommended_option_id:
+                continue
+            # recommended должен указывать на одну из альтернатив
+            if di.recommended_option_id not in {a.option_id for a in di.alternatives}:
+                continue
+            filtered_inputs.append(di)
+        if not filtered_inputs:
+            return ()
         # Группировка по task_id
         by_task: dict[str | None, list[Decision]] = {}
-        for di in decision_inputs:
+        for di in filtered_inputs:
             decision = Decision(
                 decision_id=str(uuid.uuid4()),
                 project_id=project_id,
@@ -444,6 +462,35 @@ class CheckpointService:
             return self._runtime.get_task(workspace, task_id).title or task_id
         except Exception:
             return task_id
+
+    # ---- per-decision actions ----------------------------------------------
+
+    def set_decision_verified(
+        self,
+        workspace: Path,
+        *,
+        decision_id: str,
+        verified: bool,
+    ) -> Decision:
+        """v3.4: пометить рискованное решение как «я просмотрел и согласен»
+        (или снять метку).
+
+        Не меняет ни choice, ни alternatives — это аудит-метка для UI:
+        снимает индикатор `is_low_confidence`. Применяется к любому
+        решению, в любом статусе, независимо от уровня. Используется
+        в реестре, когда пользователь хочет убрать «жёлтую плашку»
+        с конкретного дефолта.
+        """
+        decision = self._runtime.get_decision(workspace, decision_id)
+        now = utc_now_iso()
+        updated = replace(
+            decision,
+            user_verified=bool(verified),
+            user_verified_at=now if verified else None,
+            updated_at=now,
+        )
+        self._runtime.upsert_decision(workspace, updated)
+        return self._runtime.get_decision(workspace, decision_id)
 
     # ---- mode (participation level) ------------------------------------------
 

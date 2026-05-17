@@ -17,7 +17,7 @@
 import { useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, FileText, Lock } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
 import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
@@ -118,6 +118,17 @@ function DecisionCard({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [freeTextDraft, setFreeTextDraft] = useState<string>("");
   const [freeTextOpen, setFreeTextOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  // v3.4: пометить рискованное решение как «просмотрено» — снимает badge.
+  // Доступно только в read-only-режиме (реестр), не в checkpoint-сессии.
+  const verifyMutation = useMutation({
+    mutationFn: () =>
+      api.verifyDecision(decision.project_id, decision.decision_id, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["decisions", decision.project_id] });
+    },
+  });
 
   const currentAnswerKind = interactive?.currentAnswer?.kind ?? null;
   const selectedAlternativeId =
@@ -173,6 +184,33 @@ function DecisionCard({
               >
                 <AlertTriangle size={12} className="decision-card__risky-icon" />
                 <span className="decision-card__risky-text">система не уверена</span>
+                {!isInteractive ? (
+                  <button
+                    type="button"
+                    className="decision-card__risky-verify"
+                    title="Я просмотрел этот выбор — согласен, снять метку"
+                    disabled={verifyMutation.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      verifyMutation.mutate();
+                    }}
+                  >
+                    <Check size={11} />
+                    <span>подтверждаю</span>
+                  </button>
+                ) : null}
+              </span>
+            ) : decision.user_verified && !isInteractive ? (
+              <span
+                className="decision-card__verified-badge"
+                title={
+                  decision.user_verified_at
+                    ? `Подтверждено вами ${decision.user_verified_at.slice(0, 16).replace("T", " ")}`
+                    : "Подтверждено вами"
+                }
+              >
+                <Check size={11} />
+                <span>подтверждено</span>
               </span>
             ) : null}
           </h3>

@@ -399,6 +399,8 @@ class WorkspaceQueryService:
             updated_at=decision.updated_at,
             answer_mode=decision.answer_mode,
             chosen_option_ids=decision.chosen_option_ids,
+            user_verified=decision.user_verified,
+            user_verified_at=decision.user_verified_at,
         )
 
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:

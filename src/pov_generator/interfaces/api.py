@@ -462,6 +462,40 @@ def create_app(
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.post("/api/projects/{project_id}/decisions/{decision_id}/verify")
+    def project_decision_verify(
+        project_id: str, decision_id: str, body: dict[str, Any] | None = None
+    ) -> Any:
+        """v3.4 — пометить рискованное решение как «просмотрено и согласовано».
+
+        Снимает индикатор `is_low_confidence` в UI без изменения самого
+        решения (ни choice, ни alternatives). Это аудит-метка для случаев,
+        когда дефолт LLM на самом деле адекватен, а низкая уверенность —
+        артефакт общей неопределённости задачи.
+
+        Body (optional):
+            ``{"verified": true}`` — поставить метку (default).
+            ``{"verified": false}`` — снять метку.
+
+        Returns:
+            Обновлённое решение в формате DecisionItemView.
+        """
+        from ..common.errors import NotFoundError
+
+        verified = True if body is None else bool(body.get("verified", True))
+        # Сначала валидируем принадлежность решения проекту (404 если нет).
+        try:
+            query_service.decision_detail(project_id, decision_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.set_decision_verified(
+            workspace,
+            decision_id=decision_id,
+            verified=verified,
+        )
+        return to_primitive(query_service.decision_detail(project_id, decision_id))
+
     # --- v3.0 — Checkpoint sessions -----------------------------------------
 
     @app.get("/api/projects/{project_id}/checkpoints")

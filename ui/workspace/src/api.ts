@@ -178,6 +178,18 @@ export const api = {
     request<import("./types").DecisionItemView>(
       `/api/projects/${projectId}/decisions/${decisionId}`,
     ),
+  verifyDecision: (
+    projectId: string,
+    decisionId: string,
+    verified: boolean = true,
+  ) =>
+    request<import("./types").DecisionItemView>(
+      `/api/projects/${projectId}/decisions/${decisionId}/verify`,
+      {
+        method: "POST",
+        body: JSON.stringify({ verified }),
+      },
+    ),
   getDecisionsForArtifact: (projectId: string, artifactId: string) =>
     request<import("./types").DecisionItemView[]>(
       `/api/projects/${projectId}/artifacts/${artifactId}/decisions`,

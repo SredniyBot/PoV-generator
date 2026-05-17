@@ -200,6 +200,10 @@ class DecisionItemView:
     # v3.1: миграция clarifications → decisions
     answer_mode: str = "single"
     chosen_option_ids: tuple[str, ...] = ()
+    # v3.4: пользовательская верификация рискового решения.
+    # Снимает маркер is_low_confidence в UI без изменения самого решения.
+    user_verified: bool = False
+    user_verified_at: str | None = None
 
 
 @dataclass(frozen=True)

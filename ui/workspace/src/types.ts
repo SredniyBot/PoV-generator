@@ -614,6 +614,9 @@ export interface DecisionItemView {
   // v3.1: режим ответа + multi-select поддержка
   answer_mode: DecisionAnswerMode;
   chosen_option_ids: string[];
+  // v3.4: пользователь явно «верифицировал» рискованное решение
+  user_verified: boolean;
+  user_verified_at: string | null;
 }
 
 export interface ProjectDecisionsView {

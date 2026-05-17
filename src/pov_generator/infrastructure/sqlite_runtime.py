@@ -106,6 +106,8 @@ def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) ->
         "updated_at": updated_at,
         "answer_mode": decision.answer_mode,
         "chosen_option_ids_json": json_dumps(list(decision.chosen_option_ids)),
+        "user_verified": 1 if decision.user_verified else 0,
+        "user_verified_at": decision.user_verified_at,
     }
 
 
@@ -151,6 +153,15 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         chosen_option_ids = tuple(json_loads(chosen_ids_raw)) if chosen_ids_raw else ()
     except (KeyError, IndexError):
         chosen_option_ids = ()
+    # v3.4 — user_verified метка. Защитный read для legacy баз.
+    try:
+        user_verified = bool(row["user_verified"])
+    except (KeyError, IndexError):
+        user_verified = False
+    try:
+        user_verified_at = row["user_verified_at"]
+    except (KeyError, IndexError):
+        user_verified_at = None
     return Decision(
         decision_id=row["decision_id"],
         project_id=row["project_id"],
@@ -175,6 +186,8 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         updated_at=row["updated_at"],
         answer_mode=answer_mode,
         chosen_option_ids=chosen_option_ids,
+        user_verified=user_verified,
+        user_verified_at=user_verified_at,
     )
 
 
@@ -1544,7 +1557,8 @@ class SqliteRuntime:
                     status, source, source_task_id,
                     affected_artifact_ids_json, depends_on_decision_ids_json,
                     user_action, original_chosen_option_id, user_free_text_answer,
-                    free_form_level_override, created_at, updated_at
+                    free_form_level_override, created_at, updated_at,
+                    user_verified, user_verified_at
                 )
                 values (
                     :decision_id, :project_id, :title, :description, :chosen_option_id,
@@ -1552,7 +1566,8 @@ class SqliteRuntime:
                     :status, :source, :source_task_id,
                     :affected_artifact_ids_json, :depends_on_decision_ids_json,
                     :user_action, :original_chosen_option_id, :user_free_text_answer,
-                    :free_form_level_override, :created_at, :updated_at
+                    :free_form_level_override, :created_at, :updated_at,
+                    :user_verified, :user_verified_at
                 )
                 on conflict(decision_id) do update set
                     title = excluded.title,
@@ -1572,7 +1587,9 @@ class SqliteRuntime:
                     original_chosen_option_id = excluded.original_chosen_option_id,
                     user_free_text_answer = excluded.user_free_text_answer,
                     free_form_level_override = excluded.free_form_level_override,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    user_verified = excluded.user_verified,
+                    user_verified_at = excluded.user_verified_at
                 """,
                 payload,
             )
@@ -1960,7 +1977,9 @@ class SqliteRuntime:
               created_at text not null,
               updated_at text not null,
               answer_mode text not null default 'single',
-              chosen_option_ids_json text not null default '[]'
+              chosen_option_ids_json text not null default '[]',
+              user_verified integer not null default 0,
+              user_verified_at text
             );
             create index if not exists decisions_project_idx
                 on decisions(project_id, created_at);
@@ -1981,6 +2000,13 @@ class SqliteRuntime:
             "decisions",
             "chosen_option_ids_json",
             "text not null default '[]'",
+        )
+        # v3.4: миграция — user_verified для legacy decisions (false).
+        self._ensure_column(
+            connection, "decisions", "user_verified", "integer not null default 0"
+        )
+        self._ensure_column(
+            connection, "decisions", "user_verified_at", "text"
         )
 
         # W4.1 (R1): async workflow runs.

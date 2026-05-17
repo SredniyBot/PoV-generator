@@ -247,6 +247,16 @@ class ExecutionService:
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
 
+        # v3.4: defensive strip — LLM по инерции иногда возвращает
+        # blocking_questions / open_questions_for_user в payload, хотя
+        # schema их не требует и в v3.1 они полностью заменены реестром
+        # решений (Decision ledger). Чтобы артефакт не падал на schema-
+        # валидации с extras и не пугал пользователя «лишним» блоком в UI,
+        # вычищаем устаревшие поля прямо в исходнике.
+        if isinstance(payload, dict):
+            for legacy_field in ("blocking_questions", "open_questions_for_user"):
+                payload.pop(legacy_field, None)
+
         # Этап 1.1: reasoning и methodology trace больше не отдельные
         # артефакты — они становятся метаинформацией primary артефакта.
         # Этап 1.4: input_artifact_ids выводим из context_manifest items
