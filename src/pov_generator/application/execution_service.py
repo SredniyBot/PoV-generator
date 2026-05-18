@@ -18,7 +18,9 @@ from .artifact_contracts import artifact_schema, render_markdown, schema_instruc
 from .checkpoint_service import CheckpointService
 from .complexity_selector_service import select_complexity
 from .context_service import ContextService
-from .decision_planning_service import DecisionPlanningService
+from .decision_identification_service import DecisionIdentificationService
+from .decision_extraction_service import DecisionExtractionService
+from .phase_gap_analysis_service import PhaseGapAnalysisService
 from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -77,18 +79,28 @@ class ExecutionService:
         context_service: ContextService,
         *,
         llm_registry: LLMProviderRegistry | None = None,
-        decision_planning_service: DecisionPlanningService | None = None,
+        decision_identification_service: DecisionIdentificationService | None = None,
         checkpoint_service: CheckpointService | None = None,
+        # Backward-compat alias (старый аргумент). Удалить после миграции
+        # внешних вызывателей. Не использовать в новом коде.
+        decision_planning_service: DecisionIdentificationService | None = None,
+        decision_extraction_service: "DecisionExtractionService | None" = None,
+        phase_gap_analysis_service: "PhaseGapAnalysisService | None" = None,
     ) -> None:
         self._runtime = runtime
         self._context_service = context_service
         self._llm = llm_registry or LLMProviderRegistry()
-        # v3.0: pre-flight planning + checkpoint integration. Опциональны
-        # для backward-compat в тестах, в проде всегда инжектируются из api.py.
-        # Если оба None — pre-flight stage пропускается, поведение
-        # эквивалентно pre-v3.0.
-        self._decision_planning = decision_planning_service
+        # v3.6: выявление решений на уровне задачи + post-artifact extraction +
+        # checkpoint integration. Опциональны для backward-compat в тестах;
+        # в проде инжектируются из api.py.
+        # Если decision_identification_service is None — task-level
+        # identification пропускается; post-artifact extraction независим.
+        self._decision_identification = (
+            decision_identification_service or decision_planning_service
+        )
         self._checkpoint = checkpoint_service
+        self._decision_extraction = decision_extraction_service
+        self._phase_gap = phase_gap_analysis_service
 
     def execute_task(
         self,
@@ -189,19 +201,26 @@ class ExecutionService:
         is_structural_merge = (
             template.merge is not None and template.merge.strategy == "structural"
         )
-        pre_flight_eligible = (
-            self._decision_planning is not None
+        # v3.6: whitelist на уровне task-template — pure-transform / review /
+        # merge задачи не порождают новых проектных решений; identification
+        # для них отключаем по флагу шаблона.
+        template_allows_identification = getattr(
+            template, "decision_identification_enabled", True
+        )
+        identification_eligible = (
+            self._decision_identification is not None
             and self._checkpoint is not None
             and not is_structural_merge
+            and template_allows_identification
             and (active_provider != "stub" or force_pre_flight)
         )
         locked_in_decisions: tuple[Decision, ...] = ()
-        # v3.5: token usage по стадиям сборки артефакта; pre-flight заполнит
-        # ключ pre_flight_planning, основная генерация — primary_generation и
+        # v3.5: token usage по стадиям сборки артефакта; identification заполняет
+        # ключ decision_identification, основная генерация — primary_generation и
         # (для per_stage_cot) methodology_stage:<id>.
         artifact_token_usage: dict[str, dict[str, int]] = {}
-        if pre_flight_eligible:
-            paused_result = self._run_pre_flight_stage(
+        if identification_eligible:
+            paused_result = self._run_decision_identification_stage(
                 workspace=workspace,
                 state=state,
                 task=task,
@@ -337,6 +356,36 @@ class ExecutionService:
         input_artifact_ids = self._extract_input_artifact_ids(context_manifest)
 
         artifact_id = str(uuid.uuid4())
+
+        # v3.6: ИСТОЧНИК 2 — post-artifact extraction. До построения
+        # ArtifactRecord — чтобы extraction-токены попали в metadata.
+        # Сами Decision-записи привязываются к artifact_id после store_artifact
+        # (как locked_in_decisions ниже).
+        extracted_decisions: tuple[Decision, ...] = ()
+        if (
+            self._decision_extraction is not None
+            and active_provider in ("openrouter", "claude_sdk", "claude_subscription")
+        ):
+            try:
+                extraction_usage: dict[str, int] = {}
+                extracted_decisions = self._decision_extraction.extract_from_artifact(
+                    workspace=workspace,
+                    project_id=manifest.project_id,
+                    artifact_id=artifact_id,
+                    artifact_role=artifact_role,
+                    artifact_payload=payload,
+                    task_id=task.task_id,
+                    token_usage_out=extraction_usage,
+                )
+                if extraction_usage:
+                    artifact_token_usage["decision_extraction"] = extraction_usage
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Post-artifact extraction failed for artifact %s: %s",
+                    artifact_id,
+                    exc,
+                )
         # B4: при retry или повторном создании артефакта того же role
         # текущей задачи — связываем версии через parent_artifact_id и
         # помечаем предыдущую superseded. Это даёт работающую цепочку
@@ -409,6 +458,39 @@ class ExecutionService:
                         self._runtime.upsert_decision(workspace, updated)
                 except Exception:  # noqa: BLE001
                     pass
+
+        # v3.6: привязать extracted-decisions (источник 2) к свежесозданному
+        # артефакту. Сама extraction-логика отработала ДО store_artifact —
+        # см. блок выше с allocate artifact_id. Здесь — только linking.
+        for d in extracted_decisions:
+            try:
+                fresh = self._runtime.get_decision(workspace, d.decision_id)
+                if artifact_id not in fresh.affected_artifact_ids:
+                    updated = replace(
+                        fresh,
+                        affected_artifact_ids=fresh.affected_artifact_ids + (artifact_id,),
+                    )
+                    self._runtime.upsert_decision(workspace, updated)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # v3.6: ИСТОЧНИК 3 — phase-boundary gap analysis. Проверяем, не
+        # завершилась ли одна из фаз (understanding / design / delivery)
+        # с этим артефактом — и если да, запускаем «глобальный взгляд» на
+        # пробелы реестра. Best-effort: ошибка не должна валить задачу.
+        if self._phase_gap is not None:
+            try:
+                self._phase_gap.maybe_run_phase_analysis(
+                    workspace,
+                    project_id=manifest.project_id,
+                    completed_template_ref=template.ref.as_string(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Phase gap analysis failed for task %s: %s",
+                    task.task_id, exc,
+                )
         if previous_active is not None:
             # Сначала записываем новый, потом помечаем старый — атомарность
             # не нужна (worst case — оба current, query вернёт latest по
@@ -488,7 +570,7 @@ class ExecutionService:
     # Pre-flight checkpoint stage
     # ------------------------------------------------------------------------
 
-    def _run_pre_flight_stage(
+    def _run_decision_identification_stage(
         self,
         *,
         workspace: Path,
@@ -500,29 +582,32 @@ class ExecutionService:
         execution_run_id_hint: str | None,
         token_usage_out: dict[str, dict[str, int]] | None = None,
     ) -> ExecutionBundle | None:
-        """Запустить (или подхватить) pre-flight для задачи.
+        """Запустить (или подхватить) выявление решений на запуске задачи.
+
+        v3.6 название переименовано с ``_run_pre_flight_stage``. Семантика
+        чуть расширена: LLM получает текущий реестр проекта и инструкцию
+        не дублировать. Whitelist task-templates применяется на уровне
+        вызывающего ``execute_task`` через флаг
+        ``template.decision_identification_enabled``.
 
         Возвращает ``ExecutionBundle`` со статусом ``paused_for_checkpoint``
-        ТОЛЬКО если задача должна остановиться (есть pending checkpoint
-        session). Возвращает ``None`` если можно продолжать к основной
-        генерации (либо silent-accept, либо ранее финализированная сессия).
+        ТОЛЬКО если задача должна остановиться. Возвращает ``None``, если
+        можно продолжать (silent-accept, finalized session, или новых
+        решений не возникло).
 
-        Идемпотентен: повторный вызов на той же задаче с finalized сессией
-        не создаёт новых решений — просто возвращает None.
+        Идемпотентен.
 
-        v3.5: если передан ``token_usage_out`` — заполняется ключом
-        ``pre_flight_planning`` (input/output/total tokens). Используется
-        для записи в ArtifactMetadata.token_usage.
+        Если передан ``token_usage_out`` — заполняется ключом
+        ``decision_identification`` (input/output/total tokens).
         """
         assert self._checkpoint is not None
-        assert self._decision_planning is not None
+        assert self._decision_identification is not None
 
         # Шаг 1: проверяем существующую сессию.
         existing = self._runtime.find_pending_checkpoint_for_task(
             workspace, task.task_id
         )
         if existing is not None:
-            # Pending — workflow всё ещё ждёт пользователя.
             return self._make_paused_bundle(
                 project_id=state.manifest.project_id,
                 task=task,
@@ -530,8 +615,7 @@ class ExecutionService:
                 checkpoint_session_id=existing.session_id,
             )
 
-        # Шаг 2: ищем finalized session по task_id (была обработана раньше).
-        # Если есть — pre-flight уже выполнялся, повторно не запускаем.
+        # Шаг 2: ищем finalized session по task_id.
         prior_sessions = self._runtime.list_checkpoint_sessions(
             workspace, project_id=state.manifest.project_id
         )
@@ -539,66 +623,59 @@ class ExecutionService:
             s for s in prior_sessions if s.task_id == task.task_id and s.status == "finalized"
         ]
         if prior_for_task:
-            return None  # есть финализированная сессия → используем её decisions
-
-        # Шаг 3: проверяем, не было ли silent-accept без сессии для этой задачи.
-        # Если для task_id уже есть Decision-записи со source="pre_flight" —
-        # pre-flight тоже не повторяем.
-        existing_decisions = [
-            d
-            for d in self._runtime.list_decisions(
-                workspace, project_id=state.manifest.project_id
-            )
-            if d.source_task_id == task.task_id and d.source == "pre_flight"
-        ]
-        if existing_decisions:
             return None
 
-        # Шаг 4: первый запуск — выполняем pre-flight планирование.
-        # При фатальной ошибке резолвера (ни decision_planning, ни
-        # execution.standard не настроены) — graceful degrade С ЛОГОМ.
-        # При других ошибках (битый промпт, network, парсинг) — пробрасываем
-        # наверх: это реальная поломка, пользователь должен её видеть, а не
-        # получать тихо отсутствие реестра.
+        # Шаг 3: silent-accept без сессии? Для task_id уже есть решения
+        # с source="pre_flight" (имя enum-значения сохранено).
+        all_project_decisions = self._runtime.list_decisions(
+            workspace, project_id=state.manifest.project_id
+        )
+        existing_decisions_for_task = [
+            d for d in all_project_decisions
+            if d.source_task_id == task.task_id and d.source == "pre_flight"
+        ]
+        if existing_decisions_for_task:
+            return None
+
+        # Шаг 4: первый запуск — выявление новых проектных решений.
+        # v3.6: передаём title'ы существующих решений, чтобы LLM не дублировала.
+        existing_titles = tuple(d.title for d in all_project_decisions)
+
         import logging
         logger = logging.getLogger(__name__)
         try:
-            planning = self._decision_planning.plan_for_task(
+            identification = self._decision_identification.identify_for_task(
                 project_id=state.manifest.project_id,
                 task_id=task.task_id,
                 task_title=task.title,
                 artifact_role=artifact_role,
                 task_summary=template.summary,
                 context_text=user_prompt,  # уже включает контекст из manifest
+                existing_registry_titles=existing_titles,
             )
         except ConflictError as exc:
             msg = str(exc)
-            # «Не назначена модель» означает: пользователь не настроил
-            # ни decision_planning, ни execution.standard. Это admin-issue,
-            # не runtime — workflow всё равно должен пройти.
             if "Не назначена модель" in msg or "нет рабочих маршрутов" in msg:
                 logger.warning(
-                    "Pre-flight планирование skip'нуто для task %s: %s. "
+                    "Выявление решений skip'нуто для task %s: %s. "
                     "Реестр решений не пополнится. Откройте Settings → "
                     "Default Models, чтобы назначить модель для сценария.",
                     task.task_id,
                     msg,
                 )
                 return None
-            # Иначе — это реальный сбой (LLM-ошибка, парсинг и т. п.).
-            # Пробрасываем — пользователь увидит сообщение, поправит или
-            # сообщит. Без этого мы повторим багу «всё молча работает».
             raise
 
-        # v3.5: фиксируем pre-flight usage в callback-dict, если передан
-        if token_usage_out is not None and planning.token_usage:
-            token_usage_out["pre_flight_planning"] = {
-                "input_tokens": int(planning.token_usage.get("input_tokens", 0) or 0),
-                "output_tokens": int(planning.token_usage.get("output_tokens", 0) or 0),
-                "cache_read_tokens": int(planning.token_usage.get("cache_read_tokens", 0) or 0),
-                "cache_write_tokens": int(planning.token_usage.get("cache_write_tokens", 0) or 0),
-                "total_tokens": int(planning.token_usage.get("total_tokens", 0) or 0),
+        # v3.6: фиксируем usage под ключом decision_identification (раньше pre_flight_planning).
+        if token_usage_out is not None and identification.token_usage:
+            token_usage_out["decision_identification"] = {
+                "input_tokens": int(identification.token_usage.get("input_tokens", 0) or 0),
+                "output_tokens": int(identification.token_usage.get("output_tokens", 0) or 0),
+                "cache_read_tokens": int(identification.token_usage.get("cache_read_tokens", 0) or 0),
+                "cache_write_tokens": int(identification.token_usage.get("cache_write_tokens", 0) or 0),
+                "total_tokens": int(identification.token_usage.get("total_tokens", 0) or 0),
             }
+        planning = identification  # local alias для совместимости со следующим блоком
 
         result = self._checkpoint.process_planned_decisions(
             workspace,

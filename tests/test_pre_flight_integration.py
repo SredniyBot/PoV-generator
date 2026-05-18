@@ -24,9 +24,9 @@ from test_m9_api import init_project, run_stub_workflow  # type: ignore
 
 from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
-from pov_generator.application.decision_planning_service import (
-    DecisionPlanningService,
-    PlanningResult,
+from pov_generator.application.decision_identification_service import (
+    DecisionIdentificationService as DecisionPlanningService,
+    IdentificationResult as PlanningResult,
 )
 from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.registry_service import RegistryService
@@ -50,7 +50,7 @@ class _StubPlanningService(DecisionPlanningService):
         # Не вызываем super().__init__, llm_registry не нужен — нет LLM-вызовов.
         self._decisions_factory = decisions_factory
 
-    def plan_for_task(
+    def identify_for_task(
         self,
         *,
         project_id: str,
@@ -59,6 +59,7 @@ class _StubPlanningService(DecisionPlanningService):
         artifact_role: str,
         task_summary: str,
         context_text: str,
+        existing_registry_titles: tuple[str, ...] = (),
         provider: str | None = None,
         model: str | None = None,
     ) -> PlanningResult:
@@ -71,6 +72,10 @@ class _StubPlanningService(DecisionPlanningService):
             model="stub-planner",
             raw_response={"decisions": [d.title for d in decisions]},
         )
+
+    # backward-compat для тестов, ещё вызывающих старое имя
+    def plan_for_task(self, **kwargs):  # noqa: D401
+        return self.identify_for_task(**kwargs)
 
 
 def _make_business_decision(*, project_id: str, task_id: str, artifact_role: str) -> tuple[Decision, ...]:
@@ -178,6 +183,11 @@ def _first_leaf_task_with_artifact(runtime, workspace, snapshot):
         if not template.outputs.artifact_roles:
             continue
         if template.inputs.required_artifact_roles:
+            continue
+        # v3.6: тестам нужна задача, на которой identification ВКЛЮЧЁН —
+        # иначе паузы и pre-flight не будет. Skip whitelist'нутые
+        # transform/review шаблоны.
+        if not getattr(template, "decision_identification_enabled", True):
             continue
         return task
     raise AssertionError("Не нашли leaf-задачу с артефактом без required-входов")

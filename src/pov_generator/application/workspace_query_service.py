@@ -503,7 +503,7 @@ class WorkspaceQueryService:
         approval_decisions = [
             d
             for d in all_decisions
-            if d.source == "reactive_validation"
+            if d.source == "reactive_validation" or d.source == "emergent"
             and d.status in {"accepted_default", "user_overridden", "locked_in"}
         ]
         gates_required = len(objective.done_gate_refs)

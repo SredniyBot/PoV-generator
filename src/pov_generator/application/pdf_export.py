@@ -103,10 +103,12 @@ def render_decisions_pdf(
         "superseded": "Устарело",
     }
     _SOURCE_RU = {
-        "pre_flight": "pre-flight",
-        "emergent": "emergent",
-        "reactive_validation": "validation",
-        "user_manual": "manual",
+        # v3.6 ребрендинг: новые человекочитаемые ярлыки.
+        "pre_flight": "выявлено",         # task-level identification
+        "emergent": "извлечено",          # post-artifact extraction
+        "phase_gap_analysis": "пробел фазы",  # phase gap analysis
+        "reactive_validation": "валидация",
+        "user_manual": "вручную",
     }
 
     def _cell(text: str) -> str:

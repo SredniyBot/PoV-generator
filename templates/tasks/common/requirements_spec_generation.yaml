@@ -9,6 +9,12 @@ executor: llm
 # Финальный synthesis: option_generation/decision не применимы — выбор уже
 # сделан в upstream.
 methodology: minimal
+# v3.6: финальный synthesis-merge не порождает новых проектных решений
+# (все они уже в upstream-артефактах и в реестре). Identification бы
+# дублировал что-то про оформление документа. Post-artifact extraction
+# при этом ВКЛЮЧЕНА на уровне сервиса — она вытащит имплицитные тех-
+# выборы, которые попали в финальное ТЗ.
+decision_identification: false
 # Этап 5: финальный ТЗ — синтетический merge всех аналитических артефактов.
 # LLM интегрирует пересекающиеся темы (scope/stakeholders/options/...)
 # в связный документ. Strategy=synthetic не меняет путь исполнения,

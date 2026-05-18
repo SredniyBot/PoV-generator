@@ -7,6 +7,10 @@ status: active
 domain: common
 executor: llm
 methodology: skip
+# v3.6: глоссарий — это рендеринг (термины + определения), не источник
+# новых проектных решений. Identification генерирует только meta-шум
+# («глубина глоссария», «включение пробельных терминов»).
+decision_identification: false
 requires:
   state: [business_request]
   artifacts:

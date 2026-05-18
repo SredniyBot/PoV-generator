@@ -1,9 +1,13 @@
-"""Тесты DecisionPlanningService с mock LLM.
+"""Тесты DecisionIdentificationService с mock LLM (v3.6).
 
 Реальный LLM не вызываем — это unit-тест, проверяющий:
 - корректность парсинга ответа в Decision-объекты
 - fallback'ы при невалидном ответе
 - передачу параметров (project_id, task_id) в Decision-записи
+
+История: модуль ранее назывался ``decision_planning_service``; legacy-
+alias ``DecisionPlanningService`` оставлен в коде для обратной
+совместимости. Импортируем под новым именем.
 """
 
 from __future__ import annotations
@@ -13,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from pov_generator.application.decision_planning_service import (
-    DecisionPlanningService,
+from pov_generator.application.decision_identification_service import (
+    DecisionIdentificationService as DecisionPlanningService,
 )
 from pov_generator.common.errors import ConflictError
 
@@ -90,6 +94,7 @@ def _basic_response() -> dict[str, Any]:
                 "level": "architecture",
                 "level_rationale": "Затрагивает несколько компонентов",
                 "confidence": 0.85,
+                "category": "tech_stack",
             }
         ]
     }
@@ -206,6 +211,7 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "level": "detail",
                 "level_rationale": "",
                 "confidence": 0.5,
+                "category": "tech_stack",
             },
             {
                 "title": "Good — has two alternatives",
@@ -219,6 +225,7 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "level": "detail",
                 "level_rationale": "",
                 "confidence": 0.5,
+                "category": "tech_stack",
             },
         ]
     }
@@ -252,6 +259,7 @@ def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
                 "level": "detail",
                 "level_rationale": "",
                 "confidence": 0.5,
+                "category": "tech_stack",
             }
         ]
     }
@@ -284,6 +292,7 @@ def test_invalid_level_falls_back_to_architecture() -> None:
                 "level": "INVALID_LEVEL",
                 "level_rationale": "",
                 "confidence": 0.5,
+                "category": "tech_stack",
             }
         ]
     }
@@ -329,7 +338,7 @@ def test_llm_call_failure_wraps_to_conflict() -> None:
             return _FailingLLM()
 
     service = DecisionPlanningService(llm_registry=_FailingRegistry())  # type: ignore[arg-type]
-    with pytest.raises(ConflictError, match="Ошибка pre-flight планирования"):
+    with pytest.raises(ConflictError, match="Ошибка выявления решений"):
         service.plan_for_task(
             project_id="p-1",
             task_id="task-1",

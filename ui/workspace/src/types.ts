@@ -571,7 +571,12 @@ export type DecisionStatus =
   | "deferred"
   | "locked_in"
   | "superseded";
-export type DecisionSource = "pre_flight" | "emergent" | "reactive_validation" | "user_manual";
+export type DecisionSource =
+  | "pre_flight"
+  | "emergent"
+  | "phase_gap_analysis"
+  | "reactive_validation"
+  | "user_manual";
 export type DecisionUserAction =
   | "not_shown"
   | "accepted_default"
