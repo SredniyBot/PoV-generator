@@ -574,7 +574,6 @@ export type DecisionStatus =
 export type DecisionSource =
   | "pre_flight"
   | "emergent"
-  | "phase_gap_analysis"
   | "reactive_validation"
   | "user_manual";
 export type DecisionUserAction =

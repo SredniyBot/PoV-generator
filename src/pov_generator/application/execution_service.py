@@ -5,6 +5,7 @@ import os
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
@@ -20,7 +21,6 @@ from .complexity_selector_service import select_complexity
 from .context_service import ContextService
 from .decision_identification_service import DecisionIdentificationService
 from .decision_extraction_service import DecisionExtractionService
-from .phase_gap_analysis_service import PhaseGapAnalysisService
 from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -85,7 +85,10 @@ class ExecutionService:
         # внешних вызывателей. Не использовать в новом коде.
         decision_planning_service: DecisionIdentificationService | None = None,
         decision_extraction_service: "DecisionExtractionService | None" = None,
-        phase_gap_analysis_service: "PhaseGapAnalysisService | None" = None,
+        # v3.7: phase_gap_analysis_service kwarg сохранён в сигнатуре для
+        # backward-compat. Сам сервис удалён — phase-gap признан избыточной
+        # абстракцией (см. обсуждение v3.7). Игнорируется.
+        phase_gap_analysis_service: Any = None,
     ) -> None:
         self._runtime = runtime
         self._context_service = context_service
@@ -100,7 +103,8 @@ class ExecutionService:
         )
         self._checkpoint = checkpoint_service
         self._decision_extraction = decision_extraction_service
-        self._phase_gap = phase_gap_analysis_service
+        # v3.7: phase_gap инстанс игнорируется (см. сигнатуру выше).
+        _ = phase_gap_analysis_service
 
     def execute_task(
         self,
@@ -474,23 +478,14 @@ class ExecutionService:
             except Exception:  # noqa: BLE001
                 pass
 
-        # v3.6: ИСТОЧНИК 3 — phase-boundary gap analysis. Проверяем, не
-        # завершилась ли одна из фаз (understanding / design / delivery)
-        # с этим артефактом — и если да, запускаем «глобальный взгляд» на
-        # пробелы реестра. Best-effort: ошибка не должна валить задачу.
-        if self._phase_gap is not None:
-            try:
-                self._phase_gap.maybe_run_phase_analysis(
-                    workspace,
-                    project_id=manifest.project_id,
-                    completed_template_ref=template.ref.as_string(),
-                )
-            except Exception as exc:  # noqa: BLE001
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Phase gap analysis failed for task %s: %s",
-                    task.task_id, exc,
-                )
+        # v3.7: ранее здесь вызывался PhaseGapAnalysisService — он признан
+        # избыточной абстракцией. Identification (с реестр-контекстом) +
+        # extraction уже покрывают пространство «явные + имплицитные
+        # решения». Если LLM ни на одном шаге не подняла развилку — значит
+        # она либо не материальна, либо проявится в следующей задаче.
+        # Конструирование «синтетических пробелов» через ещё один LLM-вызов
+        # на каждую границу фазы давало лишний шум и удваивало стоимость.
+
         if previous_active is not None:
             # Сначала записываем новый, потом помечаем старый — атомарность
             # не нужна (worst case — оба current, query вернёт latest по
@@ -643,6 +638,12 @@ class ExecutionService:
 
         import logging
         logger = logging.getLogger(__name__)
+        # v3.7: identification — best-effort. Раньше LLM-ошибка (flaky CLI,
+        # таймаут, парсинг) валила всю задачу — пользователь видел красный
+        # workflow и не мог продвинуться. Теперь любая ошибка
+        # identification → лог + продолжение задачи без пополнения реестра
+        # для этого шага. Это соответствует semantic'у других двух
+        # источников реестра (extraction уже best-effort с самого начала).
         try:
             identification = self._decision_identification.identify_for_task(
                 project_id=state.manifest.project_id,
@@ -660,11 +661,26 @@ class ExecutionService:
                     "Выявление решений skip'нуто для task %s: %s. "
                     "Реестр решений не пополнится. Откройте Settings → "
                     "Default Models, чтобы назначить модель для сценария.",
-                    task.task_id,
-                    msg,
+                    task.task_id, msg,
                 )
-                return None
-            raise
+            else:
+                # Транзиентные ошибки (CLI timeout, parse fail, rate limit)
+                # — best-effort skip. Пользователь видит warning в логах
+                # API; реестр не пополнится для этой задачи, но workflow
+                # продолжается.
+                logger.warning(
+                    "Выявление решений упало для task %s (best-effort skip): %s",
+                    task.task_id, msg,
+                )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            # Любые неожиданные ошибки тоже soft-fail, чтобы не валить
+            # workflow из-за «нерабочего ауксиллиарного сервиса».
+            logger.warning(
+                "Выявление решений упало (unexpected) для task %s: %s",
+                task.task_id, exc,
+            )
+            return None
 
         # v3.6: фиксируем usage под ключом decision_identification (раньше pre_flight_planning).
         if token_usage_out is not None and identification.token_usage:

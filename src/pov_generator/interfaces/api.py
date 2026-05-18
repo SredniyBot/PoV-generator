@@ -11,7 +11,6 @@ from ..application.checkpoint_service import CheckpointService
 from ..application.context_service import ContextService
 from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.decision_extraction_service import DecisionExtractionService
-from ..application.phase_gap_analysis_service import PhaseGapAnalysisService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
 from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
@@ -92,9 +91,6 @@ def create_app(
     decision_extraction_service = DecisionExtractionService(
         runtime, llm_registry=llm_registry
     )
-    phase_gap_analysis_service = PhaseGapAnalysisService(
-        runtime, llm_registry=llm_registry
-    )
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
@@ -104,7 +100,6 @@ def create_app(
         llm_registry=llm_registry,
         decision_identification_service=decision_identification_service,
         decision_extraction_service=decision_extraction_service,
-        phase_gap_analysis_service=phase_gap_analysis_service,
         checkpoint_service=checkpoint_service,
     )
     validation_service = ValidationService(runtime, checkpoint_service=checkpoint_service)

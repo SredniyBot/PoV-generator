@@ -58,22 +58,23 @@ DecisionStatus = Literal[
     "superseded",
 ]
 
-#: Откуда решение попало в реестр (v3.6 расширено).
+#: Откуда решение попало в реестр (v3.7).
 #:
 #: - ``pre_flight`` — task-level identification (источник 1). Имя enum
 #:   сохранено для backward-compat с БД; функционально — «выявление
 #:   решений на запуске задачи».
 #: - ``emergent`` — post-artifact extraction (источник 2). LLM вытащила
 #:   имплицитное проектное решение из готового артефакта.
-#: - ``phase_gap_analysis`` — phase-boundary gap analysis (источник 3).
-#:   На границе фазы проекта выявлен критичный пробел в реестре.
 #: - ``reactive_validation`` — legacy fallback-путь v2.2: валидация
 #:   обнаружила пробел / низкую уверенность в payload.
 #: - ``user_manual`` — пользователь сам добавил решение через UI.
+#:
+#: История: в v3.6 был ``phase_gap_analysis`` (третий источник). В v3.7
+#: удалён — избыточная абстракция, identification + extraction уже
+#: покрывают пространство явных + имплицитных решений.
 DecisionSource = Literal[
     "pre_flight",
     "emergent",
-    "phase_gap_analysis",
     "reactive_validation",
     "user_manual",
 ]

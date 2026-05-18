@@ -103,10 +103,9 @@ def render_decisions_pdf(
         "superseded": "Устарело",
     }
     _SOURCE_RU = {
-        # v3.6 ребрендинг: новые человекочитаемые ярлыки.
-        "pre_flight": "выявлено",         # task-level identification
-        "emergent": "извлечено",          # post-artifact extraction
-        "phase_gap_analysis": "пробел фазы",  # phase gap analysis
+        # v3.6 ребрендинг (v3.7: phase_gap удалён).
+        "pre_flight": "выявлено",     # task-level identification
+        "emergent": "извлечено",      # post-artifact extraction
         "reactive_validation": "валидация",
         "user_manual": "вручную",
     }

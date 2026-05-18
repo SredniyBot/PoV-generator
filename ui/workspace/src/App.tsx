@@ -696,7 +696,9 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
                       {labelForStepStatus(step.validation_status, step.planning_outcome)}
                     </span>
                     {durationSec !== null ? (
-                      <span className="workflow-run__step-duration">{durationSec}с</span>
+                      <span className="workflow-run__step-duration">
+                        {formatElapsedHMS(durationSec)}
+                      </span>
                     ) : null}
                     {step.error_message ? (
                       <span className="workflow-run__step-error" title={step.error_message}>
@@ -726,9 +728,36 @@ function cleanStepSummary(summary: string): string {
   return summary.replace(/^Шаг\s*\d+\s*\/\s*\d+\s*:\s*/i, "");
 }
 
-// Real-time секундомер для in-progress задачи. Обновляется раз в секунду
-// через requestAnimationFrame-таймер; считает время от updated_at задачи
-// (= момент перехода в in_progress) до текущей минуты.
+/**
+ * Унифицированный формат «прошедшего времени» в часах/минутах/секундах.
+ *
+ * Правила:
+ *   < 60 секунд → "45с"
+ *   < 1 часа    → "1м 23с"
+ *   ≥ 1 часа    → "2ч 05м 07с"
+ *
+ * Используется и для in-progress секундомера (live tick раз в секунду),
+ * и для финального длительности завершённого шага. Раньше эти два места
+ * использовали разные форматы (финал — голые секунды, "83с"), что сбивало
+ * пользователя. Один helper — одна семантика.
+ */
+function formatElapsedHMS(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) {
+    return `${h}ч ${String(m).padStart(2, "0")}м ${String(sec).padStart(2, "0")}с`;
+  }
+  if (m > 0) {
+    return `${m}м ${String(sec).padStart(2, "0")}с`;
+  }
+  return `${sec}с`;
+}
+
+// Real-time секундомер для in-progress задачи. Обновляется раз в секунду;
+// считает время от updated_at задачи (= момент перехода в in_progress)
+// до текущего тика.
 function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -739,10 +768,11 @@ function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
   const startMs = new Date(startedAtIso).getTime();
   if (Number.isNaN(startMs)) return null;
   const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
-  const mm = Math.floor(elapsedSec / 60);
-  const ss = elapsedSec % 60;
-  const label = mm > 0 ? `${mm}м ${String(ss).padStart(2, "0")}с` : `${ss}с`;
-  return <span className="workflow-run__inprogress-timer">{label}</span>;
+  return (
+    <span className="workflow-run__inprogress-timer">
+      {formatElapsedHMS(elapsedSec)}
+    </span>
+  );
 }
 
 function labelForStepStatus(
