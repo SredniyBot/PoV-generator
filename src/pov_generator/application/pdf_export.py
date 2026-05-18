@@ -115,12 +115,39 @@ def render_decisions_pdf(
             return "—"
         return str(text).replace("|", "\\|").replace("\n", " ")
 
+    # v3.5: сортировка по важности — та же, что в UI DecisionsRegistryPage:
+    #   1) status=proposed (ждут ответа пользователя) сверху,
+    #   2) is_low_confidence (LLM не уверена),
+    #   3) уровень: business → architecture → detail,
+    #   4) дата создания (свежее — выше).
+    # Сохраняем стабильный порядок: пользователь, открывая PDF, видит то же
+    # самое, что и на экране — не должно быть «в реестре было одно, в PDF
+    # внезапно другое».
+    _LEVEL_WEIGHT = {"business": 0, "architecture": 1, "detail": 2}
+
+    def _neg_iso(s: str) -> str:
+        """Для desc-сортировки строки сравниваем в reverse — берём «инверсию»
+        через xor-каждого-символа; стабильный proxy для tuple-sort."""
+        # ISO-8601 строки сортируются лексикографически. Чтобы получить
+        # desc внутри одного tuple-ключа, инвертируем через chr(255 - ord(c)).
+        return "".join(chr(255 - ord(c)) for c in s)
+
+    sorted_decisions = sorted(
+        decisions,
+        key=lambda d: (
+            0 if d.get("status") == "proposed" else 1,
+            0 if d.get("is_low_confidence") else 1,
+            _LEVEL_WEIGHT.get(str(d.get("level", "")), 3),
+            _neg_iso(str(d.get("created_at") or "")),
+        ),
+    )
+
     lines: list[str] = []
     lines.append(f"# Реестр решений: {project_name}")
     lines.append("")
-    lines.append(f"Режим участия: **{mode}** · Всего решений: **{len(decisions)}**")
+    lines.append(f"Режим участия: **{mode}** · Всего решений: **{len(sorted_decisions)}**")
     lines.append("")
-    if not decisions:
+    if not sorted_decisions:
         lines.append("_В реестре пока нет решений._")
         return render_artifact_pdf(
             markdown_content="\n".join(lines),
@@ -129,7 +156,7 @@ def render_decisions_pdf(
 
     lines.append("| Уровень | Статус | Решение | Выбрано | Уверенность | Альтернативы | Источник |")
     lines.append("|---|---|---|---|---|---|---|")
-    for d in decisions:
+    for d in sorted_decisions:
         level = _LEVEL_RU.get(str(d.get("level", "")), str(d.get("level", "—")))
         status = _STATUS_RU.get(str(d.get("status", "")), str(d.get("status", "—")))
         title = str(d.get("title") or "").strip() or "—"
