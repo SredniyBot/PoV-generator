@@ -94,12 +94,15 @@ def _build_decision_input(
     recommended_option_id: если None и alternatives непуст, берётся option_id
     первой альтернативы.
     """
+    # v3.5: per-alt confidence обязательная. Если эмиттер передал None —
+    # подставляем 0.5 (нейтрально-неопределённо). is_low_confidence
+    # учитывает это и засветит индикатор «система не уверена».
     alternatives = tuple(
         DecisionAlternative(
             option_id=opt[0],
             label=opt[1],
             description=opt[2],
-            confidence=opt[3],
+            confidence=0.5 if opt[3] is None else opt[3],
         )
         for opt in options
     )

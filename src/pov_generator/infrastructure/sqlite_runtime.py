@@ -321,12 +321,22 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         "overall_confidence",
         "field_confidence",
         "used_position_ids",
+        "token_usage",
         "extras",
     }
     extras = {key: value for key, value in payload.items() if key not in known}
     declared_extras = payload.get("extras") or {}
     if isinstance(declared_extras, dict):
         extras = {**declared_extras, **extras}
+    # v3.5: token_usage — словарь словарей; защитное чтение для legacy.
+    raw_usage = payload.get("token_usage") or {}
+    token_usage: dict[str, dict[str, int]] = {}
+    if isinstance(raw_usage, dict):
+        for stage, vals in raw_usage.items():
+            if isinstance(vals, dict):
+                token_usage[str(stage)] = {
+                    k: int(v) for k, v in vals.items() if isinstance(v, (int, float))
+                }
     return ArtifactMetadata(
         template_ref=payload.get("template_ref"),
         provider=payload.get("provider"),
@@ -340,6 +350,7 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         overall_confidence=payload.get("overall_confidence"),
         field_confidence=dict(payload.get("field_confidence") or {}),
         used_position_ids=tuple(payload.get("used_position_ids") or ()),
+        token_usage=token_usage,
         extras=extras,
     )
 
@@ -371,6 +382,10 @@ def _artifact_metadata_to_payload(metadata: ArtifactMetadata) -> dict[str, objec
         payload["field_confidence"] = dict(metadata.field_confidence)
     if metadata.used_position_ids:
         payload["used_position_ids"] = list(metadata.used_position_ids)
+    if metadata.token_usage:
+        payload["token_usage"] = {
+            stage: dict(vals) for stage, vals in metadata.token_usage.items()
+        }
     if metadata.extras:
         payload["extras"] = dict(metadata.extras)
     return payload

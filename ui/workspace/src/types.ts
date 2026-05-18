@@ -149,6 +149,14 @@ export interface ArtifactValidationView {
   created_at: string;
 }
 
+export interface TokenUsageStage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+}
+
 export interface ArtifactDetailView {
   artifact_id: string;
   artifact_role: string;
@@ -172,6 +180,8 @@ export interface ArtifactDetailView {
   parent_artifact_id: string | null;
   is_superseded: boolean;
   overall_confidence: number | null;
+  // v3.5: разбивка токенов по стадиям сборки.
+  token_usage: Record<string, TokenUsageStage>;
 }
 
 export interface ReviewIssueView {

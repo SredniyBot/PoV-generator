@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import logging
@@ -55,12 +55,16 @@ class PlanningResult:
         provider: имя LLM-провайдера, использованного для планирования.
         model: модель.
         raw_response: исходный JSON от LLM (для аудита и отладки).
+        token_usage: usage от провайдера в формате dict (input_tokens,
+            output_tokens, total_tokens, ...). Пустой dict, если провайдер
+            не сообщает (subscription без ResultMessage и т.п.).
     """
 
     decisions: tuple[Decision, ...]
     provider: str
     model: str
     raw_response: dict[str, Any]
+    token_usage: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +150,12 @@ def _build_planning_schema() -> dict[str, Any]:
                             "minItems": 2,
                             "items": {
                                 "type": "object",
-                                "required": ["option_id", "label", "description"],
+                                "required": [
+                                    "option_id",
+                                    "label",
+                                    "description",
+                                    "confidence",
+                                ],
                                 "additionalProperties": False,
                                 "properties": {
                                     "option_id": {"type": "string"},
@@ -154,7 +163,16 @@ def _build_planning_schema() -> dict[str, Any]:
                                     "description": {"type": "string"},
                                     "pros": {"type": "array", "items": {"type": "string"}},
                                     "cons": {"type": "array", "items": {"type": "string"}},
-                                    "confidence": {"type": ["number", "null"]},
+                                    # v3.5: confidence теперь обязательное поле
+                                    # для каждой альтернативы. Используется UI для
+                                    # отображения «уверенности по варианту» и
+                                    # для расчёта Decision.is_low_confidence по
+                                    # выбранному дефолту.
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0,
+                                    },
                                 },
                             },
                         },
@@ -287,11 +305,16 @@ class DecisionPlanningService:
             project_id=project_id,
             task_id=task_id,
         )
+        # v3.5: usage от провайдера. LLMProvider гарантирует last_usage
+        # (хотя бы empty) после chat_json.
+        usage = getattr(llm, "last_usage", None)
+        usage_dict = usage.to_dict() if usage is not None else {}
         return PlanningResult(
             decisions=decisions,
             provider=llm.name,
             model=llm.model,
             raw_response=response,
+            token_usage=usage_dict,
         )
 
     # ---- prompt building --------------------------------------------------
@@ -326,12 +349,16 @@ class DecisionPlanningService:
             "- description: 1-3 предложения о том, что именно решается. Без воды.\n"
             "- alternatives: ОБЯЗАТЕЛЬНО минимум 2 и обычно 2-4 варианта. "
             "Каждый — реальный, содержательный, осмысленно отличающийся "
-            "от других вариант, с label, description (1-2 предложения) и "
-            "опционально pros/cons. ЗАПРЕЩЕНО плодить заглушки вида "
-            "«принять рекомендацию», «оставить как есть», «спросить позже» — "
-            "это не альтернативы, а отказ от выбора. Если содержательных "
-            "альтернатив меньше двух — значит это не решение, а готовый "
-            "ответ; не выноси его в план.\n"
+            "от других вариант, с label, description (1-2 предложения), "
+            "обязательным confidence (число 0..1 — насколько уверена в "
+            "этом конкретном варианте по отдельности, безотносительно "
+            "других) и опционально pros/cons. Confidence-оценки могут "
+            "различаться: «явный фаворит» — например, 0.85 vs 0.4; «50/50» — "
+            "0.5 vs 0.5. ЗАПРЕЩЕНО плодить заглушки вида «принять "
+            "рекомендацию», «оставить как есть», «спросить позже» — это не "
+            "альтернативы, а отказ от выбора. Если содержательных альтернатив "
+            "меньше двух — значит это не решение, а готовый ответ; не выноси "
+            "его в план.\n"
             "- proposed_option_id: id того варианта, который ты считаешь лучшим "
             "по умолчанию. Должен совпадать с option_id одного из alternatives.\n"
             "- rationale: почему именно этот вариант — дефолт. Конкретно, "
@@ -467,6 +494,12 @@ class DecisionPlanningService:
             # ответ. См. requirements в системном промпте. Пропускаем — не
             # хотим заглушек в реестре («принять рекомендацию» и т.п.).
             raise ValueError("decision требует минимум 2 альтернативы")
+        # v3.5: confidence обязательная per-alt. Если LLM пропустила
+        # (несмотря на schema-required) — отбрасываем как неполный ответ;
+        # лучше пустить через free_text fallback, чем сохранять неполную
+        # запись с None-значениями.
+        if any(alt.confidence is None for alt in alternatives):
+            raise ValueError("decision: confidence обязателен у каждой альтернативы")
 
         proposed = str(raw.get("proposed_option_id") or "")
         # Если LLM указала несуществующий option_id — fallback на первую

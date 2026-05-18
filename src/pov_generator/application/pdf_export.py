@@ -71,6 +71,108 @@ _TABLE_CELL_CHROME_PT = 13.0
 _PORTRAIT_USE_THRESHOLD = 0.95
 
 
+def render_decisions_pdf(
+    *,
+    decisions: list[dict],
+    project_name: str,
+    mode: str,
+) -> bytes:
+    """Сгенерировать PDF реестра решений проекта (v3.5).
+
+    Решения отдаются в виде одной широкой таблицы со столбцами:
+    Уровень · Статус · Заголовок · Выбрано · Уверенность · Альтернативы · Источник.
+    Реализация делегирует в `render_artifact_pdf` — markdown с большой
+    таблицей попадёт через тот же auto-width + landscape pipeline, что и
+    обычные артефакты. Никаких отдельных HTML-шаблонов не плодим.
+
+    Args:
+        decisions: список DecisionItemView в виде dict (то, что отдаёт API).
+        project_name: имя проекта для заголовка PDF.
+        mode: текущий участия-режим (`autopilot`/`balanced`/...).
+
+    Returns:
+        PDF-документ как bytes.
+    """
+    _LEVEL_RU = {"business": "Бизнес", "architecture": "Архитектура", "detail": "Детали"}
+    _STATUS_RU = {
+        "proposed": "Ожидает ответа",
+        "accepted_default": "Принят дефолт",
+        "user_overridden": "Изменено вами",
+        "deferred": "Отложено",
+        "locked_in": "Зафиксировано",
+        "superseded": "Устарело",
+    }
+    _SOURCE_RU = {
+        "pre_flight": "pre-flight",
+        "emergent": "emergent",
+        "reactive_validation": "validation",
+        "user_manual": "manual",
+    }
+
+    def _cell(text: str) -> str:
+        """Экранируем «pipe» и нормализуем переносы для markdown-таблицы."""
+        if text is None:
+            return "—"
+        return str(text).replace("|", "\\|").replace("\n", " ")
+
+    lines: list[str] = []
+    lines.append(f"# Реестр решений: {project_name}")
+    lines.append("")
+    lines.append(f"Режим участия: **{mode}** · Всего решений: **{len(decisions)}**")
+    lines.append("")
+    if not decisions:
+        lines.append("_В реестре пока нет решений._")
+        return render_artifact_pdf(
+            markdown_content="\n".join(lines),
+            title=f"Реестр решений — {project_name}",
+        )
+
+    lines.append("| Уровень | Статус | Решение | Выбрано | Уверенность | Альтернативы | Источник |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for d in decisions:
+        level = _LEVEL_RU.get(str(d.get("level", "")), str(d.get("level", "—")))
+        status = _STATUS_RU.get(str(d.get("status", "")), str(d.get("status", "—")))
+        title = str(d.get("title") or "").strip() or "—"
+        chosen_label = str(d.get("chosen_option_label") or "—")
+        if d.get("user_free_text_answer"):
+            chosen_label = f"«{d['user_free_text_answer']}»"
+        # confidence: предпочитаем chosen-alt's confidence, fallback на overall
+        chosen_id = d.get("chosen_option_id")
+        chosen_alt_conf = None
+        alt_summaries: list[str] = []
+        for alt in d.get("alternatives", []) or []:
+            alt_conf = alt.get("confidence")
+            tag = f"{alt.get('label', '')}"
+            if alt_conf is not None:
+                tag += f" ({round(float(alt_conf) * 100)}%)"
+            if alt.get("option_id") == chosen_id:
+                chosen_alt_conf = alt_conf
+            else:
+                alt_summaries.append(tag)
+        conf_value = chosen_alt_conf if chosen_alt_conf is not None else d.get("confidence")
+        try:
+            conf_pct = f"{round(float(conf_value) * 100)}%"
+        except (TypeError, ValueError):
+            conf_pct = "—"
+        if d.get("is_low_confidence"):
+            conf_pct += " ⚠"
+        alts_text = "; ".join(alt_summaries) if alt_summaries else "—"
+        source = _SOURCE_RU.get(str(d.get("source", "")), str(d.get("source", "—")))
+        lines.append(
+            "| "
+            + " | ".join(
+                _cell(x)
+                for x in (level, status, title, chosen_label, conf_pct, alts_text, source)
+            )
+            + " |"
+        )
+
+    return render_artifact_pdf(
+        markdown_content="\n".join(lines),
+        title=f"Реестр решений — {project_name}",
+    )
+
+
 def render_artifact_pdf(
     *,
     markdown_content: str,

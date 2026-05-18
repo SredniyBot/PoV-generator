@@ -1430,6 +1430,85 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   );
 }
 
+/**
+ * v3.5 — расходы токенов по стадиям сборки одного артефакта.
+ *
+ * Показываем компактную таблицу: стадия | input | output | cache-read | total.
+ * Если разбивки нет (артефакт сделан до v3.5, либо stub-провайдер) — не
+ * рендерим вовсе. Внизу — итог по всем стадиям с подсветкой «дорого/средне/дёшево»
+ * для быстрого поиска прожор.
+ */
+function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types").TokenUsageStage> }) {
+  const stages = Object.entries(usage).filter(
+    ([, v]) => (v?.total_tokens ?? 0) > 0 || (v?.input_tokens ?? 0) > 0 || (v?.output_tokens ?? 0) > 0,
+  );
+  if (stages.length === 0) {
+    return null;
+  }
+  const stageLabel = (k: string): string => {
+    if (k === "pre_flight_planning") return "Pre-flight планирование";
+    if (k === "primary_generation") return "Основная сборка";
+    if (k.startsWith("methodology_stage:")) return `Стадия методологии · ${k.slice("methodology_stage:".length)}`;
+    return k;
+  };
+  const totalInput = stages.reduce((s, [, v]) => s + (v.input_tokens || 0), 0);
+  const totalOutput = stages.reduce((s, [, v]) => s + (v.output_tokens || 0), 0);
+  const totalCacheRead = stages.reduce((s, [, v]) => s + (v.cache_read_tokens || 0), 0);
+  const grandTotal = totalInput + totalOutput;
+  const fmt = (n: number) => n.toLocaleString("ru-RU");
+  return (
+    <div className="artifact-tokens">
+      <div className="artifact-tokens__head">
+        <strong>Токены</strong>
+        <span className="artifact-tokens__total">всего {fmt(grandTotal)}</span>
+      </div>
+      <table className="artifact-tokens__table">
+        <thead>
+          <tr>
+            <th>Стадия</th>
+            <th>Input</th>
+            <th>Output</th>
+            <th>Cache-read</th>
+            <th>Всего</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map(([key, val]) => {
+            const stageTotal = (val.input_tokens || 0) + (val.output_tokens || 0);
+            const share = grandTotal > 0 ? stageTotal / grandTotal : 0;
+            const heavy = share > 0.5;
+            return (
+              <tr key={key} className={heavy ? "artifact-tokens__row--heavy" : undefined}>
+                <td>{stageLabel(key)}</td>
+                <td>{fmt(val.input_tokens || 0)}</td>
+                <td>{fmt(val.output_tokens || 0)}</td>
+                <td>{fmt(val.cache_read_tokens || 0)}</td>
+                <td>
+                  <strong>{fmt(stageTotal)}</strong>
+                  {grandTotal > 0 ? (
+                    <span className="artifact-tokens__share"> · {Math.round(share * 100)}%</span>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Итого</td>
+            <td>{fmt(totalInput)}</td>
+            <td>{fmt(totalOutput)}</td>
+            <td>{fmt(totalCacheRead)}</td>
+            <td>
+              <strong>{fmt(grandTotal)}</strong>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -1595,6 +1674,7 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             </div>
           ) : null}
         </div>
+        <ArtifactTokenUsage usage={detail.token_usage} />
       </details>
       {/* Блок «Развернуть provenance-ссылки» удалён: эти ссылки уже доступны
           в Provenance-модалке (segmented кнопка), а на самой страничке

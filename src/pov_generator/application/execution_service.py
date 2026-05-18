@@ -37,6 +37,39 @@ class ExecutionBundle:
     traces: tuple[ExecutionTrace, ...]
 
 
+# =============================================================================
+# v3.5 — token usage hotspots (см. ArtifactMetadata.token_usage в UI)
+# =============================================================================
+#
+# Аудит, проведённый параллельно с включением token tracking. Главные
+# места «утечки» токенов одного артефакта:
+#
+# 1. **Системный промпт** (см. ~941–1090 ниже в этом файле): блоки
+#    <role>/<writing_principles>/<grounding_rule>/<source_hierarchy>/<style_bans>
+#    отправляются ЦЕЛИКОМ на каждый LLM-вызов (single_call ИЛИ N+1 в
+#    per_stage_cot). Это 4–5 K tokens × 8–10 вызовов на проект.
+#    Оптимизация: prompt caching (Anthropic) либо вынос статики во внешний
+#    cached preamble. Эффект: -8…10% от total per project.
+#
+# 2. **Контекст артефакта** дублируется между pre-flight planning и
+#    основной генерацией (в per_stage_cot — ещё × N стадий, см. ниже).
+#    Большой `context.max_tokens` в task-шаблонах (`requirements_spec_generation`
+#    держит 64 K) умножает стоимость. Оптимизация: понизить max_tokens
+#    в шаблонах под реалистичные размеры, либо кэшировать `base_user_prompt`.
+#    Эффект: -15…20%.
+#
+# 3. **Per-stage CoT N+1** (см. `_execute_per_stage_cot`): для методологии
+#    `lean_jtbd` (4 стадии) фактически 5 LLM-вызовов на ОДИН артефакт.
+#    Каждая стадия повторно отправляет system + user-context + previous_outputs
+#    (последний растёт линейно). Альтернатива: `single_call` (один вызов на
+#    primary+reasoning) — почти всегда хватает на standard-задачах.
+#    Эффект: -5…8%, переключается per методологии (см. stage_execution_mode).
+#
+# Все три можно увидеть на конкретных артефактах через ArtifactDetailPanel →
+# «Подробные параметры артефакта» → раздел «Токены» (новая таблица).
+# =============================================================================
+
+
 class ExecutionService:
     def __init__(
         self,
@@ -163,6 +196,10 @@ class ExecutionService:
             and (active_provider != "stub" or force_pre_flight)
         )
         locked_in_decisions: tuple[Decision, ...] = ()
+        # v3.5: token usage по стадиям сборки артефакта; pre-flight заполнит
+        # ключ pre_flight_planning, основная генерация — primary_generation и
+        # (для per_stage_cot) methodology_stage:<id>.
+        artifact_token_usage: dict[str, dict[str, int]] = {}
         if pre_flight_eligible:
             paused_result = self._run_pre_flight_stage(
                 workspace=workspace,
@@ -172,6 +209,7 @@ class ExecutionService:
                 template=template,
                 user_prompt=user_prompt,
                 execution_run_id_hint=None,  # будет создан ниже при успехе
+                token_usage_out=artifact_token_usage,
             )
             if paused_result is not None:
                 # Workflow приостанавливается; return до основной генерации.
@@ -227,7 +265,7 @@ class ExecutionService:
                 active_methodology is not None
                 and active_methodology.stage_execution_mode == "per_stage_cot"
             ):
-                payload, live_reasoning = self._execute_per_stage_cot(
+                payload, live_reasoning, stage_token_usage = self._execute_per_stage_cot(
                     llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
@@ -236,7 +274,7 @@ class ExecutionService:
                     primary_schema=primary_schema,
                 )
             else:
-                payload, live_reasoning = self._execute_single_call(
+                payload, live_reasoning, stage_token_usage = self._execute_single_call(
                     llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
@@ -246,6 +284,13 @@ class ExecutionService:
                 )
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
+        # v3.5: stage_token_usage накапливается только для LLM-провайдеров;
+        # для stub/structural-merge оставляем пустой dict, чтобы код ниже
+        # не делал branchy-merge.
+        if active_provider not in ("openrouter", "claude_sdk", "claude_subscription"):
+            stage_token_usage = {}
+        # Сливаем primary/stage-токены в общий dict артефакта
+        artifact_token_usage.update(stage_token_usage)
 
         # v3.4: defensive strip — LLM по инерции иногда возвращает
         # blocking_questions / open_questions_for_user в payload, хотя
@@ -340,6 +385,8 @@ class ExecutionService:
                 # часто возвращает там, а task-промпт это всё ещё допускает),
                 # клампим в допустимый диапазон [0, 1].
                 overall_confidence=_extract_overall_confidence(payload),
+                # v3.5: разбивка токенов по стадиям сборки артефакта.
+                token_usage=dict(artifact_token_usage),
             ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
@@ -451,6 +498,7 @@ class ExecutionService:
         template,
         user_prompt: str,
         execution_run_id_hint: str | None,
+        token_usage_out: dict[str, dict[str, int]] | None = None,
     ) -> ExecutionBundle | None:
         """Запустить (или подхватить) pre-flight для задачи.
 
@@ -461,6 +509,10 @@ class ExecutionService:
 
         Идемпотентен: повторный вызов на той же задаче с finalized сессией
         не создаёт новых решений — просто возвращает None.
+
+        v3.5: если передан ``token_usage_out`` — заполняется ключом
+        ``pre_flight_planning`` (input/output/total tokens). Используется
+        для записи в ArtifactMetadata.token_usage.
         """
         assert self._checkpoint is not None
         assert self._decision_planning is not None
@@ -537,6 +589,16 @@ class ExecutionService:
             # Пробрасываем — пользователь увидит сообщение, поправит или
             # сообщит. Без этого мы повторим багу «всё молча работает».
             raise
+
+        # v3.5: фиксируем pre-flight usage в callback-dict, если передан
+        if token_usage_out is not None and planning.token_usage:
+            token_usage_out["pre_flight_planning"] = {
+                "input_tokens": int(planning.token_usage.get("input_tokens", 0) or 0),
+                "output_tokens": int(planning.token_usage.get("output_tokens", 0) or 0),
+                "cache_read_tokens": int(planning.token_usage.get("cache_read_tokens", 0) or 0),
+                "cache_write_tokens": int(planning.token_usage.get("cache_write_tokens", 0) or 0),
+                "total_tokens": int(planning.token_usage.get("total_tokens", 0) or 0),
+            }
 
         result = self._checkpoint.process_planned_decisions(
             workspace,
@@ -721,6 +783,24 @@ class ExecutionService:
 
     # ---- LLM execution dispatch ------------------------------------------
 
+    @staticmethod
+    def _snapshot_usage(llm: LLMProvider) -> dict[str, int]:
+        """v3.5: снять usage от провайдера в плоский dict для metadata.
+
+        Дублирует LLMUsage.to_dict, но без provider/model (их UI и так
+        видит из артефактных полей). При отсутствии данных — пустой dict.
+        """
+        usage = getattr(llm, "last_usage", None)
+        if usage is None:
+            return {}
+        return {
+            "input_tokens": int(usage.input_tokens),
+            "output_tokens": int(usage.output_tokens),
+            "cache_read_tokens": int(usage.cache_read_tokens),
+            "cache_write_tokens": int(usage.cache_write_tokens),
+            "total_tokens": int(usage.total_tokens),
+        }
+
     def _execute_single_call(
         self,
         *,
@@ -730,10 +810,15 @@ class ExecutionService:
         methodology: MethodologyPackSpec | None,
         complexity: str | None,
         primary_schema: dict,
-    ) -> tuple[dict, dict | None]:
+    ) -> tuple[dict, dict | None, dict[str, dict[str, int]]]:
         """`single_call` mode (default): один LLM-вызов, объединённая схема
         `primary + reasoning` (если есть активная методология) либо просто
-        `primary` (если методология не наложена)."""
+        `primary` (если методология не наложена).
+
+        v3.5: третий элемент кортежа — dict с разбивкой токенов:
+        `{"primary_generation": {input,output,...}}` (одна стадия здесь).
+        """
+        token_usage: dict[str, dict[str, int]] = {}
         if methodology is not None:
             methodology_schema = self._build_methodology_schema(methodology, complexity)
             combined_schema = {
@@ -750,11 +835,13 @@ class ExecutionService:
             full_payload = llm.chat_json(
                 system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
             )
-            return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"))
+            token_usage["primary_generation"] = self._snapshot_usage(llm)
+            return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"), token_usage)
         full_payload = llm.chat_json(
             system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
         )
-        return (full_payload, None)
+        token_usage["primary_generation"] = self._snapshot_usage(llm)
+        return (full_payload, None, token_usage)
 
     def _execute_per_stage_cot(
         self,
@@ -765,7 +852,7 @@ class ExecutionService:
         methodology: MethodologyPackSpec,
         complexity: str | None,
         primary_schema: dict,
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict, dict, dict[str, dict[str, int]]]:
         """`per_stage_cot` mode (W3.1, vision «После MVP» точка #1): отдельный
         LLM-вызов на каждую активную стадию методологии с накопительным
         контекстом, плюс финальный вызов на primary с собранным reasoning.
@@ -777,6 +864,7 @@ class ExecutionService:
         стадиями (например per-domain reasoning packs)."""
         active_stages = methodology.stages_for_complexity(complexity)
         stage_outputs: dict[str, dict] = {}
+        token_usage: dict[str, dict[str, int]] = {}
 
         for stage in active_stages:
             stage_schema = self._build_single_stage_schema(stage)
@@ -790,6 +878,7 @@ class ExecutionService:
                 system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
             )
             stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
+            token_usage[f"methodology_stage:{stage.identifier}"] = self._snapshot_usage(llm)
 
         # Финальный вызов: primary artifact с reasoning как структурированный контекст.
         primary_system = (
@@ -805,7 +894,8 @@ class ExecutionService:
         primary_payload = llm.chat_json(
             system_prompt=primary_system, user_prompt=primary_user, schema=primary_schema,
         )
-        return (primary_payload, stage_outputs)
+        token_usage["primary_generation"] = self._snapshot_usage(llm)
+        return (primary_payload, stage_outputs, token_usage)
 
     def _build_single_stage_schema(self, stage) -> dict:
         """JSON-schema для одной стадии — только её produces-поля."""

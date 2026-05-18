@@ -97,10 +97,16 @@ def _llm_options_to_decision_alternatives(
         if tradeoffs:
             description_parts.append(f"Компромисс: {tradeoffs}")
         description = "\n\n".join(description_parts)
+        # v3.5: confidence per-alt — обязательное поле. Если LLM не дала
+        # явное значение, fallback на 0.5 (нейтрально-неопределённо).
+        # Это ровно та полуточка, на которой Decision.is_low_confidence
+        # засветит индикатор «система не уверена», — что и есть честный
+        # сигнал, когда сама LLM воздержалась от оценки.
         confidence_raw = item.get("confidence")
-        confidence: float | None = None
         if isinstance(confidence_raw, (int, float)) and not isinstance(confidence_raw, bool):
-            confidence = max(0.0, min(1.0, float(confidence_raw)))
+            confidence: float = max(0.0, min(1.0, float(confidence_raw)))
+        else:
+            confidence = 0.5
         out.append(
             DecisionAlternative(
                 option_id=f"opt_{idx}",

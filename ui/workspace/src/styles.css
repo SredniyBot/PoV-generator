@@ -3563,6 +3563,58 @@ code {
   font-size: 0.85rem;
 }
 
+/* v3.5: token usage table inside expanded artifact meta */
+.artifact-tokens {
+  margin-top: 0.8rem;
+  padding: 0.6rem 0.4rem 0.2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.artifact-tokens__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+}
+.artifact-tokens__total {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.artifact-tokens__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.artifact-tokens__table th,
+.artifact-tokens__table td {
+  padding: 0.25rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.artifact-tokens__table th:first-child,
+.artifact-tokens__table td:first-child {
+  text-align: left;
+}
+.artifact-tokens__table th {
+  color: var(--text-secondary, #9aa4b2);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.artifact-tokens__table tfoot td {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: none;
+  color: var(--text-primary, #e8ecf3);
+}
+.artifact-tokens__row--heavy {
+  background: rgba(224, 193, 121, 0.08);
+}
+.artifact-tokens__share {
+  color: var(--text-secondary, #9aa4b2);
+}
+
 .artifact-detail__provenance-collapsible summary {
   cursor: pointer;
   font-weight: 500;

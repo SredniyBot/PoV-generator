@@ -444,6 +444,7 @@ class WorkspaceQueryService:
             parent_artifact_id=artifact.relations.parent_artifact_id,
             is_superseded=artifact.is_superseded,
             overall_confidence=artifact.metadata.overall_confidence,
+            token_usage={k: dict(v) for k, v in artifact.metadata.token_usage.items()},
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:

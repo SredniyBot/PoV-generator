@@ -17,7 +17,7 @@
 import { useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, FileText, Lock } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
 import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
@@ -300,6 +300,17 @@ function DecisionCard({
                           {isProposed && !isMulti ? (
                             <span className="decision-card__option-hint">(по умолчанию)</span>
                           ) : null}
+                          {alt.confidence !== null && alt.confidence !== undefined ? (
+                            <span
+                              className={cx(
+                                "decision-card__option-confidence",
+                                alt.confidence < 0.5 && "decision-card__option-confidence--low",
+                              )}
+                              title="Уверенность системы в этом варианте"
+                            >
+                              {Math.round(alt.confidence * 100)}%
+                            </span>
+                          ) : null}
                         </span>
                         {alt.description ? (
                           <span className="decision-card__option-desc">{alt.description}</span>
@@ -321,6 +332,17 @@ function DecisionCard({
                 <span className="decision-card__chosen-value">
                   {chosenAlt ? chosenAlt.label : decision.chosen_option_label || (decision.user_free_text_answer ? "Свой ответ" : "—")}
                 </span>
+                {chosenAlt && chosenAlt.confidence !== null && chosenAlt.confidence !== undefined ? (
+                  <span
+                    className={cx(
+                      "decision-card__option-confidence",
+                      chosenAlt.confidence < 0.5 && "decision-card__option-confidence--low",
+                    )}
+                    title="Уверенность системы в выбранном варианте"
+                  >
+                    {Math.round(chosenAlt.confidence * 100)}%
+                  </span>
+                ) : null}
               </div>
               {chosenAlt?.description ? (
                 <p className="decision-card__chosen-desc">{chosenAlt.description}</p>
@@ -446,7 +468,20 @@ function DecisionCard({
                       .filter((a) => a.option_id !== decision.chosen_option_id)
                       .map((alt) => (
                         <li key={alt.option_id}>
-                          <span className="decision-card__alt-title">{alt.label}</span>
+                          <span className="decision-card__alt-title">
+                            {alt.label}
+                            {alt.confidence !== null && alt.confidence !== undefined ? (
+                              <span
+                                className={cx(
+                                  "decision-card__option-confidence",
+                                  alt.confidence < 0.5 && "decision-card__option-confidence--low",
+                                )}
+                                title="Уверенность системы в этом варианте"
+                              >
+                                {Math.round(alt.confidence * 100)}%
+                              </span>
+                            ) : null}
+                          </span>
                           {alt.description ? (
                             <span className="decision-card__alt-desc">{alt.description}</span>
                           ) : null}
@@ -515,7 +550,22 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
 
   return (
     <div className="decisions-page">
-      <SectionCard title="Реестр решений">
+      <SectionCard
+        title={
+          <div className="decisions-page__header">
+            <span>Реестр решений</span>
+            <a
+              className="decisions-page__download"
+              href={`/api/projects/${projectId}/decisions/export.pdf`}
+              target="_blank"
+              rel="noreferrer"
+              title="Скачать весь реестр в PDF"
+            >
+              <Download size={14} /> Скачать PDF
+            </a>
+          </div>
+        }
+      >
         <p className="decisions-page__intro">
           Все решения, которые система приняла или собирается принять при сборке артефактов проекта.
           В режиме <strong>{view.mode}</strong> вы видите как ваши участвующие решения, так и те, что

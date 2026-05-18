@@ -199,7 +199,7 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "title": "Bad — only one alternative",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-only", "label": "Only", "description": ""},
+                    {"option_id": "opt-only", "label": "Only", "description": "", "confidence": 0.7},
                 ],
                 "proposed_option_id": "opt-only",
                 "rationale": "",
@@ -211,8 +211,8 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "title": "Good — has two alternatives",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-1", "label": "One", "description": ""},
-                    {"option_id": "opt-2", "label": "Two", "description": ""},
+                    {"option_id": "opt-1", "label": "One", "description": "", "confidence": 0.7},
+                    {"option_id": "opt-2", "label": "Two", "description": "", "confidence": 0.4},
                 ],
                 "proposed_option_id": "opt-1",
                 "rationale": "",
@@ -244,8 +244,8 @@ def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
                 "title": "X",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "real-1", "label": "First", "description": ""},
-                    {"option_id": "real-2", "label": "Second", "description": ""},
+                    {"option_id": "real-1", "label": "First", "description": "", "confidence": 0.6},
+                    {"option_id": "real-2", "label": "Second", "description": "", "confidence": 0.4},
                 ],
                 "proposed_option_id": "ghost-option-id",
                 "rationale": "",
@@ -276,8 +276,8 @@ def test_invalid_level_falls_back_to_architecture() -> None:
                 "title": "X",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-1", "label": "L1", "description": ""},
-                    {"option_id": "opt-2", "label": "L2", "description": ""},
+                    {"option_id": "opt-1", "label": "L1", "description": "", "confidence": 0.7},
+                    {"option_id": "opt-2", "label": "L2", "description": "", "confidence": 0.5},
                 ],
                 "proposed_option_id": "opt-1",
                 "rationale": "",

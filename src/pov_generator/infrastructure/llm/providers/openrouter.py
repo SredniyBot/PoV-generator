@@ -8,6 +8,7 @@ from typing import Any
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
 from ...openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..protocol import LLMUsage
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _DEFAULT_MODEL = "openai/gpt-4.1-mini"
@@ -39,6 +40,8 @@ class OpenRouterProvider:
         self._client = OpenRouterClient(
             OpenRouterConfig(api_key=api_key, model=model, base_url=base_url)
         )
+        # v3.5: проксируем usage из вложенного клиента
+        self.last_usage: LLMUsage = LLMUsage.empty()
 
     # --- Builders ------------------------------------------------------------
 
@@ -80,8 +83,11 @@ class OpenRouterProvider:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> dict[str, Any]:
-        return self._client.chat_json(
+        result = self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
         )
+        # v3.5: пробрасываем usage наверх (UsageTracker читает provider.last_usage)
+        self.last_usage = self._client.last_usage
+        return result

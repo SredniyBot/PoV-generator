@@ -12,7 +12,7 @@ from ..application.context_service import ContextService
 from ..application.decision_planning_service import DecisionPlanningService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
-from ..application.pdf_export import render_artifact_pdf
+from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.provider_settings_service import (
@@ -447,6 +447,34 @@ def create_app(
         ArtifactDetailPage для отдельной вкладки «Решения».
         """
         return to_primitive(query_service.decisions_for_artifact(project_id, artifact_id))
+
+    @app.get("/api/projects/{project_id}/decisions/export.pdf")
+    def download_decisions_pdf(project_id: str) -> Response:
+        """v3.5 — выгрузка реестра решений в виде PDF-таблицы.
+
+        Берёт текущий реестр (без фильтров), сериализует в широкую таблицу
+        markdown и прогоняет через общий PDF-pipeline. Landscape применяется
+        автоматически если строки длинные (см. pdf_export._enhance_tables_in_html).
+        """
+        view = query_service.project_decisions(project_id)
+        shell = query_service.project_shell(project_id)
+        decisions_payload = to_primitive(view.items)
+        pdf_bytes = render_decisions_pdf(
+            decisions=decisions_payload,  # type: ignore[arg-type]
+            project_name=shell.name or project_id,
+            mode=view.mode,
+        )
+        filename = _safe_pdf_filename(
+            f"Реестр решений — {shell.name or project_id}", project_id
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": _content_disposition_header(filename),
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/projects/{project_id}/decisions/{decision_id}")
     def project_decision_detail(project_id: str, decision_id: str) -> Any:

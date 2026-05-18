@@ -313,6 +313,11 @@ class ArtifactDetailView:
     parent_artifact_id: str | None = None
     is_superseded: bool = False
     overall_confidence: float | None = None
+    # v3.5: разбивка токенов по стадиям сборки этого артефакта.
+    # Ключи стадий: pre_flight_planning, primary_generation,
+    # methodology_stage:<id>. Значения: {input_tokens, output_tokens,
+    # cache_read_tokens, cache_write_tokens, total_tokens}.
+    token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

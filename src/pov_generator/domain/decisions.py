@@ -267,6 +267,28 @@ class Decision:
         return None
 
     @property
+    def effective_confidence(self) -> float:
+        """v3.5: «фактическая» уверенность системы в выбранном дефолте.
+
+        Берётся МИНИМУМ из двух сигналов:
+        1) overall `Decision.confidence` — общая уверенность LLM в этой
+           развилке в целом (e.g. насколько чётко поставлен вопрос).
+        2) confidence у выбранной альтернативы — насколько LLM уверена
+           именно в той опции, которая поедет в артефакт.
+
+        Min — защитная семантика: если ХОТЯ БЫ один сигнал низкий, считаем
+        решение рискованным. Это соответствует поведению UI: пилл «система
+        не уверена» загорается, как только пользователю стоит присмотреться.
+        Для legacy-записей без per-alt confidence min сводится к overall.
+
+        Возвращает float в [0, 1].
+        """
+        alt = self.chosen_alternative
+        if alt is not None and alt.confidence is not None:
+            return float(min(self.confidence, alt.confidence))
+        return float(self.confidence)
+
+    @property
     def is_low_confidence(self) -> bool:
         """Маркер для подсветки рискованного в любом режиме.
 
@@ -277,8 +299,13 @@ class Decision:
         v3.4: пользователь может явно «верифицировать» рискованное решение
         (см. `user_verified`) — это снимает индикатор. Метка остаётся
         только пока в UI стоит «непросмотрено».
+
+        v3.5: учитывает per-alternative confidence через
+        `effective_confidence` (min из overall + chosen-alt confidence).
+        Это даёт более точную картину: даже если общая уверенность задачи
+        высокая, но LLM не уверена в выбранном варианте — флаг загорится.
         """
-        return self.confidence < 0.5 and not self.user_verified
+        return self.effective_confidence < 0.5 and not self.user_verified
 
     @property
     def was_user_modified(self) -> bool:
