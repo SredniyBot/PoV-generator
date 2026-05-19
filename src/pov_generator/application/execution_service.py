@@ -365,11 +365,37 @@ class ExecutionService:
         # ArtifactRecord — чтобы extraction-токены попали в metadata.
         # Сами Decision-записи привязываются к artifact_id после store_artifact
         # (как locked_in_decisions ниже).
+        #
+        # v3.8.4 — два важных уточнения:
+        # (а) Whitelist по тому же флагу `decision_identification_enabled`:
+        #     если задача семантически не порождает новых проектных
+        #     решений (request_fact_extraction, glossary_drafting,
+        #     requirements_spec_review и т.п.), то и extraction для неё
+        #     запускать нет смысла — это просто +1 LLM-вызов на ровном
+        #     месте, который в лучшем случае даёт дубли уже принятых
+        #     решений, в худшем — мета-шум про оформление документа.
+        # (б) Передаём в extraction markdown-рендер артефакта, а не сырой
+        #     JSON. Markdown — это уже компактное человекочитаемое
+        #     представление; для крупных артефактов это даёт −40-60%
+        #     размера extraction-промпта при той же содержательной
+        #     информации для LLM. Падение render_markdown (rare —
+        #     KeyError из-за неполного payload) → fallback на JSON-снимок.
         extracted_decisions: tuple[Decision, ...] = ()
-        if (
+        extraction_eligible = (
             self._decision_extraction is not None
             and active_provider in ("openrouter", "claude_sdk", "claude_subscription")
-        ):
+            and getattr(template, "decision_identification_enabled", True)
+        )
+        if extraction_eligible:
+            # Готовим markdown-выжимку. Если render_markdown упал на
+            # неполном payload — fallback на JSON (тот же путь, что в
+            # коде ниже, где markdown тоже падает в JSON-снимок).
+            try:
+                artifact_content_for_extraction = render_markdown(artifact_role, payload)
+            except (KeyError, TypeError):
+                artifact_content_for_extraction = json_dumps(payload)
+            if not artifact_content_for_extraction:
+                artifact_content_for_extraction = json_dumps(payload)
             try:
                 extraction_usage: dict[str, int] = {}
                 extracted_decisions = self._decision_extraction.extract_from_artifact(
@@ -377,7 +403,7 @@ class ExecutionService:
                     project_id=manifest.project_id,
                     artifact_id=artifact_id,
                     artifact_role=artifact_role,
-                    artifact_payload=payload,
+                    artifact_content=artifact_content_for_extraction,
                     task_id=task.task_id,
                     token_usage_out=extraction_usage,
                 )

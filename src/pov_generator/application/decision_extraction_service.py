@@ -42,7 +42,6 @@ Extraction видит **уже принятые** решения, но не мо
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -50,7 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from ..common.errors import ConflictError
-from ..common.serialization import json_dumps, utc_now_iso
+from ..common.serialization import utc_now_iso
 from ..domain.decisions import Decision, DecisionAlternative
 from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
 from ..infrastructure.llm import LLMProviderRegistry
@@ -222,23 +221,39 @@ class DecisionExtractionService:
         project_id: str,
         artifact_id: str,
         artifact_role: str,
-        artifact_payload: dict[str, Any],
+        artifact_content: str,
         task_id: str | None = None,
         provider: str | None = None,
         model: str | None = None,
         token_usage_out: dict[str, int] | None = None,
     ) -> tuple[Decision, ...]:
-        """Извлечь имплицитные проектные решения из payload артефакта.
+        """Извлечь имплицитные проектные решения из артефакта.
 
         Сохраняет в реестр и возвращает upserted Decision'ы. Не вызывает
         checkpoint (все идут как ``accepted_default``).
+
+        v3.8.4: принимает уже **отрендеренный текст** артефакта (обычно
+        markdown через :func:`render_markdown`), а не сырой JSON. Markdown —
+        это смысловое сжатое представление содержимого артефакта без
+        технического шума (имена полей, кавычки, escape-последовательности,
+        нулевые поля). Для крупных артефактов это даёт −40-60% размера
+        промпта в input-токенах при той же информации для LLM.
+
+        Универсальность: artifact-specific markdown-рендереры уже
+        существуют для всех ролей через
+        :func:`artifact_contracts.render_markdown`; никаких per-role
+        выжимок здесь городить не надо. Если вызывающий код не смог
+        отрендерить markdown (rare — KeyError из-за неполного payload),
+        он передаёт сюда сырой JSON-снимок — extraction всё равно
+        отработает, просто на более громоздком входе.
 
         Args:
             workspace: путь workspace проекта.
             project_id: id проекта.
             artifact_id: id артефакта (для привязки).
             artifact_role: роль артефакта (для контекста промпта).
-            artifact_payload: JSON-payload артефакта.
+            artifact_content: текстовое представление содержимого
+                артефакта (markdown / plain text / fallback JSON).
             task_id: задача, породившая артефакт (для source_task_id).
             provider/model: override (тесты).
             token_usage_out: если передан — заполняется usage'ом
@@ -256,7 +271,7 @@ class DecisionExtractionService:
 
         user_prompt = self._build_user_prompt(
             artifact_role=artifact_role,
-            artifact_payload=artifact_payload,
+            artifact_content=artifact_content,
             existing_titles=existing_titles,
         )
         schema = _build_extraction_schema()
@@ -327,7 +342,7 @@ class DecisionExtractionService:
         self,
         *,
         artifact_role: str,
-        artifact_payload: dict[str, Any],
+        artifact_content: str,
         existing_titles: tuple[str, ...],
     ) -> str:
         # Лимитируем 60 последних title'ов чтобы промпт не разрастался.
@@ -342,16 +357,12 @@ class DecisionExtractionService:
                 f"НЕ дублируй эти решения, даже если формулировка отличается.\n\n"
             )
 
-        # Payload в JSON-форме. Если артефакт большой — без обрезки;
-        # extraction-промпт всё равно небольшой, токены вытащим из usage.
-        payload_json = json.dumps(artifact_payload, ensure_ascii=False, indent=2)
-
         return (
             f"### Артефакт\n"
             f"**Роль:** {artifact_role}\n\n"
             f"{registry_block}"
-            f"### Содержимое артефакта (JSON)\n"
-            f"```json\n{payload_json}\n```\n\n"
+            f"### Содержимое артефакта\n"
+            f"{artifact_content}\n\n"
             f"### Запрос\n"
             f"Вытащи из артефакта **имплицитные проектные решения**, которых "
             f"ещё нет в реестре. От 0 до 3 — лучше 0, чем шум."
