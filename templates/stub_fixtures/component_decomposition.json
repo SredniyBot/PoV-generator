@@ -1,0 +1,41 @@
+{
+  "summary": "Декомпозиция по принципу разделения транспортного слоя, бизнес-логики и хранилища. Все внешние взаимодействия проходят через шлюз.",
+  "components": [
+    {
+      "name": "API Gateway",
+      "responsibilities": "Принимает входящие запросы, проверяет авторизацию, маршрутизирует на обработчики.",
+      "owns_data": ["Ничего не хранит дольше запроса"],
+      "dependencies": ["Auth Provider", "Request Processor"]
+    },
+    {
+      "name": "Request Processor",
+      "responsibilities": "Основная бизнес-логика обработки запроса — валидация, обогащение из справочников, сохранение результата.",
+      "owns_data": ["Истории запросов", "Промежуточные состояния"],
+      "dependencies": ["Reference Data Store", "Result Store", "Источник данных"]
+    },
+    {
+      "name": "Reference Data Store",
+      "responsibilities": "Кеш справочной информации из внешних источников; обновляется по расписанию.",
+      "owns_data": ["Снимки справочников"],
+      "dependencies": ["Источник данных"]
+    },
+    {
+      "name": "Result Store",
+      "responsibilities": "Постоянное хранилище результатов обработки.",
+      "owns_data": ["Финальные структурированные результаты"],
+      "dependencies": []
+    }
+  ],
+  "mermaid_component_diagram": "flowchart LR\n    Gateway[API Gateway]\n    Processor[Request Processor]\n    RefStore[(Reference Data Store)]\n    ResultStore[(Result Store)]\n    Auth[Auth Provider]\n    Source[(Источник данных)]\n    Target[(Целевая система-потребитель)]\n    Gateway --> Auth\n    Gateway --> Processor\n    Processor --> RefStore\n    Processor --> ResultStore\n    RefStore --> Source\n    Processor --> Target",
+  "cross_cutting_concerns": [
+    "Сквозное логирование запросов с trace-id",
+    "Авторизация на API Gateway через внешний провайдер",
+    "Мониторинг latency на уровне обработчика"
+  ],
+  "open_design_questions": [
+    "Синхронное или асинхронное взаимодействие с источником данных?",
+    "Где валидировать схему результата — в Processor или на стороне целевой системы?"
+  ],
+  "confidence": 0.74,
+  "blocking_questions": []
+}

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: architecture.system_context_definition
+version: 1.0.0
+title: Системный контекст
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

@@ -1,0 +1,24 @@
+kind: task_template
+id: architecture.prepare_architecture_doc
+version: 1.0.0
+title: Подготовить архитектурный документ
+type: composite
+status: active
+domain: architecture
+children:
+  - id: system_context_definition
+    task: architecture.system_context_definition@1.0.0
+  - id: component_decomposition
+    task: architecture.component_decomposition@1.0.0
+  - id: interaction_view
+    task: architecture.interaction_view@1.0.0
+  - id: design_synthesis
+    task: architecture.design_synthesis@1.0.0
+# Сознательно опущены:
+# - common.deployment_topology / common.project_risk_register — требуют
+#   артефактов ТЗ-потока (normalized_request, solution_option_inventory,
+#   constraint_inventory). В отдельном архитектурном workspace их нет.
+#   Если рядом запущен ТЗ-поток и артефакты этих ролей уже созданы —
+#   design_synthesis подмешает их через optional-контекст автоматически.
+# - slots — отложены. Доменные расширения (architecture.* domain packs)
+#   планируются на отдельный этап roadmap.

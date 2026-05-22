@@ -53,6 +53,9 @@ EXPECTED_STATIC_ROLES = {
     "security_compliance_constraints",
     "integration_operating_model",
     "ui_requirements_outline",
+    "system_context_definition",
+    "component_decomposition",
+    "interaction_view",
 }
 
 # Эти роли намеренно остались в Python — они compose'аются из входных
@@ -61,6 +64,7 @@ COMPOSE_ROLES_STILL_IN_PYTHON = {
     "requirements_spec",
     "review_report",
     "solution_tradeoff_matrix",
+    "design_document",
 }
 
 

@@ -45,7 +45,7 @@ def test_registry_validation_passes_for_task_graph_corpus() -> None:
     snapshot, report = registry_service.validate()
 
     assert report.is_valid
-    assert len(snapshot.objectives) == 1
+    assert len(snapshot.objectives) >= 1
     assert len(snapshot.templates) >= 21
     assert len(snapshot.artifact_contracts) >= 16
     assert len(snapshot.domain_packs) == 4
@@ -175,6 +175,23 @@ def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> Non
     active = state.process.active_methodology_pack_records
     assert "process.lean_jtbd@1.0.0" in active
     assert active["process.lean_jtbd@1.0.0"].source == "bootstrap"
+
+
+def test_architecture_objective_activates_descriptive_methodology(tmp_path: Path) -> None:
+    """Для objective семейства architecture.* дефолтная методология —
+    process.descriptive_decomposition, а не lean_jtbd."""
+    _, runtime, project_service, _ = build_services()
+    workspace = tmp_path / "arch"
+    project_service.init_project(
+        workspace=workspace,
+        name="Arch pilot",
+        objective_ref=ObjectRef.parse("architecture.system_design_pilot@1.0.0"),
+        request_text="Описать архитектуру сервиса.",
+    )
+    state = project_service.load_project_state(workspace)
+    active = state.process.active_methodology_pack_records
+    assert "process.descriptive_decomposition@1.0.0" in active
+    assert "process.lean_jtbd@1.0.0" not in active
 
 
 def test_set_methodology_keeps_active_pack(tmp_path: Path) -> None:

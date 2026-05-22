@@ -1,0 +1,8 @@
+kind: objective
+id: architecture.system_design
+version: 1.0.0
+title: Подготовить архитектурный документ из бизнес-запроса
+root: architecture.prepare_architecture_doc@1.0.0
+done_when:
+  artifacts:
+    - architecture.design_document@1.0.0

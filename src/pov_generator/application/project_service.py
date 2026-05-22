@@ -69,9 +69,17 @@ class ProjectService:
         objective_ref: ObjectRef,
         request_text: str,
         domain_packs: tuple[DomainPackSpec, ...] = (),
-        default_methodology_pack_ref: str | None = "process.lean_jtbd@1.0.0",
+        default_methodology_pack_ref: str | None = None,
     ) -> ProjectBootstrap:
         """Создать новый проект и записать его начальное состояние."""
+        if default_methodology_pack_ref is None:
+            # Дефолт методологии выбирается по семейству objective. Архитектурные
+            # потоки описательные — для них descriptive_decomposition; всё
+            # остальное (ТЗ и т.п.) — JTBD-decision.
+            if objective_ref.identifier.startswith("architecture."):
+                default_methodology_pack_ref = "process.descriptive_decomposition@1.0.0"
+            else:
+                default_methodology_pack_ref = "process.lean_jtbd@1.0.0"
         project_id = str(uuid.uuid4())
         created_at = utc_now_iso()
         manifest = ProjectManifest(

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: architecture.design_document
+version: 1.0.0
+title: Архитектурный документ
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

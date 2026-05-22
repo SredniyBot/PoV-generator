@@ -1,0 +1,102 @@
+kind: task_template
+id: architecture.design_synthesis
+version: 1.0.0
+title: Собрать архитектурный документ
+type: leaf
+status: active
+domain: architecture
+executor: llm
+# Финальный synthesis: descriptive-стадии не применимы — описание уже
+# сделано в upstream. minimal оставляем для совместимости с
+# методологическим wrapper'ом; реальная сборка идёт через compose.
+methodology: minimal
+# Synthetic merge: LLM (или stub-compose) интегрирует upstream-артефакты
+# (контекст, компоненты, взаимодействия, развёртывание, риски) в связный
+# документ. Strategy=synthetic фиксирует семантику в метаинформации.
+merge:
+  strategy: synthetic
+  conflict_policy: union
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.system_context_definition@1.0.0
+      - architecture.component_decomposition@1.0.0
+      - architecture.interaction_view@1.0.0
+    # Топология и риски — обогащают финальный документ, но не блокируют
+    # сборку (для совсем минимального пилота их можно пропустить).
+    optional:
+      - common.deployment_topology@1.0.0
+      - common.project_risk_register@1.0.0
+      - security.security_compliance_constraints@1.0.0
+      - integration.integration_operating_model@1.0.0
+produces:
+  artifact: architecture.design_document@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 48000
+planning:
+  priority: 100
+effects:
+  readiness:
+    set:
+      - dimension: architecture_synthesized
+        status: ready
+summary: |
+  Собери архитектурный документ по проектируемому решению. На вход —
+  упорядоченные артефакты: системный контекст, декомпозиция на компоненты,
+  потоки взаимодействия, опционально — топология развёртывания и реестр
+  рисков. Твоя задача — связать их в единый документ для архитектора и
+  технического заказчика.
+
+  Структура документа:
+
+  • TITLE — короткое имя системы (из system_context_definition.system_name).
+
+  • EXECUTIVE_SUMMARY — 2-4 предложения о том, что за система, как она
+    устроена в основных чертах и какие у неё ключевые риски / открытые
+    вопросы. Это абзац для CTO, который не хочет читать весь документ.
+
+  • SYSTEM_CONTEXT — раздел про границы системы и внешний мир. Включай
+    содержимое system_context_definition: акторы, внешние системы,
+    mermaid_context_diagram. Не дублируй структуру upstream'а — это и есть
+    раздел документа.
+
+  • COMPONENTS — раздел про внутреннее устройство. Включай содержимое
+    component_decomposition: компоненты с их ответственностями и
+    mermaid_component_diagram.
+
+  • INTERACTIONS — раздел про динамику. Включай содержимое interaction_view:
+    сценарии и mermaid_sequence_diagram.
+
+  • DEPLOYMENT (опционально) — таблица среды/зон/компонентов из
+    deployment_topology, если задача выполнялась.
+
+  • RISKS (опционально) — список ключевых рисков из project_risk_register,
+    с category / probability / impact / mitigation.
+
+  • NON_FUNCTIONAL_REQUIREMENTS (опционально) — нагрузка, надёжность,
+    наблюдаемость, безопасность — если есть из upstream-доменов.
+
+  • OPEN_QUESTIONS (опционально) — что ещё нужно решить до реализации.
+
+  Правила:
+
+  • НЕ ВЫДУМЫВАЙ upstream-секции. Если components_decomposition не
+    выполнен — раздел COMPONENTS опускается; не сочиняй компоненты «из
+    головы».
+
+  • СОХРАНЯЙ MERMAID. Диаграммы из upstream-артефактов переносятся
+    как есть, в виде fenced ```mermaid блока. Не пересобирай и не
+    «улучшай» их синтаксис.
+
+  • EXECUTIVE_SUMMARY — содержательно, а не мета. Не пиши «документ
+    описывает архитектуру»; пиши «система состоит из API Gateway,
+    Worker'а и Result Store, основной поток — синхронная подача с
+    асинхронной обработкой».
+
+  • ОТМЕЧАЙ ПРОПУСКИ. Если в upstream чего-то нет (например, не описаны
+    нефункциональные требования) — фиксируй в open_questions, не
+    заполняй заглушками.
+
+  confidence 0.75-0.9 при качественных upstream-артефактах.

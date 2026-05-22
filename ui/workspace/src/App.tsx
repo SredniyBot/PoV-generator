@@ -31,6 +31,28 @@ import {
   XCircle,
 } from "lucide-react";
 import { marked } from "marked";
+import mermaid from "mermaid";
+
+// Stage 6: рендеринг Mermaid-диаграмм внутри артефактных markdown'ов.
+// Инициализация один раз на модуль. `startOnLoad: false` — рендерим явно
+// через mermaid.run в useEffect ниже. Тема — dark, чтобы совпадать с
+// тёмной палитрой UI.
+mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+
+function preprocessMarkdownForMermaid(markdown: string): string {
+  // Заменяет fenced ```mermaid блоки на <div class="mermaid-host">… с
+  // HTML-экранированным телом. После marked.parse эти div'ы остаются как
+  // есть (raw HTML inline-блоки в Markdown сохраняются), и mermaid.run в
+  // useEffect превращает их в SVG-диаграммы.
+  const re = /```mermaid\s*\n([\s\S]*?)\n```/g;
+  return markdown.replace(re, (_match, code: string) => {
+    const escaped = code
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return `<div class="mermaid-host">${escaped}</div>`;
+  });
+}
 
 import { api } from "./api";
 import { DecisionLogPage } from "./DecisionLogPage";
@@ -3175,10 +3197,25 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
-  const html = useMemo(
-    () => (detail.markdown_content ? marked.parse(detail.markdown_content) : "<p>Markdown-представление отсутствует.</p>"),
+  const html = useMemo<string>(
+    () =>
+      detail.markdown_content
+        ? (marked.parse(preprocessMarkdownForMermaid(detail.markdown_content)) as string)
+        : "<p>Markdown-представление отсутствует.</p>",
     [detail.markdown_content],
   );
+  const articleRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (mode !== "doc") return;
+    const root = articleRef.current;
+    if (!root) return;
+    const nodes = Array.from(root.querySelectorAll(".mermaid-host")) as HTMLElement[];
+    if (nodes.length === 0) return;
+    // Безопасный вызов: невалидный mermaid-синтаксис не должен ронять UI.
+    mermaid.run({ nodes }).catch((err) => {
+      console.warn("Mermaid render failed:", err);
+    });
+  }, [html, mode]);
   const traceQuery = useQuery({
     queryKey: [projectId, "methodology-trace", detail.created_by_task_id],
     queryFn: () => api.getMethodologyTrace(projectId, detail.created_by_task_id!),
@@ -3335,7 +3372,11 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         )}
       </Modal>
       {mode === "doc" ? (
-        <article className="document-surface" dangerouslySetInnerHTML={{ __html: html }} />
+        <article
+          ref={articleRef}
+          className="document-surface"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       ) : null}
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />

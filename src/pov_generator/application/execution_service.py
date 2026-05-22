@@ -1095,6 +1095,74 @@ class ExecutionService:
                     else ["Исправить замечания и повторно провести ревью."]
                 ),
             }
+        if artifact_role == "design_document":
+            system_context = self._find_payload(
+                parsed_inputs, "Описать системный контекст", "Системный контекст"
+            )
+            components = self._find_payload(
+                parsed_inputs, "Выделить компоненты системы", "Декомпозиция на компоненты"
+            )
+            interactions = self._find_payload(
+                parsed_inputs, "Описать потоки взаимодействия", "Потоки взаимодействия"
+            )
+            deployment = self._find_payload(
+                parsed_inputs, "Описать топологию развёртывания", "Топология развёртывания"
+            )
+            risk_register = self._find_payload(
+                parsed_inputs, "Собрать реестр рисков проекта", "Реестр рисков проекта"
+            )
+
+            title = (
+                system_context.get("system_name")
+                if isinstance(system_context, dict) and system_context.get("system_name")
+                else "Архитектурный документ"
+            )
+            summary_parts: list[str] = []
+            if isinstance(system_context, dict) and system_context.get("system_purpose"):
+                summary_parts.append(system_context["system_purpose"])
+            if isinstance(components, dict) and components.get("components"):
+                summary_parts.append(
+                    f"Декомпозирована на {len(components['components'])} ключевых компонента(ов)."
+                )
+            if isinstance(interactions, dict) and interactions.get("flows"):
+                summary_parts.append(
+                    f"Описано {len(interactions['flows'])} сценариев взаимодействия."
+                )
+            if not summary_parts:
+                snippet = (business_request or "").strip()[:200]
+                summary_parts.append(
+                    f"Архитектурный документ по запросу: {snippet}." if snippet else "Архитектурный документ."
+                )
+
+            result: dict[str, object] = {
+                "title": title,
+                "executive_summary": " ".join(summary_parts),
+                "confidence": 0.78,
+                "blocking_questions": [],
+            }
+            if isinstance(system_context, dict) and system_context:
+                # Очищаем blocking_questions/confidence — они метаданные
+                # upstream-артефакта, не наши.
+                result["system_context"] = {
+                    k: v for k, v in system_context.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(components, dict) and components:
+                result["components"] = {
+                    k: v for k, v in components.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(interactions, dict) and interactions:
+                result["interactions"] = {
+                    k: v for k, v in interactions.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(deployment, dict) and deployment:
+                result["deployment"] = deployment
+            if isinstance(risk_register, dict) and risk_register.get("risks"):
+                result["risks"] = risk_register["risks"]
+            return result
+
         raise ConflictError(f"Stub не умеет генерировать артефакт роли '{artifact_role}'.")
 
 

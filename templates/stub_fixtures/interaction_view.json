@@ -1,0 +1,51 @@
+{
+  "summary": "Базовая операция системы — синхронная подача запроса с быстрым подтверждением и асинхронной обработкой. Обновление справочников — отдельный батч-флоу по расписанию.",
+  "flows": [
+    {
+      "name": "Подача нового запроса",
+      "trigger": "Пользователь отправляет POST /request с телом запроса",
+      "participants": ["Бизнес-инициатор", "API Gateway", "Auth Provider", "Request Processor", "Result Store"],
+      "steps": [
+        "API Gateway валидирует JSON-схему запроса",
+        "API Gateway вызывает Auth Provider для проверки токена",
+        "API Gateway передаёт запрос в Request Processor",
+        "Request Processor обогащает запрос из Reference Data Store",
+        "Request Processor сохраняет результат в Result Store",
+        "API Gateway возвращает 202 Accepted с идентификатором запроса"
+      ]
+    },
+    {
+      "name": "Обновление справочников",
+      "trigger": "Расписание (раз в сутки в 03:00)",
+      "participants": ["Reference Data Store", "Источник данных"],
+      "steps": [
+        "Reference Data Store запрашивает свежий слепок справочников из Источника данных",
+        "Полученные данные валидируются и сохраняются как новая версия",
+        "Старая версия помечается как deprecated, но остаётся доступной 24 часа"
+      ]
+    }
+  ],
+  "mermaid_sequence_diagram": "sequenceDiagram\n    participant U as Бизнес-инициатор\n    participant G as API Gateway\n    participant A as Auth Provider\n    participant P as Request Processor\n    participant R as Result Store\n    U->>G: POST /request\n    G->>A: validate token\n    A-->>G: ok\n    G->>P: forward request\n    P->>R: save result\n    R-->>P: ack\n    P-->>G: 202\n    G-->>U: 202 Accepted",
+  "diagram_kind": "sequence",
+  "data_contracts": [
+    {
+      "from": "Бизнес-инициатор",
+      "to": "API Gateway",
+      "payload": "Запрос в JSON со структурой согласно ТЗ",
+      "format": "JSON"
+    },
+    {
+      "from": "Request Processor",
+      "to": "Result Store",
+      "payload": "Финальный структурированный результат",
+      "format": "JSON"
+    }
+  ],
+  "failure_modes": [
+    "Auth Provider недоступен — API Gateway возвращает 503 с retry-after",
+    "Reference Data Store не содержит свежей версии — Processor использует deprecated версию и помечает результат как fallback",
+    "Result Store недоступен — запрос ставится в очередь повторов с экспоненциальной задержкой"
+  ],
+  "confidence": 0.72,
+  "blocking_questions": []
+}
