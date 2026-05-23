@@ -310,3 +310,49 @@ def test_render_system_context_definition_normalizes_jammed_diagram() -> None:
     markdown = render_markdown("system_context_definition", payload)
     assert "```mermaid\nflowchart LR\nEmployee[Сотрудник]" in markdown
     assert "Copilot[Суфлёр]\nEmployee --> Copilot\n```" in markdown
+
+
+def test_normalize_mermaid_quotes_label_with_ampersand() -> None:
+    """Регрессия: `&` внутри `[...]` ломает mermaid.js v11."""
+    raw = (
+        "flowchart TD\n"
+        "    ASR[ASR & Diarization Module]\n"
+        "    Log[Log & Metrics Collector]\n"
+        "    ASR --> Log"
+    )
+    out = _normalize_mermaid(raw)
+    assert 'ASR["ASR & Diarization Module"]' in out
+    assert 'Log["Log & Metrics Collector"]' in out
+    # Edge stays untouched.
+    assert "ASR --> Log" in out
+
+
+def test_normalize_mermaid_skips_cylinder_with_ampersand() -> None:
+    raw = "flowchart LR\n    Store[(База & данные)]\n    A --> Store"
+    out = _normalize_mermaid(raw)
+    # Cylinder content starts with `(`, must stay as-is to keep the shape.
+    assert "Store[(База & данные)]" in out
+
+
+def test_normalize_mermaid_skips_already_quoted_label() -> None:
+    raw = 'flowchart TD\n    A["already & quoted"] --> B'
+    out = _normalize_mermaid(raw)
+    # Already quoted — no double-wrap.
+    assert 'A["already & quoted"]' in out
+    assert 'A[""already & quoted""]' not in out
+
+
+def test_normalize_mermaid_leaves_plain_labels_alone() -> None:
+    raw = "flowchart LR\n    A[Plain text] --> B[Another label]"
+    assert _normalize_mermaid(raw) == raw
+
+
+def test_normalize_mermaid_handles_single_line_with_ampersand() -> None:
+    """Двойной фикс: одна строка + & внутри label."""
+    raw = "flowchart TD A[ASR & Module] B[Log] A --> B"
+    out = _normalize_mermaid(raw)
+    lines = out.splitlines()
+    assert lines[0] == "flowchart TD"
+    assert 'A["ASR & Module"]' in lines
+    assert "B[Log]" in lines
+    assert "A --> B" in lines

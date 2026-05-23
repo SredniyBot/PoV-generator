@@ -25,33 +25,59 @@ _MERMAID_TIGHT_ARROW_RE = re.compile(
 _MERMAID_LOOSE_ARROW_RE = re.compile(
     r"\s+(\w+)\s+(-->|---|==>|-\.->|<-->|<--|==)"
 )
+_MERMAID_LABEL_RE = re.compile(r"(?<!\[)\[([^\]\n]+)\](?!\])")
+
+
+def _quote_mermaid_special_label(match: re.Match) -> str:
+    """Wrap rectangle-label content in double quotes if it contains chars
+    Mermaid v11 mis-parses (``&``, ``<``, ``>``). Skips shape syntaxes
+    (cylinder ``[(...)]``, parallelogram ``[/.../]``, trapezoid
+    ``[\\...\\]``) and already-quoted labels.
+    """
+    content = match.group(1)
+    if not any(c in content for c in "&<>"):
+        return match.group(0)
+    if content[:1] in "(/\\":
+        return match.group(0)
+    stripped = content.strip()
+    if stripped.startswith('"') and stripped.endswith('"'):
+        return match.group(0)
+    escaped = content.replace('"', "#quot;")
+    return f'["{escaped}"]'
 
 
 def _normalize_mermaid(text: Any) -> Any:
-    """Insert newlines into single-line Mermaid diagrams.
+    """Make LLM-produced Mermaid diagrams parseable by mermaid.js.
 
-    Some LLMs emit long string fields without ``\\n``, jamming the whole
-    diagram onto one line; mermaid.js then fails to parse it. If the value
-    is a string with no newlines and starts with a recognized Mermaid
-    directive, split at common statement boundaries. Otherwise return the
-    value unchanged.
+    Two issues happen with real models:
+
+    1. The whole diagram is jammed onto one line (no ``\\n``). Splitting at
+       known statement boundaries restores it.
+    2. Labels contain ``&`` / ``<`` / ``>``, which mermaid.js interprets as
+       broken HTML entities. Wrapping such labels in double quotes fixes it.
+
+    Inputs that aren't strings, are empty, or don't begin with a recognized
+    Mermaid directive are returned unchanged.
     """
-    if not isinstance(text, str) or "\n" in text or not text.strip():
+    if not isinstance(text, str) or not text.strip():
         return text
-    s = text.strip()
-    head = _MERMAID_HEAD_RE.match(s)
+    head = _MERMAID_HEAD_RE.match(text.lstrip())
     if not head:
         return text
-    directive = head.group(1)
-    body = s[head.end():].lstrip()
-    if not body:
-        return directive
-    body = _MERMAID_KEYWORD_RE.sub("\n", body)
-    body = _MERMAID_AFTER_SHAPE_RE.sub(r"\1\n", body)
-    body = _MERMAID_TIGHT_ARROW_RE.sub(r"\n\1\2", body)
-    body = _MERMAID_LOOSE_ARROW_RE.sub(r"\n\1 \2", body)
-    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
-    return directive + "\n" + "\n".join(lines)
+    if "\n" not in text:
+        s = text.strip()
+        directive = head.group(1)
+        body = s[head.end():].lstrip()
+        if body:
+            body = _MERMAID_KEYWORD_RE.sub("\n", body)
+            body = _MERMAID_AFTER_SHAPE_RE.sub(r"\1\n", body)
+            body = _MERMAID_TIGHT_ARROW_RE.sub(r"\n\1\2", body)
+            body = _MERMAID_LOOSE_ARROW_RE.sub(r"\n\1 \2", body)
+            lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+            text = directive + "\n" + "\n".join(lines)
+        else:
+            text = directive
+    return _MERMAID_LABEL_RE.sub(_quote_mermaid_special_label, text)
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
