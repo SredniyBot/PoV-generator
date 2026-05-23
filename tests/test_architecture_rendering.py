@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from pov_generator.application.artifact_contracts import (
+    _normalize_mermaid,
     artifact_schema,
     render_markdown,
     validate_json_schema,
@@ -247,3 +248,65 @@ def test_interaction_view_schema_rejects_flow_without_steps() -> None:
     schema = artifact_schema("interaction_view")
     with pytest.raises(ValidationError):
         validate_json_schema(payload, schema)
+
+
+# --- Mermaid normalizer ----------------------------------------------------
+
+
+def test_normalize_mermaid_splits_single_line_flowchart() -> None:
+    """Регрессия: модель присылает flowchart одной строкой без \\n."""
+    raw = (
+        "flowchart LR Employee[Сотрудник офиса продаж] Copilot[Суфлёр] "
+        "Client[Клиент] Storage[(Хранилище)] Employee -->|UI| Copilot "
+        "Copilot -->|подсказки| Employee Client -->|говорит| Copilot "
+        "Copilot --> Storage"
+    )
+    normalized = _normalize_mermaid(raw)
+    assert isinstance(normalized, str)
+    lines = normalized.splitlines()
+    assert lines[0] == "flowchart LR"
+    assert "Employee[Сотрудник офиса продаж]" in lines
+    assert "Copilot[Суфлёр]" in lines
+    assert "Storage[(Хранилище)]" in lines
+    assert "Employee -->|UI| Copilot" in lines
+    assert "Copilot --> Storage" in lines
+    assert all(ln.strip() == ln for ln in lines)
+
+
+def test_normalize_mermaid_splits_single_line_sequence_diagram() -> None:
+    raw = (
+        "sequenceDiagram participant User participant Suflor "
+        "User->>Suflor: ping Suflor-->>User: pong"
+    )
+    normalized = _normalize_mermaid(raw)
+    lines = normalized.splitlines()
+    assert lines[0] == "sequenceDiagram"
+    assert "participant User" in lines
+    assert "participant Suflor" in lines
+    assert "User->>Suflor: ping" in lines
+    assert "Suflor-->>User: pong" in lines
+
+
+def test_normalize_mermaid_preserves_already_multiline() -> None:
+    raw = "flowchart LR\n  A[Foo] --> B[Bar]\n"
+    assert _normalize_mermaid(raw) == raw
+
+
+def test_normalize_mermaid_returns_unchanged_for_non_mermaid() -> None:
+    assert _normalize_mermaid("Just a sentence with no Mermaid.") == (
+        "Just a sentence with no Mermaid."
+    )
+    assert _normalize_mermaid("") == ""
+    assert _normalize_mermaid(None) is None  # type: ignore[arg-type]
+
+
+def test_render_system_context_definition_normalizes_jammed_diagram() -> None:
+    """End-to-end: одна строка Mermaid в payload → корректный markdown."""
+    payload = _valid_system_context_payload()
+    payload["mermaid_context_diagram"] = (
+        "flowchart LR Employee[Сотрудник] Copilot[Суфлёр] "
+        "Employee --> Copilot"
+    )
+    markdown = render_markdown("system_context_definition", payload)
+    assert "```mermaid\nflowchart LR\nEmployee[Сотрудник]" in markdown
+    assert "Copilot[Суфлёр]\nEmployee --> Copilot\n```" in markdown

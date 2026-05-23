@@ -70,6 +70,13 @@ summary: |
         Gateway-->>User: 202 Accepted
     ```
 
+    КАК УПАКОВАТЬ ДИАГРАММУ В JSON: каждое объявление и каждая стрелка-сообщение —
+    отдельная строка, разделённая `\n`. В JSON-значении это выглядит как:
+
+    `"mermaid_sequence_diagram": "sequenceDiagram\nUser->>Gateway: POST /request\nGateway->>Worker: enqueue\nWorker->>Store: save\nWorker-->>Gateway: ack\nGateway-->>User: 202 Accepted"`
+
+    Без `\n` диаграмма не отрендерится — рендерер ничего не угадывает.
+
   ▸ DIAGRAM_KIND (опционально) — `sequence` или `flowchart`. Если не
     указано — считается `sequence`.
 

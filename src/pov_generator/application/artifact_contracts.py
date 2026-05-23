@@ -1,10 +1,57 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..common.errors import ValidationError
 
 JSONSchema = dict[str, Any]
+
+
+_MERMAID_HEAD_RE = re.compile(
+    r"^((?:flowchart|graph)\s+(?:TD|TB|BT|LR|RL)|sequenceDiagram|classDiagram"
+    r"|stateDiagram(?:-v2)?|erDiagram|mindmap|timeline|journey)\b",
+    re.IGNORECASE,
+)
+_MERMAID_KEYWORD_RE = re.compile(
+    r"\s+(?=(?:participant|actor|Note\s+(?:over|left\s+of|right\s+of)"
+    r"|loop|alt|else|opt|par|critical|break|rect|activate|deactivate"
+    r"|autonumber|subgraph|direction|end)\b)"
+)
+_MERMAID_AFTER_SHAPE_RE = re.compile(r"([\]\)\}])\s+(?=\w)")
+_MERMAID_TIGHT_ARROW_RE = re.compile(
+    r"\s+(\w+)(-->>|<<--|-->|---|==>|-\.->|<-->|<--|->>|<<-|->|==|--)"
+)
+_MERMAID_LOOSE_ARROW_RE = re.compile(
+    r"\s+(\w+)\s+(-->|---|==>|-\.->|<-->|<--|==)"
+)
+
+
+def _normalize_mermaid(text: Any) -> Any:
+    """Insert newlines into single-line Mermaid diagrams.
+
+    Some LLMs emit long string fields without ``\\n``, jamming the whole
+    diagram onto one line; mermaid.js then fails to parse it. If the value
+    is a string with no newlines and starts with a recognized Mermaid
+    directive, split at common statement boundaries. Otherwise return the
+    value unchanged.
+    """
+    if not isinstance(text, str) or "\n" in text or not text.strip():
+        return text
+    s = text.strip()
+    head = _MERMAID_HEAD_RE.match(s)
+    if not head:
+        return text
+    directive = head.group(1)
+    body = s[head.end():].lstrip()
+    if not body:
+        return directive
+    body = _MERMAID_KEYWORD_RE.sub("\n", body)
+    body = _MERMAID_AFTER_SHAPE_RE.sub(r"\1\n", body)
+    body = _MERMAID_TIGHT_ARROW_RE.sub(r"\n\1\2", body)
+    body = _MERMAID_LOOSE_ARROW_RE.sub(r"\n\1 \2", body)
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    return directive + "\n" + "\n".join(lines)
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
@@ -2466,7 +2513,7 @@ def _render_design_document(payload: dict[str, Any]) -> str:
         if sc.get("mermaid_context_diagram"):
             lines.append("\n**Контекстная диаграмма:**")
             lines.append("```mermaid")
-            lines.append(sc["mermaid_context_diagram"])
+            lines.append(_normalize_mermaid(sc["mermaid_context_diagram"]))
             lines.append("```")
 
     comp = payload.get("components") or {}
@@ -2492,7 +2539,7 @@ def _render_design_document(payload: dict[str, Any]) -> str:
         if comp.get("mermaid_component_diagram"):
             lines.append("\n**Диаграмма компонентов:**")
             lines.append("```mermaid")
-            lines.append(comp["mermaid_component_diagram"])
+            lines.append(_normalize_mermaid(comp["mermaid_component_diagram"]))
             lines.append("```")
 
     interactions = payload.get("interactions") or {}
@@ -2520,7 +2567,7 @@ def _render_design_document(payload: dict[str, Any]) -> str:
             heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
             lines.append(f"\n**{heading}:**")
             lines.append("```mermaid")
-            lines.append(interactions["mermaid_sequence_diagram"])
+            lines.append(_normalize_mermaid(interactions["mermaid_sequence_diagram"]))
             lines.append("```")
 
     deployment = payload.get("deployment") or {}
@@ -2602,7 +2649,7 @@ def _render_component_decomposition(payload: dict[str, Any]) -> str:
         lines.append("")
     lines.append("## Диаграмма компонентов")
     lines.append("```mermaid")
-    lines.append(payload["mermaid_component_diagram"])
+    lines.append(_normalize_mermaid(payload["mermaid_component_diagram"]))
     lines.append("```")
     cross = payload.get("cross_cutting_concerns") or []
     if cross:
@@ -2637,7 +2684,7 @@ def _render_interaction_view(payload: dict[str, Any]) -> str:
     heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
     lines.append(f"## {heading}")
     lines.append("```mermaid")
-    lines.append(payload["mermaid_sequence_diagram"])
+    lines.append(_normalize_mermaid(payload["mermaid_sequence_diagram"]))
     lines.append("```")
     contracts = payload.get("data_contracts") or []
     if contracts:
@@ -2685,7 +2732,7 @@ def _render_system_context_definition(payload: dict[str, Any]) -> str:
         lines.extend(f"- {item}" for item in assumptions)
     lines.append("\n## Контекстная диаграмма")
     lines.append("```mermaid")
-    lines.append(payload["mermaid_context_diagram"])
+    lines.append(_normalize_mermaid(payload["mermaid_context_diagram"]))
     lines.append("```")
     blocking = payload.get("blocking_questions") or []
     if blocking:
