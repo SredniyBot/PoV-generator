@@ -24,6 +24,7 @@ Override пути к шрифту — env-переменная ``POV_PDF_FONT_PA
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
@@ -41,6 +42,7 @@ from xhtml2pdf import default as _xhtml2pdf_default
 from xhtml2pdf import pisa
 
 from ..common.errors import PovGeneratorError
+from .mermaid_render import render_mermaid_to_png
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +90,19 @@ def render_artifact_pdf(
     Raises:
         PovGeneratorError: если HTML→PDF конверсия упала.
     """
+    # Сначала пытаемся отрисовать ```mermaid``` блоки как PNG (через mmdc) и
+    # подставить вместо них inline-<img>. Если mmdc не установлен или упал —
+    # источник остаётся ```mermaid``` блоком и попадёт в PDF как preformatted
+    # текст (текущее MVP-поведение).
+    markdown_content = _replace_mermaid_blocks_with_images(markdown_content)
+
     html_body = md_lib.markdown(
         markdown_content,
         extensions=[
             "extra",          # tables, fenced_code, footnotes, attr_list
             "sane_lists",
             "toc",
+            "md_in_html",     # passthrough для <div class="mermaid-pdf">
         ],
         output_format="xhtml",
     )
@@ -129,6 +138,40 @@ def render_artifact_pdf(
             f"Не удалось сгенерировать PDF (xhtml2pdf ошибок: {pisa_status.err})."
         )
     return buffer.getvalue()
+
+
+# --- внутреннее: пред-обработка Mermaid-блоков ----------------------------
+
+
+_MERMAID_FENCED_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+
+
+def _replace_mermaid_blocks_with_images(markdown_text: str) -> str:
+    """Найти ```mermaid``` блоки и заменить на inline-img c data-URI PNG.
+
+    На каждый блок дёргаем ``render_mermaid_to_png`` (subprocess к ``mmdc``).
+    Если рендер вернул ``None`` (mmdc не установлен / упал / отключён через
+    ``POV_MERMAID_DISABLED``) — оставляем исходный markdown-блок как есть,
+    чтобы в PDF попал хотя бы preformatted-исходник.
+    """
+    if "```mermaid" not in markdown_text:
+        return markdown_text
+
+    def _replace(match: re.Match[str]) -> str:
+        source = match.group(1).strip("\n")
+        if not source.strip():
+            return match.group(0)
+        png_bytes = render_mermaid_to_png(source)
+        if png_bytes is None:
+            return match.group(0)
+        encoded = base64.b64encode(png_bytes).decode("ascii")
+        return (
+            '\n<div class="mermaid-pdf">'
+            f'<img src="data:image/png;base64,{encoded}" alt="Mermaid diagram" />'
+            "</div>\n"
+        )
+
+    return _MERMAID_FENCED_RE.sub(_replace, markdown_text)
 
 
 # --- внутреннее: пост-обработка таблиц (auto-width + landscape) ---------------
@@ -665,4 +708,12 @@ def _build_base_css(body_font: str, *, include_landscape_page: bool = False) -> 
             font-style: italic;
         }}
         hr {{ border: 0; border-top: 0.5pt solid #999; margin: 10pt 0; }}
+        .mermaid-pdf {{
+            margin: 8pt 0;
+            text-align: center;
+        }}
+        .mermaid-pdf img {{
+            max-width: 100%;
+            height: auto;
+        }}
     """

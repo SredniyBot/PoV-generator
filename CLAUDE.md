@@ -63,6 +63,10 @@ Decision order: high-confidence + `default_assumption` → assume; else if mode 
 - **Final task is closed for edits**: `requirements_spec_generation` uses `collect_optional.from_active_domain_packs: true` (Stage 7.3). New domain artifacts get pulled in automatically — don't hand-list them.
 - **Unstructured contracts are explicit**: `additionalProperties: true` without required fields is only legal if the contract is also marked `unstructured: true` (Stage 7.5).
 
+## Mermaid in PDF (optional)
+
+UI renders Mermaid diagrams via `mermaid.js` in the browser. The PDF pipeline (`application/pdf_export.py`) uses `xhtml2pdf` which has no JS — so for graphical diagrams in PDF we preprocess `mermaid_render.render_mermaid_to_png(source)`, which shells out to `mmdc` (`@mermaid-js/mermaid-cli`, Node + headless Chromium) and inlines the PNG via data-URI. If `mmdc` is missing or the call fails, the original ```mermaid``` code-block is left intact — degraded but never broken. Tests set `POV_MERMAID_DISABLED=1` to short-circuit. Install once with `npm i -g @mermaid-js/mermaid-cli`. Env knobs: `POV_MERMAID_CLI` (binary path), `POV_MERMAID_TIMEOUT` (seconds, default 30).
+
 ## LLM provider settings
 
 Settings live in `<runtime>/settings.db` (Fernet-encrypted via `POV_SECRET_KEY` or auto-generated `<runtime>/.secret_key`), managed from the UI's `/settings` page. `.env` is only for bootstrap (first-run import) and CI/dev fallback. Three provider types: `openrouter`, `claude_sdk` (direct Anthropic API), `claude_subscription` (local `claude` CLI — needs `claude login` once; the bundled CLI from `claude-agent-sdk` is **not** used because it isn't logged in). Default execution provider is `stub` (deterministic fixtures from `templates/stub_fixtures/`, no network) — keep it that way for tests.
