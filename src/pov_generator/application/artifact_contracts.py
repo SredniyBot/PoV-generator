@@ -8,76 +8,166 @@ from ..common.errors import ValidationError
 JSONSchema = dict[str, Any]
 
 
-_MERMAID_HEAD_RE = re.compile(
-    r"^((?:flowchart|graph)\s+(?:TD|TB|BT|LR|RL)|sequenceDiagram|classDiagram"
-    r"|stateDiagram(?:-v2)?|erDiagram|mindmap|timeline|journey)\b",
-    re.IGNORECASE,
-)
-_MERMAID_KEYWORD_RE = re.compile(
-    r"\s+(?=(?:participant|actor|Note\s+(?:over|left\s+of|right\s+of)"
-    r"|loop|alt|else|opt|par|critical|break|rect|activate|deactivate"
-    r"|autonumber|subgraph|direction|end)\b)"
-)
-_MERMAID_AFTER_SHAPE_RE = re.compile(r"([\]\)\}])\s+(?=\w)")
-_MERMAID_TIGHT_ARROW_RE = re.compile(
-    r"\s+(\w+)(-->>|<<--|-->|---|==>|-\.->|<-->|<--|->>|<<-|->|==|--)"
-)
-_MERMAID_LOOSE_ARROW_RE = re.compile(
-    r"\s+(\w+)\s+(-->|---|==>|-\.->|<-->|<--|==)"
-)
-_MERMAID_LABEL_RE = re.compile(r"(?<!\[)\[([^\]\n]+)\](?!\])")
+_FLOWCHART_DIRECTIONS = {"LR", "RL", "TD", "TB", "BT"}
+_FLOWCHART_SHAPE_BRACKETS: dict[str, tuple[str, str]] = {
+    "rect": ("[", "]"),
+    "round": ("(", ")"),
+    "stadium": ("([", "])"),
+    "subroutine": ("[[", "]]"),
+    "cylinder": ("[(", ")]"),
+    "circle": ("((", "))"),
+    "hexagon": ("{{", "}}"),
+    "rhombus": ("{", "}"),
+}
+_FLOWCHART_EDGE_ARROWS: dict[str, str] = {
+    "solid": "-->",
+    "dotted": "-.->",
+    "thick": "==>",
+}
+_SEQUENCE_MESSAGE_ARROWS: dict[str, str] = {
+    "request": "->>",
+    "reply": "-->>",
+    "async_request": "-)",
+    "async_reply": "--)",
+}
+_VALID_MERMAID_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _quote_mermaid_special_label(match: re.Match) -> str:
-    """Wrap rectangle-label content in double quotes if it contains chars
-    Mermaid v11 mis-parses (``&``, ``<``, ``>``). Skips shape syntaxes
-    (cylinder ``[(...)]``, parallelogram ``[/.../]``, trapezoid
-    ``[\\...\\]``) and already-quoted labels.
+def _sanitize_mermaid_id(raw: Any, fallback: str = "node") -> str:
+    """Return a Mermaid-safe identifier.
+
+    LLMs sometimes emit ids with spaces, Cyrillic, or punctuation. We keep only
+    ASCII alnum / underscore; non-matching chars become underscores; we prepend
+    ``N`` if the id starts with a digit; empty strings fall back to ``fallback``.
     """
-    content = match.group(1)
-    if not any(c in content for c in "&<>"):
-        return match.group(0)
-    if content[:1] in "(/\\":
-        return match.group(0)
-    stripped = content.strip()
-    if stripped.startswith('"') and stripped.endswith('"'):
-        return match.group(0)
-    escaped = content.replace('"', "#quot;")
-    return f'["{escaped}"]'
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw).strip("_")
+    if not cleaned:
+        return fallback
+    if cleaned[0].isdigit():
+        cleaned = "N" + cleaned
+    return cleaned
 
 
-def _normalize_mermaid(text: Any) -> Any:
-    """Make LLM-produced Mermaid diagrams parseable by mermaid.js.
+def _escape_mermaid_label(raw: Any) -> str:
+    """Escape characters that break Mermaid label parsing.
 
-    Two issues happen with real models:
-
-    1. The whole diagram is jammed onto one line (no ``\\n``). Splitting at
-       known statement boundaries restores it.
-    2. Labels contain ``&`` / ``<`` / ``>``, which mermaid.js interprets as
-       broken HTML entities. Wrapping such labels in double quotes fixes it.
-
-    Inputs that aren't strings, are empty, or don't begin with a recognized
-    Mermaid directive are returned unchanged.
+    We always wrap labels in double quotes inside shape brackets, so ``&<>``
+    are safe; the one thing we must escape is the double-quote itself.
+    Newlines collapse to spaces — Mermaid does support ``<br/>`` but the
+    rendered look is worse than a single line.
     """
-    if not isinstance(text, str) or not text.strip():
-        return text
-    head = _MERMAID_HEAD_RE.match(text.lstrip())
-    if not head:
-        return text
-    if "\n" not in text:
-        s = text.strip()
-        directive = head.group(1)
-        body = s[head.end():].lstrip()
-        if body:
-            body = _MERMAID_KEYWORD_RE.sub("\n", body)
-            body = _MERMAID_AFTER_SHAPE_RE.sub(r"\1\n", body)
-            body = _MERMAID_TIGHT_ARROW_RE.sub(r"\n\1\2", body)
-            body = _MERMAID_LOOSE_ARROW_RE.sub(r"\n\1 \2", body)
-            lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
-            text = directive + "\n" + "\n".join(lines)
+    if raw is None:
+        return ""
+    text = str(raw)
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = text.replace('"', "#quot;")
+    return text.strip()
+
+
+def _build_flowchart(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    direction = diagram.get("direction")
+    if not isinstance(direction, str) or direction.upper() not in _FLOWCHART_DIRECTIONS:
+        direction = "LR"
+    else:
+        direction = direction.upper()
+    lines = [f"flowchart {direction}"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        # Avoid id collisions between distinct raw labels.
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, node in enumerate(diagram.get("nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        nid = _resolve_id(node.get("id"), fallback=f"N{index + 1}")
+        label = _escape_mermaid_label(node.get("label") or node.get("id") or nid)
+        shape = node.get("shape") if isinstance(node.get("shape"), str) else "rect"
+        open_b, close_b = _FLOWCHART_SHAPE_BRACKETS.get(shape, ("[", "]"))
+        lines.append(f'    {nid}{open_b}"{label}"{close_b}')
+
+    for edge in diagram.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        src = _resolve_id(edge.get("from"), fallback="A")
+        dst = _resolve_id(edge.get("to"), fallback="B")
+        kind = edge.get("kind") if isinstance(edge.get("kind"), str) else "solid"
+        arrow = _FLOWCHART_EDGE_ARROWS.get(kind, "-->")
+        label = edge.get("label")
+        if isinstance(label, str) and label.strip():
+            escaped = _escape_mermaid_label(label)
+            lines.append(f"    {src} {arrow}|{escaped}| {dst}")
         else:
-            text = directive
-    return _MERMAID_LABEL_RE.sub(_quote_mermaid_special_label, text)
+            lines.append(f"    {src} {arrow} {dst}")
+
+    return "\n".join(lines)
+
+
+def _build_sequence_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    lines = ["sequenceDiagram"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, participant in enumerate(diagram.get("participants") or []):
+        if not isinstance(participant, dict):
+            continue
+        pid = _resolve_id(participant.get("id"), fallback=f"P{index + 1}")
+        label = participant.get("label")
+        if isinstance(label, str) and label.strip():
+            lines.append(f'    participant {pid} as "{_escape_mermaid_label(label)}"')
+        else:
+            lines.append(f"    participant {pid}")
+
+    for message in diagram.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        src = _resolve_id(message.get("from"), fallback="A")
+        dst = _resolve_id(message.get("to"), fallback="B")
+        kind = message.get("kind") if isinstance(message.get("kind"), str) else "request"
+        arrow = _SEQUENCE_MESSAGE_ARROWS.get(kind, "->>")
+        label = _escape_mermaid_label(message.get("label"))
+        lines.append(f"    {src}{arrow}{dst}: {label}")
+
+    return "\n".join(lines)
+
+
+def _build_interaction_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    kind = diagram.get("kind")
+    if kind == "flowchart":
+        return _build_flowchart(diagram)
+    return _build_sequence_diagram(diagram)
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
@@ -86,6 +176,141 @@ def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
 
 def _string_array_schema() -> JSONSchema:
     return {"type": "array", "items": {"type": "string"}}
+
+
+def _flowchart_diagram_schema() -> JSONSchema:
+    """Структурированное представление flowchart-диаграммы.
+
+    Никаких сырых Mermaid-строк: модель отдаёт списки узлов/рёбер, Python
+    детерминированно собирает Mermaid через ``_build_flowchart``.
+    """
+    return {
+        "type": "object",
+        "required": ["direction", "nodes", "edges"],
+        "additionalProperties": False,
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _interaction_diagram_schema() -> JSONSchema:
+    """Объединённая схема для interaction_view: sequence- или flowchart-диаграмма.
+
+    Один tag-discriminator ``kind`` ∈ {sequence, flowchart}. Списки участников
+    / сообщений нужны для sequence; nodes/edges/direction — для flowchart.
+    Все остальные поля optional, чтобы LLM не путалась.
+    """
+    return {
+        "type": "object",
+        "required": ["kind"],
+        "additionalProperties": False,
+        "properties": {
+            "kind": {"type": "string", "enum": ["sequence", "flowchart"]},
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "participants": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                    },
+                },
+            },
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_SEQUENCE_MESSAGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
 
 
 def _analysis_meta_properties() -> JSONSchema:
@@ -943,7 +1168,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             },
         ),
         "component_decomposition": _analysis_object(
-            ["components", "mermaid_component_diagram"],
+            ["components", "component_diagram"],
             {
                 "summary": {"type": "string"},
                 "components": {
@@ -960,13 +1185,13 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                         },
                     },
                 },
-                "mermaid_component_diagram": {"type": "string"},
+                "component_diagram": _flowchart_diagram_schema(),
                 "cross_cutting_concerns": _string_array_schema(),
                 "open_design_questions": _string_array_schema(),
             },
         ),
         "interaction_view": _analysis_object(
-            ["flows", "mermaid_sequence_diagram"],
+            ["flows", "interaction_diagram"],
             {
                 "summary": {"type": "string"},
                 "flows": {
@@ -983,8 +1208,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                         },
                     },
                 },
-                "mermaid_sequence_diagram": {"type": "string"},
-                "diagram_kind": {"type": "string", "enum": ["sequence", "flowchart"]},
+                "interaction_diagram": _interaction_diagram_schema(),
                 "data_contracts": {
                     "type": "array",
                     "items": {
@@ -1003,7 +1227,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             },
         ),
         "system_context_definition": _analysis_object(
-            ["system_name", "system_purpose", "actors", "external_systems", "mermaid_context_diagram"],
+            ["system_name", "system_purpose", "actors", "external_systems", "context_diagram"],
             {
                 "system_name": {"type": "string"},
                 "system_purpose": {"type": "string"},
@@ -1033,7 +1257,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                         },
                     },
                 },
-                "mermaid_context_diagram": {"type": "string"},
+                "context_diagram": _flowchart_diagram_schema(),
                 "system_boundaries": _string_array_schema(),
                 "assumptions": _string_array_schema(),
             },
@@ -2536,10 +2760,11 @@ def _render_design_document(payload: dict[str, Any]) -> str:
                 lines.append(f"- **{system.get('name', '—')}** — {system.get('role', '—')}")
                 for interaction in system.get("interactions") or []:
                     lines.append(f"  - {interaction}")
-        if sc.get("mermaid_context_diagram"):
+        context_diagram_mmd = _build_flowchart(sc.get("context_diagram"))
+        if context_diagram_mmd:
             lines.append("\n**Контекстная диаграмма:**")
             lines.append("```mermaid")
-            lines.append(_normalize_mermaid(sc["mermaid_context_diagram"]))
+            lines.append(context_diagram_mmd)
             lines.append("```")
 
     comp = payload.get("components") or {}
@@ -2562,10 +2787,11 @@ def _render_design_document(payload: dict[str, Any]) -> str:
             if deps:
                 lines.append("**Зависимости:**")
                 lines.extend(f"- {entry}" for entry in deps)
-        if comp.get("mermaid_component_diagram"):
+        component_diagram_mmd = _build_flowchart(comp.get("component_diagram"))
+        if component_diagram_mmd:
             lines.append("\n**Диаграмма компонентов:**")
             lines.append("```mermaid")
-            lines.append(_normalize_mermaid(comp["mermaid_component_diagram"]))
+            lines.append(component_diagram_mmd)
             lines.append("```")
 
     interactions = payload.get("interactions") or {}
@@ -2588,12 +2814,14 @@ def _render_design_document(payload: dict[str, Any]) -> str:
                 lines.append("**Шаги:**")
                 for i, step in enumerate(steps, 1):
                     lines.append(f"{i}. {step}")
-        if interactions.get("mermaid_sequence_diagram"):
-            kind = interactions.get("diagram_kind", "sequence")
+        interaction_diagram = interactions.get("interaction_diagram") or {}
+        interaction_diagram_mmd = _build_interaction_diagram(interaction_diagram)
+        if interaction_diagram_mmd:
+            kind = interaction_diagram.get("kind", "sequence")
             heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
             lines.append(f"\n**{heading}:**")
             lines.append("```mermaid")
-            lines.append(_normalize_mermaid(interactions["mermaid_sequence_diagram"]))
+            lines.append(interaction_diagram_mmd)
             lines.append("```")
 
     deployment = payload.get("deployment") or {}
@@ -2675,7 +2903,7 @@ def _render_component_decomposition(payload: dict[str, Any]) -> str:
         lines.append("")
     lines.append("## Диаграмма компонентов")
     lines.append("```mermaid")
-    lines.append(_normalize_mermaid(payload["mermaid_component_diagram"]))
+    lines.append(_build_flowchart(payload["component_diagram"]))
     lines.append("```")
     cross = payload.get("cross_cutting_concerns") or []
     if cross:
@@ -2706,11 +2934,12 @@ def _render_interaction_view(payload: dict[str, Any]) -> str:
         for i, step in enumerate(flow["steps"], 1):
             lines.append(f"{i}. {step}")
         lines.append("")
-    kind = payload.get("diagram_kind", "sequence")
+    diagram = payload["interaction_diagram"]
+    kind = diagram.get("kind", "sequence")
     heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
     lines.append(f"## {heading}")
     lines.append("```mermaid")
-    lines.append(_normalize_mermaid(payload["mermaid_sequence_diagram"]))
+    lines.append(_build_interaction_diagram(diagram))
     lines.append("```")
     contracts = payload.get("data_contracts") or []
     if contracts:
@@ -2758,7 +2987,7 @@ def _render_system_context_definition(payload: dict[str, Any]) -> str:
         lines.extend(f"- {item}" for item in assumptions)
     lines.append("\n## Контекстная диаграмма")
     lines.append("```mermaid")
-    lines.append(_normalize_mermaid(payload["mermaid_context_diagram"]))
+    lines.append(_build_flowchart(payload["context_diagram"]))
     lines.append("```")
     blocking = payload.get("blocking_questions") or []
     if blocking:

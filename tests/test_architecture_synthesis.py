@@ -40,7 +40,18 @@ def _full_design_payload() -> dict:
             "external_systems": [
                 {"name": "CRM", "role": "Справочник", "interactions": ["GET /clients"]},
             ],
-            "mermaid_context_diagram": "flowchart LR\n    User --> System\n    System --> CRM",
+            "context_diagram": {
+                "direction": "LR",
+                "nodes": [
+                    {"id": "User", "label": "User"},
+                    {"id": "System", "label": "Система"},
+                    {"id": "CRM", "label": "CRM", "shape": "cylinder"},
+                ],
+                "edges": [
+                    {"from": "User", "to": "System"},
+                    {"from": "System", "to": "CRM"},
+                ],
+            },
         },
         "components": {
             "summary": "Слоистая декомпозиция.",
@@ -56,7 +67,14 @@ def _full_design_payload() -> dict:
                     "responsibilities": "Бизнес-логика.",
                 },
             ],
-            "mermaid_component_diagram": "flowchart LR\n    Gateway --> Worker",
+            "component_diagram": {
+                "direction": "LR",
+                "nodes": [
+                    {"id": "Gateway", "label": "Gateway"},
+                    {"id": "Worker", "label": "Worker"},
+                ],
+                "edges": [{"from": "Gateway", "to": "Worker"}],
+            },
         },
         "interactions": {
             "summary": "Синхронный приём, асинхронная обработка.",
@@ -68,8 +86,18 @@ def _full_design_payload() -> dict:
                     "steps": ["User шлёт запрос", "Gateway форвардит", "Worker обрабатывает"],
                 },
             ],
-            "mermaid_sequence_diagram": "sequenceDiagram\n    User->>Gateway: POST\n    Gateway->>Worker: forward",
-            "diagram_kind": "sequence",
+            "interaction_diagram": {
+                "kind": "sequence",
+                "participants": [
+                    {"id": "U", "label": "User"},
+                    {"id": "G", "label": "Gateway"},
+                    {"id": "W", "label": "Worker"},
+                ],
+                "messages": [
+                    {"from": "U", "to": "G", "label": "POST"},
+                    {"from": "G", "to": "W", "label": "forward"},
+                ],
+            },
         },
         "deployment": {
             "environments": [{"name": "pilot", "purpose": "Пилотный контур"}],
@@ -105,9 +133,14 @@ def test_synthesis_renders_mermaid_blocks_for_all_three_diagrams() -> None:
     md = render_markdown("design_document", _full_design_payload())
     # три mermaid-блока — context / components / interactions
     assert md.count("```mermaid") == 3
-    assert "flowchart LR\n    User --> System" in md
-    assert "flowchart LR\n    Gateway --> Worker" in md
+    assert "flowchart LR" in md
+    # context: ребро User → System собирается из nodes/edges
+    assert "User --> System" in md
+    # components: ребро Gateway → Worker
+    assert "Gateway --> Worker" in md
+    # interactions: sequenceDiagram с message U->>G
     assert "sequenceDiagram" in md
+    assert "U->>G: POST" in md
 
 
 def test_synthesis_renders_all_top_level_sections() -> None:
@@ -282,7 +315,11 @@ def test_compose_pulls_from_parsed_inputs() -> None:
     assert "Обработка входных запросов." in result["executive_summary"]
     assert "Декомпозирована на 2 ключевых компонента" in result["executive_summary"]
     assert "Описано 1 сценариев взаимодействия" in result["executive_summary"]
-    assert result["system_context"]["mermaid_context_diagram"].startswith("flowchart LR")
+    assert result["system_context"]["context_diagram"]["direction"] == "LR"
+    assert any(
+        node["id"] == "System"
+        for node in result["system_context"]["context_diagram"]["nodes"]
+    )
     assert "blocking_questions" not in result["system_context"]
     assert "confidence" not in result["components"]
     assert result["risks"][0]["title"] == "Качество данных"

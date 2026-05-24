@@ -1,19 +1,27 @@
-"""Тесты рендеринга архитектурных артефактов (Stage 1).
+"""Тесты рендеринга архитектурных артефактов.
 
-Покрывают `system_context_definition`: schema-валидация payload'а и
-markdown-рендеринг с обязательным Mermaid-блоком.
+Покрывают `system_context_definition`, `component_decomposition`,
+`interaction_view`: schema-валидация payload'а с **структурированными**
+diagram-объектами (новый контракт; Python детерминированно собирает Mermaid
+через `_build_flowchart` / `_build_sequence_diagram`).
 """
 from __future__ import annotations
 
 import pytest
 
 from pov_generator.application.artifact_contracts import (
-    _normalize_mermaid,
+    _build_flowchart,
+    _build_interaction_diagram,
+    _build_sequence_diagram,
+    _escape_mermaid_label,
+    _sanitize_mermaid_id,
     artifact_schema,
     render_markdown,
     validate_json_schema,
 )
 from pov_generator.common.errors import ValidationError
+
+# --- system_context_definition --------------------------------------------
 
 
 def _valid_system_context_payload() -> dict:
@@ -31,7 +39,18 @@ def _valid_system_context_payload() -> dict:
                 "interactions": ["Читает реестр клиентов"],
             },
         ],
-        "mermaid_context_diagram": "flowchart LR\n    Initiator[Инициатор] --> System[Система]\n    System --> CRM[(CRM)]",
+        "context_diagram": {
+            "direction": "LR",
+            "nodes": [
+                {"id": "Initiator", "label": "Инициатор"},
+                {"id": "System", "label": "Система"},
+                {"id": "CRM", "label": "CRM", "shape": "cylinder"},
+            ],
+            "edges": [
+                {"from": "Initiator", "to": "System"},
+                {"from": "System", "to": "CRM"},
+            ],
+        },
         "blocking_questions": [],
     }
 
@@ -78,9 +97,9 @@ def test_schema_accepts_valid_payload() -> None:
     validate_json_schema(_valid_system_context_payload(), schema)
 
 
-def test_schema_rejects_payload_without_mermaid_field() -> None:
+def test_schema_rejects_payload_without_context_diagram() -> None:
     payload = _valid_system_context_payload()
-    del payload["mermaid_context_diagram"]
+    del payload["context_diagram"]
     schema = artifact_schema("system_context_definition")
     with pytest.raises(ValidationError):
         validate_json_schema(payload, schema)
@@ -110,7 +129,23 @@ def test_schema_rejects_external_system_missing_role() -> None:
         validate_json_schema(payload, schema)
 
 
-# --- component_decomposition (Stage 3) -------------------------------------
+def test_schema_rejects_context_diagram_with_invalid_direction() -> None:
+    payload = _valid_system_context_payload()
+    payload["context_diagram"]["direction"] = "DIAGONAL"
+    schema = artifact_schema("system_context_definition")
+    with pytest.raises(ValidationError):
+        validate_json_schema(payload, schema)
+
+
+def test_schema_rejects_context_diagram_node_with_invalid_shape() -> None:
+    payload = _valid_system_context_payload()
+    payload["context_diagram"]["nodes"][0]["shape"] = "triangle"
+    schema = artifact_schema("system_context_definition")
+    with pytest.raises(ValidationError):
+        validate_json_schema(payload, schema)
+
+
+# --- component_decomposition ----------------------------------------------
 
 
 def _valid_component_decomposition_payload() -> dict:
@@ -127,7 +162,16 @@ def _valid_component_decomposition_payload() -> dict:
                 "responsibilities": "Бизнес-логика.",
             },
         ],
-        "mermaid_component_diagram": "flowchart LR\n    Gateway --> Worker",
+        "component_diagram": {
+            "direction": "LR",
+            "nodes": [
+                {"id": "Gateway", "label": "API Gateway"},
+                {"id": "Worker", "label": "Worker"},
+            ],
+            "edges": [
+                {"from": "Gateway", "to": "Worker"},
+            ],
+        },
         "blocking_questions": [],
     }
 
@@ -142,6 +186,7 @@ def test_render_component_decomposition_emits_mermaid_and_sections() -> None:
     assert "**Зависимости:**" in md
     assert "```mermaid" in md
     assert "flowchart LR" in md
+    assert "Gateway --> Worker" in md
 
 
 def test_render_component_omits_optional_sections_when_missing() -> None:
@@ -163,9 +208,9 @@ def test_render_component_emits_optional_sections_when_provided() -> None:
     assert "## Открытые вопросы дизайна" in md
 
 
-def test_component_schema_rejects_payload_without_mermaid() -> None:
+def test_component_schema_rejects_payload_without_diagram() -> None:
     payload = _valid_component_decomposition_payload()
-    del payload["mermaid_component_diagram"]
+    del payload["component_diagram"]
     schema = artifact_schema("component_decomposition")
     with pytest.raises(ValidationError):
         validate_json_schema(payload, schema)
@@ -179,7 +224,15 @@ def test_component_schema_rejects_component_without_responsibilities() -> None:
         validate_json_schema(payload, schema)
 
 
-# --- interaction_view (Stage 3) --------------------------------------------
+def test_component_schema_rejects_diagram_edge_with_unknown_kind() -> None:
+    payload = _valid_component_decomposition_payload()
+    payload["component_diagram"]["edges"][0]["kind"] = "wiggly"
+    schema = artifact_schema("component_decomposition")
+    with pytest.raises(ValidationError):
+        validate_json_schema(payload, schema)
+
+
+# --- interaction_view -----------------------------------------------------
 
 
 def _valid_interaction_view_payload() -> dict:
@@ -196,7 +249,19 @@ def _valid_interaction_view_payload() -> dict:
                 ],
             },
         ],
-        "mermaid_sequence_diagram": "sequenceDiagram\n    User->>Gateway: POST\n    Gateway->>Worker: forward",
+        "interaction_diagram": {
+            "kind": "sequence",
+            "participants": [
+                {"id": "U", "label": "User"},
+                {"id": "G", "label": "Gateway"},
+                {"id": "W", "label": "Worker"},
+            ],
+            "messages": [
+                {"from": "U", "to": "G", "label": "POST /request"},
+                {"from": "G", "to": "W", "label": "forward"},
+                {"from": "W", "to": "G", "label": "ack", "kind": "reply"},
+            ],
+        },
         "blocking_questions": [],
     }
 
@@ -211,14 +276,26 @@ def test_render_interaction_view_emits_mermaid_and_steps() -> None:
     assert "1. User шлёт запрос" in md
     assert "Sequence-диаграмма" in md
     assert "```mermaid" in md
+    assert "sequenceDiagram" in md
+    assert "U->>G: POST /request" in md
+    assert "W-->>G: ack" in md
 
 
 def test_render_interaction_view_uses_flowchart_heading_when_kind_set() -> None:
     payload = _valid_interaction_view_payload()
-    payload["diagram_kind"] = "flowchart"
+    payload["interaction_diagram"] = {
+        "kind": "flowchart",
+        "direction": "TD",
+        "nodes": [
+            {"id": "Start", "label": "Start"},
+            {"id": "End", "label": "End"},
+        ],
+        "edges": [{"from": "Start", "to": "End"}],
+    }
     md = render_markdown("interaction_view", payload)
     assert "Диаграмма потока" in md
     assert "Sequence-диаграмма" not in md
+    assert "flowchart TD" in md
 
 
 def test_render_interaction_view_emits_data_contracts_table_when_provided() -> None:
@@ -236,7 +313,7 @@ def test_render_interaction_view_emits_data_contracts_table_when_provided() -> N
 
 def test_interaction_view_schema_rejects_diagram_kind_outside_enum() -> None:
     payload = _valid_interaction_view_payload()
-    payload["diagram_kind"] = "uml"
+    payload["interaction_diagram"]["kind"] = "uml"
     schema = artifact_schema("interaction_view")
     with pytest.raises(ValidationError):
         validate_json_schema(payload, schema)
@@ -250,109 +327,146 @@ def test_interaction_view_schema_rejects_flow_without_steps() -> None:
         validate_json_schema(payload, schema)
 
 
-# --- Mermaid normalizer ----------------------------------------------------
+# --- Mermaid builders -----------------------------------------------------
 
 
-def test_normalize_mermaid_splits_single_line_flowchart() -> None:
-    """Регрессия: модель присылает flowchart одной строкой без \\n."""
-    raw = (
-        "flowchart LR Employee[Сотрудник офиса продаж] Copilot[Суфлёр] "
-        "Client[Клиент] Storage[(Хранилище)] Employee -->|UI| Copilot "
-        "Copilot -->|подсказки| Employee Client -->|говорит| Copilot "
-        "Copilot --> Storage"
+def test_build_flowchart_emits_header_and_nodes_and_edges() -> None:
+    mmd = _build_flowchart(
+        {
+            "direction": "TD",
+            "nodes": [
+                {"id": "A", "label": "Alpha"},
+                {"id": "B", "label": "Beta", "shape": "cylinder"},
+            ],
+            "edges": [{"from": "A", "to": "B", "label": "calls"}],
+        }
     )
-    normalized = _normalize_mermaid(raw)
-    assert isinstance(normalized, str)
-    lines = normalized.splitlines()
-    assert lines[0] == "flowchart LR"
-    assert "Employee[Сотрудник офиса продаж]" in lines
-    assert "Copilot[Суфлёр]" in lines
-    assert "Storage[(Хранилище)]" in lines
-    assert "Employee -->|UI| Copilot" in lines
-    assert "Copilot --> Storage" in lines
-    assert all(ln.strip() == ln for ln in lines)
-
-
-def test_normalize_mermaid_splits_single_line_sequence_diagram() -> None:
-    raw = (
-        "sequenceDiagram participant User participant Suflor "
-        "User->>Suflor: ping Suflor-->>User: pong"
-    )
-    normalized = _normalize_mermaid(raw)
-    lines = normalized.splitlines()
-    assert lines[0] == "sequenceDiagram"
-    assert "participant User" in lines
-    assert "participant Suflor" in lines
-    assert "User->>Suflor: ping" in lines
-    assert "Suflor-->>User: pong" in lines
-
-
-def test_normalize_mermaid_preserves_already_multiline() -> None:
-    raw = "flowchart LR\n  A[Foo] --> B[Bar]\n"
-    assert _normalize_mermaid(raw) == raw
-
-
-def test_normalize_mermaid_returns_unchanged_for_non_mermaid() -> None:
-    assert _normalize_mermaid("Just a sentence with no Mermaid.") == (
-        "Just a sentence with no Mermaid."
-    )
-    assert _normalize_mermaid("") == ""
-    assert _normalize_mermaid(None) is None  # type: ignore[arg-type]
-
-
-def test_render_system_context_definition_normalizes_jammed_diagram() -> None:
-    """End-to-end: одна строка Mermaid в payload → корректный markdown."""
-    payload = _valid_system_context_payload()
-    payload["mermaid_context_diagram"] = (
-        "flowchart LR Employee[Сотрудник] Copilot[Суфлёр] "
-        "Employee --> Copilot"
-    )
-    markdown = render_markdown("system_context_definition", payload)
-    assert "```mermaid\nflowchart LR\nEmployee[Сотрудник]" in markdown
-    assert "Copilot[Суфлёр]\nEmployee --> Copilot\n```" in markdown
-
-
-def test_normalize_mermaid_quotes_label_with_ampersand() -> None:
-    """Регрессия: `&` внутри `[...]` ломает mermaid.js v11."""
-    raw = (
-        "flowchart TD\n"
-        "    ASR[ASR & Diarization Module]\n"
-        "    Log[Log & Metrics Collector]\n"
-        "    ASR --> Log"
-    )
-    out = _normalize_mermaid(raw)
-    assert 'ASR["ASR & Diarization Module"]' in out
-    assert 'Log["Log & Metrics Collector"]' in out
-    # Edge stays untouched.
-    assert "ASR --> Log" in out
-
-
-def test_normalize_mermaid_skips_cylinder_with_ampersand() -> None:
-    raw = "flowchart LR\n    Store[(База & данные)]\n    A --> Store"
-    out = _normalize_mermaid(raw)
-    # Cylinder content starts with `(`, must stay as-is to keep the shape.
-    assert "Store[(База & данные)]" in out
-
-
-def test_normalize_mermaid_skips_already_quoted_label() -> None:
-    raw = 'flowchart TD\n    A["already & quoted"] --> B'
-    out = _normalize_mermaid(raw)
-    # Already quoted — no double-wrap.
-    assert 'A["already & quoted"]' in out
-    assert 'A[""already & quoted""]' not in out
-
-
-def test_normalize_mermaid_leaves_plain_labels_alone() -> None:
-    raw = "flowchart LR\n    A[Plain text] --> B[Another label]"
-    assert _normalize_mermaid(raw) == raw
-
-
-def test_normalize_mermaid_handles_single_line_with_ampersand() -> None:
-    """Двойной фикс: одна строка + & внутри label."""
-    raw = "flowchart TD A[ASR & Module] B[Log] A --> B"
-    out = _normalize_mermaid(raw)
-    lines = out.splitlines()
+    lines = mmd.splitlines()
     assert lines[0] == "flowchart TD"
-    assert 'A["ASR & Module"]' in lines
-    assert "B[Log]" in lines
-    assert "A --> B" in lines
+    assert '    A["Alpha"]' in lines
+    assert '    B[("Beta")]' in lines
+    assert "    A -->|calls| B" in lines
+
+
+def test_build_flowchart_quotes_special_chars_via_escaper() -> None:
+    """`&`, `<`, `>` теперь безопасны — мы всегда заворачиваем в `"..."`."""
+    mmd = _build_flowchart(
+        {
+            "direction": "LR",
+            "nodes": [
+                {"id": "ASR", "label": "ASR & Diarization Module"},
+                {"id": "Log", "label": "Log <Metrics> Collector"},
+            ],
+            "edges": [{"from": "ASR", "to": "Log"}],
+        }
+    )
+    assert '"ASR & Diarization Module"' in mmd
+    assert '"Log <Metrics> Collector"' in mmd
+
+
+def test_build_flowchart_escapes_double_quote_in_label() -> None:
+    mmd = _build_flowchart(
+        {
+            "direction": "LR",
+            "nodes": [{"id": "A", "label": 'Quoted "value" here'}],
+            "edges": [],
+        }
+    )
+    assert 'Quoted #quot;value#quot; here' in mmd
+
+
+def test_build_flowchart_collapses_newlines_in_labels() -> None:
+    mmd = _build_flowchart(
+        {
+            "direction": "LR",
+            "nodes": [{"id": "A", "label": "Line one\nLine two"}],
+            "edges": [],
+        }
+    )
+    assert "Line one Line two" in mmd
+    assert "Line one\nLine two" not in mmd.splitlines()[1]
+
+
+def test_build_flowchart_defaults_to_lr_when_direction_invalid() -> None:
+    mmd = _build_flowchart({"direction": "garbage", "nodes": [], "edges": []})
+    assert mmd.startswith("flowchart LR")
+
+
+def test_build_flowchart_sanitizes_non_ascii_ids() -> None:
+    """Если LLM зачем-то отдал id с кириллицей/пробелами — мы нормализуем."""
+    mmd = _build_flowchart(
+        {
+            "direction": "LR",
+            "nodes": [{"id": "Сервис 1", "label": "Сервис"}],
+            "edges": [{"from": "Сервис 1", "to": "Сервис 1"}],
+        }
+    )
+    # Сама id целиком превращается в `_`, попадает в fallback или N-префикс.
+    assert "Сервис" not in mmd.splitlines()[1].split('"')[0]
+
+
+def test_build_sequence_diagram_renders_participants_and_messages() -> None:
+    mmd = _build_sequence_diagram(
+        {
+            "kind": "sequence",
+            "participants": [
+                {"id": "U", "label": "User"},
+                {"id": "G"},  # без label — допустимо
+            ],
+            "messages": [
+                {"from": "U", "to": "G", "label": "ping"},
+                {"from": "G", "to": "U", "label": "pong", "kind": "reply"},
+            ],
+        }
+    )
+    assert mmd.startswith("sequenceDiagram")
+    assert '    participant U as "User"' in mmd
+    assert "    participant G" in mmd
+    assert "    U->>G: ping" in mmd
+    assert "    G-->>U: pong" in mmd
+
+
+def test_build_sequence_diagram_supports_async_kinds() -> None:
+    mmd = _build_sequence_diagram(
+        {
+            "kind": "sequence",
+            "participants": [{"id": "A"}, {"id": "B"}],
+            "messages": [
+                {"from": "A", "to": "B", "label": "fire-and-forget", "kind": "async_request"},
+                {"from": "B", "to": "A", "label": "later", "kind": "async_reply"},
+            ],
+        }
+    )
+    assert "A-)B: fire-and-forget" in mmd
+    assert "B--)A: later" in mmd
+
+
+def test_build_interaction_diagram_dispatches_on_kind() -> None:
+    seq = _build_interaction_diagram(
+        {"kind": "sequence", "participants": [{"id": "A"}], "messages": []}
+    )
+    assert seq.startswith("sequenceDiagram")
+    flow = _build_interaction_diagram(
+        {"kind": "flowchart", "direction": "LR", "nodes": [], "edges": []}
+    )
+    assert flow.startswith("flowchart LR")
+
+
+def test_build_flowchart_returns_empty_string_for_none() -> None:
+    assert _build_flowchart(None) == ""
+    assert _build_sequence_diagram(None) == ""
+    assert _build_interaction_diagram(None) == ""
+
+
+def test_sanitize_mermaid_id_strips_non_alnum_and_handles_digits() -> None:
+    assert _sanitize_mermaid_id("Hello World") == "Hello_World"
+    assert _sanitize_mermaid_id("3rd Party") == "N3rd_Party"
+    assert _sanitize_mermaid_id("Сервис") == "node"  # фоллбек — без ASCII букв
+    assert _sanitize_mermaid_id("") == "node"
+    assert _sanitize_mermaid_id(None, fallback="X") == "X"
+
+
+def test_escape_mermaid_label_handles_quotes_and_newlines() -> None:
+    assert _escape_mermaid_label('say "hi"') == "say #quot;hi#quot;"
+    assert _escape_mermaid_label("multi\nline") == "multi line"
+    assert _escape_mermaid_label(None) == ""

@@ -55,30 +55,46 @@ summary: |
     — `steps` — массив шагов. Каждый шаг — одна строка с описанием
       действия (например «API Gateway валидирует запрос и кладёт в Kafka»)
 
-  ▸ MERMAID_SEQUENCE_DIAGRAM — диаграмма ключевого сценария в синтаксисе
-    Mermaid. Это может быть либо `sequenceDiagram` (для строгих
-    последовательностей), либо `flowchart TD` (для разветвлённых процессов
-    с условиями). Зафиксируй тип через поле `diagram_kind`. Пример
-    sequenceDiagram:
+  ▸ INTERACTION_DIAGRAM — диаграмма ключевого сценария как
+    **структурированный объект** (не Mermaid-строка!). Mermaid собирается
+    рендерером детерминированно. Поле `kind` определяет тип:
 
+    Вариант 1 — `kind: "sequence"` (для строгих последовательностей):
+    — `participants` — список участников. Для каждого:
+        • `id` — короткий ASCII-идентификатор (`U`, `Gateway`, `Worker`).
+        • `label` (опционально) — человекочитаемое имя (любые символы).
+    — `messages` — список сообщений. Для каждого:
+        • `from`, `to` — id участников.
+        • `label` — текст сообщения.
+        • `kind` (опционально) — `request` (по умолчанию, `->>`),
+          `reply` (`-->>`, ответ), `async_request` (`-)`, fire-and-forget),
+          `async_reply` (`--)`).
+
+    Пример sequence:
+
+    ```json
+    "interaction_diagram": {
+      "kind": "sequence",
+      "participants": [
+        {"id": "U", "label": "User"},
+        {"id": "Gateway", "label": "API Gateway"},
+        {"id": "Worker", "label": "Worker"},
+        {"id": "Store", "label": "Store"}
+      ],
+      "messages": [
+        {"from": "U", "to": "Gateway", "label": "POST /request"},
+        {"from": "Gateway", "to": "Worker", "label": "enqueue"},
+        {"from": "Worker", "to": "Store", "label": "save"},
+        {"from": "Worker", "to": "Gateway", "label": "ack", "kind": "reply"},
+        {"from": "Gateway", "to": "U", "label": "202 Accepted", "kind": "reply"}
+      ]
+    }
     ```
-    sequenceDiagram
-        User->>Gateway: POST /request
-        Gateway->>Worker: enqueue
-        Worker->>Store: save
-        Worker-->>Gateway: ack
-        Gateway-->>User: 202 Accepted
-    ```
 
-    КАК УПАКОВАТЬ ДИАГРАММУ В JSON: каждое объявление и каждая стрелка-сообщение —
-    отдельная строка, разделённая `\n`. В JSON-значении это выглядит как:
-
-    `"mermaid_sequence_diagram": "sequenceDiagram\nUser->>Gateway: POST /request\nGateway->>Worker: enqueue\nWorker->>Store: save\nWorker-->>Gateway: ack\nGateway-->>User: 202 Accepted"`
-
-    Без `\n` диаграмма не отрендерится — рендерер ничего не угадывает.
-
-  ▸ DIAGRAM_KIND (опционально) — `sequence` или `flowchart`. Если не
-    указано — считается `sequence`.
+    Вариант 2 — `kind: "flowchart"` (для разветвлённых процессов с
+    условиями): структура та же, что у component_decomposition.component_diagram —
+    `direction`, `nodes` (с опциональным `shape`, включая `rhombus` для
+    условий), `edges` (с опциональным `label` и `kind` ∈ solid/dotted/thick).
 
   ▸ DATA_CONTRACTS (опционально) — формат данных, которыми обмениваются
     компоненты. Для каждой пары:
@@ -92,10 +108,10 @@ summary: |
 
   Правила:
   • Не выдумывай флоу, которых не следует из контекста или компонентов.
-  • В диаграмме используй те же имена узлов, что в component_decomposition.
-  • Если в подписи (например `as Имя` для participant) есть `&`, `<`, `>`
-    или другие спецсимволы — оборачивай её в двойные кавычки. Без кавычек
-    mermaid.js v11 падает на парсинге.
+  • Используй те же имена участников/узлов, что в component_decomposition
+    (`id` совпадает).
+  • `id` — короткий ASCII; любые подписи (в т.ч. `&`, `<`, `>` и кириллица) —
+    в `label` или `messages[].label`, экранирование делается рендерером.
   • Если deployment_topology доступен — учитывай размещение компонентов
     в зонах при описании сетевых вызовов.
 

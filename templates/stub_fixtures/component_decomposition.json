@@ -26,7 +26,26 @@
       "dependencies": []
     }
   ],
-  "mermaid_component_diagram": "flowchart LR\n    Gateway[API Gateway]\n    Processor[Request Processor]\n    RefStore[(Reference Data Store)]\n    ResultStore[(Result Store)]\n    Auth[Auth Provider]\n    Source[(Источник данных)]\n    Target[(Целевая система-потребитель)]\n    Gateway --> Auth\n    Gateway --> Processor\n    Processor --> RefStore\n    Processor --> ResultStore\n    RefStore --> Source\n    Processor --> Target",
+  "component_diagram": {
+    "direction": "LR",
+    "nodes": [
+      {"id": "Gateway", "label": "API Gateway"},
+      {"id": "Processor", "label": "Request Processor"},
+      {"id": "RefStore", "label": "Reference Data Store", "shape": "cylinder"},
+      {"id": "ResultStore", "label": "Result Store", "shape": "cylinder"},
+      {"id": "Auth", "label": "Auth Provider"},
+      {"id": "Source", "label": "Источник данных", "shape": "cylinder"},
+      {"id": "Target", "label": "Целевая система-потребитель", "shape": "cylinder"}
+    ],
+    "edges": [
+      {"from": "Gateway", "to": "Auth"},
+      {"from": "Gateway", "to": "Processor"},
+      {"from": "Processor", "to": "RefStore"},
+      {"from": "Processor", "to": "ResultStore"},
+      {"from": "RefStore", "to": "Source"},
+      {"from": "Processor", "to": "Target"}
+    ]
+  },
   "cross_cutting_concerns": [
     "Сквозное логирование запросов с trace-id",
     "Авторизация на API Gateway через внешний провайдер",

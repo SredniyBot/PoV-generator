@@ -59,15 +59,16 @@ summary: |
 
   • SYSTEM_CONTEXT — раздел про границы системы и внешний мир. Включай
     содержимое system_context_definition: акторы, внешние системы,
-    mermaid_context_diagram. Не дублируй структуру upstream'а — это и есть
-    раздел документа.
+    `context_diagram` (структурированный объект — рендерер сам соберёт
+    Mermaid). Не дублируй структуру upstream'а — это и есть раздел документа.
 
   • COMPONENTS — раздел про внутреннее устройство. Включай содержимое
     component_decomposition: компоненты с их ответственностями и
-    mermaid_component_diagram.
+    `component_diagram` (структурированный объект).
 
   • INTERACTIONS — раздел про динамику. Включай содержимое interaction_view:
-    сценарии и mermaid_sequence_diagram.
+    сценарии и `interaction_diagram` (структурированный объект — sequence
+    или flowchart, см. поле `kind`).
 
   • DEPLOYMENT (опционально) — таблица среды/зон/компонентов из
     deployment_topology, если задача выполнялась.
@@ -86,9 +87,10 @@ summary: |
     выполнен — раздел COMPONENTS опускается; не сочиняй компоненты «из
     головы».
 
-  • СОХРАНЯЙ MERMAID. Диаграммы из upstream-артефактов переносятся
-    как есть, в виде fenced ```mermaid блока. Не пересобирай и не
-    «улучшай» их синтаксис.
+  • СОХРАНЯЙ СТРУКТУРНЫЕ ДИАГРАММЫ. Объекты `context_diagram`,
+    `component_diagram`, `interaction_diagram` копируются из upstream-
+    артефактов как есть — не пересобирай их и не пытайся вернуть в
+    Mermaid-строку. Рендерер сам построит Mermaid из объекта.
 
   • EXECUTIVE_SUMMARY — содержательно, а не мета. Не пиши «документ
     описывает архитектуру»; пиши «система состоит из API Gateway,

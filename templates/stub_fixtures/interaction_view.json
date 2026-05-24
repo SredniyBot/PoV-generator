@@ -25,8 +25,26 @@
       ]
     }
   ],
-  "mermaid_sequence_diagram": "sequenceDiagram\n    participant U as Бизнес-инициатор\n    participant G as API Gateway\n    participant A as Auth Provider\n    participant P as Request Processor\n    participant R as Result Store\n    U->>G: POST /request\n    G->>A: validate token\n    A-->>G: ok\n    G->>P: forward request\n    P->>R: save result\n    R-->>P: ack\n    P-->>G: 202\n    G-->>U: 202 Accepted",
-  "diagram_kind": "sequence",
+  "interaction_diagram": {
+    "kind": "sequence",
+    "participants": [
+      {"id": "U", "label": "Бизнес-инициатор"},
+      {"id": "G", "label": "API Gateway"},
+      {"id": "A", "label": "Auth Provider"},
+      {"id": "P", "label": "Request Processor"},
+      {"id": "R", "label": "Result Store"}
+    ],
+    "messages": [
+      {"from": "U", "to": "G", "label": "POST /request"},
+      {"from": "G", "to": "A", "label": "validate token"},
+      {"from": "A", "to": "G", "label": "ok", "kind": "reply"},
+      {"from": "G", "to": "P", "label": "forward request"},
+      {"from": "P", "to": "R", "label": "save result"},
+      {"from": "R", "to": "P", "label": "ack", "kind": "reply"},
+      {"from": "P", "to": "G", "label": "202", "kind": "reply"},
+      {"from": "G", "to": "U", "label": "202 Accepted", "kind": "reply"}
+    ]
+  },
   "data_contracts": [
     {
       "from": "Бизнес-инициатор",

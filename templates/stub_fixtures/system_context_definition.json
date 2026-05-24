@@ -38,7 +38,23 @@
     "Все внешние системы доступны по сети из контура размещения",
     "Объём входных запросов на пилоте не превышает 100 в сутки"
   ],
-  "mermaid_context_diagram": "flowchart LR\n    Initiator[Бизнес-инициатор]\n    Operator[Оператор/администратор]\n    System[Проектируемая система]\n    Source[(Источник данных)]\n    Target[(Целевая система-потребитель)]\n    Initiator -->|подаёт запрос| System\n    Operator -->|настраивает| System\n    System -->|читает справочники| Source\n    Source -->|уведомляет об изменениях| System\n    System -->|передаёт результат| Target",
+  "context_diagram": {
+    "direction": "LR",
+    "nodes": [
+      {"id": "Initiator", "label": "Бизнес-инициатор"},
+      {"id": "Operator", "label": "Оператор/администратор"},
+      {"id": "System", "label": "Проектируемая система"},
+      {"id": "Source", "label": "Источник данных", "shape": "cylinder"},
+      {"id": "Target", "label": "Целевая система-потребитель", "shape": "cylinder"}
+    ],
+    "edges": [
+      {"from": "Initiator", "to": "System", "label": "подаёт запрос"},
+      {"from": "Operator", "to": "System", "label": "настраивает"},
+      {"from": "System", "to": "Source", "label": "читает справочники"},
+      {"from": "Source", "to": "System", "label": "уведомляет об изменениях"},
+      {"from": "System", "to": "Target", "label": "передаёт результат"}
+    ]
+  },
   "confidence": 0.78,
   "blocking_questions": []
 }
