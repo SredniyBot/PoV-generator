@@ -61,6 +61,10 @@ class ObjectiveSpec:
     done_artifact_refs: tuple[ObjectRef, ...]
     done_gate_refs: tuple[ObjectRef, ...]
     source_path: Path
+    # Опциональная декларация: какую методологию активировать при создании
+    # проекта с этим objective. Если ``None``, ``project_service.init_project``
+    # подставляет глобальный fallback (``process.lean_jtbd@1.0.0``).
+    default_methodology_pack_ref: ObjectRef | None = None
 
     @property
     def ref(self) -> ObjectRef:
@@ -576,6 +580,15 @@ def parse_objective(raw: dict[str, Any], source_path: Path) -> ObjectiveSpec:
     version = require_str(raw, "version", owner)
     parse_semver(version)
     done_when = require_mapping(raw, "done_when", owner)
+    raw_methodology = raw.get("default_methodology_pack")
+    if raw_methodology is None:
+        default_methodology_pack_ref: ObjectRef | None = None
+    elif isinstance(raw_methodology, str) and raw_methodology.strip():
+        default_methodology_pack_ref = ObjectRef.parse(raw_methodology.strip())
+    else:
+        raise ValidationError(
+            f"Expected non-empty string 'default_methodology_pack' in {owner}"
+        )
     return ObjectiveSpec(
         identifier=require_str(raw, "id", owner),
         version=version,
@@ -584,6 +597,7 @@ def parse_objective(raw: dict[str, Any], source_path: Path) -> ObjectiveSpec:
         done_artifact_refs=tuple(ObjectRef.parse(str(item)) for item in require_list(done_when, "artifacts", owner)),
         done_gate_refs=tuple(ObjectRef.parse(str(item)) for item in require_list(done_when, "gates", owner)),
         source_path=source_path,
+        default_methodology_pack_ref=default_methodology_pack_ref,
     )
 
 

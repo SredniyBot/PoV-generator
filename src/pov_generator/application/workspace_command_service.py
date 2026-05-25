@@ -289,12 +289,19 @@ class WorkspaceCommandService:
                 f"Обоснование: {selection.rationale}"
             )
         workspace = self._allocate_workspace(name)
+        objective_spec = snapshot.resolve_objective(objective_object_ref)
+        methodology_ref = (
+            objective_spec.default_methodology_pack_ref.as_string()
+            if objective_spec.default_methodology_pack_ref is not None
+            else None
+        )
         bootstrap = self._project_service.init_project(
             workspace=workspace,
             name=name.strip(),
             objective_ref=objective_object_ref,
             request_text=request_text.strip(),
             domain_packs=packs,
+            default_methodology_pack_ref=methodology_ref,
         )
         self._project_service.add_fact(
             workspace,

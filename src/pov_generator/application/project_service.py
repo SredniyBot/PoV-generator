@@ -42,7 +42,6 @@ from ..domain.project_state import ProjectManifest, ProjectState, StateEvent
 from ..domain.registry import DomainPackSpec, ObjectRef
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
-
 _INITIAL_REQUEST_POSITION_ID = "project.business_request"
 
 
@@ -71,15 +70,17 @@ class ProjectService:
         domain_packs: tuple[DomainPackSpec, ...] = (),
         default_methodology_pack_ref: str | None = None,
     ) -> ProjectBootstrap:
-        """Создать новый проект и записать его начальное состояние."""
+        """Создать новый проект и записать его начальное состояние.
+
+        ``default_methodology_pack_ref`` ожидается от вызывающего слоя — он
+        обычно подставляет ``ObjectiveSpec.default_methodology_pack_ref`` из
+        реестра (см. ``workspace_command_service.create_project`` и CLI
+        ``project init``). Если поле в YAML objective не задано и caller
+        ничего не передал — используем глобальный fallback
+        ``process.lean_jtbd@1.0.0``.
+        """
         if default_methodology_pack_ref is None:
-            # Дефолт методологии выбирается по семейству objective. Архитектурные
-            # потоки описательные — для них descriptive_decomposition; всё
-            # остальное (ТЗ и т.п.) — JTBD-decision.
-            if objective_ref.identifier.startswith("architecture."):
-                default_methodology_pack_ref = "process.descriptive_decomposition@1.0.0"
-            else:
-                default_methodology_pack_ref = "process.lean_jtbd@1.0.0"
+            default_methodology_pack_ref = "process.lean_jtbd@1.0.0"
         project_id = str(uuid.uuid4())
         created_at = utc_now_iso()
         manifest = ProjectManifest(

@@ -3,6 +3,9 @@ id: architecture.system_design
 version: 1.0.0
 title: Подготовить архитектурный документ из бизнес-запроса
 root: architecture.prepare_architecture_doc@1.0.0
+# Descriptive-style декомпозиция: scope → сущности → связи → проверка
+# полноты. Не decision-style — для архитектуры нет «вариантов на выбор».
+default_methodology_pack: process.descriptive_decomposition@1.0.0
 done_when:
   artifacts:
     - architecture.design_document@1.0.0

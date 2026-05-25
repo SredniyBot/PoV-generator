@@ -127,12 +127,19 @@ def _dispatch(
                     "confidence": selection.confidence,
                 }
             domain_packs = tuple(snapshot.resolve_domain_pack(pack_ref) for pack_ref in enabled_pack_refs)
+            objective_spec = snapshot.resolve_objective(objective_ref)
+            methodology_ref = (
+                objective_spec.default_methodology_pack_ref.as_string()
+                if objective_spec.default_methodology_pack_ref is not None
+                else None
+            )
             bootstrap = project_service.init_project(
                 workspace=Path(args.workspace),
                 name=args.name,
                 objective_ref=objective_ref,
                 request_text=request_text,
                 domain_packs=domain_packs,
+                default_methodology_pack_ref=methodology_ref,
             )
             planning_service.expand_graph(Path(args.workspace), snapshot)
             project_service.add_fact(

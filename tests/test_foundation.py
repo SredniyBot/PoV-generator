@@ -177,21 +177,96 @@ def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> Non
     assert active["process.lean_jtbd@1.0.0"].source == "bootstrap"
 
 
+def test_architecture_objective_declares_descriptive_methodology_in_yaml() -> None:
+    """architecture.system_design в YAML декларирует descriptive_decomposition
+    через поле ``default_methodology_pack``. Это поле читается верхним слоем
+    (CLI / workspace_command_service) и передаётся в init_project."""
+    registry_service, _, _, _ = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+
+    arch_spec = snapshot.resolve_objective(ObjectRef.parse("architecture.system_design@1.0.0"))
+    assert arch_spec.default_methodology_pack_ref is not None
+    assert (
+        arch_spec.default_methodology_pack_ref.as_string()
+        == "process.descriptive_decomposition@1.0.0"
+    )
+
+    tz_spec = snapshot.resolve_objective(ObjectRef.parse("common.requirements_specification@1.0.0"))
+    assert tz_spec.default_methodology_pack_ref is not None
+    assert (
+        tz_spec.default_methodology_pack_ref.as_string()
+        == "process.lean_jtbd@1.0.0"
+    )
+
+
 def test_architecture_objective_activates_descriptive_methodology(tmp_path: Path) -> None:
-    """Для objective семейства architecture.* дефолтная методология —
-    process.descriptive_decomposition, а не lean_jtbd."""
-    _, runtime, project_service, _ = build_services()
+    """init_project активирует ту методологию, которую ему передал caller.
+    Раньше дефолт выбирался по префиксу id; теперь — caller сам читает
+    ``ObjectiveSpec.default_methodology_pack_ref`` из реестра."""
+    registry_service, _, project_service, _ = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+
+    arch_spec = snapshot.resolve_objective(ObjectRef.parse("architecture.system_design@1.0.0"))
+    assert arch_spec.default_methodology_pack_ref is not None
     workspace = tmp_path / "arch"
     project_service.init_project(
         workspace=workspace,
-        name="Arch pilot",
-        objective_ref=ObjectRef.parse("architecture.system_design_pilot@1.0.0"),
+        name="Arch",
+        objective_ref=arch_spec.ref,
         request_text="Описать архитектуру сервиса.",
+        default_methodology_pack_ref=arch_spec.default_methodology_pack_ref.as_string(),
     )
     state = project_service.load_project_state(workspace)
     active = state.process.active_methodology_pack_records
     assert "process.descriptive_decomposition@1.0.0" in active
     assert "process.lean_jtbd@1.0.0" not in active
+
+
+def test_parse_objective_rejects_empty_default_methodology_pack(
+    tmp_path: Path,
+) -> None:
+    """parse_objective падает, если ``default_methodology_pack`` есть, но пустой.
+    Полное отсутствие поля допустимо — это просто fallback."""
+    import shutil as _shutil
+
+    from pov_generator.common.errors import ValidationError
+
+    registry_root = tmp_path / "templates"
+    _shutil.copytree(REPO_ROOT / "templates", registry_root)
+    obj_path = registry_root / "objectives" / "architecture" / "system_design.yaml"
+    raw = yaml.safe_load(obj_path.read_text(encoding="utf-8"))
+    raw["default_methodology_pack"] = "   "
+    obj_path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+    registry_service, _, _, _ = build_services(registry_root)
+    raised = False
+    try:
+        registry_service.validate()
+    except ValidationError:
+        raised = True
+    assert raised
+
+
+def test_init_project_falls_back_to_lean_jtbd_when_no_methodology_passed(
+    tmp_path: Path,
+) -> None:
+    """Если caller не передал ``default_methodology_pack_ref``, активируется
+    fallback ``process.lean_jtbd@1.0.0`` (обратная совместимость)."""
+    _, _, project_service, _ = build_services()
+    workspace = tmp_path / "fallback"
+    project_service.init_project(
+        workspace=workspace,
+        name="Fallback case",
+        objective_ref=ObjectRef.parse("common.requirements_specification@1.0.0"),
+        request_text="Минимальный запрос.",
+    )
+    state = project_service.load_project_state(workspace)
+    active = state.process.active_methodology_pack_records
+    assert "process.lean_jtbd@1.0.0" in active
 
 
 def test_set_methodology_keeps_active_pack(tmp_path: Path) -> None:

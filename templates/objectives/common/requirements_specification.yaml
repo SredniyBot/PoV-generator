@@ -3,6 +3,8 @@ id: common.requirements_specification
 version: 1.0.0
 title: Подготовить техническое задание из бизнес-запроса
 root: common.prepare_requirements_spec@1.0.0
+# Decision-style декомпозиция: цели → JTBD → варианты → решения.
+default_methodology_pack: process.lean_jtbd@1.0.0
 done_when:
   artifacts:
     - common.requirements_spec@1.0.0
