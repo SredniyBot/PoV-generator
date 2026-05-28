@@ -177,10 +177,11 @@ def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> Non
     assert active["process.lean_jtbd@1.0.0"].source == "bootstrap"
 
 
-def test_architecture_objective_declares_descriptive_methodology_in_yaml() -> None:
-    """architecture.system_design в YAML декларирует descriptive_decomposition
-    через поле ``default_methodology_pack``. Это поле читается верхним слоем
-    (CLI / workspace_command_service) и передаётся в init_project."""
+def test_objectives_declare_default_methodology_in_yaml() -> None:
+    """Оба objective'а декларируют ``default_methodology_pack`` в YAML.
+    Поле читается верхним слоем (CLI / workspace_command_service) и
+    передаётся в init_project. Архитектура использует тот же lean_jtbd, что
+    и ТЗ — архитектурные решения тоже выбор из вариантов."""
     registry_service, _, _, _ = build_services()
     snapshot, report = registry_service.validate()
     assert report.is_valid
@@ -189,7 +190,7 @@ def test_architecture_objective_declares_descriptive_methodology_in_yaml() -> No
     assert arch_spec.default_methodology_pack_ref is not None
     assert (
         arch_spec.default_methodology_pack_ref.as_string()
-        == "process.descriptive_decomposition@1.0.0"
+        == "process.lean_jtbd@1.0.0"
     )
 
     tz_spec = snapshot.resolve_objective(ObjectRef.parse("common.requirements_specification@1.0.0"))
@@ -200,7 +201,7 @@ def test_architecture_objective_declares_descriptive_methodology_in_yaml() -> No
     )
 
 
-def test_architecture_objective_activates_descriptive_methodology(tmp_path: Path) -> None:
+def test_architecture_objective_activates_methodology_from_yaml(tmp_path: Path) -> None:
     """init_project активирует ту методологию, которую ему передал caller.
     Раньше дефолт выбирался по префиксу id; теперь — caller сам читает
     ``ObjectiveSpec.default_methodology_pack_ref`` из реестра."""
@@ -220,8 +221,8 @@ def test_architecture_objective_activates_descriptive_methodology(tmp_path: Path
     )
     state = project_service.load_project_state(workspace)
     active = state.process.active_methodology_pack_records
-    assert "process.descriptive_decomposition@1.0.0" in active
-    assert "process.lean_jtbd@1.0.0" not in active
+    assert "process.lean_jtbd@1.0.0" in active
+    assert "process.descriptive_decomposition@1.0.0" not in active
 
 
 def test_parse_objective_rejects_empty_default_methodology_pack(
