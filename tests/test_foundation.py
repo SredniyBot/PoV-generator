@@ -72,6 +72,23 @@ def test_registry_validation_detects_unknown_domain_slot(tmp_path: Path) -> None
     assert any("unknown.slot" in issue.message for issue in report.errors)
 
 
+def test_objective_picker_excludes_chain_targets(tmp_path: Path) -> None:
+    """Пикер «Новый проект» (list_objectives) не предлагает цели-продолжения
+    цепочки: architecture.system_design — продолжение ТЗ (объявлено в его
+    compatible_next_objectives), формируется из ТЗ, а не из бизнес-запроса,
+    поэтому скрыто из выбора. ТЗ-цель остаётся точкой входа."""
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+
+    registry_service, runtime, _project_service, planning_service = build_services()
+    query_service = WorkspaceQueryService(
+        WorkspaceCatalog(tmp_path, runtime), registry_service, runtime, planning_service
+    )
+    refs = {item.objective_ref for item in query_service.list_objectives()}
+    assert "common.requirements_specification@1.0.0" in refs
+    assert "architecture.system_design@1.0.0" not in refs
+
+
 def test_planning_tolerates_orphaned_task_templates(tmp_path: Path) -> None:
     """Сохранённые в графе задачи, чьи шаблоны удалены из реестра (напр. после
     варианта B — common.review_requirements_spec / requirements_spec_review),

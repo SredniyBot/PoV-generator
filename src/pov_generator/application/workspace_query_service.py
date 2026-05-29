@@ -111,6 +111,17 @@ class WorkspaceQueryService:
         snapshot, report = self._registry_service.validate()
         if not report.is_valid:
             raise ConflictError("Registry невалиден. Невозможно отобразить список целей.")
+        # Цели-продолжения цепочки (объявленные в чьём-то
+        # compatible_next_objectives) достижимы только через
+        # activate_next_objective и НЕ предлагаются как точка входа при
+        # создании проекта: например, architecture.system_design формируется
+        # из артефактов ТЗ, а не из сырого бизнес-запроса. Сама цель остаётся
+        # в реестре — цепочка её по-прежнему резолвит.
+        chain_targets = {
+            next_ref.as_string()
+            for objective in snapshot.objectives.values()
+            for next_ref in objective.compatible_next_objectives
+        }
         return tuple(
             sorted(
                 (
@@ -121,6 +132,7 @@ class WorkspaceQueryService:
                         required_artifact_count=len(objective.done_artifact_refs),
                     )
                     for objective in snapshot.objectives.values()
+                    if objective.ref.as_string() not in chain_targets
                 ),
                 key=lambda item: item.title,
             )
