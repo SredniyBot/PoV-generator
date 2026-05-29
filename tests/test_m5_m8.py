@@ -158,7 +158,7 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     ) = init_workspace(tmp_path)
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
-    # Stub-flow доходит до момента, когда review_report готов и
+    # Stub-flow доходит до момента, когда requirements_spec готов и
     # human_approval gate `client.requirements_signoff@1.0.0` блокирует
     # завершение objective: ждём согласования заказчика.
     assert result.stopped_reason == "planner_blocked"
@@ -179,11 +179,8 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
         "stakeholder_map",
         "solution_option_inventory",
         "requirements_spec",
-        "review_report",
     }.issubset(artifact_roles)
     assert all(run.status == "passed" for run in runtime.list_validation_runs(workspace))
-    state = project_service.load_project_state(workspace)
-    assert "specification_reviewed" in state.process.readiness
 
 
 def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) -> None:
@@ -221,7 +218,6 @@ def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) ->
         "integration_operating_model",
         "ui_requirements_outline",
         "requirements_spec",
-        "review_report",
     }.issubset(artifact_roles)
 
     spec_artifact = runtime.latest_artifact_by_role(workspace, "requirements_spec")
@@ -231,84 +227,6 @@ def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) ->
     assert payload["security_constraints_detail"]["mandatory_controls"]
     assert payload["integration_model"]["delivery_pattern"]
     assert payload["frontend_requirements"]["screens"]
-
-
-def test_validation_creates_escalation_for_failed_review_report(tmp_path: Path) -> None:
-    (
-        workspace,
-        snapshot,
-        runtime,
-        _project_service,
-        _planning_service,
-        _context_service,
-        _execution_service,
-        validation_service,
-        _workflow_service,
-    ) = init_workspace(tmp_path)
-    task = next(task for task in runtime.list_tasks(workspace) if task.template_ref == "common.requirements_spec_review@1.0.0")
-
-    artifact = ArtifactRecord(
-        artifact_id=str(uuid.uuid4()),
-        project_id=task.project_id,
-        artifact_role="review_report",
-        title="Провести ревью ТЗ (review_report)",
-        description="Искусственно созданный артефакт для теста",
-        artifact_format="json",
-        artifact_kind="primary",
-        created_by_task_id=task.task_id,
-        storage_path=f"artifacts/{uuid.uuid4()}.json",
-        created_at="2026-04-20T00:00:00+00:00",
-        metadata=ArtifactMetadata(template_ref=task.template_ref),
-    )
-    runtime.store_artifact(
-        workspace,
-        artifact=artifact,
-        content=json.dumps(
-            {
-                "overall_status": "needs_changes",
-                "summary": "Документ требует доработки.",
-                "confidence": 0.62,
-                "strengths": ["Структура документа понятна."],
-                "issues": [{"severity": "error", "message": "Нет функциональных требований."}],
-                "recommendations": ["Исправить замечания."],
-                "blocking_questions": [],
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    bundle = ExecutionBundle(
-        request=ExecutionRequest(
-            execution_run_id=str(uuid.uuid4()),
-            project_id=task.project_id,
-            task_id=task.task_id,
-            template_ref=task.template_ref,
-            context_manifest_id="manual-test",
-            provider="stub",
-            model="stub",
-            actor="test",
-        ),
-        result=ExecutionResult(
-            execution_run_id=str(uuid.uuid4()),
-            status="succeeded",
-            outputs=(ExecutionOutput(artifact_id=artifact.artifact_id, artifact_role="review_report"),),
-            trace_ids=(),
-        ),
-        traces=(),
-    )
-
-    validation_run = validation_service.validate_execution(
-        workspace,
-        snapshot,
-        task_id=task.task_id,
-        execution_bundle=bundle,
-    )
-
-    assert validation_run.status == "failed"
-    assert any("Ревью не прошло" in finding.message for finding in validation_run.findings)
-    escalations = runtime.list_escalations(workspace)
-    assert len(escalations) == 1
-    assert escalations[0].reason_code == "validation_failed"
 
 
 def test_requirements_spec_schema_depends_on_active_domain_packs() -> None:

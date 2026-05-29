@@ -6,7 +6,6 @@ status: active
 requires:
   artifacts:
     - common.requirements_spec@1.0.0
-    - common.review_report@1.0.0
 check:
   type: human_approval
   approver_role: client

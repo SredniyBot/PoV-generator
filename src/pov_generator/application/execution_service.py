@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -853,9 +852,9 @@ class ExecutionService:
         # W3.3: статические payload'ы вынесены в `templates/stub_fixtures/`.
         # Добавление нового task_template со статическим stub'ом теперь — это
         # JSON-файл + новая запись в реестре, без правки этого Python.
-        # Compose-payload'ы (requirements_spec, review_report,
-        # solution_tradeoff_matrix) — ниже, потому что они зависят от
-        # parsed_inputs и domain flags.
+        # Compose-payload'ы (requirements_spec, solution_tradeoff_matrix,
+        # design_document) — ниже, потому что они зависят от parsed_inputs
+        # и domain flags.
         fixture_payload = self._load_stub_fixture(artifact_role, business_request, goal)
         if fixture_payload is not None:
             return fixture_payload
@@ -1056,45 +1055,6 @@ class ExecutionService:
                     "dependency_risks": integration_model.get("dependency_risks", []),
                 }
             return spec
-        if artifact_role == "review_report":
-            spec_payload = self._find_payload(parsed_inputs, "Подготовить структурированное ТЗ", "Подготовка структурированного ТЗ")
-            if not spec_payload:
-                spec_payload = self._find_payload(parsed_inputs, "Подготовка черновика ТЗ")
-            issues = []
-            blocking_questions: list[str] = []
-            if not isinstance(spec_payload, dict) or not spec_payload.get("functional_requirements"):
-                issues.append({"severity": "error", "message": "В ТЗ отсутствуют функциональные требования."})
-            if frontend_enabled and (
-                not isinstance(spec_payload, dict)
-                or "frontend_requirements" not in spec_payload
-                or not spec_payload["frontend_requirements"].get("screens")
-            ):
-                issues.append({"severity": "error", "message": "Для проекта с интерфейсом не заполнен раздел требований к интерфейсу."})
-            if ml_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("ml_requirements")):
-                issues.append({"severity": "critical", "message": "Для проекта с аналитикой и ML в ТЗ отсутствует раздел требований к модели и данным.", "area": "ml", "requires_user_input": False})
-            if security_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("security_constraints_detail")):
-                issues.append({"severity": "critical", "message": "Для проекта с ограничениями ИБ в ТЗ отсутствует раздел безопасности и приватности.", "area": "security", "requires_user_input": False})
-            if integration_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("integration_model")):
-                issues.append({"severity": "critical", "message": "Для проекта с интеграциями в ТЗ отсутствует раздел интеграционной модели.", "area": "integration", "requires_user_input": False})
-            if isinstance(spec_payload, dict) and not spec_payload.get("open_questions"):
-                blocking_questions = []
-            status = "passed" if not issues else "needs_changes"
-            return {
-                "overall_status": status,
-                "summary": "Черновик ТЗ можно принимать." if status == "passed" else "Черновик ТЗ требует доработки.",
-                "confidence": 0.9 if status == "passed" else 0.62,
-                "strengths": [
-                    "Структура документа выдержана",
-                    "Есть связь с целями, рамкой этапа и требованиями к результату",
-                ],
-                "issues": issues,
-                "blocking_questions": blocking_questions,
-                "recommendations": (
-                    ["Можно переходить к следующему этапу."]
-                    if status == "passed"
-                    else ["Исправить замечания и повторно провести ревью."]
-                ),
-            }
         if artifact_role == "design_document":
             system_context = self._find_payload(
                 parsed_inputs, "Описать системный контекст", "Системный контекст"

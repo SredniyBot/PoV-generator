@@ -12,8 +12,6 @@ children:
     task: common.analyze_solution@1.0.0
   - id: spec_generation
     task: common.generate_requirements_spec@1.0.0
-  - id: spec_review
-    task: common.review_requirements_spec@1.0.0
 slots:
   - id: project.additional_analysis
     title: Дополнительный анализ проекта

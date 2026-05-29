@@ -50,7 +50,7 @@ def test_registry_validation_passes_for_task_graph_corpus() -> None:
     assert len(snapshot.artifact_contracts) >= 16
     assert len(snapshot.domain_packs) == 4
     assert len(snapshot.methodology_packs) >= 1
-    assert len(snapshot.quality_gates) >= 2
+    assert len(snapshot.quality_gates) >= 1
     assert len(snapshot.vocabularies) == 5
 
 
@@ -93,11 +93,11 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     tasks = runtime.list_tasks(workspace)
 
     assert state.process.root_task_id is not None
-    # Обновлено: после Phase 3 (добавлены glossary_drafting,
-    # deployment_topology, project_risk_register к 4 уже добавленным в Phase 2)
-    # общее число задач выросло с 16 до 23. Privacy_impact_assessment живёт
+    # Обновлено: после Phase 3 число задач было 23; после удаления LLM-ревью
+    # (вариант B — убраны композит review_requirements_spec + leaf
+    # requirements_spec_review) стало 21. Privacy_impact_assessment живёт
     # в security-домене и появляется только когда активен security pack.
-    assert len(tasks) == 23
+    assert len(tasks) == 21
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
 
@@ -158,15 +158,6 @@ def test_methodology_pack_is_registered_with_stages() -> None:
     assert "goal_framing" in pack.reasoning_artifact.required_stages
     trivial_stages = pack.stages_for_complexity("trivial")
     assert all(stage.identifier != "option_generation" for stage in trivial_stages)
-
-
-def test_quality_gate_normalizes_legacy_check_type() -> None:
-    registry_service, _, _, _ = build_services()
-    snapshot, report = registry_service.validate()
-
-    assert report.is_valid
-    gate = snapshot.resolve_quality_gate("common.requirements_spec_review_passed@1.0.0")
-    assert gate.check_type == "automated_review"
 
 
 def test_default_methodology_is_activated_on_project_init(tmp_path: Path) -> None:

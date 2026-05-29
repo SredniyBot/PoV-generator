@@ -1301,45 +1301,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "additionalProperties": False,
             "properties": requirements_spec_properties,
         },
-        "review_report": {
-            "type": "object",
-            "required": ["overall_status", "summary", "strengths", "issues", "recommendations"],
-            "additionalProperties": False,
-            "properties": {
-                "overall_status": {
-                    "type": "string",
-                    # Расширено: prompt задачи `requirements_spec_review` использует
-                    # более выразительные значения. Старые `needs_changes` и
-                    # `needs_user_input` остаются для обратной совместимости.
-                    "enum": [
-                        "passed",
-                        "passed_with_remarks",
-                        "needs_changes",
-                        "needs_user_input",
-                        "failed_needs_rework",
-                    ],
-                },
-                "confidence": {"type": "number"},
-                "summary": {"type": "string"},
-                "strengths": _string_array_schema(),
-                "issues": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["severity", "message"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "area": {"type": "string"},
-                            "severity": {"type": "string", "enum": ["info", "warning", "error", "critical"]},
-                            "message": {"type": "string"},
-                            "requires_user_input": {"type": "boolean"},
-                        },
-                    },
-                },
-                "recommendations": _string_array_schema(),
-                "blocking_questions": _string_array_schema(),
-            },
-        },
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")
@@ -2569,26 +2530,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
 
     if artifact_role == "requirements_spec":
         return _render_requirements_spec(payload)
-
-    if artifact_role == "review_report":
-        lines = [
-            "# Отчёт ревью",
-            f"## Статус\n{payload['overall_status']}",
-            f"## Резюме\n{payload['summary']}",
-        ]
-        # Уверенность вынесена в метаданные артефакта (overall_confidence)
-        # и отображается отдельно в UI — в markdown-теле её не дублируем.
-        lines.extend(["\n## Сильные стороны", *[f"- {item}" for item in payload["strengths"]], "\n## Замечания"])
-        for issue in payload["issues"]:
-            area = issue.get("area")
-            prefix = f"[{area}] " if area else ""
-            user_flag = " (нужен ввод пользователя)" if issue.get("requires_user_input") else ""
-            lines.append(f"- [{issue['severity']}] {prefix}{issue['message']}{user_flag}")
-        if payload.get("blocking_questions"):
-            lines.extend(["\n## Блокирующие вопросы", *[f"- {item}" for item in payload["blocking_questions"]]])
-        lines.append("\n## Рекомендации")
-        lines.extend(f"- {item}" for item in payload["recommendations"])
-        return "\n".join(lines)
 
     if artifact_role == "glossary_terms":
         entries = payload.get("entries") or []
