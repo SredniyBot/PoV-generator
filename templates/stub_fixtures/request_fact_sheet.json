@@ -18,6 +18,5 @@
   "mentioned_metrics_and_targets": [
     "Целевые метрики и ожидаемый эффект, если они присутствуют в брифе"
   ],
-  "confidence": 0.9,
-  "blocking_questions": []
+  "confidence": 0.9
 }

@@ -23,7 +23,6 @@ from typing import Literal
 from .process_state import ProcessState
 from .project_knowledge import ProjectKnowledge
 
-
 StateLayer = Literal["knowledge", "process"]
 """Слой, к которому относится событие изменения состояния."""
 

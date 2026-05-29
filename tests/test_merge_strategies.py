@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -24,12 +23,9 @@ import pytest
 from pov_generator.application.merge_strategies import structural_merge
 from pov_generator.common.errors import ConflictError, ValidationError
 from pov_generator.domain.registry import (
-    ConflictPolicy,
     MergeConfig,
-    MergeStrategy,
     parse_task_template,
 )
-
 
 # --- 1. structural_merge: unit ---------------------------------------------
 

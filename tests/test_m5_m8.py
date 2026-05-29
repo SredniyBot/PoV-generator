@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from pov_generator.application.artifact_contracts import artifact_schema
-from pov_generator.application.clarification_service import ClarificationService
+from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.domain_pack_selection_service import DomainPackSelectionService
 from pov_generator.application.execution_service import ExecutionBundle, ExecutionService
@@ -18,10 +18,13 @@ from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.domain.artifacts import ArtifactMetadata, ArtifactRecord
+from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
+
+SIGNOFF_GATE_TITLE = "Согласование ТЗ с заказчиком"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
@@ -34,7 +37,7 @@ def build_services(registry_root: Path | None = None):
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    validation_service = ValidationService(runtime, ClarificationService(runtime, provider="stub"))
+    validation_service = ValidationService(runtime, CheckpointService(runtime))
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     return (
         registry_service,
@@ -127,20 +130,38 @@ def test_context_builder_collects_previous_artifacts_for_spec_generation(tmp_pat
 
 
 def _approve_requirements_signoff(runtime: SqliteRuntime, workspace: Path) -> None:
-    """Хелпер: после первого `run_until_blocked` находит открытое
-    уточнение `client.requirements_signoff@1.0.0` и отвечает на него
-    `approved`. Нужен, потому что objective не закроется, пока заказчик
-    не согласовал ТЗ через human_approval gate."""
-    clarification_service = ClarificationService(runtime, provider="stub")
-    target = next(
-        req
-        for req in runtime.list_clarification_requests(workspace)
-        if req.source_type == "quality_gate"
-        and req.source_id == "client.requirements_signoff@1.0.0"
-        and req.status == "open"
+    """v3.1 helper: после первого `run_until_blocked` находит pending
+    CheckpointSession с decision sign-off ('Согласование ТЗ с заказчиком')
+    и финализирует её ответом `approved`. Без этого objective не закроется,
+    потому что human_approval gate на ТЗ блокирует завершение цели."""
+    manifest = runtime.load_manifest(workspace)
+    checkpoint_service = CheckpointService(runtime)
+    sessions = runtime.list_checkpoint_sessions(
+        workspace, project_id=manifest.project_id, status="pending"
     )
-    clarification_service.answer_clarification(
-        workspace, request_id=target.request_id, selected_option_ids=("approved",)
+    for session in sessions:
+        signoff_decisions = []
+        for decision_id in session.decision_ids:
+            decision = runtime.get_decision(workspace, decision_id)
+            if SIGNOFF_GATE_TITLE in decision.title:
+                signoff_decisions.append(decision)
+        if not signoff_decisions:
+            continue
+        answers = tuple(
+            CheckpointAnswer(
+                decision_id=decision.decision_id,
+                kind="select_alternative",
+                selected_option_id="approved",
+            )
+            for decision in signoff_decisions
+        )
+        checkpoint_service.submit_answers(
+            workspace, session_id=session.session_id, answers=answers
+        )
+        return
+    raise AssertionError(
+        f"Не найдена pending CheckpointSession с signoff-decision (title contains "
+        f"{SIGNOFF_GATE_TITLE!r}) для проекта {manifest.project_id!r}"
     )
 
 
@@ -271,7 +292,6 @@ def test_validation_creates_escalation_for_failed_review_report(tmp_path: Path) 
                 "strengths": ["Структура документа понятна."],
                 "issues": [{"severity": "error", "message": "Нет функциональных требований."}],
                 "recommendations": ["Исправить замечания."],
-                "blocking_questions": [],
             },
             ensure_ascii=False,
         ),
@@ -369,7 +389,6 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
                 "implicit_risks": ["Очень высокая неопределенность"],
                 "ambiguous_points": ["Почти все"],
                 "confidence": 0.2,
-                "blocking_questions": ["Нужна ясная формулировка бизнес-результата."],
             },
             ensure_ascii=False,
         ),
@@ -404,7 +423,10 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
 
     assert validation_run.status == "failed"
     assert any(finding.finding_type == "low_confidence" for finding in validation_run.findings)
-    assert any(finding.finding_type == "needs_user_input" for finding in validation_run.findings)
+    # v3.1: blocking_questions удалены из контрактов; needs_user_input
+    # больше не поднимается из произвольных артефактов — только из
+    # review_report со статусом "needs_user_input". low_confidence сам по
+    # себе остаётся сигналом и валит статус валидации.
 
 
 def test_domain_pack_selector_stub_picks_relevant_packs() -> None:

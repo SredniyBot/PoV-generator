@@ -8,6 +8,10 @@ domain: common
 executor: llm
 # Ревью: только финальное decision-suжение; промежуточных стадий нет.
 methodology: validation
+# v3.6: review-задача — это судит уже принятые решения, не источник
+# новых. Identification генерирует только meta-шум типа «глубина
+# проверки», «строгость порога passed_with_remarks».
+decision_identification: false
 requires:
   state: [business_request]
   artifacts:

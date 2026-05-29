@@ -16,8 +16,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.planning_service import PlanningService
@@ -28,7 +26,7 @@ from pov_generator.domain.artifacts import (
     ArtifactRecord,
     ArtifactRelations,
 )
-from pov_generator.domain.registry import ObjectRef, TemplateSpec, MergeConfig
+from pov_generator.domain.registry import MergeConfig, ObjectRef, TemplateSpec
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 

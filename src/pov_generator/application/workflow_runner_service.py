@@ -236,6 +236,34 @@ class WorkflowRunnerService:
                 )
                 return
 
+            # v3.0: задача приостановлена pre-flight checkpoint'ом.
+            # Workflow корректно завершается со специальным stop_reason —
+            # это не ошибка, а ожидание пользователя. После submit_answers
+            # пользователь увидит блокирующий task в UI и сможет нажать
+            # retry; новый run подхватит финализированную сессию.
+            if result.validation_status == "paused_for_checkpoint":
+                self._append_step_and_finalize(
+                    workspace,
+                    run_id,
+                    step_index=step_index,
+                    step_started_at=step_started_at,
+                    planning_outcome=result.planning_outcome,
+                    selected_step_id=result.selected_step_id,
+                    task_id=result.task_id,
+                    task_key=result.selected_step_id,
+                    execution_run_id=result.execution_run_id,
+                    validation_status=result.validation_status,
+                    error_message=step_record.error_message,
+                    final_status="completed",
+                    stop_reason="awaiting_checkpoint",
+                    summary=(
+                        f"Ждём ответа пользователя в checkpoint-сессии "
+                        f"{result.checkpoint_session_id} перед сборкой "
+                        f"{result.selected_step_id}."
+                    ),
+                )
+                return
+
             # Validation провалилась.
             #
             # Default (continue_past_validation_failure=False): останавливаем

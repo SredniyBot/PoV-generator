@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   BrowserRouter,
   Link,
@@ -17,11 +17,8 @@ import {
   CheckCircle2,
   ChevronRight,
   Download,
-  ExternalLink,
   FileJson2,
   Layers3,
-  MessageSquareWarning,
-  PencilLine,
   Plus,
   RefreshCcw,
   ShieldAlert,
@@ -33,36 +30,28 @@ import {
 import { marked } from "marked";
 
 import { api } from "./api";
-import { DecisionLogPage } from "./DecisionLogPage";
+import {
+  CheckpointSessionPage,
+  CheckpointsListPage,
+  DecisionsRegistryPage,
+} from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
-  ActionDescriptor,
   ArtifactDetailView,
-  ArtifactSummaryView,
-  ClarificationItemView,
   CommandResultView,
   DomainPackCatalogItemView,
   ObjectiveCatalogItemView,
   ProjectCreatedView,
-  ProjectClarificationsView,
   ProjectDebugView,
-  ProjectReviewView,
-  ProjectOverviewView,
   ProjectShellView,
-  ProjectSituationView,
-  ProjectStateView,
-  ProjectTaskGraphView,
-  ProjectTimelineView,
   ProjectionName,
   TaskNodeView,
-  TimelineEntryView,
 } from "./types";
 import { useProjectRealtime } from "./useProjectRealtime";
 import {
-  ArtifactRail,
   Button,
   CommandBar,
   Drawer,
@@ -71,12 +60,9 @@ import {
   Modal,
   ProjectRail,
   SectionCard,
-  SituationPanel,
   StatusPill,
-  TimelineFeed,
   WorkspaceHeader,
   WorkspaceTabs,
-  TaskGraphTree,
   cx,
   formatDateTime,
   prettyLabel,
@@ -88,7 +74,6 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   "situation",
   "timeline",
   "artifacts",
-  "clarifications",
   "review",
   "state",
   // C6: aggregated L1 / L2 projections — when these fire, MissionControl
@@ -114,8 +99,6 @@ interface WorkspaceActionApi {
   closeGap: (gapId: string) => void;
   setReadiness: (payload: { dimension: string; status: string; blocking: boolean; confidence: number }) => void;
   enableDomainPack: (packRef: string) => void;
-  answerClarification: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
-  acceptAssumption: (clarificationId: string) => void;
   setClarificationMode: (mode: string) => void;
   notify: (tone: ToastTone, title: string, description: string) => void;
   busy: boolean;
@@ -197,27 +180,6 @@ function titleForCommandStatus(status: string | null | undefined): string {
     default:
       return "Команда не выполнена";
   }
-}
-
-function useTimelineFreshness(entries: TimelineEntryView[]): number[] {
-  const previousTopSequence = useRef<number>(entries[0]?.sequence ?? 0);
-  const [recentSequences, setRecentSequences] = useState<number[]>([]);
-
-  useEffect(() => {
-    const newest = entries[0]?.sequence ?? 0;
-    const previous = previousTopSequence.current;
-    if (newest > previous) {
-      const fresh = entries.filter((entry) => entry.sequence > previous).map((entry) => entry.sequence);
-      setRecentSequences(fresh);
-      const timer = window.setTimeout(() => setRecentSequences([]), 1400);
-      previousTopSequence.current = newest;
-      return () => window.clearTimeout(timer);
-    }
-    previousTopSequence.current = newest;
-    return undefined;
-  }, [entries]);
-
-  return recentSequences;
 }
 
 function App() {
@@ -371,7 +333,6 @@ function WorkspaceRoute({
       /* ignore */
     }
   }, []);
-  const [flashProjection, setFlashProjection] = useState<ProjectionName | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
 
   const shellQuery = useQuery({
@@ -379,9 +340,19 @@ function WorkspaceRoute({
     queryFn: () => api.getShell(projectId),
     enabled: Boolean(projectId),
   });
-  const headerClarificationsQuery = useQuery({
-    queryKey: projectionKey(projectId, "clarifications"),
-    queryFn: () => api.getClarifications(projectId),
+  // v3.0: pending-checkpoint бэйдж в header'е.
+  const headerCheckpointsQuery = useQuery({
+    queryKey: ["checkpoints-list", projectId],
+    queryFn: () => api.getCheckpoints(projectId),
+    enabled: Boolean(projectId),
+    // Pollим раз в 5 сек чтобы бэйдж появился даже при отсутствии WS-события.
+    refetchInterval: 5000,
+  });
+  // v3.1: clarification_mode теперь хранится в Layer A state-снапшоте.
+  // Используем его как источник истины для селектора режима в шапке.
+  const headerStateQuery = useQuery({
+    queryKey: projectionKey(projectId, "state"),
+    queryFn: () => api.getState(projectId),
     enabled: Boolean(projectId),
   });
 
@@ -422,8 +393,6 @@ function WorkspaceRoute({
       closeGap: (gapId: string) => void commandRequest(() => api.closeGap(projectId, gapId)),
       setReadiness: (payload) => void commandRequest(() => api.setReadiness(projectId, payload)),
       enableDomainPack: (packRef: string) => void commandRequest(() => api.enableDomainPack(projectId, packRef)),
-      answerClarification: (payload) => void commandRequest(() => api.answerClarification(projectId, payload)),
-      acceptAssumption: (clarificationId: string) => void commandRequest(() => api.acceptAssumption(projectId, clarificationId)),
       setClarificationMode: (mode: string) => void commandRequest(() => api.setClarificationMode(projectId, mode)),
       notify,
       busy: commandBusy,
@@ -446,8 +415,6 @@ function WorkspaceRoute({
       // Инвалидируем активный run и список — UI подхватит прогресс.
       void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
       void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
-      setFlashProjection(projection);
-      window.setTimeout(() => setFlashProjection(null), 1200);
     },
   });
 
@@ -482,12 +449,21 @@ function WorkspaceRoute({
       <WorkspaceHeader
         shell={shellQuery.data}
         connectionStatus={realtimeStatus}
-        clarificationMode={headerClarificationsQuery.data?.mode}
+        clarificationMode={headerStateQuery.data?.clarification_mode}
         onClarificationModeChange={commandMutations.setClarificationMode}
         modePending={commandMutations.busy}
-        openClarificationCount={headerClarificationsQuery.data?.open_count}
-        blockingClarificationCount={headerClarificationsQuery.data?.blocking_count}
-        onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
+        pendingCheckpointCount={headerCheckpointsQuery.data?.pending_count}
+        pendingCheckpointSessionId={
+          headerCheckpointsQuery.data?.items.find((s) => s.status === "pending")?.session_id ?? null
+        }
+        onOpenCheckpoints={() => {
+          const pending = headerCheckpointsQuery.data?.items.filter((s) => s.status === "pending") ?? [];
+          if (pending.length === 1 && pending[0]) {
+            navigate(`/projects/${projectId}/checkpoints/${pending[0].session_id}`);
+          } else {
+            navigate(`/projects/${projectId}/checkpoints`);
+          }
+        }}
         actions={<CommandBar projectId={projectId} />}
       />
       {/* Workflow-блок выше табов: пользователь сразу видит, что идёт
@@ -500,8 +476,7 @@ function WorkspaceRoute({
           element={
             <ProjectOverviewV2
               projectId={projectId}
-              onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
-              onOpenDecisionLog={() => navigate(`/projects/${projectId}/decisions`)}
+              onOpenDecisions={() => navigate(`/projects/${projectId}/decisions`)}
               onOpenArtifactFull={(artifactId) =>
                 navigate(`/projects/${projectId}/artifacts/${artifactId}`)
               }
@@ -510,36 +485,20 @@ function WorkspaceRoute({
             />
           }
         />
-        {/* Legacy «mission control» / «активность» оставлены до L6-8 как fallback */}
-        <Route
-          path="mission"
-          element={
-            <MissionControlPage
-              projectId={projectId}
-              flashProjection={flashProjection}
-              commands={commandMutations}
-            />
-          }
-        />
-        <Route
-          path="activity"
-          element={
-            <OverviewPage
-              projectId={projectId}
-              flashProjection={flashProjection}
-              onAction={(action) => handleAction(action, projectId, navigate, commandMutations)}
-              commands={commandMutations}
-            />
-          }
-        />
+        {/* v3.1: legacy /mission и /activity удалены — обе страницы
+            были построены вокруг ClarificationRequest, который ушёл
+            в Decision (v3.0 реестр). */}
         <Route path="artifacts" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="artifacts/:artifactId" element={<ArtifactsPage projectId={projectId} />} />
         <Route path="task-graph" element={<TaskGraphPage projectId={projectId} />} />
+        {/* v3.1: legacy /clarifications и /decision-log удалены — Decision
+            (v3.0 реестр) полностью покрывает эти сценарии. */}
+        <Route path="decisions" element={<DecisionsRegistryPage projectId={projectId} />} />
+        <Route path="checkpoints" element={<CheckpointsListPage projectId={projectId} />} />
         <Route
-          path="clarifications"
-          element={<ClarificationsPage projectId={projectId} commands={commandMutations} />}
+          path="checkpoints/:sessionId"
+          element={<CheckpointSessionPage projectId={projectId} />}
         />
-        <Route path="decisions" element={<DecisionLogPage projectId={projectId} />} />
         <Route path="methodology" element={<MethodologyPage projectId={projectId} />} />
         {/* Диагностические страницы — прямой доступ по URL.
             Вкладки в WorkspaceTabs больше нет: эти разделы (Состояние /
@@ -737,7 +696,9 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
                       {labelForStepStatus(step.validation_status, step.planning_outcome)}
                     </span>
                     {durationSec !== null ? (
-                      <span className="workflow-run__step-duration">{durationSec}с</span>
+                      <span className="workflow-run__step-duration">
+                        {formatElapsedHMS(durationSec)}
+                      </span>
                     ) : null}
                     {step.error_message ? (
                       <span className="workflow-run__step-error" title={step.error_message}>
@@ -767,9 +728,36 @@ function cleanStepSummary(summary: string): string {
   return summary.replace(/^Шаг\s*\d+\s*\/\s*\d+\s*:\s*/i, "");
 }
 
-// Real-time секундомер для in-progress задачи. Обновляется раз в секунду
-// через requestAnimationFrame-таймер; считает время от updated_at задачи
-// (= момент перехода в in_progress) до текущей минуты.
+/**
+ * Унифицированный формат «прошедшего времени» в часах/минутах/секундах.
+ *
+ * Правила:
+ *   < 60 секунд → "45с"
+ *   < 1 часа    → "1м 23с"
+ *   ≥ 1 часа    → "2ч 05м 07с"
+ *
+ * Используется и для in-progress секундомера (live tick раз в секунду),
+ * и для финального длительности завершённого шага. Раньше эти два места
+ * использовали разные форматы (финал — голые секунды, "83с"), что сбивало
+ * пользователя. Один helper — одна семантика.
+ */
+function formatElapsedHMS(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) {
+    return `${h}ч ${String(m).padStart(2, "0")}м ${String(sec).padStart(2, "0")}с`;
+  }
+  if (m > 0) {
+    return `${m}м ${String(sec).padStart(2, "0")}с`;
+  }
+  return `${sec}с`;
+}
+
+// Real-time секундомер для in-progress задачи. Обновляется раз в секунду;
+// считает время от updated_at задачи (= момент перехода в in_progress)
+// до текущего тика.
 function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -780,10 +768,11 @@ function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
   const startMs = new Date(startedAtIso).getTime();
   if (Number.isNaN(startMs)) return null;
   const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
-  const mm = Math.floor(elapsedSec / 60);
-  const ss = elapsedSec % 60;
-  const label = mm > 0 ? `${mm}м ${String(ss).padStart(2, "0")}с` : `${ss}с`;
-  return <span className="workflow-run__inprogress-timer">{label}</span>;
+  return (
+    <span className="workflow-run__inprogress-timer">
+      {formatElapsedHMS(elapsedSec)}
+    </span>
+  );
 }
 
 function labelForStepStatus(
@@ -831,658 +820,6 @@ function labelForStopReason(reason: string): string {
     default: return reason;
   }
 }
-
-
-function MissionControlPage({
-  projectId,
-  flashProjection,
-  commands,
-}: {
-  projectId: string;
-  flashProjection: ProjectionName | null;
-  commands: WorkspaceActionApi;
-}) {
-  const navigate = useNavigate();
-  const overviewQuery = useQuery({
-    queryKey: projectionKey(projectId, "overview"),
-    queryFn: () => api.getOverview(projectId),
-    refetchInterval: 30_000,
-  });
-
-  if (overviewQuery.isLoading) {
-    return <LoadingPanel title="Загружаем mission control…" />;
-  }
-  if (overviewQuery.isError || !overviewQuery.data) {
-    return (
-      <SectionCard title="Mission Control недоступен" tone="danger">
-        <EmptyState
-          title="Не удалось загрузить агрегированный обзор"
-          description={String((overviewQuery.error as Error)?.message ?? "Повторите обновление страницы.")}
-        />
-      </SectionCard>
-    );
-  }
-
-  const overview = overviewQuery.data;
-  const progress = overview.objective_progress;
-  const hasArtifactGoal = progress.artifacts_required > 0;
-  const hasGateGoal = progress.gates_required > 0;
-  const artifactsPct = hasArtifactGoal
-    ? Math.min(100, Math.round((progress.artifacts_ready / progress.artifacts_required) * 100))
-    : 0;
-  const gatesPct = hasGateGoal
-    ? Math.min(100, Math.round((progress.gates_passed / progress.gates_required) * 100))
-    : 0;
-  const flashOverview = flashProjection === "situation" || flashProjection === "clarifications";
-
-  return (
-    <div className={cx("mission-control", flashOverview && "mission-control--flash")}>
-      <SectionCard title="Где мы сейчас">
-        <div className="mc-stage">
-          <div className="mc-stage__row">
-            <span className="mc-stage__label">Стадия</span>
-            <span className="mc-stage__value">{overview.stage_summary || "не определена"}</span>
-          </div>
-          <div className="mc-stage__row">
-            <span className="mc-stage__label">Сейчас</span>
-            <span className="mc-stage__value">{overview.current_activity || "система ожидает следующего шага"}</span>
-          </div>
-          <div className="mc-stage__row">
-            <span className="mc-stage__label">Режим участия</span>
-            <span className="mc-stage__value">{prettyLabel(overview.clarification_mode)}</span>
-          </div>
-        </div>
-      </SectionCard>
-
-      {(hasArtifactGoal || hasGateGoal) && (
-        <SectionCard title="Прогресс по цели">
-          <div className="mc-progress">
-            {hasArtifactGoal && (
-              <div className="mc-progress__row">
-                <div className="mc-progress__label">
-                  <span>Артефакты</span>
-                  <span>
-                    {progress.artifacts_ready}/{progress.artifacts_required}
-                  </span>
-                </div>
-                <div className="mc-progress__bar">
-                  <div className="mc-progress__bar-fill" style={{ width: `${artifactsPct}%` }} />
-                </div>
-              </div>
-            )}
-            {hasGateGoal && (
-              <div className="mc-progress__row">
-                <div className="mc-progress__label">
-                  <span>Gates</span>
-                  <span>
-                    {progress.gates_passed}/{progress.gates_required}
-                  </span>
-                </div>
-                <div className="mc-progress__bar">
-                  <div className="mc-progress__bar-fill" style={{ width: `${gatesPct}%` }} />
-                </div>
-              </div>
-            )}
-          </div>
-        </SectionCard>
-      )}
-
-      {overview.critical_clarifications.length > 0 && (
-        <SectionCard title={`Критичные уточнения (${overview.critical_clarifications.length})`} tone="warning">
-          <ul className="mc-list">
-            {overview.critical_clarifications.slice(0, 5).map((item) => (
-              <li key={item.clarification_id} className="mc-list__row">
-                <button
-                  type="button"
-                  className="mc-list__link"
-                  onClick={() => navigate(`/projects/${projectId}/activity?clarification=${item.clarification_id}`)}
-                >
-                  <span className="mc-list__title">{item.title}</span>
-                  <span className={cx("mc-pill", `mc-pill--${item.priority}`)}>{item.priority}</span>
-                  <span className="mc-list__meta">
-                    {prettyLabel(item.source_type)} · {prettyLabel(item.blocking_scope)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </SectionCard>
-      )}
-
-      {overview.key_artifacts.length > 0 && (
-        <SectionCard title="Ключевые артефакты">
-          <ul className="mc-list">
-            {overview.key_artifacts.slice(0, 5).map((item) => (
-              <li key={item.artifact_id} className="mc-list__row">
-                <Link
-                  to={`/projects/${projectId}/artifacts/${item.artifact_id}`}
-                  className="mc-list__link"
-                >
-                  <span className="mc-list__title">{item.title}</span>
-                  <span className="mc-list__meta">{prettyLabel(item.artifact_role)}</span>
-                  <span className="mc-list__meta">{formatDateTime(item.created_at)}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </SectionCard>
-      )}
-
-      <SectionCard title="Контекст рассуждения">
-        <div className="mc-stage">
-          <div className="mc-stage__row">
-            <span className="mc-stage__label">Методология</span>
-            <span className="mc-stage__value">
-              {overview.active_methodology ? (
-                <Link to={`/projects/${projectId}/methodology`}>{overview.active_methodology}</Link>
-              ) : (
-                "не назначена"
-              )}
-            </span>
-          </div>
-          <div className="mc-stage__row">
-            <span className="mc-stage__label">Domain packs</span>
-            <span className="mc-stage__value">
-              {overview.active_domain_packs.length > 0 ? overview.active_domain_packs.join(", ") : "нет активных"}
-            </span>
-          </div>
-        </div>
-      </SectionCard>
-
-      <div className="mc-footer">
-        <Button tone="secondary" onClick={commands.runNext} disabled={commands.busy}>
-          Запустить следующий шаг
-        </Button>
-        <Link to={`/projects/${projectId}/activity`} className="mc-footer__link">
-          Полный экран активности →
-        </Link>
-      </div>
-    </div>
-  );
-}
-
-
-// ---- L2 ClarificationsPage (W5.2) ---------------------------------------
-
-type ClarFilter = "open" | "answered" | "assumed" | "deferred" | "all";
-
-function ClarificationsPage({
-  projectId,
-  commands,
-}: {
-  projectId: string;
-  commands: WorkspaceActionApi;
-}) {
-  const [filter, setFilter] = useState<ClarFilter>("open");
-  const [wizardId, setWizardId] = useState<string | null>(null);
-  const clarQuery = useQuery({
-    queryKey: projectionKey(projectId, "clarifications"),
-    queryFn: () => api.getClarifications(projectId),
-  });
-
-  if (clarQuery.isLoading || !clarQuery.data) {
-    return <LoadingPanel title="Загружаем вопросы…" />;
-  }
-
-  const view = clarQuery.data;
-  const counts = {
-    open: view.open_count,
-    answered: view.answered_count,
-    assumed: view.assumed_count,
-    deferred: view.items.filter((i) => i.status === "deferred").length,
-    blocking: view.blocking_count,
-    // V1: «решено автоматически» = всё, что система закрыла без явного
-    // действия пользователя (assumed_auto / deferred_auto). UI'у нужно,
-    // чтобы менеджер на autopilot всё равно видел масштаб того, что
-    // система делает за него.
-    auto_resolved: view.items.filter((i) => i.auto_resolved).length,
-  };
-  const filtered = view.items.filter((item) => {
-    if (filter === "all") return true;
-    return item.status === filter;
-  });
-
-  return (
-    <div className="clar-page">
-      <SectionCard title="Вопросы к менеджеру">
-        <div className="clar-hero">
-          <ClarCounter label="Открытых" value={counts.open} tone="active" emphasis />
-          <ClarCounter label="Блокирующих" value={counts.blocking} tone={counts.blocking > 0 ? "danger" : "muted"} />
-          <ClarCounter label="🤖 Авто-решений" value={counts.auto_resolved} tone="active" />
-          <ClarCounter label="Отвечено" value={counts.answered} tone="success" />
-          <ClarCounter label="Допущений" value={counts.assumed} tone="muted" />
-          <ClarCounter label="Отложено" value={counts.deferred} tone="warning" />
-        </div>
-        <div className="clar-toolbar">
-          <div className="segmented">
-            {(["open", "answered", "assumed", "deferred", "all"] as ClarFilter[]).map((f) => (
-              <button
-                key={f}
-                type="button"
-                className={cx("segmented__item", filter === f && "segmented__item--active")}
-                onClick={() => setFilter(f)}
-              >
-                {labelForClarFilter(f)} ({f === "all" ? view.items.length : counts[f as keyof typeof counts] ?? 0})
-              </button>
-            ))}
-          </div>
-          {counts.open > 0 ? (
-            <Button
-              tone="primary"
-              onClick={() => {
-                const firstOpen = view.items.find((i) => i.status === "open");
-                if (firstOpen) setWizardId(firstOpen.clarification_id);
-              }}
-            >
-              {/* После каждого ответа модалка закрывается. Кнопка открывает
-                  первый открытый вопрос; пользователь возвращается в список
-                  и кликает на следующий, когда сам готов. */}
-              Открыть первый открытый ({counts.open})
-            </Button>
-          ) : null}
-        </div>
-        <ul className="clar-list">
-          {filtered.length === 0 ? (
-            <li className="clar-list__empty">
-              <EmptyState
-                title={filter === "open" ? "Открытых вопросов нет" : "Нет записей в этой категории"}
-                description={
-                  filter === "open"
-                    ? "Когда система решит спросить — карточка появится здесь и в шапке проекта."
-                    : "Переключи фильтр выше, чтобы увидеть остальные."
-                }
-              />
-            </li>
-          ) : (
-            filtered.map((item) => (
-              <li key={item.clarification_id}>
-                <ClarRowCard
-                  item={item}
-                  onOpen={() => setWizardId(item.clarification_id)}
-                />
-              </li>
-            ))
-          )}
-        </ul>
-      </SectionCard>
-      {wizardId ? (
-        <ClarificationWizardModal
-          projectId={projectId}
-          startId={wizardId}
-          onClose={() => setWizardId(null)}
-          commands={commands}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function ClarCounter({
-  label,
-  value,
-  tone,
-  emphasis,
-}: {
-  label: string;
-  value: number;
-  tone: "active" | "success" | "warning" | "danger" | "muted";
-  emphasis?: boolean;
-}) {
-  return (
-    <div className={cx("clar-counter", `clar-counter--${tone}`, emphasis && "clar-counter--emphasis")}>
-      <span className="clar-counter__value">{value}</span>
-      <span className="clar-counter__label">{label}</span>
-    </div>
-  );
-}
-
-function ClarRowCard({
-  item,
-  onOpen,
-}: {
-  item: ClarificationItemView;
-  onOpen: () => void;
-}) {
-  const blocking = item.blocking_scope !== "none";
-  return (
-    <button type="button" className={cx("clar-row", blocking && "clar-row--blocking", item.auto_resolved && "clar-row--auto")} onClick={onOpen}>
-      <div className="clar-row__head">
-        <StatusPill tone={toneForClarificationPriority(item.priority)}>{prettyLabel(item.priority)}</StatusPill>
-        <span className={cx("clar-role", `clar-role--${item.decision_owner_role}`)}>
-          {prettyDecisionOwnerRole(item.decision_owner_role)}
-        </span>
-        <span className={cx("clar-blocking", `clar-blocking--${item.blocking_scope}`)}>
-          {labelForBlockingScope(item.blocking_scope)}
-        </span>
-        {item.auto_resolved ? (
-          <span className="clar-auto-badge" title="Закрыто системой автоматически (autopilot/допущение)">
-            🤖 авто
-          </span>
-        ) : null}
-        <span className="clar-row__mode">
-          мин. режим: <strong>{labelForEngagementMode(item.min_participation_mode)}</strong>
-        </span>
-        <span className="clar-row__status">{labelForClarStatus(item.status)}</span>
-      </div>
-      <div className="clar-row__body">
-        <span className="clar-row__question">{item.question}</span>
-        {item.resolution_summary ? (
-          <span className="clar-row__answer">→ {item.resolution_summary}</span>
-        ) : null}
-      </div>
-      <div className="clar-row__meta">
-        <span>{formatDateTime(item.updated_at)}</span>
-        <span>{item.affected_task_ids.length} задач · {item.related_artifact_ids.length} артефактов</span>
-      </div>
-    </button>
-  );
-}
-
-function labelForClarFilter(filter: ClarFilter): string {
-  switch (filter) {
-    case "open": return "Открытые";
-    case "answered": return "Отвечено";
-    case "assumed": return "Допущения";
-    case "deferred": return "Отложено";
-    case "all": return "Все";
-  }
-}
-
-function labelForBlockingScope(scope: string): string {
-  switch (scope) {
-    case "objective": return "🔒 блокирует цель";
-    case "subtree": return "⚠ блокирует ветку";
-    case "task": return "⛔ блокирует задачу";
-    case "none": return "не блокирует";
-    default: return scope;
-  }
-}
-
-function labelForEngagementMode(mode: string): string {
-  switch (mode) {
-    case "autopilot": return "автопилот";
-    case "balanced": return "сбалансированный";
-    case "control": return "контроль";
-    case "expert": return "эксперт";
-    default: return mode;
-  }
-}
-
-function labelForClarStatus(status: string): string {
-  switch (status) {
-    case "open": return "Ожидает ответа";
-    case "answered": return "Отвечено";
-    case "assumed": return "Принято допущение";
-    case "deferred": return "Отложено";
-    case "cancelled": return "Закрыто";
-    default: return prettyLabel(status);
-  }
-}
-
-// ---- Wizard-модалка с auto-advance (W5.2) ------------------------------
-
-function ClarificationWizardModal({
-  projectId,
-  startId,
-  onClose,
-  commands,
-}: {
-  projectId: string;
-  startId: string;
-  onClose: () => void;
-  commands: WorkspaceActionApi;
-}) {
-  const [currentId, setCurrentId] = useState(startId);
-  const [historyVisible, setHistoryVisible] = useState(false);
-  const queryClient = useQueryClient();
-
-  const detailQuery = useQuery({
-    queryKey: [projectId, "clarification-detail", currentId],
-    queryFn: () => api.getClarificationDetail(projectId, currentId),
-    enabled: Boolean(currentId),
-  });
-  const eventsQuery = useQuery({
-    queryKey: [projectId, "clarification-events", currentId],
-    queryFn: () => api.getClarificationEvents(projectId, currentId),
-    enabled: Boolean(currentId) && historyVisible,
-  });
-
-  // После любого успешного действия (ответ/допущение/отложить):
-  // 1) инвалидируем список вопросов и сводку проекта,
-  // 2) показываем toast с обратной связью + сколько ещё осталось,
-  // 3) ЕСЛИ это был последний открытый вопрос — авто-запускаем workflow,
-  //    чтобы пользователь не нажимал «Run» вручную,
-  // 4) закрываем модалку, возвращая пользователя в инбокс.
-  //
-  // Раньше Save переключал на следующий вопрос внутри модалки. Это
-  // мешало пользователю «выдохнуть» между ответами и приводило к
-  // ощущению, что система не реагирует на действие. Теперь Save =
-  // явное действие с явным закрытием.
-  const closeAfterAction = async (kind: "answered" | "assumed" | "deferred" | "reopened") => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "clarifications") }),
-      queryClient.invalidateQueries({ queryKey: [projectId, "clarification-detail", currentId] }),
-      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "situation") }),
-      queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "overview") }),
-    ]);
-    if (kind === "reopened") {
-      // Пере-ответ: модалку оставляем открытой — пользователь хочет
-      // дать новый ответ прямо сейчас.
-      commands.notify("warning", "Вопрос открыт заново", "Можно дать новый ответ.");
-      return;
-    }
-    const next = await api.getNextOpenClarification(projectId, currentId);
-    const remaining = next ? "ещё есть открытые вопросы" : "открытых вопросов больше нет";
-    const titleByKind = {
-      answered: "Ответ сохранён",
-      assumed: "Допущение принято",
-      deferred: "Вопрос отложен",
-    } as const;
-    commands.notify("success", titleByKind[kind], remaining);
-    if (!next) {
-      // Все открытые вопросы закрыты — продолжаем workflow автоматически.
-      commands.runUntilBlocked();
-    }
-    onClose();
-  };
-
-  const deferMutation = useMutation({
-    mutationFn: (reason: string | undefined) => api.deferClarification(projectId, currentId, reason),
-    onSuccess: () => closeAfterAction("deferred"),
-    onError: (error) =>
-      commands.notify("danger", "Не удалось отложить", error instanceof Error ? error.message : "Неизвестная ошибка"),
-  });
-  const reopenMutation = useMutation({
-    mutationFn: () => api.reopenClarification(projectId, currentId),
-    onSuccess: () => closeAfterAction("reopened"),
-    onError: (error) =>
-      commands.notify("danger", "Не удалось пере-открыть", error instanceof Error ? error.message : "Неизвестная ошибка"),
-  });
-  const answerMutation = useMutation({
-    mutationFn: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) =>
-      api.answerClarification(projectId, payload),
-    onSuccess: () => closeAfterAction("answered"),
-    onError: (error) =>
-      commands.notify("danger", "Не удалось сохранить ответ", error instanceof Error ? error.message : "Неизвестная ошибка"),
-  });
-  const acceptMutation = useMutation({
-    mutationFn: () => api.acceptAssumption(projectId, currentId),
-    onSuccess: () => closeAfterAction("assumed"),
-    onError: (error) =>
-      commands.notify("danger", "Не удалось принять допущение", error instanceof Error ? error.message : "Неизвестная ошибка"),
-  });
-
-  // ESC закрывает модалку. Раньше это был только клик по overlay'у — это
-  // не очевидно и не работало с клавиатуры.
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
-
-  if (detailQuery.isLoading || !detailQuery.data) {
-    return (
-      <Modal open onClose={onClose} title="Загружаем вопрос…">
-        <LoadingPanel title="Загружаем вопрос…" />
-      </Modal>
-    );
-  }
-  const detail = detailQuery.data;
-  const events = eventsQuery.data ?? [];
-  const isOpen = detail.status === "open";
-  const isAnswered = detail.status === "answered" || detail.status === "assumed";
-  const isDeferred = detail.status === "deferred";
-  const busy =
-    answerMutation.isPending ||
-    acceptMutation.isPending ||
-    deferMutation.isPending ||
-    reopenMutation.isPending;
-
-  // Заголовок модалки отражает реальный статус вопроса. Раньше всегда
-  // показывалось одинаковое «Вопрос к менеджеру», что вводило в
-  // заблуждение, когда юзер открывал уже отвеченный вопрос.
-  const modalTitle = isOpen
-    ? "Вопрос требует решения"
-    : detail.status === "answered"
-    ? "Уже отвечено"
-    : detail.status === "assumed"
-    ? "Принято допущение"
-    : isDeferred
-    ? "Вопрос отложен"
-    : "Вопрос";
-
-  return (
-    <Modal open onClose={onClose} title={modalTitle}>
-      <div className="clar-wizard">
-        <div className="clar-wizard__chips">
-          <StatusPill tone={toneForClarificationPriority(detail.priority)}>
-            {prettyLabel(detail.priority)}
-          </StatusPill>
-          <span className={cx("clar-role", `clar-role--${detail.decision_owner_role}`)}>
-            {prettyDecisionOwnerRole(detail.decision_owner_role)}
-          </span>
-          <span className={cx("clar-blocking", `clar-blocking--${detail.blocking_scope}`)}>
-            {labelForBlockingScope(detail.blocking_scope)}
-          </span>
-          <span className="clar-wizard__mode">
-            мин. режим: <strong>{labelForEngagementMode(detail.min_participation_mode)}</strong>
-          </span>
-          <span className="clar-wizard__status">{labelForClarStatus(detail.status)}</span>
-        </div>
-        <div className="clar-wizard__question">
-          <h3>{detail.question}</h3>
-          <p>{clarificationDescription(detail)}</p>
-        </div>
-
-        {isOpen ? (
-          <ClarificationAnswerForm
-            clarification={detail}
-            onAnswer={(payload) => answerMutation.mutate(payload)}
-            onAcceptAssumption={() => acceptMutation.mutate()}
-            pending={busy}
-            variant="modal"
-          />
-        ) : (
-          <div className="clarification-resolution">
-            <span>{isAnswered ? "Ответ" : isDeferred ? "Причина" : "Резолюция"}</span>
-            <p>{detail.resolution_summary || detail.default_assumption || "—"}</p>
-          </div>
-        )}
-
-        <div className="clar-wizard__actions">
-          {isOpen ? (
-            <Button
-              tone="secondary"
-              onClick={() => deferMutation.mutate("Пропущено пользователем.")}
-              disabled={busy}
-              busy={deferMutation.isPending}
-            >
-              Отложить
-            </Button>
-          ) : null}
-          {(isAnswered || isDeferred) ? (
-            <Button
-              tone="secondary"
-              onClick={() => reopenMutation.mutate()}
-              disabled={busy}
-              busy={reopenMutation.isPending}
-            >
-              Переответить
-            </Button>
-          ) : null}
-          <Button
-            tone="secondary"
-            onClick={() => setHistoryVisible((v) => !v)}
-            disabled={busy}
-          >
-            {historyVisible ? "Скрыть историю" : "История"}
-          </Button>
-          <div className="clar-wizard__nav">
-            {/* «Дальше» для уже-закрытых вопросов — навигация по журналу.
-                Для open-вопроса навигации нет: пользователь либо отвечает,
-                либо откладывает, либо закрывает модалку (ESC / клик мимо). */}
-            {!isOpen ? (
-              <Button
-                tone="secondary"
-                onClick={async () => {
-                  const next = await api.getNextOpenClarification(projectId, currentId);
-                  if (next) {
-                    setCurrentId(next.clarification_id);
-                    setHistoryVisible(false);
-                  } else {
-                    commands.notify("success", "Открытых вопросов больше нет", "Можно закрыть окно.");
-                  }
-                }}
-                disabled={busy}
-              >
-                Следующий открытый →
-              </Button>
-            ) : null}
-            <Button tone="secondary" onClick={onClose} disabled={busy}>
-              Закрыть
-            </Button>
-          </div>
-        </div>
-
-        {historyVisible && (
-          <div className="clar-wizard__history">
-            <h4>История вопроса</h4>
-            {events.length === 0 ? (
-              <p className="clar-wizard__history-empty">События не зафиксированы.</p>
-            ) : (
-              <ol>
-                {events.map((evt) => (
-                  <li key={evt.event_id}>
-                    <span className="clar-wizard__history-type">{labelForEventType(evt.event_type)}</span>
-                    <span className="clar-wizard__history-time">{formatDateTime(evt.created_at)}</span>
-                    {Object.keys(evt.payload).length > 0 ? (
-                      <pre>{JSON.stringify(evt.payload, null, 2)}</pre>
-                    ) : null}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
-function labelForEventType(type: string): string {
-  switch (type) {
-    case "created": return "Создан";
-    case "assumed_auto": return "Принято авто-допущение";
-    case "answered": return "Получен ответ";
-    case "assumed": return "Принято допущение";
-    case "deferred": return "Отложено";
-    case "reopened": return "Возобновлён";
-    default: return type;
-  }
-}
-
 
 // ---- L2 MethodologyPage --------------------------------------------------
 
@@ -1940,635 +1277,6 @@ function ReasoningField({ field, value }: { field: string; value: unknown }) {
     </details>
   );
 }
-
-
-function OverviewPage({
-  projectId,
-  flashProjection,
-  onAction,
-  commands,
-}: {
-  projectId: string;
-  flashProjection: ProjectionName | null;
-  onAction: (action: ActionDescriptor) => void;
-  commands: WorkspaceActionApi;
-}) {
-  const [selectedEvent, setSelectedEvent] = useState<TimelineEntryView | null>(null);
-  const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
-  const [selectedClarification, setSelectedClarification] = useState<ClarificationItemView | null>(null);
-
-  const taskGraphQuery = useQuery({
-    queryKey: projectionKey(projectId, "task_graph"),
-    queryFn: () => api.getTaskGraph(projectId),
-  });
-  const situationQuery = useQuery({
-    queryKey: projectionKey(projectId, "situation"),
-    queryFn: () => api.getSituation(projectId),
-  });
-  const timelineQuery = useQuery({
-    queryKey: projectionKey(projectId, "timeline"),
-    queryFn: () => api.getTimeline(projectId),
-  });
-  const clarificationsQuery = useQuery({
-    queryKey: projectionKey(projectId, "clarifications"),
-    queryFn: () => api.getClarifications(projectId),
-  });
-  const artifactsQuery = useQuery({
-    queryKey: projectionKey(projectId, "artifacts"),
-    queryFn: () => api.getArtifacts(projectId),
-  });
-  const reviewQuery = useQuery({
-    queryKey: projectionKey(projectId, "review"),
-    queryFn: () => api.getReview(projectId),
-  });
-  const stateQuery = useQuery({
-    queryKey: projectionKey(projectId, "state"),
-    queryFn: () => api.getState(projectId),
-  });
-
-  const recentSequences = useTimelineFreshness(timelineQuery.data?.entries ?? []);
-
-  if (
-    taskGraphQuery.isLoading ||
-    situationQuery.isLoading ||
-    timelineQuery.isLoading ||
-    clarificationsQuery.isLoading ||
-    artifactsQuery.isLoading ||
-    reviewQuery.isLoading ||
-    stateQuery.isLoading
-  ) {
-    return <LoadingPanel title="Сборка overview…" />;
-  }
-
-  if (
-    !taskGraphQuery.data ||
-    !situationQuery.data ||
-    !timelineQuery.data ||
-    !clarificationsQuery.data ||
-    !artifactsQuery.data ||
-    !reviewQuery.data ||
-    !stateQuery.data
-  ) {
-    return (
-      <SectionCard title="Не удалось собрать overview" tone="danger">
-        <EmptyState title="Часть проектных проекций недоступна" description="Повторите обновление страницы." />
-      </SectionCard>
-    );
-  }
-
-  const primaryClarification = pickPrimaryClarification(clarificationsQuery.data.items);
-  const taskList = flattenTaskNodes(taskGraphQuery.data.nodes);
-
-  const openClarification = (clarification: ClarificationItemView) => {
-    setSelectedClarification(clarification);
-  };
-
-  const openAction = (action: ActionDescriptor) => {
-    if (action.target_view === "clarification" && action.target_id) {
-      const clarification = clarificationsQuery.data.items.find((item) => item.clarification_id === action.target_id);
-      if (clarification) {
-        openClarification(clarification);
-        return;
-      }
-    }
-    onAction(action);
-  };
-
-  return (
-    <>
-      <ProjectCockpit
-        situation={situationQuery.data}
-        taskGraph={taskGraphQuery.data}
-        artifacts={artifactsQuery.data}
-        review={reviewQuery.data}
-        clarifications={clarificationsQuery.data}
-        onAction={openAction}
-        onRunUntilBlocked={commands.runUntilBlocked}
-        pending={commands.busy}
-        flash={flashProjection === "situation" || flashProjection === "task_graph"}
-      />
-
-      {primaryClarification ? (
-        <BlockingClarificationPanel
-          clarification={primaryClarification}
-          onOpenAnswer={() => openClarification(primaryClarification)}
-          flash={flashProjection === "clarifications"}
-        />
-      ) : null}
-
-      <div className="overview-grid">
-        <div className="overview-grid__main">
-          <TimelineFeed
-            entries={timelineQuery.data.entries}
-            onOpenEntry={(entry) => {
-              if (entry.detail_view === "clarification" && entry.entity_id) {
-                const clarification = clarificationsQuery.data.items.find((item) => item.clarification_id === entry.entity_id);
-                if (clarification) {
-                  openClarification(clarification);
-                  return;
-                }
-              }
-              setSelectedEvent(entry);
-            }}
-            recentSequences={recentSequences}
-            flash={flashProjection === "timeline"}
-          />
-          <WorkMapSummary tasks={taskList} onOpenTask={setSelectedTask} flash={flashProjection === "task_graph"} />
-        </div>
-        <div className="overview-grid__side">
-          <AttentionPanel
-            situation={situationQuery.data}
-            clarifications={clarificationsQuery.data}
-            onAction={openAction}
-            onOpenClarification={openClarification}
-            onRetryTask={commands.retryTask}
-            retryTaskId={retryTaskIdForSituation(situationQuery.data)}
-          />
-          <ClarificationCenter
-            clarifications={clarificationsQuery.data}
-            highlightedClarificationId={primaryClarification?.clarification_id}
-            onOpenClarification={openClarification}
-            onAcceptAssumption={commands.acceptAssumption}
-            pending={commands.busy}
-            flash={flashProjection === "clarifications"}
-          />
-          <ArtifactRail
-            projectId={projectId}
-            artifacts={artifactsQuery.data}
-            review={reviewQuery.data}
-            state={stateQuery.data}
-            flashArtifacts={flashProjection === "artifacts" || flashProjection === "review" || flashProjection === "state"}
-          />
-        </div>
-      </div>
-
-      <Drawer
-        open={Boolean(selectedEvent)}
-        title={selectedEvent?.title ?? "Событие"}
-        onClose={() => setSelectedEvent(null)}
-      >
-          {selectedEvent ? (
-            <TimelineEventDetail
-              event={selectedEvent}
-              projectId={projectId}
-              onOpenAction={onAction}
-              onRetryTask={commands.retryTask}
-            />
-          ) : null}
-        </Drawer>
-
-        <Drawer open={Boolean(selectedTask)} title={selectedTask?.title ?? "Задача"} onClose={() => setSelectedTask(null)}>
-          {selectedTask ? <TaskNodeDetail task={selectedTask} onRetryTask={commands.retryTask} projectId={projectId} /> : null}
-        </Drawer>
-
-        <Modal
-          open={Boolean(selectedClarification)}
-          title="Ответ на уточнение"
-          onClose={() => setSelectedClarification(null)}
-        >
-          {selectedClarification ? (
-            <ClarificationDetailPanel
-              clarification={selectedClarification}
-              onAnswer={(payload) => {
-                commands.answerClarification(payload);
-                setSelectedClarification(null);
-              }}
-              onAcceptAssumption={(clarificationId) => {
-                commands.acceptAssumption(clarificationId);
-                setSelectedClarification(null);
-              }}
-              pending={commands.busy}
-            />
-          ) : null}
-        </Modal>
-      </>
-    );
-  }
-
-type ProgressStageStatus = "done" | "active" | "waiting" | "blocked";
-
-interface ProgressStageView {
-  id: string;
-  label: string;
-  description: string;
-  status: ProgressStageStatus;
-}
-
-const PROGRESS_STAGE_DEFINITIONS = [
-  {
-    id: "intake",
-    label: "Разбор запроса",
-    description: "Факты, цель, ограничения",
-    artifactRoles: ["request_fact_sheet", "goal_hypothesis", "constraint_inventory", "normalized_request"],
-  },
-  {
-    id: "framing",
-    label: "Формализация",
-    description: "Границы, стейкхолдеры, варианты",
-    artifactRoles: ["business_outcome_model", "scope_boundary_matrix", "stakeholder_map", "solution_option_inventory"],
-  },
-  {
-    id: "domain",
-    label: "Доменная проработка",
-    description: "ML, интеграции, ИБ, интерфейс",
-    artifactRoles: [
-      "predictive_problem_definition",
-      "data_landscape_assessment",
-      "security_compliance_constraints",
-      "integration_operating_model",
-      "ui_requirements_outline",
-    ],
-  },
-  {
-    id: "spec",
-    label: "Сборка ТЗ",
-    description: "Черновик требований",
-    artifactRoles: ["requirements_spec"],
-  },
-  {
-    id: "quality",
-    label: "Проверка качества",
-    description: "Ревью и замечания",
-    artifactRoles: ["review_report"],
-  },
-] as const;
-
-function pickPrimaryClarification(items: ClarificationItemView[]): ClarificationItemView | null {
-  const candidates = items
-    .filter((item) => item.status === "open" && item.blocking_scope !== "none")
-    .slice()
-    .sort((left, right) => {
-      const scopeWeight = (scope: string) => ({ objective: 0, subtree: 1, task: 2, none: 3 })[scope] ?? 4;
-      const priorityWeight = (priority: string) => ({ critical: 0, high: 1, medium: 2, low: 3 })[priority] ?? 4;
-      return scopeWeight(left.blocking_scope) - scopeWeight(right.blocking_scope) || priorityWeight(left.priority) - priorityWeight(right.priority);
-    });
-  return candidates[0] ?? null;
-}
-
-function buildProgressStages(
-  artifacts: ArtifactSummaryView[],
-  review: ProjectReviewView,
-  situation: ProjectSituationView,
-): ProgressStageView[] {
-  const artifactRoles = new Set(artifacts.map((artifact) => artifact.artifact_role));
-  if (review.status !== "missing") {
-    artifactRoles.add("review_report");
-  }
-  const firstOpenIndex = PROGRESS_STAGE_DEFINITIONS.findIndex((stage) => !stage.artifactRoles.some((role) => artifactRoles.has(role)));
-  return PROGRESS_STAGE_DEFINITIONS.map((stage, index) => {
-    const done = stage.artifactRoles.some((role) => artifactRoles.has(role));
-    let status: ProgressStageStatus = "waiting";
-    if (done) {
-      status = "done";
-    } else if (index === Math.max(firstOpenIndex, 0)) {
-      status = situation.blocking ? "blocked" : "active";
-    }
-    return {
-      id: stage.id,
-      label: stage.label,
-      description: stage.description,
-      status,
-    };
-  });
-}
-
-function progressTone(status: ProgressStageStatus): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
-  if (status === "done") return "success";
-  if (status === "active") return "active";
-  if (status === "blocked") return "warning";
-  return "muted";
-}
-
-function ProjectCockpit({
-  situation,
-  taskGraph,
-  artifacts,
-  review,
-  clarifications,
-  onAction,
-  onRunUntilBlocked,
-  pending,
-  flash,
-}: {
-  situation: ProjectSituationView;
-  taskGraph: ProjectTaskGraphView;
-  artifacts: ArtifactSummaryView[];
-  review: ProjectReviewView;
-  clarifications: ProjectClarificationsView;
-  onAction: (action: ActionDescriptor) => void;
-  onRunUntilBlocked: () => void;
-  pending: boolean;
-  flash?: boolean;
-}) {
-  const stages = buildProgressStages(artifacts, review, situation);
-  const completed = taskGraph.completed_leaf_tasks;
-  const total = taskGraph.total_leaf_tasks || 1;
-  const progress = Math.round((completed / total) * 100);
-  const primaryAction = situation.primary_action;
-  const canContinue = !situation.blocking;
-
-  return (
-    <section className={cx("project-cockpit", situation.blocking && "project-cockpit--blocked", flash && "live-flash")}>
-      <div className="project-cockpit__main">
-        <div className="project-cockpit__status">
-          <StatusPill tone={situation.blocking ? "danger" : situation.status_label === "Готово" ? "success" : "active"}>
-            {situation.status_label}
-          </StatusPill>
-          <span>{situation.blocking ? "Работа остановлена до решения" : "Система может продолжать работу"}</span>
-        </div>
-        <h2>{situation.headline}</h2>
-        <p>{situation.summary}</p>
-        <div className="project-cockpit__actions">
-          {primaryAction ? (
-            <Button tone={situation.blocking ? "danger" : "primary"} icon={situation.blocking ? <AlertTriangle size={16} /> : <Sparkles size={16} />} onClick={() => onAction(primaryAction)}>
-              {primaryAction.label}
-            </Button>
-          ) : null}
-          {canContinue ? (
-            <Button tone={primaryAction ? "secondary" : "primary"} icon={<Sparkles size={16} />} onClick={onRunUntilBlocked} busy={pending}>
-              Выполнить до остановки
-            </Button>
-          ) : null}
-        </div>
-      </div>
-      <div className="project-cockpit__progress">
-        <div className="progress-meter">
-          <div className="progress-meter__head">
-            <span>Прогресс работ</span>
-            <strong>{progress}%</strong>
-          </div>
-          <div className="progress-meter__bar" aria-hidden="true">
-            <span style={{ width: `${progress}%` }} />
-          </div>
-          <div className="progress-meter__meta">
-            <span>{completed} из {taskGraph.total_leaf_tasks} листовых задач завершено</span>
-            <span>{artifacts.length} артефактов</span>
-            <span>{clarifications.open_count} открытых вопросов</span>
-          </div>
-        </div>
-        <div className="stage-strip" aria-label="Смысловые стадии проекта">
-          {stages.map((stage) => (
-            <div key={stage.id} className={cx("stage-chip", `stage-chip--${stage.status}`)}>
-              <div className="stage-chip__dot" />
-              <div>
-                <strong>{stage.label}</strong>
-                <span>{stage.description}</span>
-              </div>
-              <StatusPill tone={progressTone(stage.status)}>{prettyLabel(stage.status)}</StatusPill>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function BlockingClarificationPanel({
-  clarification,
-  onOpenAnswer,
-  flash,
-}: {
-  clarification: ClarificationItemView;
-  onOpenAnswer: () => void;
-  flash?: boolean;
-}) {
-  const choices = answerOptions(clarification);
-  return (
-    <section className={cx("blocking-question", flash && "live-flash")}>
-      <div className="blocking-question__intro">
-        <StatusPill tone={toneForClarificationPriority(clarification.priority)}>Нужно ваше решение</StatusPill>
-        <h2>{clarification.question}</h2>
-        <p>{clarificationDescription(clarification)}</p>
-      </div>
-      <div className="blocking-question__answer-preview">
-        <span>Варианты ответа</span>
-        {clarification.answer_mode === "multiple" ? <p className="answer-mode-hint">Можно выбрать несколько вариантов.</p> : null}
-        <div className="answer-preview-list">
-          {choices.slice(0, 3).map((choice) => (
-            <div key={choice.option_id} className="answer-preview-item">
-              <strong>
-                {choice.label}
-                {confidenceLabel(choice.confidence) ? <small>{confidenceLabel(choice.confidence)}</small> : null}
-              </strong>
-              <p>{choice.description}</p>
-            </div>
-          ))}
-        </div>
-        <Button tone="primary" icon={<MessageSquareWarning size={16} />} onClick={onOpenAnswer}>
-          Ответить в окне
-        </Button>
-      </div>
-      <details className="context-details">
-        <summary>Почему система остановилась</summary>
-        <div className="context-details__body">
-          <p>{clarification.reason}</p>
-          <span>Область блокировки: {prettyLabel(clarification.blocking_scope)}</span>
-        </div>
-      </details>
-    </section>
-  );
-}
-
-function AttentionPanel({
-  situation,
-  clarifications,
-  onAction,
-  onOpenClarification,
-  onRetryTask,
-  retryTaskId,
-}: {
-  situation: ProjectSituationView;
-  clarifications: ProjectClarificationsView;
-  onAction: (action: ActionDescriptor) => void;
-  onOpenClarification: (clarification: ClarificationItemView) => void;
-  onRetryTask: (taskId: string) => void;
-  retryTaskId: string | null;
-}) {
-  const openQuestions = clarifications.items.filter((item) => item.status === "open");
-  const hasAttention = situation.blockers.length > 0 || openQuestions.length > 0;
-  return (
-    <SectionCard
-      title="Требует внимания"
-      subtitle={hasAttention ? "Решения, которые могут влиять на движение проекта" : "Нет блокирующих действий пользователя"}
-      tone={hasAttention ? "warning" : "default"}
-    >
-      {!hasAttention ? (
-        <EmptyState title="Ничего срочного" description="Система может продолжать работу без вашего участия." icon={<CheckCircle2 size={18} />} />
-      ) : (
-        <div className="attention-list">
-          {situation.blockers.slice(0, 3).map((blocker) => (
-            <button
-              key={`${blocker.kind}-${blocker.related_id ?? blocker.summary}`}
-              type="button"
-              className="attention-item"
-              onClick={() => {
-                const clarification = openQuestions.find((item) => item.clarification_id === blocker.related_id);
-                if (clarification) {
-                  onOpenClarification(clarification);
-                  return;
-                }
-                if (retryTaskId && (blocker.kind === "task_failure" || blocker.kind === "execution_failure")) {
-                  onRetryTask(retryTaskId);
-                  return;
-                }
-                onAction({
-                  kind: `open_${blocker.detail_view}`,
-                  label: blocker.title,
-                  description: blocker.summary,
-                  target_view: blocker.detail_view,
-                  target_id: blocker.related_id,
-                  command_name: null,
-                  blocking: true,
-                });
-              }}
-            >
-              <AlertTriangle size={16} />
-              <div>
-                <strong>{blocker.title}</strong>
-                <p>{blocker.summary}</p>
-              </div>
-              <ChevronRight size={14} />
-            </button>
-          ))}
-          {openQuestions
-            .filter((item) => !situation.blockers.some((blocker) => blocker.related_id === item.clarification_id))
-            .slice(0, 3)
-            .map((item) => (
-              <button key={item.clarification_id} type="button" className="attention-item" onClick={() => onOpenClarification(item)}>
-                <MessageSquareWarning size={16} />
-                <div>
-                  <strong>{item.title}</strong>
-                  <p>{item.question}</p>
-                </div>
-                <ChevronRight size={14} />
-              </button>
-            ))}
-          {situation.primary_action ? (
-            <Button tone={situation.blocking ? "danger" : "secondary"} onClick={() => onAction(situation.primary_action!)}>
-              {situation.primary_action.label}
-            </Button>
-          ) : null}
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
-function WorkMapSummary({
-  tasks,
-  onOpenTask,
-  flash,
-}: {
-  tasks: TaskNodeView[];
-  onOpenTask: (task: TaskNodeView) => void;
-  flash?: boolean;
-}) {
-  const leafTasks = tasks.filter((task) => task.template_type === "leaf");
-  const failed = leafTasks.filter((task) => task.status === "failed");
-  const ready = leafTasks.filter((task) => task.status === "ready" || task.is_current);
-  const waitingForInput = leafTasks.filter((task) => task.status === "blocked" && task.blocking_clarification_count > 0);
-  const waiting = leafTasks.filter(
-    (task) => task.status === "blocked" && task.blocking_clarification_count === 0,
-  );
-  const done = leafTasks.filter((task) => task.status === "completed");
-  const visibleTasks = [...failed, ...waitingForInput, ...ready, ...waiting].slice(0, 7);
-
-  return (
-    <SectionCard
-      title="Карта работ"
-      subtitle="Это не порядок выполнения, а состояние зависимостей: задачи могут стартовать нелинейно"
-      className={cx("work-map-card", flash && "live-flash")}
-      actions={<Link className="text-link" to="../task-graph">Открыть полный граф</Link>}
-    >
-      <div className="work-map-metrics">
-        <div>
-          <span>Готово</span>
-          <strong>{done.length}</strong>
-        </div>
-        <div>
-          <span>Можно запускать</span>
-          <strong>{ready.length}</strong>
-        </div>
-        <div>
-          <span>Ждет ответа</span>
-          <strong>{waitingForInput.length}</strong>
-        </div>
-        <div>
-          <span>Ошибки</span>
-          <strong>{failed.length}</strong>
-        </div>
-      </div>
-      {visibleTasks.length === 0 ? (
-        <EmptyState title="Нет активных задач" description="Завершенные работы видны в истории и полном графе." />
-      ) : (
-        <div className="work-list">
-          {visibleTasks.map((task) => (
-            <button key={task.task_id} type="button" className="work-list__item" onClick={() => onOpenTask(task)}>
-              <StatusPill tone={taskStatusTone(task)}>{taskStatusLabel(task)}</StatusPill>
-              <div>
-                <strong>{task.title}</strong>
-                <p>{task.status_summary ?? task.template_ref}</p>
-              </div>
-              <ChevronRight size={14} />
-            </button>
-          ))}
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
-function taskStatusTone(task: TaskNodeView): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
-  if (task.status === "failed") return "danger";
-  if (task.blocking_clarification_count > 0) return "warning";
-  if (task.status === "ready" || task.is_current) return "active";
-  if (task.status === "completed") return "success";
-  return "muted";
-}
-
-function taskStatusLabel(task: TaskNodeView): string {
-  if (task.status === "failed") return "Ошибка";
-  if (task.blocking_clarification_count > 0) return "Ждет ответа";
-  if (task.status === "ready" || task.is_current) return "Можно запускать";
-  return prettyLabel(task.status);
-}
-
-function toneForClarificationPriority(priority: string): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
-  switch (priority) {
-    case "critical":
-      return "danger";
-    case "high":
-      return "warning";
-    case "medium":
-      return "active";
-    case "low":
-      return "muted";
-    default:
-      return "neutral";
-  }
-}
-
-function prettyDecisionOwnerRole(role: string): string {
-  // Человекочитаемый ярлык владельца решения (W1.2). Должен умещаться в одном
-  // слове, чтобы аккуратно сидеть в chip'е рядом с приоритетом.
-  switch (role) {
-    case "business":
-      return "Бизнес";
-    case "client":
-      return "Заказчик";
-    case "methodologist":
-      return "Методология";
-    case "architect":
-      return "Архитектура";
-    case "data_owner":
-      return "Данные";
-    case "security":
-      return "ИБ";
-    default:
-      return prettyLabel(role);
-  }
-}
-
 function clarificationModeLabel(mode: string): string {
   const labels: Record<string, string> = {
     autopilot: "Автопилот",
@@ -2577,383 +1285,6 @@ function clarificationModeLabel(mode: string): string {
     expert: "Экспертный",
   };
   return labels[mode] ?? mode;
-}
-
-interface AnswerChoice {
-  option_id: string;
-  label: string;
-  description: string;
-  effect_preview: string;
-  confidence?: number | null;
-  synthetic?: boolean;
-}
-
-function clarificationDescription(clarification: ClarificationItemView): string {
-  return (
-    clarification.description ||
-    [clarification.reason, clarification.impact].filter(Boolean).join(" ") ||
-    "Система обнаружила неопределенность, которая может повлиять на дальнейшую работу проекта."
-  );
-}
-
-function answerOptions(clarification: ClarificationItemView): AnswerChoice[] {
-  if (clarification.options.length > 0) {
-    return clarification.options;
-  }
-  return [
-    {
-      option_id: "synthetic:include_in_current_project",
-      label: "Да, учитывать в текущем проекте",
-      description: "Эта информация важна для текущего PoC/PoV и должна повлиять на дальнейшую работу.",
-      effect_preview: "Ответ будет сохранен как решение проекта и учтен в следующих задачах.",
-      confidence: 0.55,
-      synthetic: true,
-    },
-    {
-      option_id: "synthetic:use_working_assumption",
-      label: "Продолжить с рабочим допущением",
-      description: clarification.default_assumption || "Система зафиксирует допущение и продолжит работу без дополнительной детализации.",
-      effect_preview: "Допущение попадет в историю проекта.",
-      confidence: clarification.default_assumption ? 0.45 : 0.35,
-      synthetic: true,
-    },
-  ];
-}
-
-function confidenceLabel(confidence: number | null | undefined): string | null {
-  if (confidence === null || confidence === undefined) {
-    return null;
-  }
-  return `Уверенность ${Math.round(confidence * 100)}%`;
-}
-
-function ClarificationCenter({
-  clarifications,
-  highlightedClarificationId,
-  onOpenClarification,
-  onAcceptAssumption,
-  pending,
-  flash,
-}: {
-  clarifications: ProjectClarificationsView;
-  highlightedClarificationId?: string;
-  onOpenClarification: (clarification: ClarificationItemView) => void;
-  onAcceptAssumption: (clarificationId: string) => void;
-  pending: boolean;
-  flash?: boolean;
-}) {
-  const visibleItems = clarifications.items
-    .filter((item) => (item.status === "open" || item.status === "assumed") && item.clarification_id !== highlightedClarificationId)
-    .slice()
-    .sort((left, right) => {
-      const statusWeight = (status: string) => (status === "open" ? 0 : 1);
-      const priorityWeight = (priority: string) => ({ critical: 0, high: 1, medium: 2, low: 3 })[priority] ?? 4;
-      return statusWeight(left.status) - statusWeight(right.status) || priorityWeight(left.priority) - priorityWeight(right.priority);
-    });
-
-  if (visibleItems.length === 0 && clarifications.mode === "balanced") {
-    return null;
-  }
-
-  return (
-    <SectionCard
-      title="Уточнения"
-      subtitle={
-        clarifications.open_count > 0
-          ? `${clarifications.open_count} открытых вопросов, ${clarifications.blocking_count} блокируют работу`
-          : "Открытых вопросов нет"
-      }
-      className={cx(flash && "live-flash")}
-    >
-      {visibleItems.length === 0 ? (
-        <EmptyState title="Вопросов нет" description="Система продолжает работу без участия пользователя." />
-      ) : (
-        <div className="clarification-list">
-          {visibleItems.map((item) => (
-            <div key={item.clarification_id} className={cx("clarification-card", item.status === "open" && "clarification-card--open")}>
-              <div className="clarification-card__head">
-                <div>
-                  <span className="clarification-card__eyebrow">
-                    {item.status === "open" ? "Открытый вопрос" : "Рабочее допущение"}
-                  </span>
-                  <strong>{item.question}</strong>
-                  <p>{clarificationDescription(item)}</p>
-                </div>
-                <StatusPill tone={item.status === "open" ? toneForClarificationPriority(item.priority) : "muted"}>
-                  {item.status === "open" ? prettyLabel(item.priority) : prettyLabel(item.status)}
-                </StatusPill>
-              </div>
-              <div className="clarification-card__meta">
-                <span className={cx("clar-role", `clar-role--${item.decision_owner_role}`)}>
-                  {prettyDecisionOwnerRole(item.decision_owner_role)}
-                </span>
-                <span>{item.blocking_scope === "none" ? "Не блокирует работу" : "Может влиять на дальнейшие шаги"}</span>
-                <span>{formatDateTime(item.updated_at)}</span>
-              </div>
-              {item.default_assumption ? (
-                <div className="clarification-assumption">
-                  <span>Предложенное допущение</span>
-                  <p>{item.default_assumption}</p>
-                </div>
-              ) : null}
-              <div className="inline-actions">
-                <Button tone="primary" icon={<MessageSquareWarning size={16} />} onClick={() => onOpenClarification(item)}>
-                  {item.status === "open" ? "Ответить" : "Открыть"}
-                </Button>
-                {item.status === "open" && item.default_assumption ? (
-                  <Button tone="secondary" onClick={() => onAcceptAssumption(item.clarification_id)} disabled={pending}>
-                    Принять допущение
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
-function ClarificationDetailPanel({
-  clarification,
-  onAnswer,
-  onAcceptAssumption,
-  pending,
-}: {
-  clarification: ClarificationItemView;
-  onAnswer: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
-  onAcceptAssumption: (clarificationId: string) => void;
-  pending: boolean;
-}) {
-  return (
-    <div className="detail-stack clarification-detail">
-      <div className="detail-callout">
-        <StatusPill tone={toneForClarificationPriority(clarification.priority)}>
-          {clarification.status === "open" ? "Нужно решение" : prettyLabel(clarification.status)}
-        </StatusPill>
-        <span className={cx("clar-role", `clar-role--${clarification.decision_owner_role}`)}>
-          {prettyDecisionOwnerRole(clarification.decision_owner_role)}
-        </span>
-        <span>{formatDateTime(clarification.updated_at)}</span>
-      </div>
-      <div className="clarification-detail__question">
-        <span>Вопрос</span>
-        <h3>{clarification.question}</h3>
-        <p>{clarificationDescription(clarification)}</p>
-      </div>
-
-      {clarification.status === "open" ? (
-        <ClarificationAnswerForm
-          clarification={clarification}
-          onAnswer={onAnswer}
-          onAcceptAssumption={onAcceptAssumption}
-          pending={pending}
-          variant="modal"
-        />
-      ) : (
-        <div className="clarification-resolution">
-          <span>Решение</span>
-          <p>{clarification.resolution_summary || clarification.default_assumption || "Уточнение закрыто."}</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ClarificationAnswerForm({
-  clarification,
-  onAnswer,
-  onAcceptAssumption,
-  pending,
-  variant,
-}: {
-  clarification: ClarificationItemView;
-  onAnswer: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
-  onAcceptAssumption: (clarificationId: string) => void;
-  pending: boolean;
-  variant: "focus" | "modal";
-}) {
-  const choices = answerOptions(clarification);
-  const canSelectMultiple = clarification.answer_mode === "multiple";
-  const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>(
-    clarification.recommended_option_id ? [clarification.recommended_option_id] : [choices[0]?.option_id ?? ""].filter(Boolean),
-  );
-  const [freeText, setFreeText] = useState("");
-  const [customAnswerSelected, setCustomAnswerSelected] = useState(false);
-
-  useEffect(() => {
-    setSelectedOptionIds(clarification.recommended_option_id ? [clarification.recommended_option_id] : [choices[0]?.option_id ?? ""].filter(Boolean));
-    setFreeText("");
-    setCustomAnswerSelected(false);
-  }, [clarification.clarification_id, clarification.recommended_option_id]);
-
-  const toggleOption = (optionId: string) => {
-    setCustomAnswerSelected(false);
-    setSelectedOptionIds((current) => {
-      if (canSelectMultiple) {
-        return current.includes(optionId) ? current.filter((item) => item !== optionId) : [...current, optionId];
-      }
-      return [optionId];
-    });
-  };
-  const selectCustomAnswer = () => {
-    setCustomAnswerSelected(true);
-    setSelectedOptionIds([]);
-  };
-  const canAnswer =
-    clarification.status === "open" &&
-    (customAnswerSelected ? freeText.trim().length > 0 : selectedOptionIds.length > 0);
-  const submitAnswer = () => {
-    if (customAnswerSelected) {
-      onAnswer({
-        clarification_id: clarification.clarification_id,
-        selected_option_ids: [],
-        free_text: freeText.trim(),
-      });
-      return;
-    }
-    const backendOptionIds = selectedOptionIds.filter((optionId) =>
-      clarification.options.some((option) => option.option_id === optionId),
-    );
-    const syntheticLabels = selectedOptionIds
-      .filter((optionId) => !clarification.options.some((option) => option.option_id === optionId))
-      .map((optionId) => choices.find((option) => option.option_id === optionId)?.label)
-      .filter((label): label is string => Boolean(label));
-    const mergedFreeText = syntheticLabels.join("; ");
-    onAnswer({
-      clarification_id: clarification.clarification_id,
-      selected_option_ids: backendOptionIds,
-      free_text: mergedFreeText || undefined,
-    });
-  };
-
-  return (
-    <div className={cx("clarification-answer", `clarification-answer--${variant}`)}>
-      {clarification.default_assumption ? (
-        <div className="clarification-assumption clarification-assumption--detail">
-          <span>Предложенное допущение</span>
-          <p>{clarification.default_assumption}</p>
-        </div>
-      ) : null}
-
-      <div className="field-stack">
-        <div className="answer-section-title">
-          <span>Возможные варианты ответа</span>
-          {canSelectMultiple ? <p>Можно выбрать несколько вариантов, если они одновременно применимы.</p> : <p>Выберите наиболее подходящий вариант или уточните ответ в комментарии.</p>}
-        </div>
-        <div className="choice-list">
-          {choices.map((option) => {
-              const selected = selectedOptionIds.includes(option.option_id);
-              const confidence = confidenceLabel(option.confidence);
-              return (
-                <button
-                  key={option.option_id}
-                  type="button"
-                  className={cx("choice-card", selected && "choice-card--selected")}
-                  onClick={() => toggleOption(option.option_id)}
-                >
-                  <strong>
-                    {option.label}
-                    {confidence ? <small>{confidence}</small> : null}
-                  </strong>
-                  {option.description ? <span>{option.description}</span> : null}
-                  {option.effect_preview ? <p>{option.effect_preview}</p> : null}
-                </button>
-              );
-            })}
-        </div>
-        <label className={cx("choice-card", "choice-card--input", customAnswerSelected && "choice-card--selected")}>
-          <strong>Свой ответ</strong>
-          <span>Выберите этот вариант, если предложенные ответы не подходят или требуют замены.</span>
-          <input
-            value={freeText}
-            onFocus={selectCustomAnswer}
-            onChange={(event) => {
-              setFreeText(event.target.value);
-              selectCustomAnswer();
-            }}
-            placeholder="Напишите ответ обычным языком…"
-          />
-        </label>
-        <div className="inline-actions">
-          <Button
-            tone="primary"
-            disabled={!canAnswer || pending}
-            busy={pending}
-            onClick={submitAnswer}
-          >
-            Сохранить ответ
-          </Button>
-          {clarification.default_assumption ? (
-            <Button tone="secondary" disabled={pending} onClick={() => onAcceptAssumption(clarification.clarification_id)}>
-              Принять допущение
-            </Button>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TimelineEventDetail({
-  event,
-  projectId,
-  onOpenAction,
-  onRetryTask,
-}: {
-  event: TimelineEntryView;
-  projectId: string;
-  onOpenAction: (action: ActionDescriptor) => void;
-  onRetryTask: (taskId: string) => void;
-}) {
-  const navigate = useNavigate();
-  const detailAction: ActionDescriptor = {
-    kind: `open_${event.detail_view}`,
-    label: "Открыть связанную сущность",
-    description: "Перейти в соответствующий раздел проекта.",
-    target_view: event.detail_view,
-    target_id: event.entity_type === "artifact" ? event.entity_id : null,
-    command_name: null,
-    blocking: false,
-  };
-  return (
-    <div className="detail-stack">
-      <div className="detail-callout">
-        <StatusPill tone={toneForSemanticStatus(event.status)}>
-          {prettyLabel(event.status)}
-        </StatusPill>
-        <span>{formatDateTime(event.created_at)}</span>
-      </div>
-      <p>{event.summary}</p>
-      <div className="detail-meta-list">
-        <div>
-          <span>Тип события</span>
-          <strong>{prettyLabel(event.kind)}</strong>
-        </div>
-        <div>
-          <span>Связанная сущность</span>
-          <strong>{prettyLabel(event.entity_type)}</strong>
-        </div>
-        <div>
-          <span>Экран деталей</span>
-          <strong>{prettyLabel(event.detail_view)}</strong>
-        </div>
-      </div>
-      <div className="inline-actions">
-        <Button tone="primary" onClick={() => onOpenAction(detailAction)}>
-          Открыть связанный экран
-        </Button>
-        {event.kind === "task_failed" && event.entity_id ? (
-          <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(event.entity_id!)}>
-            Повторить шаг
-          </Button>
-        ) : null}
-        <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/task-graph`)}>
-          Открыть граф задач
-        </Button>
-      </div>
-    </div>
-  );
 }
 
 function TaskNodeDetail({
@@ -2967,28 +1298,10 @@ function TaskNodeDetail({
 }) {
   const navigate = useNavigate();
 
-  // Список открытых уточнений, привязанных к этой задаче. Нужен, чтобы
-  // выделить случай «задача failed, но есть нерешённые вопросы» — даже
-  // если они не блокирующие (методологические advisory). Для пользователя
-  // это всё равно сигнал «здесь нужно твоё внимание».
-  const clarificationsQuery = useQuery({
-    queryKey: projectId ? projectionKey(projectId, "clarifications") : ["__noop__"],
-    queryFn: () => api.getClarifications(projectId!),
-    enabled: Boolean(projectId),
-  });
-  const affectingOpen = (clarificationsQuery.data?.items ?? []).filter(
-    (c) => c.status === "open" && c.affected_task_ids?.includes(task.task_id),
-  );
-  const blockingOpen = affectingOpen.filter((c) => c.blocking_scope !== "none");
-
-  // Главная цель блока: ответить на вопрос «почему задача упала и что мне
-  // делать?». Раньше показывался только status-pill и тех. описание шаблона.
-  // Теперь — если failed/blocked с открытыми вопросами, явный CTA «открой
-  // инбокс и ответь», иначе — кнопка retry (если применимо).
-  const showOpenQuestionsBanner =
-    (task.status === "failed" || task.status === "blocked") && affectingOpen.length > 0;
-  const showStuckBanner =
-    task.status === "failed" && affectingOpen.length === 0 && Boolean(projectId);
+  // v3.1: блок «открытые вопросы по задаче» убран — в новой Decision-модели
+  // вопросы привязаны к checkpoint-сессиям и показываются на главном
+  // экране проекта. Здесь оставлен только retry-CTA для упавших задач.
+  const showStuckBanner = task.status === "failed" && Boolean(projectId);
 
   return (
     <div className="detail-stack">
@@ -3009,47 +1322,22 @@ function TaskNodeDetail({
         <span>{prettyLabel(task.template_type)}</span>
       </div>
 
-      {showOpenQuestionsBanner && projectId ? (
-        <div className="task-open-questions-banner">
-          <div className="task-open-questions-banner__head">
-            <strong>
-              {blockingOpen.length > 0
-                ? `Задача ждёт ваших ответов: ${blockingOpen.length} блокирующих вопроса`
-                : `Задаче нужно ваше внимание: ${affectingOpen.length} открытых вопроса`}
-            </strong>
-            <p>
-              {blockingOpen.length > 0
-                ? "Без ответов задача не сможет завершиться. После ответа она автоматически перезапустится."
-                : "Вопросы не блокирующие, но возникли в этой задаче — стоит просмотреть и при желании ответить."}
-            </p>
-          </div>
-          <ul className="task-open-questions-banner__list">
-            {affectingOpen.slice(0, 5).map((c) => (
-              <li key={c.clarification_id}>
-                <span className={cx("clar-blocking", `clar-blocking--${c.blocking_scope}`)}>
-                  {labelForBlockingScope(c.blocking_scope)}
-                </span>
-                <span>{c.title || c.question}</span>
-              </li>
-            ))}
-            {affectingOpen.length > 5 ? <li>… и ещё {affectingOpen.length - 5}</li> : null}
-          </ul>
-          <div className="inline-actions">
-            <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/clarifications`)}>
-              Открыть вопросы ({affectingOpen.length})
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {showStuckBanner ? (
         <div className="task-open-questions-banner task-open-questions-banner--muted">
-          <strong>Задача упала без открытых вопросов</strong>
+          <strong>Задача упала</strong>
           <p>
-            На уровне уточнений ничего не висит. Возможные причины: ошибка LLM-вызова,
-            сбой валидации или гонка состояний. Нажмите «Повторить шаг» — задача
-            переподнимется с актуальным контекстом.
+            Возможные причины: ошибка LLM-вызова, сбой валидации или гонка
+            состояний. Нажмите «Повторить шаг» — задача переподнимется с
+            актуальным контекстом. Если для задачи нужны решения, они
+            появятся как checkpoint в шапке проекта.
           </p>
+          {projectId ? (
+            <div className="inline-actions">
+              <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/decisions`)}>
+                Открыть реестр решений
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -3172,8 +1460,87 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   );
 }
 
+/**
+ * v3.5 — расходы токенов по стадиям сборки одного артефакта.
+ *
+ * Показываем компактную таблицу: стадия | input | output | cache-read | total.
+ * Если разбивки нет (артефакт сделан до v3.5, либо stub-провайдер) — не
+ * рендерим вовсе. Внизу — итог по всем стадиям с подсветкой «дорого/средне/дёшево»
+ * для быстрого поиска прожор.
+ */
+function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types").TokenUsageStage> }) {
+  const stages = Object.entries(usage).filter(
+    ([, v]) => (v?.total_tokens ?? 0) > 0 || (v?.input_tokens ?? 0) > 0 || (v?.output_tokens ?? 0) > 0,
+  );
+  if (stages.length === 0) {
+    return null;
+  }
+  const stageLabel = (k: string): string => {
+    if (k === "pre_flight_planning") return "Pre-flight планирование";
+    if (k === "primary_generation") return "Основная сборка";
+    if (k.startsWith("methodology_stage:")) return `Стадия методологии · ${k.slice("methodology_stage:".length)}`;
+    return k;
+  };
+  const totalInput = stages.reduce((s, [, v]) => s + (v.input_tokens || 0), 0);
+  const totalOutput = stages.reduce((s, [, v]) => s + (v.output_tokens || 0), 0);
+  const totalCacheRead = stages.reduce((s, [, v]) => s + (v.cache_read_tokens || 0), 0);
+  const grandTotal = totalInput + totalOutput;
+  const fmt = (n: number) => n.toLocaleString("ru-RU");
+  return (
+    <div className="artifact-tokens">
+      <div className="artifact-tokens__head">
+        <strong>Токены</strong>
+        <span className="artifact-tokens__total">всего {fmt(grandTotal)}</span>
+      </div>
+      <table className="artifact-tokens__table">
+        <thead>
+          <tr>
+            <th>Стадия</th>
+            <th>Input</th>
+            <th>Output</th>
+            <th>Cache-read</th>
+            <th>Всего</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map(([key, val]) => {
+            const stageTotal = (val.input_tokens || 0) + (val.output_tokens || 0);
+            const share = grandTotal > 0 ? stageTotal / grandTotal : 0;
+            const heavy = share > 0.5;
+            return (
+              <tr key={key} className={heavy ? "artifact-tokens__row--heavy" : undefined}>
+                <td>{stageLabel(key)}</td>
+                <td>{fmt(val.input_tokens || 0)}</td>
+                <td>{fmt(val.output_tokens || 0)}</td>
+                <td>{fmt(val.cache_read_tokens || 0)}</td>
+                <td>
+                  <strong>{fmt(stageTotal)}</strong>
+                  {grandTotal > 0 ? (
+                    <span className="artifact-tokens__share"> · {Math.round(share * 100)}%</span>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Итого</td>
+            <td>{fmt(totalInput)}</td>
+            <td>{fmt(totalOutput)}</td>
+            <td>{fmt(totalCacheRead)}</td>
+            <td>
+              <strong>{fmt(grandTotal)}</strong>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
-  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations">("doc");
+  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const html = useMemo(
     () => (detail.markdown_content ? marked.parse(detail.markdown_content) : "<p>Markdown-представление отсутствует.</p>"),
@@ -3184,6 +1551,12 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     queryFn: () => api.getMethodologyTrace(projectId, detail.created_by_task_id!),
     enabled: provenanceOpen && Boolean(detail.created_by_task_id),
   });
+  // v3.0: решения, принятые при сборке этого артефакта.
+  const decisionsQuery = useQuery({
+    queryKey: ["artifact-decisions", projectId, detail.artifact_id],
+    queryFn: () => api.getDecisionsForArtifact(projectId, detail.artifact_id),
+  });
+  const decisionsCount = decisionsQuery.data?.length ?? 0;
 
   return (
     <div className="artifact-detail">
@@ -3213,6 +1586,16 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           type="button"
         >
           Проверки
+        </button>
+        {/* v3.0: Решения, принятые при сборке этого артефакта. Вкладка
+            показывается всегда (даже если 0), чтобы пользователь видел
+            наличие концепта; счётчик подсказывает наполненность. */}
+        <button
+          className={cx("segmented__item", mode === "decisions" && "segmented__item--active")}
+          onClick={() => setMode("decisions")}
+          type="button"
+        >
+          Решения{decisionsCount > 0 ? ` (${decisionsCount})` : ""}
         </button>
         {detail.created_by_task_id ? (
           <button
@@ -3321,6 +1704,7 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             </div>
           ) : null}
         </div>
+        <ArtifactTokenUsage usage={detail.token_usage} />
       </details>
       {/* Блок «Развернуть provenance-ссылки» удалён: эти ссылки уже доступны
           в Provenance-модалке (segmented кнопка), а на самой страничке
@@ -3362,6 +1746,68 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           )}
         </div>
       ) : null}
+      {mode === "decisions" ? (
+        <ArtifactDecisionsTab
+          projectId={projectId}
+          decisions={decisionsQuery.data ?? []}
+          loading={decisionsQuery.isLoading}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** v3.0: рендер вкладки «Решения» внутри артефакта. */
+function ArtifactDecisionsTab({
+  projectId,
+  decisions,
+  loading,
+}: {
+  projectId: string;
+  decisions: import("./types").DecisionItemView[];
+  loading: boolean;
+}) {
+  const navigate = useNavigate();
+  if (loading) return <LoadingPanel title="Загружаем решения…" />;
+  if (decisions.length === 0) {
+    return (
+      <EmptyState
+        title="Решений по этому артефакту нет"
+        description="Реестр пополняется по мере прохождения задач. Если артефакт собран до v3.0, решения для него не зафиксированы."
+      />
+    );
+  }
+  return (
+    <div className="artifact-decisions">
+      <div className="artifact-decisions__head">
+        <span>{decisions.length} {decisions.length === 1 ? "решение" : "решений"} принято при сборке</span>
+        <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/decisions`)}>
+          В полный реестр
+        </Button>
+      </div>
+      <ul className="artifact-decisions__list">
+        {decisions.map((d) => (
+          <li key={d.decision_id} className="artifact-decisions__item">
+            <div className="artifact-decisions__title">
+              <span
+                className={cx(
+                  "artifact-decisions__level-dot",
+                  `artifact-decisions__level-dot--${d.level}`,
+                )}
+                title={`Уровень: ${d.level}`}
+              />
+              <strong>{d.title}</strong>
+            </div>
+            <div className="artifact-decisions__chosen">
+              <span className="artifact-decisions__chosen-label">Выбрано:</span>
+              {d.chosen_option_label || "—"}
+              {d.was_user_modified ? (
+                <span className="artifact-decisions__user-mark"> · вами</span>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -4163,53 +2609,6 @@ function ToastViewport({ toasts }: { toasts: ToastItem[] }) {
       ))}
     </div>
   );
-}
-
-function handleAction(
-  action: ActionDescriptor,
-  projectId: string,
-  navigate: ReturnType<typeof useNavigate>,
-  commands: WorkspaceActionApi,
-) {
-  if (action.command_name === "run-next" || action.kind === "run_next") {
-    commands.runNext();
-    return;
-  }
-  if (action.command_name === "run-until-blocked" || action.kind === "run_until_blocked") {
-    commands.runUntilBlocked();
-    return;
-  }
-  if (action.target_view === "review") {
-    navigate(`/projects/${projectId}/review`);
-    return;
-  }
-  if (action.target_view === "artifact" && action.target_id) {
-    navigate(`/projects/${projectId}/artifacts/${action.target_id}`);
-    return;
-  }
-  if (action.target_view === "task_graph") {
-    navigate(`/projects/${projectId}/task-graph`);
-    return;
-  }
-  if (action.target_view === "state") {
-    navigate(`/projects/${projectId}/state`);
-    return;
-  }
-  if (action.target_view === "debug") {
-    navigate(`/projects/${projectId}/debug`);
-    return;
-  }
-}
-
-function retryTaskIdForSituation(situation: ProjectSituationView): string | null {
-  const blocker = situation.blockers[0];
-  if (!blocker || !blocker.related_id) {
-    return null;
-  }
-  if (blocker.kind !== "task_failure" && blocker.kind !== "execution_failure") {
-    return null;
-  }
-  return blocker.related_id;
 }
 
 export default App;

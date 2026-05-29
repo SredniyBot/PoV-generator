@@ -23,7 +23,6 @@ from pov_generator.domain.artifacts import (
 )
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
-
 # --- 1. Структура ArtifactRecord -------------------------------------------
 
 

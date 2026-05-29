@@ -17,6 +17,5 @@
   "dependency_constraints": [
     "Ключевые решения могут зависеть от подтверждений со стороны заказчика, ИТ или ИБ"
   ],
-  "confidence": 0.83,
-  "blocking_questions": []
+  "confidence": 0.83
 }

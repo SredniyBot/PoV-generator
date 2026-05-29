@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ArtifactFormat = Literal["json", "markdown", "text"]
 """Формат хранимого содержимого артефакта."""
 
@@ -93,6 +92,25 @@ class ArtifactMetadata:
     инвалидации зависимых артефактов при оспаривании положения
     (см. ``downstream_closure``).
     """
+
+    # --- v3.5: token usage по стадиям сборки ------------------------------
+    #
+    # Сколько токенов реально ушло на этот артефакт, с разбивкой по этапам.
+    # Ключи стадий — стабильные строковые id; значения — словари с
+    # input/output/cache/total. Сумма по стадиям = «полная стоимость» одного
+    # артефакта.
+    #
+    # Используется в UI ArtifactDetail (раздел «Токены»), агрегатах
+    # производительности и при отладке («куда уходят токены»). Значения
+    # фиксируются на этапе сборки артефакта и не пересчитываются.
+    #
+    # Ожидаемые стадии:
+    #   - `pre_flight_planning` — DecisionPlanningService (1 вызов).
+    #   - `primary_generation`  — основная сборка артефакта (1 вызов
+    #                              single_call ИЛИ N+1 для per_stage_cot).
+    #   - `methodology_stage:<id>` — отдельные стадии per_stage_cot (если есть).
+    # При отсутствии данных от провайдера — поле пустое (default {}).
+    token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
 
     # --- free-form расширение ----------------------------------------------
 

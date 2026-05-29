@@ -115,7 +115,7 @@ def _merge_lists(
     if policy == "fail_on_conflict":
         if left != right:
             raise ConflictError(
-                f"Structural merge conflict: list mismatch (policy=fail_on_conflict)"
+                "Structural merge conflict: list mismatch (policy=fail_on_conflict)"
             )
         return list(left)
     # union: дедуп для хэшируемых, иначе сохраняем порядок появления.

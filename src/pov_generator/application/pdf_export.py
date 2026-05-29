@@ -51,24 +51,174 @@ _PDF_FONT_NAME_BOLD = "PovBodyFont-Bold"
 _PDF_FONT_FALLBACK = "Helvetica"  # core PDF font; для Cyrillic непригоден
 
 # --- размеры страниц (для оценки «лезет ли таблица в portrait») -------------
-# A4 = 21.0 × 29.7 cm; 1 cm ≈ 28.346 pt; внешние поля задаются в @page (1.8 cm).
+# A4 = 21.0 × 29.7 cm; 1 cm ≈ 28.346 pt.
+# v3.8.3: landscape-поля сжаты до 1.0см с боков — это страница с
+# таблицей, а не литературный текст; чем больше места под колонки, тем
+# реже алгоритм скейлит мин-ширины вниз и рвёт слова. Portrait-поля
+# оставлены щедрыми (1.8см) для обычных артефактных PDF.
 # Доступная под контент ширина:
 #   portrait  = (21.0 − 2×1.8) cm ≈ 493 pt
-#   landscape = (29.7 − 2×1.8) cm ≈ 738 pt
+#   landscape = (29.7 − 2×1.0) cm ≈ 785 pt
 _PORTRAIT_CONTENT_WIDTH_PT = 493.0
-_LANDSCAPE_CONTENT_WIDTH_PT = 738.0
+_LANDSCAPE_CONTENT_WIDTH_PT = 785.0
 
-# Грубая оценка средней ширины символа в шрифте таблицы (9.5pt). Для
-# пропорциональных шрифтов средняя ширина строчной кириллической буквы
-# составляет около 0.55 em (≈5.2pt). Берём с запасом — лучше переоценить
-# ширину и уйти в landscape лишний раз, чем недооценить и обрезать таблицу.
-_TABLE_CHAR_WIDTH_PT = 5.5
-# Горизонтальный padding ячейки (4pt × 2) + бордеры (~1pt). Каждая колонка
-# добавляет это к натуральной ширине, независимо от текста.
-_TABLE_CELL_CHROME_PT = 13.0
+# Грубая оценка средней ширины символа в шрифте таблицы (9.5pt).
+#
+# v3.8.2: повышено с 5.5 до 6.2pt по результатам реальных PDF-рендеров.
+# Причины:
+#   - кириллица в Arial рендерится шире, чем латиница; буквы «ш», «щ», «м»,
+#     «ю», «ы», «ж» дают ~6.5pt каждая, среднее по слову — около 5.8-6pt.
+#   - жирный (`**word**` для выбранного варианта) рендерится ~15% шире
+#     обычного начертания. Если жирный определяет longest_word, расчёт
+#     по обычному char_width недооценивает реальную ширину.
+#   - запас на «безопасном допущении» при оценке очень нужен — иначе
+#     слово вылезает за рамку колонки на 1-3 пункта, и это становится
+#     заметным дефектом верстки.
+# Эффект: суммарная минимальная ширина растёт на ~13%; landscape бюджет
+# 738pt пока хватает для 6-колонной таблицы реестра решений.
+_TABLE_CHAR_WIDTH_PT = 6.2
+# Горизонтальный padding ячейки (4pt × 2) + бордеры (~1pt) + 2pt запаса
+# на округление при PDF-рендере. Каждая колонка добавляет это к
+# натуральной ширине, независимо от текста.
+_TABLE_CELL_CHROME_PT = 16.0
 # Порог: при какой доле от portrait-ширины уже разворачиваем в landscape.
 # 0.95 — оставляем небольшой буфер на округление и неточность оценки.
 _PORTRAIT_USE_THRESHOLD = 0.95
+
+
+def render_decisions_pdf(
+    *,
+    decisions: list[dict],
+    project_name: str,
+    mode: str,
+) -> bytes:
+    """Сгенерировать PDF реестра решений проекта (v3.8.1).
+
+    Решения отдаются в виде одной широкой таблицы со столбцами:
+    Уровень · Описание · Решение · Альтернативы · Источник · Уверенность.
+
+    v3.8: «Выбрано» (chosen_option_label) заменён на «Описание»
+    (decision.description). chosen-label дублировался с альтернативами
+    (выбранный помечен ✓), а полнота описания была недоступна без UI.
+
+    v3.8.1: убран столбец «Статус» — для autopilot он всегда
+    «Принят дефолт», в balanced/control/expert он редко меняется и
+    место съедает. Перепорядочены так, чтобы при чтении сверху вниз
+    шла естественная логика: «какого уровня → о чём → суть → варианты
+    → откуда → уверенность».
+
+    Реализация делегирует в `render_artifact_pdf` — markdown с большой
+    таблицей попадёт через тот же auto-width + landscape pipeline.
+
+    Args:
+        decisions: список DecisionItemView в виде dict (то, что отдаёт API).
+        project_name: имя проекта для заголовка PDF.
+        mode: текущий участия-режим (`autopilot`/`balanced`/...).
+
+    Returns:
+        PDF-документ как bytes.
+    """
+    _LEVEL_RU = {"business": "Бизнес", "architecture": "Архитектура", "detail": "Детали"}
+    _SOURCE_RU = {
+        # v3.6 ребрендинг (v3.7: phase_gap удалён).
+        "pre_flight": "выявлено",     # task-level identification
+        "emergent": "извлечено",      # post-artifact extraction
+        "reactive_validation": "валидация",
+        "user_manual": "вручную",
+    }
+
+    def _cell(text: str) -> str:
+        """Экранируем «pipe» и нормализуем переносы для markdown-таблицы."""
+        if text is None:
+            return "—"
+        return str(text).replace("|", "\\|").replace("\n", " ")
+
+    # v3.5: сортировка по важности — та же, что в UI DecisionsRegistryPage:
+    #   1) status=proposed (ждут ответа пользователя) сверху,
+    #   2) is_low_confidence (LLM не уверена),
+    #   3) уровень: business → architecture → detail,
+    #   4) дата создания (свежее — выше).
+    # Сохраняем стабильный порядок: пользователь, открывая PDF, видит то же
+    # самое, что и на экране — не должно быть «в реестре было одно, в PDF
+    # внезапно другое».
+    _LEVEL_WEIGHT = {"business": 0, "architecture": 1, "detail": 2}
+
+    def _neg_iso(s: str) -> str:
+        """Для desc-сортировки строки сравниваем в reverse — берём «инверсию»
+        через xor-каждого-символа; стабильный proxy для tuple-sort."""
+        # ISO-8601 строки сортируются лексикографически. Чтобы получить
+        # desc внутри одного tuple-ключа, инвертируем через chr(255 - ord(c)).
+        return "".join(chr(255 - ord(c)) for c in s)
+
+    sorted_decisions = sorted(
+        decisions,
+        key=lambda d: (
+            0 if d.get("status") == "proposed" else 1,
+            0 if d.get("is_low_confidence") else 1,
+            _LEVEL_WEIGHT.get(str(d.get("level", "")), 3),
+            _neg_iso(str(d.get("created_at") or "")),
+        ),
+    )
+
+    lines: list[str] = []
+    lines.append(f"# Реестр решений: {project_name}")
+    lines.append("")
+    lines.append(f"Режим участия: **{mode}** · Всего решений: **{len(sorted_decisions)}**")
+    lines.append("")
+    if not sorted_decisions:
+        lines.append("_В реестре пока нет решений._")
+        return render_artifact_pdf(
+            markdown_content="\n".join(lines),
+            title=f"Реестр решений — {project_name}",
+        )
+
+    lines.append("| Уровень | Описание | Решение | Альтернативы | Источник | Уверенность |")
+    lines.append("|---|---|---|---|---|---|")
+    for d in sorted_decisions:
+        level = _LEVEL_RU.get(str(d.get("level", "")), str(d.get("level", "—")))
+        title = str(d.get("title") or "").strip() or "—"
+        description_raw = str(d.get("description") or "").strip() or "—"
+        # confidence: предпочитаем chosen-alt's confidence, fallback на overall
+        chosen_id = d.get("chosen_option_id")
+        chosen_alt_conf = None
+        alt_summaries: list[str] = []
+        for alt in d.get("alternatives", []) or []:
+            alt_conf = alt.get("confidence")
+            tag = f"{alt.get('label', '')}"
+            if alt_conf is not None:
+                tag += f" ({round(float(alt_conf) * 100)}%)"
+            if alt.get("option_id") == chosen_id:
+                chosen_alt_conf = alt_conf
+                # Помечаем выбранный вариант жирным в начале списка.
+                # Markdown-bold надёжно работает в xhtml2pdf c
+                # зарегистрированным bold-шрифтом; Unicode-символы
+                # вроде ✓ ломаются если в шрифте нет glyph'а.
+                alt_summaries.insert(0, f"**{tag}**")
+            else:
+                alt_summaries.append(tag)
+        conf_value = chosen_alt_conf if chosen_alt_conf is not None else d.get("confidence")
+        try:
+            conf_pct = f"{round(float(conf_value) * 100)}%"
+        except (TypeError, ValueError):
+            conf_pct = "—"
+        if d.get("is_low_confidence"):
+            conf_pct += " ⚠"
+        alts_text = "; ".join(alt_summaries) if alt_summaries else "—"
+        source = _SOURCE_RU.get(str(d.get("source", "")), str(d.get("source", "—")))
+        # v3.8.1 порядок: Уровень · Описание · Решение · Альтернативы · Источник · Уверенность
+        lines.append(
+            "| "
+            + " | ".join(
+                _cell(x)
+                for x in (level, description_raw, title, alts_text, source, conf_pct)
+            )
+            + " |"
+        )
+
+    return render_artifact_pdf(
+        markdown_content="\n".join(lines),
+        title=f"Реестр решений — {project_name}",
+    )
 
 
 def render_artifact_pdf(
@@ -107,6 +257,25 @@ def render_artifact_pdf(
     css = _build_base_css(body_font, include_landscape_page=landscape_used)
 
     page_title = (title or "Artifact").replace("<", "&lt;").replace(">", "&gt;")
+    # ITMO-брендинг (v3.8.4): шапка в начале и контактный блок в конце
+    # каждого PDF. Заданы как inline-HTML вокруг html_body, потому что
+    # xhtml2pdf не поддерживает CSS @page running-elements (то есть нельзя
+    # сделать настоящие header/footer на каждой странице через CSS).
+    # Поэтому это «одноразовые» блоки на первой и последней странице
+    # документа — достаточно для атрибуции, не претендуют на page-header.
+    header_block = (
+        '<div class="doc-header">'
+        "Выполнено <strong>AI Talent Hub ИТМО</strong> · "
+        '<a href="https://ai.itmo.ru">ai.itmo.ru</a>'
+        "</div>"
+    )
+    footer_block = (
+        '<div class="doc-footer">'
+        "По вопросам реализации: <strong>Олег Шатов</strong> · "
+        '<a href="mailto:oishatov@itmo.ru">oishatov@itmo.ru</a> · '
+        "+7 963 460-89-19"
+        "</div>"
+    )
     html_document = (
         "<!DOCTYPE html>"
         '<html lang="ru"><head>'
@@ -114,7 +283,9 @@ def render_artifact_pdf(
         f"<title>{page_title}</title>"
         f"<style>{css}</style>"
         "</head><body>"
+        f"{header_block}"
         f"{html_body}"
+        f"{footer_block}"
         "</body></html>"
     )
 
@@ -196,9 +367,17 @@ def _enhance_tables_in_html(html_body: str) -> tuple[str, bool]:
         metrics = _compute_column_metrics(table)
         if not metrics:
             continue
-        _inject_colgroup(table, metrics)
+        # v3.8.1: сначала определяем, помещается ли таблица в portrait —
+        # это нужно знать, чтобы передать правильную available_pt в
+        # _inject_colgroup (иначе бонус-пул считается от 493pt portrait,
+        # но фактически таблица будет на 738pt landscape — overflow).
         natural_pt = _estimate_table_width_pt(metrics)
-        if natural_pt > _PORTRAIT_CONTENT_WIDTH_PT * _PORTRAIT_USE_THRESHOLD:
+        is_landscape = natural_pt > _PORTRAIT_CONTENT_WIDTH_PT * _PORTRAIT_USE_THRESHOLD
+        available_pt = (
+            _LANDSCAPE_CONTENT_WIDTH_PT if is_landscape else _PORTRAIT_CONTENT_WIDTH_PT
+        )
+        _inject_colgroup(table, metrics, available_pt=available_pt)
+        if is_landscape:
             _wrap_in_landscape(table, parent_map)
             landscape_used = True
 
@@ -267,43 +446,109 @@ def _compute_column_metrics(table: ET.Element) -> list[_ColumnMetrics]:
     return metrics
 
 
-def _inject_colgroup(table: ET.Element, metrics: list[_ColumnMetrics]) -> None:
-    """Вставить ``<colgroup>`` с пропорциональными процентами в начало table.
+def _inject_colgroup(
+    table: ET.Element,
+    metrics: list[_ColumnMetrics],
+    *,
+    available_pt: float = _PORTRAIT_CONTENT_WIDTH_PT,
+) -> None:
+    """Зафиксировать пропорциональные ширины колонок для xhtml2pdf.
 
-    Проценты вычисляются от суммы весов колонок — это даёт «справедливое»
-    распределение горизонтального места: колонка с длинным контентом
-    получает больше, чем колонка с двумя символами.
+    КРИТИЧНО ПРО xhtml2pdf. Движок **игнорирует** ``<colgroup>``/``<col>``
+    — даже с ``table-layout: fixed`` и ``<col style="width: X%">``.
+    Реальный путь, по которому ширины попадают в reportlab Table:
+    атрибут ``width`` на ячейках ``<td>`` / ``<th>`` (см.
+    ``xhtml2pdf/tables.py:345``: ``width = c.frag.width or self.attr.width``).
 
-    Минимальная ширина любой колонки — 5%, чтобы узкие столбцы (status,
-    приоритет) не сжимались до нечитаемой ширины из-за соседей-гигантов.
+    Соответственно фиксируем ширины **на header-ячейках первой строки**:
+    xhtml2pdf пройдёт по ним и зафиксирует ``tdata.colw`` для всей
+    таблицы. ``<colgroup>`` оставляем тоже — он корректно
+    интерпретируется обычными HTML-просмотрщиками.
+
+    АЛГОРИТМ РАСПРЕДЕЛЕНИЯ ШИРИН (v3.8.1, исправляет overflow).
+
+    Раньше использовался %-floor 5% от ширины страницы. Это плохо
+    работало для landscape-таблиц с очень длинными заголовками или
+    короткими но непереносимыми словами: «Архитектура» (11 символов) ×
+    5.5pt/символ = 60pt минимум; 5% от 738pt landscape = 37pt → текст
+    вылезал за границы колонки.
+
+    Новый алгоритм:
+      1) Для каждой колонки считаем минимальную ширину в pt —
+         ``longest_word * char_width + chrome``. Это та ширина, ниже
+         которой текст ГАРАНТИРОВАННО переполнится.
+      2) Если суммарный минимум превышает доступную ширину — что-то не
+         так со страницей (вызывающий должен был развернуть в landscape).
+         В этом случае всё равно распределяем минимумы пропорционально —
+         лучше частично сжатый текст, чем катастрофа layout.
+      3) Излишек (available − sum(min)) распределяем пропорционально
+         весам колонок: колонки с большим контентом получают больше
+         «бонусной» ширины поверх своего минимума.
+      4) Конвертируем pt → % от доступной ширины и кладём в width="X%"
+         на header-ячейки.
     """
+    if not metrics:
+        return
+
+    # 1) Минимумы по pt: longest_word + chrome — нижняя граница, ниже
+    # которой текст обрезается прямо посреди слова.
+    min_widths_pt = [
+        m.longest_word * _TABLE_CHAR_WIDTH_PT + _TABLE_CELL_CHROME_PT
+        for m in metrics
+    ]
+    sum_min = sum(min_widths_pt)
+
+    # 2) Бюджет на распределение бонусов.
+    bonus_pool = max(0.0, available_pt - sum_min)
+
+    # 3) Распределяем бонусы пропорционально весам.
     weights = [m.weight for m in metrics]
-    total = sum(weights) or 1.0
-    raw_percents = [w / total * 100.0 for w in weights]
+    total_weight = sum(weights) or 1.0
+    widths_pt = [
+        base + bonus_pool * (w / total_weight)
+        for base, w in zip(min_widths_pt, weights)
+    ]
 
-    # Min-floor 5%: если колонка получила меньше — поднимаем; излишек
-    # вычитаем пропорционально из колонок выше floor.
-    min_pct = 5.0
-    floored = [max(p, min_pct) for p in raw_percents]
-    over = sum(floored) - 100.0
-    if over > 0:
-        eligible_total = sum(p for p in floored if p > min_pct)
-        if eligible_total > 0:
-            floored = [
-                (p - over * (p - min_pct) / eligible_total) if p > min_pct else p
-                for p in floored
-            ]
+    # Если минимумы не лезут — нормализуем целиком (sum=available).
+    # Это аварийный режим: layout всё равно будет тесным, но без
+    # переполнения за границы страницы.
+    total_w = sum(widths_pt)
+    if total_w > available_pt:
+        scale = available_pt / total_w
+        widths_pt = [w * scale for w in widths_pt]
 
-    # Удаляем существующий colgroup, если markdown почему-то его вставил.
+    # 4) Конвертируем в % от available_pt — xhtml2pdf принимает и %,
+    # и pt, но % лучше переживают изменение размера страницы.
+    percents = [(w / available_pt) * 100.0 for w in widths_pt]
+
+    # <colgroup> для семантической корректности HTML.
     for existing in list(table.findall("colgroup")):
         table.remove(existing)
-
     colgroup = ET.Element("colgroup")
-    for pct in floored:
+    for pct in percents:
         col = ET.SubElement(colgroup, "col")
         col.set("style", f"width: {pct:.2f}%;")
-    # ET вставляет в начало через insert(0, ...) — это правильное место для colgroup.
     table.insert(0, colgroup)
+
+    # ГЛАВНОЕ: ставим width="X%" как HTML-атрибут на ячейки первой
+    # строки. Именно это xhtml2pdf будет читать.
+    first_row_cells = _first_row_cells(table)
+    if first_row_cells and len(first_row_cells) == len(percents):
+        for cell, pct in zip(first_row_cells, percents):
+            cell.set("width", f"{pct:.2f}%")
+
+
+def _first_row_cells(table: ET.Element) -> list[ET.Element]:
+    """Найти ячейки первой строки таблицы (thead/tbody/прямо в table).
+
+    Возвращает первую найденную <tr> с непустым списком <th>/<td>.
+    Если таблица битая (нет строк) — пустой список.
+    """
+    for tr in table.iter("tr"):
+        cells = [cell for cell in tr if cell.tag in ("td", "th")]
+        if cells:
+            return cells
+    return []
 
 
 def _estimate_table_width_pt(metrics: list[_ColumnMetrics]) -> float:
@@ -586,7 +831,7 @@ def _build_base_css(body_font: str, *, include_landscape_page: bool = False) -> 
         """
         @page landscape_page {
             size: A4 landscape;
-            margin: 1.6cm 1.8cm;
+            margin: 1.4cm 1.0cm;
         }
         """
         if include_landscape_page
@@ -641,6 +886,15 @@ def _build_base_css(body_font: str, *, include_landscape_page: bool = False) -> 
             vertical-align: top;
             text-align: left;
             word-wrap: break-word;
+            /* v3.8.3: НИКАКОГО `-pdf-word-wrap: CJK`. Эта опция
+               включает в reportlab режим, при котором текст
+               разрывается посреди буквы при первом же намёке на
+               нехватку места — даже если слово целиком прекрасно
+               помещается с обычным пробельным переносом. На практике
+               это рисовало «Уверенност / ь», «лин / ии» и подобный
+               мусор в каждой второй ячейке. Положимся на
+               `word-wrap: break-word` + правильно посчитанные мин-
+               ширины колонок (longest_word × char_width + chrome). */
         }}
         th {{ background-color: #eef0f3; font-weight: bold; }}
         code {{
@@ -665,4 +919,27 @@ def _build_base_css(body_font: str, *, include_landscape_page: bool = False) -> 
             font-style: italic;
         }}
         hr {{ border: 0; border-top: 0.5pt solid #999; margin: 10pt 0; }}
+        /* ITMO-брендинг — шапка/подвал документа. Намеренно ненавязчивые:
+           серый цвет, мелкий шрифт, отделены тонкой линией. */
+        .doc-header {{
+            font-family: {body_font};
+            font-size: 8.5pt;
+            color: #666;
+            border-bottom: 0.5pt solid #b0b0b0;
+            padding-bottom: 4pt;
+            margin: 0 0 12pt 0;
+        }}
+        .doc-header a {{ color: #2a5db0; text-decoration: none; }}
+        .doc-footer {{
+            font-family: {body_font};
+            font-size: 8.5pt;
+            color: #666;
+            border-top: 0.5pt solid #b0b0b0;
+            padding-top: 4pt;
+            margin: 16pt 0 0 0;
+            /* page-break-inside на блоке-подвале: не хочется, чтобы
+               «Олег Шатов» и его email уехали на разные страницы. */
+            page-break-inside: avoid;
+        }}
+        .doc-footer a {{ color: #2a5db0; text-decoration: none; }}
     """

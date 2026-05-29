@@ -21,15 +21,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
 
-from ..common.errors import ConflictError, ValidationError
+from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
 from ..domain.llm_settings import (
     ALL_PURPOSES,
     PURPOSE_CLARIFICATION_CE11,
     PURPOSE_COMPLEXITY_SELECTOR,
+    PURPOSE_DECISION_PLANNING,
     PURPOSE_DOMAIN_PACK_SELECTOR,
     PURPOSE_EXECUTION_COMPLEX,
     PURPOSE_EXECUTION_STANDARD,
@@ -42,7 +41,6 @@ from ..domain.llm_settings import (
 )
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
-
 
 # Каталог известных моделей. Используется для автозаполнения routings при
 # создании connection. Кастомные модели админ добавляет через
@@ -83,6 +81,10 @@ RECOMMENDED_BY_PURPOSE: dict[str, tuple[str, ...]] = {
     PURPOSE_DOMAIN_PACK_SELECTOR: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_CLARIFICATION_CE11: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_COMPLEXITY_SELECTOR: ("claude-haiku-4-5", "openai/gpt-4o-mini"),
+    # v3.0: pre-flight планирование решений. Структурная задача
+    # (перечисление выборов), не глубокий анализ — поэтому быстрая/дешёвая
+    # модель. Sonnet как fallback, если haiku нет.
+    PURPOSE_DECISION_PLANNING: ("claude-haiku-4-5", "claude-sonnet-4-5", "openai/gpt-4o-mini"),
 }
 
 
@@ -483,6 +485,37 @@ class ProviderSettingsService:
 
         return tuple(created)
 
+    def sync_missing_purpose_assignments(self) -> tuple[ModelAssignment, ...]:
+        """Достроить assignments для purposes, появившихся после установки.
+
+        Для существующих пользователей (у которых БД уже не пустая, поэтому
+        ``ensure_default_settings`` ничего не делает) — этот метод ловит
+        случай, когда мы добавили новый purpose (например, decision_planning
+        в v3.0), но в их settings.db для него нет назначения.
+
+        Логика:
+        - Идём по RECOMMENDED_BY_PURPOSE.
+        - Для каждого purpose без assignment пробуем назначить первую
+          рекомендуемую модель из доступных. Если ни одна не доступна —
+          purpose остаётся без назначения (как и было).
+
+        Существующие assignments НЕ переписываются — пользователь мог
+        выбрать другую модель осознанно.
+
+        Возвращает список созданных назначений (пустой, если все уже на месте).
+        """
+        existing_purposes = {a.purpose for a in self._store.list_assignments()}
+        available_models = {entry["model_name"] for entry in self.list_models()}
+        applied: list[ModelAssignment] = []
+        for purpose, recommended in RECOMMENDED_BY_PURPOSE.items():
+            if purpose in existing_purposes:
+                continue
+            for model_name in recommended:
+                if model_name in available_models:
+                    applied.append(self.set_assignment(purpose=purpose, model_name=model_name))
+                    break
+        return tuple(applied)
+
     # --- Internals -----------------------------------------------------------
 
     def sync_known_routings(self, connection_id: str) -> tuple[ModelRouting, ...]:
@@ -537,7 +570,6 @@ class ProviderSettingsService:
         ``model_name`` (из assignment), ``resolved`` — что фактически
         выбрано (или ``None`` если резолв упал) с пояснением ошибки.
         """
-        from ..common.errors import ConflictError
 
         out: list[dict[str, object]] = []
         for purpose in ALL_PURPOSES:

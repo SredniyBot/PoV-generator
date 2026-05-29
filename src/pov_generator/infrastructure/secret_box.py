@@ -25,7 +25,6 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from ..common.errors import ConflictError
 
-
 _KEY_ENV_VAR = "POV_SECRET_KEY"
 _KEY_FILENAME = ".secret_key"
 

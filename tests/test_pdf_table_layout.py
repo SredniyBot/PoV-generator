@@ -15,12 +15,12 @@ import re
 import markdown as md_lib
 
 from pov_generator.application.pdf_export import (
+    _LANDSCAPE_CONTENT_WIDTH_PT,
+    _PORTRAIT_CONTENT_WIDTH_PT,
     _ColumnMetrics,
     _compute_column_metrics,
     _enhance_tables_in_html,
     _estimate_table_width_pt,
-    _LANDSCAPE_CONTENT_WIDTH_PT,
-    _PORTRAIT_CONTENT_WIDTH_PT,
 )
 
 
@@ -255,7 +255,12 @@ def test_estimate_table_width_pt_grows_with_columns() -> None:
 
 def test_landscape_content_width_constants_match_a4() -> None:
     """Регрессия на случай, если кто-то переставит margin'ы и забудет
-    обновить пороги. A4 — 21×29.7 cm, при отступах 1.8 cm доступно ≈
-    493 pt portrait и ≈ 738 pt landscape (×28.35 pt/cm)."""
+    обновить пороги.
+
+    A4 — 21×29.7 cm; 1 cm ≈ 28.35 pt.
+      portrait: при margin 1.8 cm доступно ≈ 493 pt.
+      landscape: при margin 1.0 cm (v3.8.3 — сжаты с боков под таблицы)
+      доступно ≈ 785 pt."""
     assert 470 < _PORTRAIT_CONTENT_WIDTH_PT < 520
-    assert 700 < _LANDSCAPE_CONTENT_WIDTH_PT < 770
+    # Landscape поля v3.8.3 узкие (1.0 cm), даём диапазон 700–810.
+    assert 700 < _LANDSCAPE_CONTENT_WIDTH_PT < 810
