@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import uuid
 from pathlib import Path
 
 import yaml
@@ -8,7 +9,9 @@ import yaml
 from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
+from pov_generator.common.serialization import utc_now_iso
 from pov_generator.domain.registry import ObjectRef
+from pov_generator.domain.tasks import TaskRecord
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -67,6 +70,53 @@ def test_registry_validation_detects_unknown_domain_slot(tmp_path: Path) -> None
 
     assert not report.is_valid
     assert any("unknown.slot" in issue.message for issue in report.errors)
+
+
+def test_planning_tolerates_orphaned_task_templates(tmp_path: Path) -> None:
+    """Сохранённые в графе задачи, чьи шаблоны удалены из реестра (напр. после
+    варианта B — common.review_requirements_spec / requirements_spec_review),
+    не должны ронять планирование: их пропускают при развёртывании и допуске.
+    Регрессия: иначе один stranded-проект валит весь list_projects (NotFoundError
+    → 409 на /api/projects → пустой сайдбар)."""
+    workspace, snapshot, runtime, _project_service, planning_service = init_workspace(tmp_path)
+    planning_service.expand_graph(workspace, snapshot)
+    root = next(task for task in runtime.list_tasks(workspace) if task.parent_task_id is None)
+    now = utc_now_iso()
+
+    def _orphan(template_ref: str, template_type: str, status: str, key: str) -> TaskRecord:
+        return TaskRecord(
+            task_id=str(uuid.uuid4()),
+            project_id=root.project_id,
+            objective_ref=root.objective_ref,
+            parent_task_id=root.task_id,
+            template_ref=template_ref,
+            template_type=template_type,
+            title="orphan",
+            status=status,
+            origin_kind="base_child",
+            origin_ref="orphan",
+            stable_key=key,
+            depth=1,
+            slot_id=None,
+            attempt=1,
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    # composite (waiting_for_children) бьёт по _expand_composites; leaf
+    # (candidate) — по _recompute_admission. Оба сайта должны пережить
+    # отсутствие шаблона.
+    runtime.create_task(
+        workspace, _orphan("common.__removed_composite__@1.0.0", "composite", "waiting_for_children", "orphan:c")
+    )
+    runtime.create_task(
+        workspace, _orphan("common.__removed_leaf__@1.0.0", "leaf", "candidate", "orphan:l")
+    )
+
+    # Раньше — NotFoundError; теперь осиротевшие задачи пропускаются.
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run", record=False)
+    assert decision is not None
 
 
 def test_problem_state_patches_persist_and_history(tmp_path: Path) -> None:
