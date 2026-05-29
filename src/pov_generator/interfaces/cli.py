@@ -172,6 +172,27 @@ def _dispatch(
         if args.action == "show":
             print(json_dumps(project_service.load_manifest(Path(args.workspace))))
             return
+        if args.action == "activate-next-objective":
+            snapshot, report = registry_service.validate()
+            if not report.is_valid:
+                raise PovGeneratorError(
+                    "Registry невалиден. Сначала выполните 'povgen registry validate'."
+                )
+            new_ref = ObjectRef.parse(args.objective)
+            new_spec = snapshot.resolve_objective(new_ref)
+            methodology_ref = (
+                new_spec.default_methodology_pack_ref.as_string()
+                if new_spec.default_methodology_pack_ref is not None
+                else None
+            )
+            updated_manifest = project_service.activate_next_objective(
+                Path(args.workspace),
+                new_ref,
+                default_methodology_pack_ref=methodology_ref,
+            )
+            planning_service.expand_graph(Path(args.workspace), snapshot)
+            print(json_dumps(updated_manifest))
+            return
 
     if args.entity == "problem":
         workspace = Path(args.workspace)
@@ -377,6 +398,9 @@ def _build_parser() -> argparse.ArgumentParser:
     request_group.add_argument("--request-file")
     project_show = project_subparsers.add_parser("show")
     project_show.add_argument("--workspace", required=True)
+    project_next = project_subparsers.add_parser("activate-next-objective")
+    project_next.add_argument("--workspace", required=True)
+    project_next.add_argument("--objective", required=True)
 
     problem = subparsers.add_parser("problem")
     problem_subparsers = problem.add_subparsers(dest="action", required=True)

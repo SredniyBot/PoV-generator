@@ -184,6 +184,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
+  activateNextObjective: (projectId: string, objectiveRef: string) =>
+    request<CommandResultView>(
+      `/api/projects/${projectId}/commands/activate-next-objective`,
+      {
+        method: "POST",
+        body: JSON.stringify({ objective_ref: objectiveRef }),
+      },
+    ),
   getOverview: (projectId: string) =>
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
   getMethodologyTrace: (projectId: string, taskId: string) =>

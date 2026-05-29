@@ -270,6 +270,232 @@ def test_init_project_falls_back_to_lean_jtbd_when_no_methodology_passed(
     assert "process.lean_jtbd@1.0.0" in active
 
 
+def test_objective_compatible_next_objectives_defaults_to_empty() -> None:
+    """Поле ``compatible_next_objectives`` опционально; отсутствие в YAML
+    даёт пустой tuple."""
+    registry_service, _, _, _ = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+
+    arch_spec = snapshot.resolve_objective(ObjectRef.parse("architecture.system_design@1.0.0"))
+    assert arch_spec.compatible_next_objectives == ()
+
+
+def test_parse_objective_rejects_unknown_compatible_next_objective(
+    tmp_path: Path,
+) -> None:
+    """Если ``compatible_next_objectives`` ссылается на несуществующий
+    objective — валидация реестра падает."""
+    import shutil as _shutil
+
+    registry_root = tmp_path / "templates"
+    _shutil.copytree(REPO_ROOT / "templates", registry_root)
+    obj_path = registry_root / "objectives" / "common" / "requirements_specification.yaml"
+    raw = yaml.safe_load(obj_path.read_text(encoding="utf-8"))
+    raw["compatible_next_objectives"] = ["nonexistent.objective@1.0.0"]
+    obj_path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+    registry_service, _, _, _ = build_services(registry_root)
+    _, report = registry_service.validate()
+    assert not report.is_valid
+    messages = [issue.message for issue in report.errors]
+    assert any("nonexistent.objective@1.0.0" in msg for msg in messages)
+
+
+def test_parse_objective_rejects_self_reference_in_compatible_next(
+    tmp_path: Path,
+) -> None:
+    """Самореференция в ``compatible_next_objectives`` запрещена."""
+    import shutil as _shutil
+
+    registry_root = tmp_path / "templates"
+    _shutil.copytree(REPO_ROOT / "templates", registry_root)
+    obj_path = registry_root / "objectives" / "common" / "requirements_specification.yaml"
+    raw = yaml.safe_load(obj_path.read_text(encoding="utf-8"))
+    raw["compatible_next_objectives"] = ["common.requirements_specification@1.0.0"]
+    obj_path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+    registry_service, _, _, _ = build_services(registry_root)
+    _, report = registry_service.validate()
+    assert not report.is_valid
+
+
+def test_parse_objective_accepts_valid_compatible_next_objective(
+    tmp_path: Path,
+) -> None:
+    """Корректная ссылка на существующий objective проходит валидацию и
+    подхватывается в ``ObjectiveSpec``."""
+    import shutil as _shutil
+
+    registry_root = tmp_path / "templates"
+    _shutil.copytree(REPO_ROOT / "templates", registry_root)
+    obj_path = registry_root / "objectives" / "common" / "requirements_specification.yaml"
+    raw = yaml.safe_load(obj_path.read_text(encoding="utf-8"))
+    raw["compatible_next_objectives"] = ["architecture.system_design@1.0.0"]
+    obj_path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+    registry_service, _, _, _ = build_services(registry_root)
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+
+    spec = snapshot.resolve_objective(
+        ObjectRef.parse("common.requirements_specification@1.0.0")
+    )
+    assert len(spec.compatible_next_objectives) == 1
+    assert (
+        spec.compatible_next_objectives[0].as_string()
+        == "architecture.system_design@1.0.0"
+    )
+
+
+def test_activate_next_objective_switches_active_ref_and_appends_history(
+    tmp_path: Path,
+) -> None:
+    """``activate_next_objective`` переключает active objective и
+    переносит предыдущий в ``objective_history``."""
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    old_manifest = project_service.load_manifest(workspace)
+    assert old_manifest.objective_ref == "common.requirements_specification@1.0.0"
+    assert old_manifest.objective_history == ()
+
+    new_manifest = project_service.activate_next_objective(
+        workspace,
+        ObjectRef.parse("architecture.system_design@1.0.0"),
+        default_methodology_pack_ref="process.lean_jtbd@1.0.0",
+    )
+    assert new_manifest.objective_ref == "architecture.system_design@1.0.0"
+    assert new_manifest.objective_history == (
+        "common.requirements_specification@1.0.0",
+    )
+
+    reloaded = project_service.load_manifest(workspace)
+    assert reloaded.objective_ref == "architecture.system_design@1.0.0"
+    assert reloaded.objective_history == (
+        "common.requirements_specification@1.0.0",
+    )
+
+
+def test_activate_next_objective_rejects_same_objective(
+    tmp_path: Path,
+) -> None:
+    """Активация того же objective'а, что уже активен, отклоняется."""
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    raised = False
+    try:
+        project_service.activate_next_objective(
+            workspace,
+            ObjectRef.parse("common.requirements_specification@1.0.0"),
+        )
+    except ValueError:
+        raised = True
+    assert raised
+
+
+def test_activate_next_objective_keeps_methodology_when_same_default(
+    tmp_path: Path,
+) -> None:
+    """Если новая методология совпадает с уже активной, событий смены
+    методологии в state log не появляется."""
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    before_events = len(project_service.state_history(workspace))
+
+    project_service.activate_next_objective(
+        workspace,
+        ObjectRef.parse("architecture.system_design@1.0.0"),
+        default_methodology_pack_ref="process.lean_jtbd@1.0.0",
+    )
+
+    after_events = len(project_service.state_history(workspace))
+    # Никаких новых событий процесса — обе методологии одинаковы.
+    assert after_events == before_events
+
+
+def test_activate_next_objective_preserves_knowledge_and_process(
+    tmp_path: Path,
+) -> None:
+    """Состояние (положения, цель, gaps, readiness) сохраняется при
+    смене objective'а — это и есть смысл chain-ов."""
+    workspace, _, _, project_service, _ = init_workspace(tmp_path)
+    project_service.set_goal(workspace, "Достичь цели X.")
+    knowledge_before = project_service.load_project_state(workspace).knowledge
+    goal_before = knowledge_before.positions["project.goal"].statement
+
+    project_service.activate_next_objective(
+        workspace,
+        ObjectRef.parse("architecture.system_design@1.0.0"),
+    )
+
+    knowledge_after = project_service.load_project_state(workspace).knowledge
+    assert knowledge_after.positions["project.goal"].statement == goal_before
+
+
+def test_chain_expand_graph_creates_new_root_for_next_objective(
+    tmp_path: Path,
+) -> None:
+    """После activate_next_objective + expand_graph в БД появляется
+    второй root-таск для нового objective'а, а старый сохраняется.
+
+    Это интеграционный тест механики chain'а: backend корректно создаёт
+    новое дерево задач рядом со старым, артефакты ТЗ становятся доступны
+    архитектурным задачам через ``requires.artifacts.optional``."""
+    registry_service, runtime, project_service, planning_service = build_services()
+    snapshot, _ = registry_service.validate()
+    workspace = tmp_path / "chain"
+
+    # 1. Создаём TZ workspace + expand_graph
+    project_service.init_project(
+        workspace=workspace,
+        name="Chain demo",
+        objective_ref=ObjectRef.parse("common.requirements_specification@1.0.0"),
+        request_text="Нужен сервис, генерирующий ТЗ.",
+    )
+    planning_service.expand_graph(workspace, snapshot)
+    tasks_after_tz = runtime.list_tasks(workspace)
+    tz_root_count = sum(
+        1
+        for t in tasks_after_tz
+        if t.origin_kind == "objective_root"
+        and "requirements_specification" in t.origin_ref
+    )
+    assert tz_root_count == 1
+
+    # 2. Активируем следующий objective + expand_graph
+    project_service.activate_next_objective(
+        workspace,
+        ObjectRef.parse("architecture.system_design@1.0.0"),
+    )
+    planning_service.expand_graph(workspace, snapshot)
+    tasks_after_arch = runtime.list_tasks(workspace)
+
+    arch_root_count = sum(
+        1
+        for t in tasks_after_arch
+        if t.origin_kind == "objective_root"
+        and "system_design" in t.origin_ref
+    )
+    tz_root_count_still = sum(
+        1
+        for t in tasks_after_arch
+        if t.origin_kind == "objective_root"
+        and "requirements_specification" in t.origin_ref
+    )
+    # Оба root'а живут в одной БД задач.
+    assert arch_root_count == 1
+    assert tz_root_count_still == 1
+    # Manifest показывает arch как активный, TZ в истории.
+    final_manifest = project_service.load_manifest(workspace)
+    assert final_manifest.objective_ref == "architecture.system_design@1.0.0"
+    assert final_manifest.objective_history == (
+        "common.requirements_specification@1.0.0",
+    )
+
+
 def test_set_methodology_keeps_active_pack(tmp_path: Path) -> None:
     workspace, _, _, project_service, _ = init_workspace(tmp_path)
     process = project_service.set_methodology(workspace, "process.lean_jtbd@1.0.0")

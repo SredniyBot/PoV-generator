@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from ..common.errors import NotFoundError
@@ -38,7 +38,6 @@ from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, St
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
-
 
 # --- сериализация Layer A (знания) -------------------------------------------
 
@@ -478,7 +477,33 @@ class SqliteRuntime:
         manifest_path = workspace / self.MANIFEST_FILENAME
         if not manifest_path.exists():
             raise NotFoundError(f"Workspace manifest not found: {manifest_path}")
-        return ProjectManifest(**json_loads(manifest_path.read_text(encoding="utf-8")))
+        raw = json_loads(manifest_path.read_text(encoding="utf-8"))
+        history = raw.get("objective_history", [])
+        if not isinstance(history, list):
+            raise ValueError(
+                f"manifest 'objective_history' must be a list, got {type(history).__name__}"
+            )
+        return ProjectManifest(
+            project_id=raw["project_id"],
+            name=raw["name"],
+            objective_ref=raw["objective_ref"],
+            business_request=raw["business_request"],
+            created_at=raw["created_at"],
+            objective_history=tuple(str(item) for item in history),
+        )
+
+    def update_manifest(self, workspace: Path, manifest: ProjectManifest) -> None:
+        """Перезаписать ``project.json`` новым manifest'ом.
+
+        Используется ``project_service.activate_next_objective`` при смене
+        активного objective'а. Остальные поля manifest'а (project_id, name,
+        business_request, created_at) должны оставаться неизменными — это
+        контрактные сигналы для UI и API.
+        """
+        manifest_path = workspace / self.MANIFEST_FILENAME
+        if not manifest_path.exists():
+            raise NotFoundError(f"Workspace manifest not found: {manifest_path}")
+        manifest_path.write_text(json_dumps(manifest), encoding="utf-8")
 
     def load_knowledge(self, workspace: Path) -> ProjectKnowledge:
         with self._connect(workspace) as connection:

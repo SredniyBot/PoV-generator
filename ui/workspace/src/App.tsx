@@ -139,6 +139,7 @@ interface WorkspaceActionApi {
   answerClarification: (payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string }) => void;
   acceptAssumption: (clarificationId: string) => void;
   setClarificationMode: (mode: string) => void;
+  activateNextObjective: (objectiveRef: string) => void;
   notify: (tone: ToastTone, title: string, description: string) => void;
   busy: boolean;
 }
@@ -447,6 +448,8 @@ function WorkspaceRoute({
       answerClarification: (payload) => void commandRequest(() => api.answerClarification(projectId, payload)),
       acceptAssumption: (clarificationId: string) => void commandRequest(() => api.acceptAssumption(projectId, clarificationId)),
       setClarificationMode: (mode: string) => void commandRequest(() => api.setClarificationMode(projectId, mode)),
+      activateNextObjective: (objectiveRef: string) =>
+        void commandRequest(() => api.activateNextObjective(projectId, objectiveRef)),
       notify,
       busy: commandBusy,
     }),
@@ -510,6 +513,8 @@ function WorkspaceRoute({
         openClarificationCount={headerClarificationsQuery.data?.open_count}
         blockingClarificationCount={headerClarificationsQuery.data?.blocking_count}
         onOpenClarifications={() => navigate(`/projects/${projectId}/clarifications`)}
+        onActivateNextObjective={commandMutations.activateNextObjective}
+        activatingNextObjective={commandMutations.busy}
         actions={<CommandBar projectId={projectId} />}
       />
       {/* Workflow-блок выше табов: пользователь сразу видит, что идёт

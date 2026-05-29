@@ -3800,6 +3800,26 @@ code {
   background: rgba(214, 173, 89, 0.18);
   border-color: rgba(214, 173, 89, 0.6);
 }
+.meta-chip--muted {
+  opacity: 0.55;
+  font-size: 0.85em;
+}
+.meta-chip--cta {
+  background: rgba(120, 184, 201, 0.15);
+  border-color: rgba(120, 184, 201, 0.5);
+  color: #aedde9;
+}
+.meta-chip--cta:hover, .meta-chip--cta:focus-visible {
+  background: rgba(120, 184, 201, 0.25);
+  border-color: rgba(120, 184, 201, 0.7);
+}
+.meta-chip--cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.meta-chip__sep {
+  opacity: 0.5;
+}
 
 /* Wizard modal */
 .clar-wizard { display: grid; gap: 1rem; }

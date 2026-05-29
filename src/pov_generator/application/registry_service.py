@@ -56,6 +56,25 @@ class RegistryService:
                             str(objective.source_path),
                         )
                     )
+            for next_ref in objective.compatible_next_objectives:
+                if next_ref.as_string() not in snapshot.objectives:
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель ссылается на неизвестный следующий objective "
+                            f"'{next_ref.as_string()}' в compatible_next_objectives.",
+                            str(objective.source_path),
+                        )
+                    )
+                elif next_ref.as_string() == objective.ref.as_string():
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель не может ссылаться на саму себя в "
+                            f"compatible_next_objectives ('{next_ref.as_string()}').",
+                            str(objective.source_path),
+                        )
+                    )
 
         declared_slots: set[str] = set()
         for template in snapshot.templates.values():
