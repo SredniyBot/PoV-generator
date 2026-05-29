@@ -21,10 +21,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
 
-from ..common.errors import ConflictError, ValidationError
+from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
 from ..domain.llm_settings import (
     ALL_PURPOSES,
@@ -43,7 +41,6 @@ from ..domain.llm_settings import (
 )
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
-
 
 # Каталог известных моделей. Используется для автозаполнения routings при
 # создании connection. Кастомные модели админ добавляет через
@@ -573,7 +570,6 @@ class ProviderSettingsService:
         ``model_name`` (из assignment), ``resolved`` — что фактически
         выбрано (или ``None`` если резолв упал) с пояснением ошибки.
         """
-        from ..common.errors import ConflictError
 
         out: list[dict[str, object]] = []
         for purpose in ALL_PURPOSES:

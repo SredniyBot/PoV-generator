@@ -18,22 +18,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
-import pytest
-from test_m9_api import init_project, run_stub_workflow  # type: ignore
+from test_m9_api import init_project  # type: ignore
 
 from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.decision_identification_service import (
     DecisionIdentificationService as DecisionPlanningService,
+)
+from pov_generator.application.decision_identification_service import (
     IdentificationResult as PlanningResult,
 )
 from pov_generator.application.execution_service import ExecutionService
-from pov_generator.application.registry_service import RegistryService
-from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.application.planning_service import PlanningService
+from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
+from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.decisions import Decision, DecisionAlternative
 from pov_generator.domain.positions import Position

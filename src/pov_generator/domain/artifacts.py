@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ArtifactFormat = Literal["json", "markdown", "text"]
 """Формат хранимого содержимого артефакта."""
 

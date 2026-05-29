@@ -42,7 +42,6 @@ from ..domain.project_state import ProjectManifest, ProjectState, StateEvent
 from ..domain.registry import DomainPackSpec, ObjectRef
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
-
 _INITIAL_REQUEST_POSITION_ID = "project.business_request"
 
 

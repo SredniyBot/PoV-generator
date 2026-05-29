@@ -32,7 +32,6 @@ from ..domain.llm_settings import (
 )
 from .secret_box import SecretBox
 
-
 _DB_FILENAME = "settings.db"
 
 

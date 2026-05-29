@@ -21,7 +21,6 @@ from ..domain.decisions import DecisionAlternative, DecisionInput, DecisionLevel
 from ..domain.registry import MethodologyPackSpec
 from .methodology_rule_eval import evaluate_rule
 
-
 _VALID_VISIBILITY = {"principal", "architectural", "technical"}
 
 # v3.1: visibility (legacy emit YAML schema) → level (new domain)

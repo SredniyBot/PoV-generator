@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import to_primitive
+from ..domain.project_state import ProjectManifest, ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
@@ -17,8 +18,8 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ArtifactVersionItemView,
-    ContextManifestSummaryView,
     CheckpointSessionView,
+    ContextManifestSummaryView,
     DecisionAlternativeView,
     DecisionItemView,
     DomainPackCatalogItemView,
@@ -28,8 +29,8 @@ from ..domain.workspace_views import (
     OverviewArtifactItem,
     OverviewClarificationItem,
     ProjectArtifactVersionsView,
-    ProjectDebugView,
     ProjectCheckpointsView,
+    ProjectDebugView,
     ProjectDecisionsView,
     ProjectFailurePinsView,
     ProjectListItemView,
@@ -45,7 +46,6 @@ from ..domain.workspace_views import (
     TaskNodeView,
     TimelineEntryView,
 )
-from ..domain.project_state import ProjectManifest, ProjectState
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
 from .registry_service import RegistryService
@@ -263,7 +263,7 @@ class WorkspaceQueryService:
         уровне» в текущем режиме проекта. Это основной индикатор для
         пользователя: «N решений ждут моего внимания».
         """
-        from ..domain.decisions import levels_for_mode, should_surface_to_user
+        from ..domain.decisions import should_surface_to_user
 
         context = self._load_context(project_id)
         mode = context.state.process.clarification_mode

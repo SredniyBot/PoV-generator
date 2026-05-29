@@ -51,11 +51,10 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
-
-import logging
 
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
@@ -65,7 +64,7 @@ from ..domain.decisions import (
     DecisionAlternative,
     strip_decision_category_prefix,
 )
-from ..domain.llm_settings import PURPOSE_DECISION_PLANNING, PURPOSE_EXECUTION_STANDARD
+from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
 from ..infrastructure.llm import LLMProviderRegistry
 
 logger = logging.getLogger(__name__)

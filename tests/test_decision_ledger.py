@@ -15,16 +15,15 @@ import pytest
 
 from pov_generator.common.errors import NotFoundError
 from pov_generator.domain.decisions import (
+    ENGAGEMENT_LEVELS,
     Decision,
     DecisionAlternative,
-    ENGAGEMENT_LEVELS,
+    levels_for_mode,
     normalized_decision_signature,
     normalized_decision_title_key,
-    levels_for_mode,
     should_surface_to_user,
 )
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
-
 
 # ---------------------------------------------------------------------------
 # Доменная модель

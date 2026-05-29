@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from ..common.errors import NotFoundError
@@ -22,7 +22,6 @@ from ..domain.decisions import (
     DecisionLevel,
     DecisionSource,
     DecisionStatus,
-    DecisionUserAction,
 )
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
@@ -46,7 +45,6 @@ from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, St
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
-
 
 # --- сериализация Layer A (знания) -------------------------------------------
 

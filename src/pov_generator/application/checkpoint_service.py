@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..domain.process_state import ProcessState  # noqa: F401
 
-from ..common.errors import ConflictError, NotFoundError
+from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
 from ..domain.checkpoints import (
     CheckpointAnswer,
@@ -41,7 +41,6 @@ from ..domain.checkpoints import (
 from ..domain.decisions import (
     Decision,
     DecisionInput,
-    levels_for_mode,
     should_surface_to_user,
     split_decision_category_prefix,
 )

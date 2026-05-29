@@ -15,12 +15,12 @@ import re
 import markdown as md_lib
 
 from pov_generator.application.pdf_export import (
+    _LANDSCAPE_CONTENT_WIDTH_PT,
+    _PORTRAIT_CONTENT_WIDTH_PT,
     _ColumnMetrics,
     _compute_column_metrics,
     _enhance_tables_in_html,
     _estimate_table_width_pt,
-    _LANDSCAPE_CONTENT_WIDTH_PT,
-    _PORTRAIT_CONTENT_WIDTH_PT,
 )
 
 

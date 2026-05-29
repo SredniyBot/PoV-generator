@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..application.checkpoint_service import CheckpointService
 from ..application.context_service import ContextService
-from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.decision_extraction_service import DecisionExtractionService
+from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
 from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
@@ -588,7 +588,7 @@ def create_app(
 
         # Проверяем, что сессия принадлежит проекту, до применения
         try:
-            session = query_service.checkpoint_session_detail(project_id, session_id)
+            query_service.checkpoint_session_detail(project_id, session_id)
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 

@@ -16,15 +16,14 @@ import pytest
 
 from pov_generator.common.errors import ConflictError, ValidationError
 from pov_generator.domain.llm_settings import (
+    PURPOSE_EXECUTION_STANDARD,
     ModelAssignment,
     ModelRouting,
     ProviderConnection,
     ProviderCredentials,
-    PURPOSE_EXECUTION_STANDARD,
 )
 from pov_generator.infrastructure.llm_settings_store import SqliteSettingsStore
 from pov_generator.infrastructure.secret_box import SecretBox
-
 
 # --- SecretBox ---------------------------------------------------------------
 
