@@ -18,6 +18,8 @@ from pov_generator.domain.decisions import (
     Decision,
     DecisionAlternative,
     ENGAGEMENT_LEVELS,
+    normalized_decision_signature,
+    normalized_decision_title_key,
     levels_for_mode,
     should_surface_to_user,
 )
@@ -34,6 +36,8 @@ def _make_decision(
     decision_id: str = "d-1",
     project_id: str = "p-1",
     title: str = "Выбор СУБД",
+    description: str = "Какую СУБД использовать для основного сервиса",
+    category: str = "tech_stack",
     level: str = "architecture",
     confidence: float = 0.8,
     chosen: str = "opt-postgres",
@@ -42,7 +46,8 @@ def _make_decision(
         decision_id=decision_id,
         project_id=project_id,
         title=title,
-        description="Какую СУБД использовать для основного сервиса",
+        description=description,
+        category=category,
         chosen_option_id=chosen,
         alternatives=(
             DecisionAlternative(
@@ -114,6 +119,47 @@ def test_was_user_modified_true_only_on_real_override() -> None:
     # Через user_action
     via_action = Decision(**{**base.__dict__, "user_action": "modified"})
     assert via_action.was_user_modified is True
+
+
+def test_normalized_signature_uses_explicit_category() -> None:
+    decision = _make_decision(title="Выбор   СУБД?", category="tech_stack")
+
+    signature = normalized_decision_signature(decision)
+
+    assert signature.decision_id == decision.decision_id
+    assert signature.normalized_title_key == "выбор-субд"
+    assert signature.category == "tech_stack"
+    assert signature.chosen_answer_summary == "PostgreSQL: Реляционная, transactions, partial indexes"
+    assert signature.status == "proposed"
+    assert decision.description_without_category == "Какую СУБД использовать для основного сервиса"
+
+
+def test_normalized_signature_falls_back_to_legacy_description_prefix() -> None:
+    decision = _make_decision(
+        description="[scope] Что включить в пилотный этап",
+        category="",
+    )
+
+    signature = normalized_decision_signature(decision)
+
+    assert decision.normalized_category == "scope"
+    assert decision.description_without_category == "Что включить в пилотный этап"
+    assert signature.category == "scope"
+
+
+def test_normalized_title_key_is_stable_for_unicode_variants() -> None:
+    assert normalized_decision_title_key("Выбор   СУБД?") == "выбор-субд"
+    assert normalized_decision_title_key("Ёмкость MVP") == "емкость-mvp"
+    assert normalized_decision_title_key("ＡＰＩ формат") == "api-формат"
+
+
+def test_normalized_title_key_handles_empty_and_very_long_titles() -> None:
+    assert normalized_decision_title_key("") == "untitled"
+    assert normalized_decision_title_key("!!!").startswith("untitled-")
+
+    key = normalized_decision_title_key(" ".join(f"word{i}" for i in range(80)))
+    assert len(key) <= 120
+    assert key.rsplit("-", 1)[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +252,23 @@ def test_upsert_and_get_decision_round_trip(tmp_path: Path, runtime: SqliteRunti
     assert fetched.chosen_option_id == "opt-postgres"
     assert fetched.confidence == 0.8
     assert fetched.affected_artifact_ids == ("artifact-arch-design",)
+    assert fetched.category == "tech_stack"
+
+
+def test_upsert_normalizes_legacy_category_prefix(tmp_path: Path, runtime: SqliteRuntime) -> None:
+    workspace = tmp_path / "ws"
+    decision = _make_decision(
+        decision_id="legacy-category",
+        description="[scope] Что входит в MVP",
+        category="",
+    )
+
+    runtime.upsert_decision(workspace, decision)
+    fetched = runtime.get_decision(workspace, "legacy-category")
+
+    assert fetched.category == "scope"
+    assert fetched.description == "Что входит в MVP"
+    assert fetched.normalized_category == "scope"
 
 
 def test_upsert_updates_existing_decision(tmp_path: Path, runtime: SqliteRuntime) -> None:

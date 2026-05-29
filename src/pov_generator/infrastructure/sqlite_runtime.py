@@ -86,7 +86,7 @@ def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) ->
         "decision_id": decision.decision_id,
         "project_id": decision.project_id,
         "title": decision.title,
-        "description": decision.description,
+        "description": decision.description_without_category,
         "chosen_option_id": decision.chosen_option_id,
         "alternatives_json": json_dumps([to_primitive(alt) for alt in decision.alternatives]),
         "rationale": decision.rationale,
@@ -104,6 +104,7 @@ def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) ->
         "free_form_level_override": decision.free_form_level_override,
         "created_at": created_at,
         "updated_at": updated_at,
+        "category": decision.normalized_category,
         "answer_mode": decision.answer_mode,
         "chosen_option_ids_json": json_dumps(list(decision.chosen_option_ids)),
         "user_verified": 1 if decision.user_verified else 0,
@@ -162,6 +163,10 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         user_verified_at = row["user_verified_at"]
     except (KeyError, IndexError):
         user_verified_at = None
+    try:
+        category = str(row["category"] or "")
+    except (KeyError, IndexError):
+        category = ""
     return Decision(
         decision_id=row["decision_id"],
         project_id=row["project_id"],
@@ -184,6 +189,7 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         free_form_level_override=row["free_form_level_override"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        category=category,
         answer_mode=answer_mode,
         chosen_option_ids=chosen_option_ids,
         user_verified=user_verified,
@@ -1573,6 +1579,7 @@ class SqliteRuntime:
                     affected_artifact_ids_json, depends_on_decision_ids_json,
                     user_action, original_chosen_option_id, user_free_text_answer,
                     free_form_level_override, created_at, updated_at,
+                    category, answer_mode, chosen_option_ids_json,
                     user_verified, user_verified_at
                 )
                 values (
@@ -1582,6 +1589,7 @@ class SqliteRuntime:
                     :affected_artifact_ids_json, :depends_on_decision_ids_json,
                     :user_action, :original_chosen_option_id, :user_free_text_answer,
                     :free_form_level_override, :created_at, :updated_at,
+                    :category, :answer_mode, :chosen_option_ids_json,
                     :user_verified, :user_verified_at
                 )
                 on conflict(decision_id) do update set
@@ -1603,13 +1611,22 @@ class SqliteRuntime:
                     user_free_text_answer = excluded.user_free_text_answer,
                     free_form_level_override = excluded.free_form_level_override,
                     updated_at = excluded.updated_at,
+                    category = excluded.category,
+                    answer_mode = excluded.answer_mode,
+                    chosen_option_ids_json = excluded.chosen_option_ids_json,
                     user_verified = excluded.user_verified,
                     user_verified_at = excluded.user_verified_at
                 """,
                 payload,
             )
             connection.commit()
-        return replace(decision, created_at=created_at, updated_at=now)
+        return replace(
+            decision,
+            description=str(payload["description"]),
+            category=str(payload["category"]),
+            created_at=created_at,
+            updated_at=now,
+        )
 
     def get_decision(self, workspace: Path, decision_id: str) -> Decision:
         """Достать одно решение по id. Бросает NotFoundError при отсутствии."""
@@ -1991,6 +2008,7 @@ class SqliteRuntime:
               free_form_level_override text,
               created_at text not null,
               updated_at text not null,
+              category text not null default '',
               answer_mode text not null default 'single',
               chosen_option_ids_json text not null default '[]',
               user_verified integer not null default 0,
@@ -2009,6 +2027,11 @@ class SqliteRuntime:
         # для legacy decisions, созданных до v3.1 (single-mode по умолчанию).
         self._ensure_column(
             connection, "decisions", "answer_mode", "text not null default 'single'"
+        )
+        # v3.8: category became explicit; legacy rows may still encode it as
+        # "[category]" in description and are normalized lazily on read/upsert.
+        self._ensure_column(
+            connection, "decisions", "category", "text not null default ''"
         )
         self._ensure_column(
             connection,

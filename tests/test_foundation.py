@@ -221,6 +221,77 @@ def test_execution_emits_primary_artifact_with_reasoning_and_trace_metadata(
     assert "stages_executed" in primary.metadata.methodology_trace
 
 
+def test_methodology_reasoning_applied_decisions_come_from_ledger_not_legacy_knowledge(
+    tmp_path: Path,
+) -> None:
+    from pov_generator.application.context_service import ContextService
+    from pov_generator.application.execution_service import ExecutionService
+    from pov_generator.domain.decisions import Decision, DecisionAlternative
+    from pov_generator.domain.positions import Position
+    from pov_generator.domain.project_knowledge import UpsertPositionPatch
+
+    workspace, snapshot, runtime, _, planning_service = init_workspace(tmp_path)
+    planning_service.expand_graph(workspace, snapshot)
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+    task_id = decision.selected_task_id
+    assert task_id is not None
+    project_id = runtime.load_manifest(workspace).project_id
+
+    runtime.apply_knowledge_patch(
+        workspace,
+        UpsertPositionPatch(
+            position=Position(
+                identifier="legacy.decision.trace-test",
+                type="decision",
+                statement="Legacy Layer A decision must not appear in reasoning trace",
+                visibility="principal",
+                scope="global",
+                source="user",
+                taken_by="test",
+                taken_at="2026-05-27T00:00:00Z",
+            )
+        ),
+        actor="test",
+        reason="seed legacy decision knowledge",
+    )
+    runtime.upsert_decision(
+        workspace,
+        Decision(
+            decision_id="ledger-applied",
+            project_id=project_id,
+            title="Граница MVP",
+            description="Что включить в первый релиз",
+            chosen_option_id="narrow",
+            alternatives=(
+                DecisionAlternative(option_id="narrow", label="Узкий MVP"),
+                DecisionAlternative(option_id="wide", label="Широкий MVP"),
+            ),
+            rationale="Узкий MVP снижает риск поставки",
+            level="business",
+            level_rationale="Меняет scope поставки",
+            confidence=0.8,
+            status="accepted_default",
+            source="pre_flight",
+            source_task_id="task-a",
+            category="scope",
+        ),
+    )
+
+    execution_service = ExecutionService(runtime, ContextService(runtime))
+    execution_service.execute_task(workspace, snapshot, task_id, provider="stub")
+
+    primary = next(
+        artifact
+        for artifact in runtime.list_artifacts(workspace)
+        if artifact.created_by_task_id == task_id
+    )
+    applied = primary.metadata.reasoning["applied_decisions"]
+    assert [item["decision_id"] for item in applied] == ["ledger-applied"]
+    assert applied[0]["title"] == "Граница MVP"
+    assert applied[0]["category"] == "scope"
+    assert all(item["decision_id"] != "legacy.decision.trace-test" for item in applied)
+
+
 def test_project_overview_exposes_methodology_and_progress(tmp_path: Path) -> None:
     from pov_generator.application.checkpoint_service import CheckpointService
     from pov_generator.application.context_service import ContextService

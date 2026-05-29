@@ -19,6 +19,7 @@ from .artifact_contracts import artifact_schema, render_markdown, schema_instruc
 from .checkpoint_service import CheckpointService
 from .complexity_selector_service import select_complexity
 from .context_service import ContextService
+from .decision_context_builder import DecisionContextBuilder
 from .decision_identification_service import DecisionIdentificationService
 from .decision_extraction_service import DecisionExtractionService
 from .merge_strategies import structural_merge
@@ -85,6 +86,7 @@ class ExecutionService:
         # внешних вызывателей. Не использовать в новом коде.
         decision_planning_service: DecisionIdentificationService | None = None,
         decision_extraction_service: "DecisionExtractionService | None" = None,
+        decision_context_builder: DecisionContextBuilder | None = None,
         # v3.7: phase_gap_analysis_service kwarg сохранён в сигнатуре для
         # backward-compat. Сам сервис удалён — phase-gap признан избыточной
         # абстракцией (см. обсуждение v3.7). Игнорируется.
@@ -103,6 +105,7 @@ class ExecutionService:
         )
         self._checkpoint = checkpoint_service
         self._decision_extraction = decision_extraction_service
+        self._decision_context_builder = decision_context_builder or DecisionContextBuilder(runtime)
         # v3.7: phase_gap инстанс игнорируется (см. сигнатуру выше).
         _ = phase_gap_analysis_service
 
@@ -218,19 +221,26 @@ class ExecutionService:
             and template_allows_identification
             and (active_provider != "stub" or force_pre_flight)
         )
-        locked_in_decisions: tuple[Decision, ...] = ()
+        applied_decisions: tuple[Decision, ...] = ()
         # v3.5: token usage по стадиям сборки артефакта; identification заполняет
         # ключ decision_identification, основная генерация — primary_generation и
         # (для per_stage_cot) methodology_stage:<id>.
         artifact_token_usage: dict[str, dict[str, int]] = {}
         if identification_eligible:
+            identification_context = self._build_decision_identification_context(
+                state=state,
+                task=task,
+                artifact_role=artifact_role,
+                template=template,
+                context_manifest=context_manifest,
+            )
             paused_result = self._run_decision_identification_stage(
                 workspace=workspace,
                 state=state,
                 task=task,
                 artifact_role=artifact_role,
                 template=template,
-                user_prompt=user_prompt,
+                context_text=identification_context,
                 execution_run_id_hint=None,  # будет создан ниже при успехе
                 token_usage_out=artifact_token_usage,
             )
@@ -238,19 +248,16 @@ class ExecutionService:
                 # Workflow приостанавливается; return до основной генерации.
                 # Не пишем артефакт, не делаем LLM-вызов.
                 return paused_result
-            # Pre-flight прошёл (либо использована старая finalized session,
-            # либо silent-accept всех решений). Подтягиваем locked-in для
-            # встраивания в основной промпт.
-            locked_in_decisions = self._collect_locked_in_decisions(
-                workspace=workspace,
-                project_id=manifest.project_id,
-                task_id=task.task_id,
-            )
-            if locked_in_decisions:
-                user_prompt = self._append_locked_in_decisions(
-                    user_prompt=user_prompt,
-                    decisions=locked_in_decisions,
-                )
+
+        decision_context = self._decision_context_builder.build_generation_constraints(
+            workspace=workspace,
+            project_id=manifest.project_id,
+            task_id=task.task_id,
+            context_manifest=context_manifest,
+        )
+        if decision_context.text:
+            user_prompt = f"{user_prompt}\n\n{decision_context.text}"
+            applied_decisions = decision_context.decisions
 
         # Этап 5: если шаблон помечен как merge-задача со strategy=structural,
         # обходим LLM/stub и собираем результат детерминированно из входных
@@ -341,6 +348,7 @@ class ExecutionService:
                 methodology=active_methodology,
                 complexity=complexity_value,
                 live_reasoning=live_reasoning,
+                applied_decisions=applied_decisions,
             )
             evaluation = evaluate_methodology_rules(
                 methodology=active_methodology,
@@ -364,7 +372,7 @@ class ExecutionService:
         # v3.6: ИСТОЧНИК 2 — post-artifact extraction. До построения
         # ArtifactRecord — чтобы extraction-токены попали в metadata.
         # Сами Decision-записи привязываются к artifact_id после store_artifact
-        # (как locked_in_decisions ниже).
+        # (как applied_decisions ниже).
         #
         # v3.8.4 — два важных уточнения:
         # (а) Whitelist по тому же флагу `decision_identification_enabled`:
@@ -474,8 +482,8 @@ class ExecutionService:
         # артефактом — это даёт UI «решения этого артефакта» (вкладка в
         # ArtifactDetail). Делается после store_artifact, потому что нужен
         # artifact_id. Не falls'ом — если ошибка, просто пропускаем.
-        if locked_in_decisions:
-            for d in locked_in_decisions:
+        if applied_decisions:
+            for d in applied_decisions:
                 try:
                     # Re-fetch чтобы не перетереть status/user_action, которые
                     # могли поменяться после нашего snapshot (race protection).
@@ -599,7 +607,7 @@ class ExecutionService:
         task,
         artifact_role: str,
         template,
-        user_prompt: str,
+        context_text: str,
         execution_run_id_hint: str | None,
         token_usage_out: dict[str, dict[str, int]] | None = None,
     ) -> ExecutionBundle | None:
@@ -677,7 +685,7 @@ class ExecutionService:
                 task_title=task.title,
                 artifact_role=artifact_role,
                 task_summary=template.summary,
-                context_text=user_prompt,  # уже включает контекст из manifest
+                context_text=context_text,
                 existing_registry_titles=existing_titles,
             )
         except ConflictError as exc:
@@ -740,6 +748,51 @@ class ExecutionService:
         # Всё silent → можно продолжать к основной генерации.
         return None
 
+    def _build_decision_identification_context(
+        self,
+        *,
+        state,
+        task,
+        artifact_role: str,
+        template,
+        context_manifest,
+    ) -> str:
+        """Compact context for decision identification, separate from generation prompt."""
+
+        def compact(value: str, limit: int = 1800) -> str:
+            text = " ".join((value or "").split())
+            if len(text) <= limit:
+                return text
+            return text[: limit - 1].rstrip() + "..."
+
+        lines: list[str] = [
+            "Контекст для выявления новых проектных решений.",
+            f"Задача: {task.title}",
+            f"Роль артефакта: {artifact_role}",
+        ]
+        summary = compact(getattr(template, "summary", "") or "")
+        if summary:
+            lines.append(f"Краткое описание задачи: {summary}")
+        business_request = compact(getattr(state.manifest, "business_request", "") or "")
+        if business_request:
+            lines.append(f"Бизнес-запрос: {business_request}")
+
+        context_lines: list[str] = []
+        for item in context_manifest.items:
+            if item.item_type == "instruction":
+                continue
+            content = compact(item.content, limit=1200)
+            if not content:
+                continue
+            context_lines.append(f"- {item.title}: {content}")
+            if len(context_lines) >= 8:
+                break
+        if context_lines:
+            lines.append("Краткий task/artifact context:")
+            lines.extend(context_lines)
+
+        return "\n".join(lines)
+
     def _make_paused_bundle(
         self,
         *,
@@ -773,74 +826,6 @@ class ExecutionService:
             checkpoint_session_id=checkpoint_session_id,
         )
         return ExecutionBundle(request=request, result=result, traces=())
-
-    def _collect_locked_in_decisions(
-        self,
-        *,
-        workspace: Path,
-        project_id: str,
-        task_id: str,
-    ) -> tuple[Decision, ...]:
-        """Собрать решения, относящиеся к задаче, готовые ко встраиванию.
-
-        Включает все pre_flight / emergent / user_manual решения этой
-        задачи в любом из «закрытых» статусов: accepted_default,
-        user_overridden, deferred, locked_in. Этих статусов достаточно,
-        чтобы решение считалось «принятым» (даже deferred — это значит
-        «применяется дефолт, помечено»).
-        """
-        all_for_task = [
-            d
-            for d in self._runtime.list_decisions(workspace, project_id=project_id)
-            if d.source_task_id == task_id
-        ]
-        return tuple(
-            d
-            for d in all_for_task
-            if d.status in {"accepted_default", "user_overridden", "deferred", "locked_in"}
-        )
-
-    def _append_locked_in_decisions(
-        self,
-        *,
-        user_prompt: str,
-        decisions: tuple[Decision, ...],
-    ) -> str:
-        """Дописать в user_prompt блок с зафиксированными решениями.
-
-        Формат — XML-секция (визуально отделена от остального контекста)
-        с явным заголовком, чтобы LLM воспринимала это как жёсткие
-        ограничения, а не как «контекстные подсказки».
-        """
-        if not decisions:
-            return user_prompt
-        lines: list[str] = [
-            "",
-            "<locked_in_decisions>",
-            "Перед началом этой задачи зафиксированы следующие решения. "
-            "Используй их как ОБЯЗАТЕЛЬНЫЕ ограничения; не пересматривай, "
-            "не предлагай альтернатив, не оспаривай. Если у пользователя был "
-            "свободный ответ — он имеет приоритет над всеми предложенными вариантами.",
-            "",
-        ]
-        for d in decisions:
-            chosen = d.chosen_alternative
-            user_text = (d.user_free_text_answer or "").strip()
-            if user_text:
-                value_line = f"Выбор пользователя (свободный ответ): {user_text}"
-            elif chosen is not None:
-                value_line = f"Выбрано: {chosen.label} — {chosen.description}".rstrip(" —")
-            else:
-                value_line = f"Выбран option_id={d.chosen_option_id} (без расшифровки)"
-
-            modifier = " (изменено пользователем)" if d.was_user_modified else ""
-            lines.append(f"- **{d.title}**{modifier}")
-            lines.append(f"  {value_line}")
-            if d.rationale:
-                lines.append(f"  Обоснование: {d.rationale}")
-            lines.append("")
-        lines.append("</locked_in_decisions>")
-        return user_prompt + "\n".join(lines)
 
     def _execute_structural_merge(
         self,
@@ -1694,6 +1679,7 @@ class ExecutionService:
         methodology: MethodologyPackSpec,
         complexity: str | None,
         live_reasoning: dict | None = None,
+        applied_decisions: tuple[Decision, ...] = (),
     ) -> dict[str, object]:
         """Собрать reasoning payload для метаинформации primary артефакта.
 
@@ -1748,18 +1734,15 @@ class ExecutionService:
                         },
                     }
                 )
-        # B5: applied_decisions — список decision_id, доступных на момент
-        # исполнения и потенциально учтённых этой задачей. Это даёт явную
-        # трассировку: пользователь видит «вот эти ответы повлияли на
-        # вывод». Заполняем системно по релевантности (LLM не обязан
-        # ничего знать про id'ы — мы их матчим сами по state.decisions
-        # и affected_task_ids источника).
-        applied_decisions = self._collect_applied_decisions(workspace, task.task_id)
+        # B5: applied_decisions — ровно те ledger decisions, которые
+        # DecisionContextBuilder добавил в generation prompt как compact
+        # constraints. Trace больше не читает legacy ProjectKnowledge.
+        applied_decision_trace = self._collect_applied_decisions(applied_decisions)
         return {
             "methodology_pack_ref": methodology.ref.as_string(),
             "stages": stages_payload,
             "complexity": complexity,
-            "applied_decisions": applied_decisions,
+            "applied_decisions": applied_decision_trace,
         }
 
     @staticmethod
@@ -1803,32 +1786,22 @@ class ExecutionService:
             "decisions_emitted": decisions_emitted,
         }
 
-    def _collect_applied_decisions(
-        self, workspace: Path, task_id: str
-    ) -> list[dict[str, object]]:
-        """B5: формирует список decisions из Layer A (knowledge) для
-        трассировки в reasoning_artifact.
-
-        v3.1: положения с префиксом ``clarification.`` больше не создаются
-        (legacy-координатор уточнений удалён). Все decision-положения
-        Layer A считаются применимыми — реальная связка с конкретной
-        задачей живёт в реестре Decisions (`source_task_id`).
-
-        Используется в reasoning_artifact как трассировка: пользователь
-        видит «вот эти ответы повлияли на этот reasoning». Closes M-J6.
-        """
-        del task_id
-        try:
-            knowledge = self._runtime.load_knowledge(workspace)
-        except Exception:
-            return []
+    @staticmethod
+    def _collect_applied_decisions(decisions: tuple[Decision, ...]) -> list[dict[str, object]]:
+        """Build methodology reasoning trace from canonical ledger decisions."""
         result: list[dict[str, object]] = []
-        for position in knowledge.by_type("decision"):
+        for decision in decisions:
+            signature = decision.signature
             result.append(
                 {
-                    "decision_id": position.identifier,
-                    "statement": position.statement,
-                    "source": position.source,
+                    "decision_id": signature.decision_id,
+                    "title": decision.title,
+                    "statement": signature.chosen_answer_summary,
+                    "category": signature.category,
+                    "answer_summary": signature.chosen_answer_summary,
+                    "status": signature.status,
+                    "source": decision.source,
+                    "source_task_id": decision.source_task_id,
                 }
             )
         return result

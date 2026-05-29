@@ -5,7 +5,7 @@
    business-решения → execute_task возвращает paused_for_checkpoint.
 2. Пользователь финализирует сессию → задача переходит обратно в ready.
 3. Повторный запуск задачи → pre-flight видит finalized session, НЕ
-   создаёт новых, locked-in решение попадает в основной промпт.
+   создаёт новых, ledger constraint попадает в основной промпт.
 4. В autopilot pre-flight тоже срабатывает, но решения уходят в silent;
    задача сразу идёт в основную генерацию.
 
@@ -16,6 +16,7 @@ mock-планировщик для pre-flight. Так тест детермин�
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,8 @@ from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.decisions import Decision, DecisionAlternative
+from pov_generator.domain.positions import Position
+from pov_generator.domain.project_knowledge import UpsertPositionPatch
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -49,6 +52,7 @@ class _StubPlanningService(DecisionPlanningService):
     def __init__(self, decisions_factory) -> None:
         # Не вызываем super().__init__, llm_registry не нужен — нет LLM-вызовов.
         self._decisions_factory = decisions_factory
+        self.last_context_text: str | None = None
 
     def identify_for_task(
         self,
@@ -63,6 +67,7 @@ class _StubPlanningService(DecisionPlanningService):
         provider: str | None = None,
         model: str | None = None,
     ) -> PlanningResult:
+        self.last_context_text = context_text
         decisions = self._decisions_factory(
             project_id=project_id, task_id=task_id, artifact_role=artifact_role
         )
@@ -163,6 +168,12 @@ def _bootstrap_services(workspace: Path, planning_factory):
     return runtime, snapshot, workflow, checkpoint, planning, execution
 
 
+def _stub_identifier(execution: ExecutionService) -> _StubPlanningService:
+    service = execution._decision_identification  # type: ignore[attr-defined]
+    assert isinstance(service, _StubPlanningService)
+    return service
+
+
 def _first_leaf_task_with_artifact(runtime, workspace, snapshot):
     """Найти первую leaf-задачу с артефактом и БЕЗ обязательных upstream-входов.
 
@@ -191,6 +202,14 @@ def _first_leaf_task_with_artifact(runtime, workspace, snapshot):
             continue
         return task
     raise AssertionError("Не нашли leaf-задачу с артефактом без required-входов")
+
+
+def _user_prompt_from_bundle(bundle) -> str:
+    for trace in bundle.traces:
+        if trace.trace_type == "prompt_bundle":
+            data = json.loads(trace.content)
+            return data["user_prompt"]
+    raise AssertionError("Не найден prompt_bundle trace")
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +300,7 @@ def test_balanced_detail_decision_silent_no_pause(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Сценарий 4: submit + retry → pre-flight НЕ повторяется, locked-in
+# Сценарий 4: submit + retry → pre-flight НЕ повторяется, принятое
 #             решение попадает в промпт
 # ---------------------------------------------------------------------------
 
@@ -327,14 +346,12 @@ def test_submit_then_retry_uses_finalized_session(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Сценарий 5: locked-in декларации действительно в промпте
+# Сценарий 5: ledger constraints действительно в промпте
 # ---------------------------------------------------------------------------
 
 
-def test_locked_in_decisions_appear_in_prompt(tmp_path: Path) -> None:
-    """После финализации сессии, при повторном запуске задачи блок
-    <locked_in_decisions> должен оказаться в user_prompt (мы видим это
-    через execution trace prompt_bundle)."""
+def test_decision_constraints_appear_in_prompt(tmp_path: Path) -> None:
+    """После финализации сессии compact constraints попадают в user_prompt."""
     workspace = tmp_path / "case_prompt"
     init_project(workspace, "Бизнес-запрос для проверки промпта.")
     runtime, snapshot, _wf, checkpoint_svc, planning_svc, _exec = _bootstrap_services(
@@ -357,19 +374,124 @@ def test_locked_in_decisions_appear_in_prompt(tmp_path: Path) -> None:
     second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
 
     # Достаём prompt_bundle trace, проверяем что в user_prompt есть блок
-    import json as _json
+    user_prompt = _user_prompt_from_bundle(second)
+    assert "<decision_constraints>" in user_prompt
+    assert "<locked_in_decisions>" not in user_prompt
+    assert "Целевая аудитория сервиса" in user_prompt
+    assert "Корпоративные клиенты" in user_prompt
 
-    trace_ids = second.result.trace_ids
-    prompt_trace_content = None
-    for trace in second.traces:
-        if trace.trace_type == "prompt_bundle":
-            prompt_trace_content = trace.content
-            break
-    assert prompt_trace_content is not None
-    data = _json.loads(prompt_trace_content)
-    assert "<locked_in_decisions>" in data["user_prompt"]
-    assert "Целевая аудитория сервиса" in data["user_prompt"]
-    assert "Корпоративные клиенты" in data["user_prompt"]
+
+def test_identification_uses_compact_context_not_generation_prompt(tmp_path: Path) -> None:
+    workspace = tmp_path / "case_identification_context"
+    init_project(workspace, "Бизнес-запрос для проверки identification-context.")
+    runtime, snapshot, _wf, _checkpoint_svc, planning_svc, exec_svc = _bootstrap_services(
+        workspace, _make_business_decision
+    )
+    planning_svc.expand_graph(workspace, snapshot)
+    task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
+
+    bundle = exec_svc.execute_task(
+        workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True
+    )
+    assert bundle.result.status == "paused_for_checkpoint"
+
+    context_text = _stub_identifier(exec_svc).last_context_text
+    assert context_text is not None
+    assert "Контекст для выявления новых проектных решений." in context_text
+    assert "Бизнес-запрос для проверки identification-context." in context_text
+    assert "Верни строго JSON" not in context_text
+    assert "Схема:" not in context_text
+    assert "Активные доменные пакеты" not in context_text
+    assert "<decision_constraints>" not in context_text
+    assert "<writing_principles>" not in context_text
+    assert "<output_contract>" not in context_text
+
+
+def test_generation_prompt_ignores_legacy_layer_a_decisions(tmp_path: Path) -> None:
+    workspace = tmp_path / "case_layer_a_decision_not_prompt"
+    init_project(workspace, "Бизнес-запрос для проверки legacy Layer A decisions.")
+    runtime, snapshot, _wf, _checkpoint_svc, planning_svc, exec_svc = _bootstrap_services(
+        workspace, _make_business_decision
+    )
+    planning_svc.expand_graph(workspace, snapshot)
+    task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
+    legacy_statement = "LEGACY_LAYER_A_DECISION_SHOULD_NOT_BE_IN_GENERATION_PROMPT"
+    runtime.apply_knowledge_patch(
+        workspace,
+        UpsertPositionPatch(
+            position=Position(
+                identifier="legacy.decision.prompt-test",
+                type="decision",
+                statement=legacy_statement,
+                visibility="principal",
+                scope="global",
+                source="user",
+                taken_by="test",
+                taken_at="2026-05-27T00:00:00Z",
+            )
+        ),
+        actor="test",
+        reason="seed legacy Layer A decision",
+    )
+
+    bundle = exec_svc.execute_task(workspace, snapshot, task.task_id, provider="stub")
+    user_prompt = _user_prompt_from_bundle(bundle)
+
+    assert bundle.result.status == "succeeded"
+    assert legacy_statement not in user_prompt
+    assert "<decision_constraints>" not in user_prompt
+
+
+def test_previous_task_decision_constraints_appear_in_downstream_prompt(tmp_path: Path) -> None:
+    """Generation task B получает compact constraint из ledger-решения task A."""
+    workspace = tmp_path / "case_prompt_downstream"
+    init_project(workspace, "Бизнес-запрос для downstream-проверки.")
+    runtime, snapshot, _wf, _checkpoint_svc, planning_svc, _exec = _bootstrap_services(
+        workspace, _make_business_decision
+    )
+    planning_svc.expand_graph(workspace, snapshot)
+    task_b = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
+    project_id = runtime.load_project_state(workspace).manifest.project_id
+
+    runtime.upsert_decision(
+        workspace,
+        Decision(
+            decision_id="decision-from-task-a",
+            project_id=project_id,
+            title="Целевая аудитория сервиса",
+            description="Кто пользователи: корпорации или розница?",
+            chosen_option_id="opt-corp",
+            alternatives=(
+                DecisionAlternative(
+                    option_id="opt-corp",
+                    label="Корпоративные клиенты",
+                    description="B2B сегмент",
+                ),
+                DecisionAlternative(
+                    option_id="opt-retail",
+                    label="Розничные клиенты",
+                    description="B2C сегмент",
+                ),
+            ),
+            rationale="Принято на upstream-задаче как business constraint.",
+            level="business",
+            level_rationale="Меняет целевую аудиторию продукта.",
+            confidence=0.8,
+            status="accepted_default",
+            source="pre_flight",
+            source_task_id="task-a",
+        ),
+    )
+
+    bundle = _exec.execute_task(workspace, snapshot, task_b.task_id, provider="stub")
+    user_prompt = _user_prompt_from_bundle(bundle)
+
+    assert bundle.result.status == "succeeded"
+    assert "<decision_constraints>" in user_prompt
+    assert "Целевая аудитория сервиса" in user_prompt
+    assert "Корпоративные клиенты: B2B сегмент" in user_prompt
+    assert "Принято на upstream-задаче как business constraint." in user_prompt
+    assert "задача task-a" in user_prompt
 
 
 # ---------------------------------------------------------------------------

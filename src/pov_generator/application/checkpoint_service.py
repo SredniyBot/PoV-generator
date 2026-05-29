@@ -43,6 +43,7 @@ from ..domain.decisions import (
     DecisionInput,
     levels_for_mode,
     should_surface_to_user,
+    split_decision_category_prefix,
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -396,11 +397,12 @@ class CheckpointService:
         # Группировка по task_id
         by_task: dict[str | None, list[Decision]] = {}
         for di in filtered_inputs:
+            legacy_category, clean_description = split_decision_category_prefix(di.description)
             decision = Decision(
                 decision_id=str(uuid.uuid4()),
                 project_id=project_id,
                 title=di.title,
-                description=di.description,
+                description=clean_description,
                 chosen_option_id=di.recommended_option_id,
                 chosen_option_ids=(),
                 alternatives=di.alternatives,
@@ -412,6 +414,7 @@ class CheckpointService:
                 source=di.source,
                 source_task_id=di.source_task_id,
                 affected_artifact_ids=di.affected_artifact_ids,
+                category=di.category or legacy_category,
                 answer_mode=di.answer_mode,
                 created_at=now,
                 updated_at=now,

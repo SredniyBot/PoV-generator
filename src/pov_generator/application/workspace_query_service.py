@@ -228,6 +228,8 @@ class WorkspaceQueryService:
         self,
         project_id: str,
         artifact_id: str,
+        *,
+        include_details: bool = True,
     ) -> tuple["DecisionItemView", ...]:
         """Решения, которые были приняты при сборке этого артефакта.
 
@@ -238,7 +240,9 @@ class WorkspaceQueryService:
         context = self._load_context(project_id)
         all_decisions = self._runtime.list_decisions(context.workspace, project_id=project_id)
         relevant = [d for d in all_decisions if artifact_id in d.affected_artifact_ids]
-        return tuple(self._decision_view(d) for d in relevant)
+        return tuple(
+            self._decision_view(d, include_details=include_details) for d in relevant
+        )
 
     def project_decisions(
         self,
@@ -246,6 +250,7 @@ class WorkspaceQueryService:
         *,
         level: str | None = None,
         status: str | None = None,
+        include_details: bool = True,
     ) -> ProjectDecisionsView:
         """Реестр решений проекта с агрегатами по уровням и статусам.
 
@@ -299,7 +304,10 @@ class WorkspaceQueryService:
             accepted_count=sum(1 for d in all_decisions if d.status == "accepted_default"),
             overridden_count=sum(1 for d in all_decisions if d.status == "user_overridden"),
             low_confidence_count=sum(1 for d in all_decisions if d.is_low_confidence),
-            items=tuple(self._decision_view(d) for d in filtered),
+            items=tuple(
+                self._decision_view(d, include_details=include_details)
+                for d in filtered
+            ),
         )
 
     def decision_detail(self, project_id: str, decision_id: str) -> DecisionItemView:
@@ -360,17 +368,18 @@ class WorkspaceQueryService:
             decisions=decisions,
         )
 
-    def _decision_view(self, decision) -> DecisionItemView:
+    def _decision_view(self, decision, *, include_details: bool = True) -> DecisionItemView:
         chosen = decision.chosen_alternative
         return DecisionItemView(
             decision_id=decision.decision_id,
             project_id=decision.project_id,
             title=decision.title,
-            description=decision.description,
+            description=decision.description_without_category if include_details else "",
+            category=decision.normalized_category,
             level=decision.effective_level,
             raw_level=decision.level,
-            level_rationale=decision.level_rationale,
-            rationale=decision.rationale,
+            level_rationale=decision.level_rationale if include_details else "",
+            rationale=decision.rationale if include_details else "",
             chosen_option_id=decision.chosen_option_id,
             chosen_option_label=chosen.label if chosen else "",
             alternatives=tuple(
@@ -384,7 +393,7 @@ class WorkspaceQueryService:
                     is_chosen=(alt.option_id == decision.chosen_option_id),
                 )
                 for alt in decision.alternatives
-            ),
+            ) if include_details else (),
             confidence=decision.confidence,
             is_low_confidence=decision.is_low_confidence,
             status=decision.status,
@@ -401,6 +410,7 @@ class WorkspaceQueryService:
             chosen_option_ids=decision.chosen_option_ids,
             user_verified=decision.user_verified,
             user_verified_at=decision.user_verified_at,
+            details_included=include_details,
         )
 
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
@@ -661,6 +671,13 @@ class WorkspaceQueryService:
         state = context.state
         process = state.process
         knowledge = state.knowledge
+        try:
+            ledger_decisions = self._runtime.list_decisions(
+                context.workspace,
+                project_id=state.manifest.project_id,
+            )
+        except Exception:
+            ledger_decisions = []
         return ProjectStateView(
             project_id=state.manifest.project_id,
             goal=knowledge.goal_statement(),
@@ -677,10 +694,8 @@ class WorkspaceQueryService:
                 )
             ),
             decisions=tuple(
-                sorted(
-                    (to_primitive(item) for item in knowledge.by_type("decision")),
-                    key=lambda item: item["identifier"],
-                )
+                to_primitive(self._decision_view(decision))
+                for decision in ledger_decisions
             ),
             readiness=tuple(
                 sorted(
@@ -1209,7 +1224,7 @@ class WorkspaceQueryService:
                 SituationBlockerView(
                     kind="clarification",
                     title=decision.title,
-                    summary=decision.description or decision.title,
+                    summary=decision.description_without_category or decision.title,
                     severity=level_to_severity.get(decision.effective_level, "medium"),
                     detail_view="clarification",
                     related_id=decision.decision_id,
@@ -1400,7 +1415,7 @@ class WorkspaceQueryService:
                         sequence=0,
                         kind=f"clarification_{decision.status}",
                         title=title,
-                        summary=decision.description or decision.title,
+                        summary=decision.description_without_category or decision.title,
                         status=status,
                         created_at=decision.updated_at or decision.created_at,
                         detail_view="clarification",

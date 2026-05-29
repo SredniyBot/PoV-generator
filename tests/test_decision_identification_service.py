@@ -123,6 +123,8 @@ def test_plan_returns_decisions_parsed_from_llm_response() -> None:
     assert d.source == "pre_flight"
     assert d.status == "proposed"
     assert d.chosen_option_id == "opt-postgres"
+    assert d.category == "tech_stack"
+    assert d.description == "Какую СУБД использовать для основного сервиса"
     assert d.level == "architecture"
     assert d.confidence == 0.85
     assert len(d.alternatives) == 2

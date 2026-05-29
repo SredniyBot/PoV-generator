@@ -430,28 +430,46 @@ def create_app(
         project_id: str,
         level: str | None = None,
         status: str | None = None,
+        include_details: bool = True,
     ) -> Any:
         """Реестр решений проекта.
 
         Опциональные query-параметры:
         - ``level``: business | architecture | detail
         - ``status``: proposed | accepted_default | user_overridden | deferred | locked_in | superseded
+        - ``include_details``: false returns lightweight items; use detail
+          endpoint for alternatives/rationale/description.
 
         Возвращает items + агрегаты по уровням и статусам (агрегаты
         считаются по всему реестру, не по отфильтрованному виду).
         """
         return to_primitive(
-            query_service.project_decisions(project_id, level=level, status=status)
+            query_service.project_decisions(
+                project_id,
+                level=level,
+                status=status,
+                include_details=include_details,
+            )
         )
 
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/decisions")
-    def project_artifact_decisions(project_id: str, artifact_id: str) -> Any:
+    def project_artifact_decisions(
+        project_id: str,
+        artifact_id: str,
+        include_details: bool = True,
+    ) -> Any:
         """Решения, принятые при сборке конкретного артефакта (v3.0).
 
         Связь — через ``Decision.affected_artifact_ids``. Используется в
         ArtifactDetailPage для отдельной вкладки «Решения».
         """
-        return to_primitive(query_service.decisions_for_artifact(project_id, artifact_id))
+        return to_primitive(
+            query_service.decisions_for_artifact(
+                project_id,
+                artifact_id,
+                include_details=include_details,
+            )
+        )
 
     @app.get("/api/projects/{project_id}/decisions/export.pdf")
     def download_decisions_pdf(project_id: str) -> Response:

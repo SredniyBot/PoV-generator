@@ -110,7 +110,7 @@ interface DecisionCardProps {
  * - Уровень показывается малозаметным indicator (точка-цвет), не плашкой.
  */
 function DecisionCard({
-  decision,
+  decision: initialDecision,
   interactive,
   defaultExpanded = false,
   hideMeta = false,
@@ -119,6 +119,14 @@ function DecisionCard({
   const [freeTextDraft, setFreeTextDraft] = useState<string>("");
   const [freeTextOpen, setFreeTextOpen] = useState(false);
   const queryClient = useQueryClient();
+  const isInteractive = interactive !== undefined;
+
+  const detailQuery = useQuery({
+    queryKey: ["decision-detail", initialDecision.project_id, initialDecision.decision_id],
+    queryFn: () => api.getDecisionDetail(initialDecision.project_id, initialDecision.decision_id),
+    enabled: !isInteractive && expanded && !initialDecision.details_included,
+  });
+  const decision = detailQuery.data ?? initialDecision;
 
   // v3.4: пометить рискованное решение как «просмотрено» — снимает badge.
   // Доступно только в read-only-режиме (реестр), не в checkpoint-сессии.
@@ -127,6 +135,9 @@ function DecisionCard({
       api.verifyDecision(decision.project_id, decision.decision_id, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["decisions", decision.project_id] });
+      queryClient.invalidateQueries({
+        queryKey: ["decision-detail", decision.project_id, decision.decision_id],
+      });
     },
   });
 
@@ -140,7 +151,6 @@ function DecisionCard({
     interactive?.onAnswerChange(answer);
   };
 
-  const isInteractive = interactive !== undefined;
   const showBody = expanded || isInteractive;
 
   // Дефолтное состояние interactive: выбран предложенный вариант (radio
@@ -516,6 +526,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
       api.getDecisionsRegistry(projectId, {
         level: levelFilter === "all" ? undefined : levelFilter,
         status: statusFilter === "all" ? undefined : statusFilter,
+        includeDetails: false,
       }),
   });
 

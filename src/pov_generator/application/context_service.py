@@ -285,7 +285,7 @@ class ContextService:
         """
         ids: list[str] = []
         for position in state.knowledge.active():
-            if position.type in {"decision", "assumption", "fact"}:
+            if position.type in {"assumption", "fact"}:
                 ids.append(position.identifier)
         return tuple(ids)
 
@@ -324,27 +324,9 @@ class ContextService:
                 + business_request
             )
 
-        # 🟢 USER DECISIONS — обязательные ограничения.
-        #
-        # always_full=True: решения пользователя ВСЕГДА показываются полным
-        # текстом, даже в global-секции. Раньше global-список обрезал
-        # statement до 120 символов; для решений вида
-        # «<длинный вопрос>? Ответ: <короткий ответ>» это резало именно
-        # часть «Ответ: …», и LLM видел только вопрос без ответа. Из-за
-        # этого модель эмитила лишние follow-up-вопросы с пометкой
-        # «Решение пользователя не найдено в контексте», что плодило
-        # дубликаты уточнений и блокировало pipeline.
-        decisions_section = self._format_positions_section(
-            workspace=workspace,
-            task=task,
-            template=template,
-            positions=state.knowledge.by_type("decision"),
-            relevant_title="🟢 Решения пользователя — ОБЯЗАТЕЛЬНО учитывай в выводе",
-            global_title="🟢 Другие принятые решения проекта (тоже учитывай)",
-            always_full=True,
-        )
-        if decisions_section:
-            sections.append(decisions_section)
+        # Decisions are no longer read from Layer A here. The canonical source
+        # is the decisions ledger; ExecutionService appends compact ledger
+        # constraints after the generic ContextManifest is built.
 
         # 🟡 ASSUMPTIONS — рабочие, можно override decision'ом
         assumptions_section = self._format_positions_section(

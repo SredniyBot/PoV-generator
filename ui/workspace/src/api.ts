@@ -164,11 +164,12 @@ export const api = {
   // --- v3.0 — Decision ledger + checkpoint sessions ----------------------
   getDecisionsRegistry: (
     projectId: string,
-    filters?: { level?: string; status?: string },
+    filters?: { level?: string; status?: string; includeDetails?: boolean },
   ) => {
     const qs = new URLSearchParams();
     if (filters?.level) qs.set("level", filters.level);
     if (filters?.status) qs.set("status", filters.status);
+    if (filters?.includeDetails === false) qs.set("include_details", "false");
     const qstr = qs.toString() ? `?${qs.toString()}` : "";
     return request<import("./types").ProjectDecisionsView>(
       `/api/projects/${projectId}/decisions${qstr}`,

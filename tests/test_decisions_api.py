@@ -18,6 +18,8 @@ from fastapi.testclient import TestClient
 from test_m9_api import init_project  # type: ignore
 
 from pov_generator.domain.decisions import Decision, DecisionAlternative
+from pov_generator.domain.positions import Position
+from pov_generator.domain.project_knowledge import UpsertPositionPatch
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 from pov_generator.interfaces.api import create_app
 
@@ -29,6 +31,8 @@ def _make_decision(
     decision_id: str,
     project_id: str,
     title: str = "Test decision",
+    description: str | None = None,
+    category: str = "",
     level: str = "architecture",
     confidence: float = 0.8,
     status: str = "proposed",
@@ -37,7 +41,7 @@ def _make_decision(
         decision_id=decision_id,
         project_id=project_id,
         title=title,
-        description=f"Description for {title}",
+        description=description if description is not None else f"Description for {title}",
         chosen_option_id="opt-a",
         alternatives=(
             DecisionAlternative(
@@ -65,6 +69,7 @@ def _make_decision(
         source="pre_flight",
         source_task_id="task-1",
         affected_artifact_ids=("art-1",),
+        category=category,
     )
 
 
@@ -120,9 +125,75 @@ def test_list_endpoint_returns_seeded_decisions(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert len(body["items"]) == 2
+    assert all(item["details_included"] is True for item in body["items"])
     assert body["business_count"] == 1
     assert body["architecture_count"] == 1
     assert body["detail_count"] == 0
+
+
+def test_list_endpoint_can_return_compact_decision_items(tmp_path: Path) -> None:
+    client, project_id, workspace = _build_client_with_project(tmp_path)
+    runtime = SqliteRuntime()
+    runtime.upsert_decision(
+        workspace,
+        _make_decision(decision_id="d-compact", project_id=project_id),
+    )
+
+    response = client.get(
+        f"/api/projects/{project_id}/decisions?include_details=false"
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["decision_id"] == "d-compact"
+    assert item["details_included"] is False
+    assert item["alternatives"] == []
+    assert item["description"] == ""
+    assert item["rationale"] == ""
+    assert item["chosen_option_label"] == "Variant A"
+
+    detail = client.get(f"/api/projects/{project_id}/decisions/d-compact").json()
+    assert detail["details_included"] is True
+    assert len(detail["alternatives"]) == 2
+    assert detail["description"] == "Description for Test decision"
+
+
+def test_project_state_decisions_come_from_ledger_not_legacy_knowledge(tmp_path: Path) -> None:
+    client, project_id, workspace = _build_client_with_project(tmp_path)
+    runtime = SqliteRuntime()
+    runtime.apply_knowledge_patch(
+        workspace,
+        UpsertPositionPatch(
+            position=Position(
+                identifier="legacy.decision.state-test",
+                type="decision",
+                statement="Legacy Layer A decision should not be canonical",
+                visibility="principal",
+                scope="global",
+                source="user",
+                taken_by="test",
+                taken_at="2026-05-27T00:00:00Z",
+            )
+        ),
+        actor="test",
+        reason="seed legacy Layer A decision",
+    )
+    runtime.upsert_decision(
+        workspace,
+        _make_decision(
+            decision_id="ledger-decision",
+            project_id=project_id,
+            title="Ledger canonical decision",
+            status="accepted_default",
+        ),
+    )
+
+    response = client.get(f"/api/projects/{project_id}/state")
+    assert response.status_code == 200
+    decisions = response.json()["decisions"]
+
+    assert [decision["decision_id"] for decision in decisions] == ["ledger-decision"]
+    assert decisions[0]["title"] == "Ledger canonical decision"
+    assert all(decision.get("identifier") != "legacy.decision.state-test" for decision in decisions)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +321,38 @@ def test_detail_endpoint_returns_chosen_label_and_alternatives(tmp_path: Path) -
     by_id = {alt["option_id"]: alt for alt in body["alternatives"]}
     assert by_id["opt-a"]["is_chosen"] is True
     assert by_id["opt-b"]["is_chosen"] is False
+
+
+def test_detail_endpoint_returns_clean_description_and_category(tmp_path: Path) -> None:
+    client, project_id, workspace = _build_client_with_project(tmp_path)
+    runtime = SqliteRuntime()
+    runtime.upsert_decision(
+        workspace,
+        _make_decision(
+            decision_id="d-structural-category",
+            project_id=project_id,
+            description="Какую БД использовать для MVP",
+            category="tech_stack",
+        ),
+    )
+    runtime.upsert_decision(
+        workspace,
+        _make_decision(
+            decision_id="d-legacy-category",
+            project_id=project_id,
+            description="[scope] Что включить в первый релиз",
+        ),
+    )
+
+    structural = client.get(
+        f"/api/projects/{project_id}/decisions/d-structural-category"
+    ).json()
+    assert structural["description"] == "Какую БД использовать для MVP"
+    assert structural["category"] == "tech_stack"
+
+    legacy = client.get(f"/api/projects/{project_id}/decisions/d-legacy-category").json()
+    assert legacy["description"] == "Что включить в первый релиз"
+    assert legacy["category"] == "scope"
 
 
 def test_detail_endpoint_404_when_not_found(tmp_path: Path) -> None:

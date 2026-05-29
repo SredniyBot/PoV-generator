@@ -59,7 +59,12 @@ import logging
 
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
-from ..domain.decisions import Decision, DecisionAlternative
+from ..domain.decisions import (
+    DECISION_CATEGORIES,
+    Decision,
+    DecisionAlternative,
+    strip_decision_category_prefix,
+)
 from ..domain.llm_settings import PURPOSE_DECISION_PLANNING, PURPOSE_EXECUTION_STANDARD
 from ..infrastructure.llm import LLMProviderRegistry
 
@@ -70,24 +75,6 @@ logger = logging.getLogger(__name__)
 # структурное перечисление, не глубокий анализ. Standard уровня достаточно;
 # на Claude-провайдерах маппится на sonnet (см. claude_sdk_client).
 _IDENTIFICATION_COMPLEXITY = "standard"
-
-
-# Категории решений (v3.6). Перечень намеренно компактный и стабильный:
-# любая попытка «расширить под каждый домен» приведёт к каше. Эти девять
-# категорий покрывают весь спектр проектных решений в любом PoV. Если
-# LLM не может уложить решение ни в одну категорию — это сигнал, что
-# оно не проектное (мета/процессное), его надо отбрасывать.
-DECISION_CATEGORIES: tuple[str, ...] = (
-    "scope",         # что входит / не входит в текущий этап проекта
-    "tech_stack",    # выбор фреймворков, моделей ML/LLM, библиотек, СУБД
-    "data",          # источники, форматы, размер выборки, обезличивание
-    "integration",   # интеграции с внешними системами, протоколы
-    "acceptance",    # критерии приёмки, KPI, методика замера
-    "risk",          # риски, митигации, триггеры пересмотра
-    "stakeholder",   # роли, ответственные, кто подписывает
-    "budget",        # бюджет, ресурсы, оценки
-    "team",          # состав, организация работ, фазировка
-)
 
 
 @dataclass(frozen=True)
@@ -605,19 +592,14 @@ class DecisionIdentificationService:
         if level not in ("business", "architecture", "detail"):
             level = "architecture"
 
-        # v3.6: category пишем в decision.description как префикс
-        # `[category]` (для быстрого фильтра в UI без миграции схемы).
-        # В отдельное поле Decision.category вынесем позже, когда наберётся
-        # стабильное использование. Сейчас — лёгкий, обратимый канал.
-        description = str(raw.get("description") or "")
-        if not description.startswith("[") or "]" not in description[:30]:
-            description = f"[{category}] {description}"
+        description = strip_decision_category_prefix(str(raw.get("description") or ""))
 
         return Decision(
             decision_id=str(uuid.uuid4()),
             project_id=project_id,
             title=str(raw.get("title") or "Untitled decision"),
             description=description,
+            category=category,
             chosen_option_id=proposed,
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),

@@ -50,11 +50,15 @@ from typing import Any
 
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
-from ..domain.decisions import Decision, DecisionAlternative
+from ..domain.decisions import (
+    DECISION_CATEGORIES,
+    Decision,
+    DecisionAlternative,
+    strip_decision_category_prefix,
+)
 from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import SqliteRuntime
-from .decision_identification_service import DECISION_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -440,9 +444,7 @@ class DecisionExtractionService:
         if level not in ("business", "architecture", "detail"):
             level = "architecture"
 
-        description = str(raw.get("description") or "")
-        if not description.startswith("[") or "]" not in description[:30]:
-            description = f"[{category}] {description}"
+        description = strip_decision_category_prefix(str(raw.get("description") or ""))
 
         # source="emergent" — этот enum уже существует в v3.0 для
         # незапланированных решений, возникших по ходу генерации.
@@ -452,6 +454,7 @@ class DecisionExtractionService:
             project_id=project_id,
             title=str(raw.get("title") or "Untitled extracted decision"),
             description=description,
+            category=category,
             chosen_option_id=chosen,
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),

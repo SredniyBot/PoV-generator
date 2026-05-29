@@ -26,6 +26,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -108,6 +111,32 @@ DecisionUserAction = Literal[
 #: до полного покрытия answer-mode space.
 DecisionAnswerMode = Literal["single", "multiple", "free_text", "confirmation"]
 
+#: Категория проектного решения (v3.6+). Это structural dimension: о чём
+#: решение, независимо от того, насколько оно user-facing (``level``).
+DecisionCategory = Literal[
+    "scope",
+    "tech_stack",
+    "data",
+    "integration",
+    "acceptance",
+    "risk",
+    "stakeholder",
+    "budget",
+    "team",
+]
+
+DECISION_CATEGORIES: tuple[str, ...] = (
+    "scope",
+    "tech_stack",
+    "data",
+    "integration",
+    "acceptance",
+    "risk",
+    "stakeholder",
+    "budget",
+    "team",
+)
+
 
 # ---------------------------------------------------------------------------
 # Доменные структуры
@@ -140,6 +169,17 @@ class DecisionAlternative:
     pros: tuple[str, ...] = field(default_factory=tuple)
     cons: tuple[str, ...] = field(default_factory=tuple)
     confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class DecisionSignature:
+    """Compact normalized identity/summary for registry and prompt context."""
+
+    decision_id: str
+    normalized_title_key: str
+    category: str
+    chosen_answer_summary: str
+    status: DecisionStatus
 
 
 @dataclass(frozen=True)
@@ -191,6 +231,9 @@ class Decision:
             предпочёл его вариантам.
         free_form_level_override: пользователь переклассифицировал уровень
             (None означает «принимаю классификацию LLM как есть»).
+        category: структурная категория решения (scope, tech_stack, ...).
+            Для legacy-записей может быть пустой; тогда читается из префикса
+            ``[category]`` в description.
         created_at: ISO-8601 UTC.
         updated_at: ISO-8601 UTC.
     """
@@ -216,6 +259,7 @@ class Decision:
     free_form_level_override: DecisionLevel | None = None
     created_at: str = ""
     updated_at: str = ""
+    category: str = ""
     # v3.1 — миграция legacy clarifications в Decision.
     # ``answer_mode`` определяет UI:
     #   single → radio (chosen_option_id заполнен)
@@ -318,6 +362,119 @@ class Decision:
         """True, если пользователь явно изменил выбор LLM."""
         return self.status == "user_overridden" or self.user_action == "modified"
 
+    @property
+    def normalized_category(self) -> str:
+        """Explicit category with legacy ``[category]`` fallback."""
+        return normalized_decision_category(self)
+
+    @property
+    def description_without_category(self) -> str:
+        """Description without legacy ``[category]`` prefix."""
+        return strip_decision_category_prefix(self.description)
+
+    @property
+    def signature(self) -> DecisionSignature:
+        """Compact normalized decision signature."""
+        return normalized_decision_signature(self)
+
+
+_TITLE_WORD_RE = re.compile(r"\w+", re.UNICODE)
+_MAX_TITLE_KEY_LENGTH = 120
+
+
+def split_decision_category_prefix(description: str) -> tuple[str, str]:
+    """Return ``(category, clean_description)`` for legacy ``[category]`` text."""
+
+    text = " ".join((description or "").split())
+    if not text.startswith("["):
+        return "", text
+    closing = text.find("]")
+    if closing <= 1 or closing > 30:
+        return "", text
+    candidate = text[1:closing].strip()
+    if candidate not in DECISION_CATEGORIES:
+        return "", text
+    return candidate, text[closing + 1 :].lstrip()
+
+
+def strip_decision_category_prefix(description: str) -> str:
+    """Drop legacy ``[category]`` prefix when it is a known decision category."""
+
+    _category, clean_description = split_decision_category_prefix(description)
+    return clean_description
+
+
+def normalized_decision_category(decision: Decision) -> str:
+    category = (decision.category or "").strip()
+    if category in DECISION_CATEGORIES:
+        return category
+    legacy_category, _clean_description = split_decision_category_prefix(decision.description)
+    return legacy_category
+
+
+def normalized_decision_title_key(title: str) -> str:
+    normalized = unicodedata.normalize("NFKC", title or "").casefold().replace("ё", "е")
+    words = _TITLE_WORD_RE.findall(normalized)
+    if not words:
+        if not normalized.strip():
+            return "untitled"
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
+        return f"untitled-{digest}"
+
+    key = "-".join(words)
+    if len(key) <= _MAX_TITLE_KEY_LENGTH:
+        return key
+
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+    head = key[: _MAX_TITLE_KEY_LENGTH - len(digest) - 1].rstrip("-")
+    return f"{head}-{digest}"
+
+
+def compact_decision_answer_summary(decision: Decision, *, limit: int = 500) -> str:
+    user_text = " ".join((decision.user_free_text_answer or "").split())
+    if user_text:
+        return _compact_text(user_text, limit=limit)
+
+    labels: list[str] = []
+    chosen_ids = decision.effective_chosen_ids
+    if chosen_ids:
+        alternatives_by_id = {alt.option_id: alt for alt in decision.alternatives}
+        for option_id in chosen_ids:
+            alternative = alternatives_by_id.get(option_id)
+            if alternative is None:
+                labels.append(f"option_id={option_id}")
+                continue
+            label = alternative.label.strip()
+            description = strip_decision_category_prefix(alternative.description)
+            if description:
+                label = f"{label}: {description}" if label else description
+            labels.append(label or f"option_id={option_id}")
+
+    if labels:
+        return _compact_text("; ".join(labels), limit=limit)
+
+    clean_description = decision.description_without_category
+    if clean_description:
+        return _compact_text(clean_description, limit=limit)
+    return "принято без структурированного ответа"
+
+
+def normalized_decision_signature(decision: Decision) -> DecisionSignature:
+    return DecisionSignature(
+        decision_id=decision.decision_id,
+        normalized_title_key=normalized_decision_title_key(decision.title),
+        category=decision.normalized_category,
+        chosen_answer_summary=compact_decision_answer_summary(decision),
+        status=decision.status,
+    )
+
+
+def _compact_text(value: str, *, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
 
 @dataclass(frozen=True)
 class DecisionInput:
@@ -345,6 +502,9 @@ class DecisionInput:
         source: откуда возникло решение ("reactive_validation" / "emergent" / ...).
         source_task_id: id задачи, которая привела к появлению решения.
         affected_artifact_ids: артефакты, на которые повлияет это решение.
+        category: структурная категория решения. Optional для backward-compat;
+            если пустая, legacy ``[category]`` prefix в description всё ещё
+            читается как fallback.
     """
 
     title: str
@@ -358,6 +518,7 @@ class DecisionInput:
     source: DecisionSource = "reactive_validation"
     source_task_id: str | None = None
     affected_artifact_ids: tuple[str, ...] = field(default_factory=tuple)
+    category: str = ""
 
 
 # ---------------------------------------------------------------------------

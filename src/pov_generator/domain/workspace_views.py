@@ -178,6 +178,7 @@ class DecisionItemView:
     project_id: str
     title: str
     description: str
+    category: str
     level: str  # effective_level (с учётом возможной user-переклассификации)
     raw_level: str  # исходный уровень от LLM, если был переопределён
     level_rationale: str
@@ -204,6 +205,9 @@ class DecisionItemView:
     # Снимает маркер is_low_confidence в UI без изменения самого решения.
     user_verified: bool = False
     user_verified_at: str | None = None
+    # v3.9: list endpoints can return compact items and let callers lazy-load
+    # heavy alternatives/rationale through the detail endpoint.
+    details_included: bool = True
 
 
 @dataclass(frozen=True)

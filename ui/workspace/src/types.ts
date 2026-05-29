@@ -606,6 +606,7 @@ export interface DecisionItemView {
   project_id: string;
   title: string;
   description: string;
+  category: string;
   level: DecisionLevel;
   raw_level: DecisionLevel;
   level_rationale: string;
@@ -631,6 +632,9 @@ export interface DecisionItemView {
   // v3.4: пользователь явно «верифицировал» рискованное решение
   user_verified: boolean;
   user_verified_at: string | null;
+  // false means list endpoint returned a compact item; load detail for
+  // alternatives/rationale/description.
+  details_included: boolean;
 }
 
 export interface ProjectDecisionsView {

@@ -20,7 +20,7 @@ import pytest
 from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.common.errors import ConflictError
 from pov_generator.domain.checkpoints import CheckpointAnswer
-from pov_generator.domain.decisions import Decision, DecisionAlternative
+from pov_generator.domain.decisions import Decision, DecisionAlternative, DecisionInput
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -96,6 +96,57 @@ def test_autopilot_silent_accept_all_no_session(service) -> None:
     for d in saved:
         assert d.status == "accepted_default"
         assert d.user_action == "not_shown"
+
+
+def test_register_decision_inputs_accepts_optional_category(service) -> None:
+    svc, runtime, ws = service
+    created = svc.register_decision_inputs(
+        ws,
+        project_id="p-1",
+        decision_inputs=(
+            DecisionInput(
+                title="Выбор БД",
+                description="Какую БД использовать для MVP",
+                alternatives=(_alt("postgres", "PostgreSQL"), _alt("mysql", "MySQL")),
+                recommended_option_id="postgres",
+                rationale="PostgreSQL лучше ложится на требования к данным",
+                level="architecture",
+                source_task_id=None,
+                category="tech_stack",
+            ),
+        ),
+    )
+
+    assert len(created) == 1
+    saved = runtime.get_decision(ws, created[0].decision_id)
+    assert saved.category == "tech_stack"
+    assert saved.normalized_category == "tech_stack"
+    assert saved.description == "Какую БД использовать для MVP"
+
+
+def test_register_decision_inputs_uses_legacy_category_prefix(service) -> None:
+    svc, runtime, ws = service
+    created = svc.register_decision_inputs(
+        ws,
+        project_id="p-1",
+        decision_inputs=(
+            DecisionInput(
+                title="Граница MVP",
+                description="[scope] Что включить в первый релиз",
+                alternatives=(_alt("narrow", "Узкий MVP"), _alt("wide", "Широкий MVP")),
+                recommended_option_id="narrow",
+                rationale="Узкий MVP снижает риск поставки",
+                level="business",
+                source_task_id=None,
+            ),
+        ),
+    )
+
+    assert len(created) == 1
+    saved = runtime.get_decision(ws, created[0].decision_id)
+    assert saved.category == "scope"
+    assert saved.normalized_category == "scope"
+    assert saved.description == "Что включить в первый релиз"
 
 
 def test_balanced_surfaces_only_business(service) -> None:
