@@ -459,7 +459,7 @@ class ProviderSettingsService:
                     provider_type="anthropic",
                     display_name="Anthropic API (из .env)",
                     api_key=anthropic_key,
-                    extras={"max_tokens": os.environ.get("POV_CLAUDE_MAX_TOKENS", "8192")},
+                    extras={"max_tokens": os.environ.get("POV_CLAUDE_MAX_TOKENS", "32768")},
                     source="env_bootstrap",
                 )
             )

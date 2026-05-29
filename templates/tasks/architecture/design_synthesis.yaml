@@ -1,0 +1,138 @@
+kind: task_template
+id: architecture.design_synthesis
+version: 1.0.0
+title: Собрать архитектурный документ
+type: leaf
+status: active
+domain: architecture
+executor: llm
+# Финальный synthesis: descriptive-стадии не применимы — описание уже
+# сделано в upstream. minimal оставляем для совместимости с
+# методологическим wrapper'ом; реальная сборка идёт через compose.
+methodology: minimal
+# Synthetic merge: LLM (или stub-compose) интегрирует upstream-артефакты
+# (контекст, компоненты, взаимодействия, развёртывание, риски) в связный
+# документ. Strategy=synthetic фиксирует семантику в метаинформации.
+merge:
+  strategy: synthetic
+  conflict_policy: union
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.system_context_definition@1.0.0
+      - architecture.component_decomposition@1.0.0
+      - architecture.interaction_view@1.0.0
+    # Топология и риски — обогащают финальный документ, но не блокируют
+    # сборку (для совсем минимального пилота их можно пропустить).
+    optional:
+      - common.deployment_topology@1.0.0
+      - common.project_risk_register@1.0.0
+      - security.security_compliance_constraints@1.0.0
+      - integration.integration_operating_model@1.0.0
+produces:
+  artifact: architecture.design_document@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 48000
+planning:
+  priority: 100
+effects:
+  readiness:
+    set:
+      - dimension: architecture_synthesized
+        status: ready
+summary: |
+  Собери архитектурный документ по проектируемому решению. На вход —
+  упорядоченные артефакты: системный контекст, декомпозиция на компоненты,
+  потоки взаимодействия, опционально — топология развёртывания и реестр
+  рисков. Твоя задача — связать их в единый документ для архитектора и
+  технического заказчика.
+
+  Структура документа:
+
+  • TITLE — короткое имя системы (из system_context_definition.system_name).
+
+  • EXECUTIVE_SUMMARY — 2-4 предложения о том, что за система, как она
+    устроена в основных чертах и какие у неё ключевые риски / открытые
+    вопросы. Это абзац для CTO, который не хочет читать весь документ.
+
+  • SYSTEM_CONTEXT — раздел про границы системы и внешний мир. Включай
+    содержимое system_context_definition: акторы, внешние системы,
+    `context_diagram` (структурированный объект — рендерер сам соберёт
+    Mermaid). Не дублируй структуру upstream'а — это и есть раздел документа.
+
+  • COMPONENTS — раздел про внутреннее устройство. Включай содержимое
+    component_decomposition: компоненты с их ответственностями и
+    `component_diagram` (структурированный объект).
+
+  • INTERACTIONS — раздел про динамику. Включай содержимое interaction_view:
+    сценарии и `interaction_diagram` (структурированный объект — sequence
+    или flowchart, см. поле `kind`).
+
+  • DEPLOYMENT (опционально) — таблица среды/зон/компонентов из
+    deployment_topology, если задача выполнялась.
+
+  • RISKS (опционально) — список ключевых рисков из project_risk_register,
+    с category / probability / impact / mitigation.
+
+  • NON_FUNCTIONAL_REQUIREMENTS (опционально) — нагрузка, надёжность,
+    наблюдаемость, безопасность — если есть из upstream-доменов.
+
+  • OPEN_QUESTIONS (опционально) — что ещё нужно решить до реализации.
+
+  Правила:
+
+  • НЕ ВЫДУМЫВАЙ upstream-секции. Если components_decomposition не
+    выполнен — раздел COMPONENTS опускается; не сочиняй компоненты «из
+    головы».
+
+  • СОХРАНЯЙ СТРУКТУРНЫЕ ДИАГРАММЫ. Объекты `context_diagram`,
+    `component_diagram`, `interaction_diagram` копируются из upstream-
+    артефактов как есть — не пересобирай их и не пытайся вернуть в
+    Mermaid-строку. Рендерер сам построит Mermaid из объекта.
+
+  • EXECUTIVE_SUMMARY — содержательно, а не мета. Не пиши «документ
+    описывает архитектуру»; пиши «система состоит из API Gateway,
+    Worker'а и Result Store, основной поток — синхронная подача с
+    асинхронной обработкой».
+
+  • ОТМЕЧАЙ ПРОПУСКИ. Если в upstream чего-то нет (например, не описаны
+    нефункциональные требования) — фиксируй в open_questions, не
+    заполняй заглушками.
+
+  CONFIDENCE и BLOCKING_QUESTIONS финального документа — это
+  агрегированный сигнал, насколько архитектурное решение готово к
+  передаче в реализацию. Архитектор НЕ создаёт новой неопределённости
+  на этом этапе — он суммирует то, что осталось открытым в upstream.
+
+  ▸ `blocking_questions` ОБЯЗАТЕЛЬНО ЗАПОЛНЯЙ, если выполнено хотя бы одно:
+    — в upstream-артефактах есть собственные `blocking_questions` —
+      перенеси их сюда (де-дублируя по смыслу), сохраняя адресность;
+    — между секциями обнаружено несоответствие (компонент не
+      обслуживает ни одного актора из контекста; в interactions
+      участвует компонент, не описанный в decomposition);
+    — отсутствует целая секция, критичная для решения о реализации
+      (например, deployment_topology не выполнен для системы с явными
+      зональными требованиями);
+    — нефункциональные требования отсутствуют, а система явно подразумевает
+      нагрузку / SLA / compliance.
+    Каждый вопрос — конкретный. Пример: «В interaction_view участвует
+    компонент `NotificationService`, но в component_decomposition его нет;
+    либо добавить компонент, либо использовать существующий `EventBus`».
+
+  ▸ `confidence` — число 0.0-1.0:
+    — 0.85-0.95 — все три ключевых upstream-артефакта (контекст,
+      компоненты, взаимодействия) выполнены с confidence ≥0.7, нет
+      межсекционных несоответствий, blocking_questions — уточняющий.
+    — 0.65-0.85 — upstream полный, но 1-2 секции с пониженной
+      уверенностью (≥0.5) или 2-4 blocking_questions, перенесённых
+      из upstream'а.
+    — 0.4-0.65 — есть upstream с confidence <0.5 или отсутствует
+      значимая секция (например, нет deployment).
+    — <0.4 — документ собран на гипотезах; в текущем виде не пригоден
+      для оценки реализации.
+
+  ▸ Confidence финального документа НЕ ДОЛЖЕН быть выше минимального
+    confidence из upstream-артефактов (context / components / interactions).
+    Если context.confidence = 0.55, design_document.confidence ≤ 0.55.

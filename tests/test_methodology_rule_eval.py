@@ -211,3 +211,112 @@ def test_methodology_rules_silent_on_incomplete_reasoning() -> None:
     fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
     assert "ambiguous_choice" not in fired
     assert "low_overall_confidence" not in fired
+
+
+# --- 5. Descriptive decomposition methodology (Stage 2) --------------------
+
+
+def _load_descriptive_methodology():
+    snapshot, _ = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates")).validate()
+    return snapshot.resolve_methodology_pack("process.descriptive_decomposition@1.0.0")
+
+
+def test_descriptive_decomposition_missing_entities_fires_when_empty_list() -> None:
+    """`missing_entities` срабатывает, когда entity_identification.entities пуст."""
+    methodology = _load_descriptive_methodology()
+    reasoning = {
+        "stages": [
+            {"stage_id": "scope_framing", "outputs": {"scope_statement": "Описать модуль X."}},
+            {"stage_id": "entity_identification", "outputs": {"entities": []}},
+        ]
+    }
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-1",
+    )
+    fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
+    assert "missing_entities" in fired
+
+
+def test_descriptive_decomposition_unconnected_entities_fires_when_no_relationships() -> None:
+    """`unconnected_entities` срабатывает, когда relationships пуст, а entities есть."""
+    methodology = _load_descriptive_methodology()
+    reasoning = {
+        "stages": [
+            {"stage_id": "scope_framing", "outputs": {"scope_statement": "Описать модуль X."}},
+            {
+                "stage_id": "entity_identification",
+                "outputs": {"entities": [{"id": "a", "label": "A", "kind": "component"}]},
+            },
+            {"stage_id": "relationship_mapping", "outputs": {"relationships": []}},
+        ]
+    }
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-2",
+    )
+    fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
+    assert "unconnected_entities" in fired
+
+
+def test_descriptive_decomposition_low_coverage_fires_below_threshold() -> None:
+    """`low_coverage` срабатывает, когда completeness_check.coverage_confidence < 0.5."""
+    methodology = _load_descriptive_methodology()
+    reasoning = {
+        "stages": [
+            {"stage_id": "scope_framing", "outputs": {"scope_statement": "Рамка."}},
+            {
+                "stage_id": "entity_identification",
+                "outputs": {"entities": [{"id": "a", "label": "A", "kind": "component"}]},
+            },
+            {
+                "stage_id": "completeness_check",
+                "outputs": {"unresolved_questions": ["q1"], "coverage_confidence": 0.3},
+            },
+        ]
+    }
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-3",
+    )
+    fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
+    assert "low_coverage" in fired
+
+
+def test_descriptive_decomposition_silent_when_stage_absent() -> None:
+    """При отсутствующих стадиях правила должны молча не срабатывать."""
+    methodology = _load_descriptive_methodology()
+    reasoning = {
+        "stages": [
+            {"stage_id": "scope_framing", "outputs": {"scope_statement": "Есть рамка."}},
+            # entity_identification / relationship_mapping / completeness_check отсутствуют
+        ]
+    }
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-4",
+    )
+    fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
+    assert "missing_entities" not in fired
+    assert "unconnected_entities" not in fired
+    assert "low_coverage" not in fired
+
+
+def test_descriptive_decomposition_trivial_complexity_skips_completeness_check() -> None:
+    """Для trivial-сложности completeness_check выпадает из стадий, low_coverage relaxed."""
+    methodology = _load_descriptive_methodology()
+    stage_ids = [s.identifier for s in methodology.stages_for_complexity("trivial")]
+    assert "completeness_check" not in stage_ids
+    assert {"scope_framing", "entity_identification", "relationship_mapping"}.issubset(set(stage_ids))

@@ -425,6 +425,8 @@ export function WorkspaceHeader({
   openClarificationCount,
   blockingClarificationCount,
   onOpenClarifications,
+  onActivateNextObjective,
+  activatingNextObjective,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
@@ -436,6 +438,10 @@ export function WorkspaceHeader({
   openClarificationCount?: number;
   blockingClarificationCount?: number;
   onOpenClarifications?: () => void;
+  // Цепочка objective'ов: когда текущий objective завершён и у него есть
+  // compatible_next_objectives, UI показывает кнопку перехода.
+  onActivateNextObjective?: (objectiveRef: string) => void;
+  activatingNextObjective?: boolean;
 }) {
   const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
   const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
@@ -449,6 +455,17 @@ export function WorkspaceHeader({
         <h1>{shell.name}</h1>
         <p className="workspace-header__request">{shell.business_request}</p>
         <div className="workspace-header__meta">
+          {shell.objective_history && shell.objective_history.length > 0 ? (
+            <>
+              {shell.objective_history.map((ref) => (
+                <span key={ref} className="meta-chip meta-chip--muted" title="Завершённый objective">
+                  <CheckCircle2 size={14} />
+                  {ref}
+                </span>
+              ))}
+              <ChevronRight size={14} className="meta-chip__sep" />
+            </>
+          ) : null}
           <span className="meta-chip">
             <Waypoints size={14} />
             {shell.objective_ref}
@@ -457,6 +474,24 @@ export function WorkspaceHeader({
             <Layers3 size={14} />
             Доменов: {shell.active_domain_packs.length}
           </span>
+          {shell.objective_complete &&
+          shell.compatible_next_objectives &&
+          shell.compatible_next_objectives.length > 0 &&
+          onActivateNextObjective
+            ? shell.compatible_next_objectives.map((nextRef) => (
+                <button
+                  key={nextRef}
+                  type="button"
+                  className="meta-chip meta-chip--button meta-chip--cta"
+                  onClick={() => onActivateNextObjective(nextRef)}
+                  disabled={activatingNextObjective}
+                  title={`Активировать следующий objective: ${nextRef}`}
+                >
+                  <ArrowRight size={14} />
+                  Перейти к {nextRef}
+                </button>
+              ))
+            : null}
           {openClarificationCount && openClarificationCount > 0 ? (
             <button
               type="button"

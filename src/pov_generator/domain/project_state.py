@@ -23,18 +23,23 @@ from typing import Literal
 from .process_state import ProcessState
 from .project_knowledge import ProjectKnowledge
 
-
 StateLayer = Literal["knowledge", "process"]
 """Слой, к которому относится событие изменения состояния."""
 
 
 @dataclass(frozen=True)
 class ProjectManifest:
-    """Иммутабельные метаданные проекта.
+    """Метаданные проекта.
 
-    Заполняются при создании проекта, не меняются за время его жизни.
-    Хранятся в `project.json` для быстрого человеческого осмотра без
-    обращения к базе данных.
+    Заполняются при создании; неизменяемы в большинстве полей. Хранятся
+    в `project.json` для быстрого человеческого осмотра без обращения к
+    базе данных.
+
+    Поле ``objective_ref`` — текущий (активный) objective. Может меняться
+    через ``project_service.activate_next_objective`` (ТЗ → архитектура).
+    Все прошлые активные objective'ы фиксируются в ``objective_history``
+    в хронологическом порядке (не включая текущий). При первом создании
+    проекта ``objective_history`` пуст.
     """
 
     project_id: str
@@ -42,6 +47,7 @@ class ProjectManifest:
     objective_ref: str
     business_request: str
     created_at: str
+    objective_history: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

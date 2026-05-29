@@ -161,7 +161,9 @@ def test_api_exposes_operator_projections_for_task_graph(tmp_path: Path) -> None
     assert artifact_detail["markdown_content"] is not None
 
     review = client.get(f"/api/projects/{project_id}/review").json()
-    assert review["status"] == "passed"
+    # LLM-ревью удалён (вариант B): /review больше не производит review_report,
+    # проекция возвращает "missing". Валидатор ТЗ теперь — человеческий sign-off.
+    assert review["status"] == "missing"
 
     state = client.get(f"/api/projects/{project_id}/state").json()
     assert state["root_task_id"] is not None

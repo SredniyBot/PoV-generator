@@ -65,6 +65,35 @@ def model_for_complexity(complexity: str | None) -> str | None:
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
+def _iter_parseable_objects(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Найти все валидные JSON-объекты в тексте.
+
+    Использует ``json.JSONDecoder.raw_decode`` от каждой позиции ``{``:
+    если модель в subscription-CLI прервалась и стартовала JSON заново,
+    одна из попыток обычно валидна. Возвращает список ``(parsed, raw_str)``,
+    caller выберет самый длинный.
+
+    Учитывает обе наши пост-обработки (``\\'`` → ``'``, ``strict=False``).
+    """
+    normalized = text.replace("\\'", "'")
+    decoder = json.JSONDecoder(strict=False)
+    results: list[tuple[dict[str, Any], str]] = []
+    pos = 0
+    while True:
+        idx = normalized.find("{", pos)
+        if idx < 0:
+            break
+        try:
+            parsed, end = decoder.raw_decode(normalized, idx)
+        except json.JSONDecodeError:
+            pos = idx + 1
+            continue
+        if isinstance(parsed, dict):
+            results.append((parsed, normalized[idx:end]))
+        pos = end
+    return results
+
+
 class ClaudeSubscriptionClient:
     """Тонкая обёртка над claude-agent-sdk."""
 
@@ -254,24 +283,40 @@ class ClaudeSubscriptionClient:
         text = text.strip()
         if not text:
             raise ConflictError("Claude вернул пустой ответ.")
+        # 1. Сначала пытаемся вытащить из markdown-блока ```json```.
         match = _JSON_FENCE_RE.search(text)
-        candidate: str | None = None
         if match:
-            candidate = match.group(1)
-        else:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                candidate = text[start : end + 1]
-        if candidate is None:
-            raise ConflictError(f"Не удалось извлечь JSON из ответа: {text!r}")
+            fenced = match.group(1).replace("\\'", "'")
+            try:
+                parsed = json.loads(fenced, strict=False)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        # 2. Иначе ищем все валидные JSON-объекты в тексте и берём самый
+        #    длинный. Subscription-CLI на длинных ответах иногда стримит
+        #    несколько JSON-объектов подряд (модель обрывается посередине
+        #    и перезапускается с нуля — оба склеиваются в один поток).
+        candidates = _iter_parseable_objects(text)
+        if candidates:
+            parsed, raw = max(candidates, key=lambda pair: len(pair[1]))
+            return parsed
+        # 3. Никаких валидных JSON не нашли — диагностика по «жадному»
+        #    срезу `{...}` от первой `{` до последней `}` (исторически
+        #    самый информативный candidate для логов).
+        start = text.find("{")
+        end = text.rfind("}")
+        fallback = (
+            text[start : end + 1].replace("\\'", "'") if start >= 0 and end > start else text
+        )
         try:
-            payload = json.loads(candidate)
+            json.loads(fallback, strict=False)
         except json.JSONDecodeError as exc:
-            raise ConflictError(f"Невалидный JSON в ответе Claude: {candidate!r}") from exc
-        if not isinstance(payload, dict):
-            raise ConflictError(f"Ожидался JSON-объект, получено: {payload!r}")
-        return payload
+            raise ConflictError(
+                f"Невалидный JSON в ответе Claude (line {exc.lineno} "
+                f"col {exc.colno}): {exc.msg}. Candidate: {fallback!r}"
+            ) from exc
+        raise ConflictError(f"Не удалось извлечь JSON из ответа: {text!r}")
 
 
 def _resolve_cli_path() -> str | None:

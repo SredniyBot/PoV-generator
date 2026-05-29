@@ -61,6 +61,15 @@ class ObjectiveSpec:
     done_artifact_refs: tuple[ObjectRef, ...]
     done_gate_refs: tuple[ObjectRef, ...]
     source_path: Path
+    # Опциональная декларация: какую методологию активировать при создании
+    # проекта с этим objective. Если ``None``, ``project_service.init_project``
+    # подставляет глобальный fallback (``process.lean_jtbd@1.0.0``).
+    default_methodology_pack_ref: ObjectRef | None = None
+    # Цепочка objective'ов: после завершения этого objective'а в том же
+    # workspace можно активировать любой из перечисленных. UX-подсказка,
+    # не жёсткий контракт — ``activate_next_objective`` принимает и
+    # незадекларированные переходы.
+    compatible_next_objectives: tuple[ObjectRef, ...] = ()
 
     @property
     def ref(self) -> ObjectRef:
@@ -576,6 +585,31 @@ def parse_objective(raw: dict[str, Any], source_path: Path) -> ObjectiveSpec:
     version = require_str(raw, "version", owner)
     parse_semver(version)
     done_when = require_mapping(raw, "done_when", owner)
+    raw_methodology = raw.get("default_methodology_pack")
+    if raw_methodology is None:
+        default_methodology_pack_ref: ObjectRef | None = None
+    elif isinstance(raw_methodology, str) and raw_methodology.strip():
+        default_methodology_pack_ref = ObjectRef.parse(raw_methodology.strip())
+    else:
+        raise ValidationError(
+            f"Expected non-empty string 'default_methodology_pack' in {owner}"
+        )
+    raw_next = raw.get("compatible_next_objectives")
+    if raw_next is None:
+        compatible_next_objectives: tuple[ObjectRef, ...] = ()
+    elif isinstance(raw_next, list):
+        parsed: list[ObjectRef] = []
+        for item in raw_next:
+            if not isinstance(item, str) or not item.strip():
+                raise ValidationError(
+                    f"Expected non-empty string in 'compatible_next_objectives' of {owner}"
+                )
+            parsed.append(ObjectRef.parse(item.strip()))
+        compatible_next_objectives = tuple(parsed)
+    else:
+        raise ValidationError(
+            f"Expected list of strings for 'compatible_next_objectives' in {owner}"
+        )
     return ObjectiveSpec(
         identifier=require_str(raw, "id", owner),
         version=version,
@@ -584,6 +618,8 @@ def parse_objective(raw: dict[str, Any], source_path: Path) -> ObjectiveSpec:
         done_artifact_refs=tuple(ObjectRef.parse(str(item)) for item in require_list(done_when, "artifacts", owner)),
         done_gate_refs=tuple(ObjectRef.parse(str(item)) for item in require_list(done_when, "gates", owner)),
         source_path=source_path,
+        default_methodology_pack_ref=default_methodology_pack_ref,
+        compatible_next_objectives=compatible_next_objectives,
     )
 
 

@@ -1,10 +1,173 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..common.errors import ValidationError
 
 JSONSchema = dict[str, Any]
+
+
+_FLOWCHART_DIRECTIONS = {"LR", "RL", "TD", "TB", "BT"}
+_FLOWCHART_SHAPE_BRACKETS: dict[str, tuple[str, str]] = {
+    "rect": ("[", "]"),
+    "round": ("(", ")"),
+    "stadium": ("([", "])"),
+    "subroutine": ("[[", "]]"),
+    "cylinder": ("[(", ")]"),
+    "circle": ("((", "))"),
+    "hexagon": ("{{", "}}"),
+    "rhombus": ("{", "}"),
+}
+_FLOWCHART_EDGE_ARROWS: dict[str, str] = {
+    "solid": "-->",
+    "dotted": "-.->",
+    "thick": "==>",
+}
+_SEQUENCE_MESSAGE_ARROWS: dict[str, str] = {
+    "request": "->>",
+    "reply": "-->>",
+    "async_request": "-)",
+    "async_reply": "--)",
+}
+_VALID_MERMAID_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sanitize_mermaid_id(raw: Any, fallback: str = "node") -> str:
+    """Return a Mermaid-safe identifier.
+
+    LLMs sometimes emit ids with spaces, Cyrillic, or punctuation. We keep only
+    ASCII alnum / underscore; non-matching chars become underscores; we prepend
+    ``N`` if the id starts with a digit; empty strings fall back to ``fallback``.
+    """
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw).strip("_")
+    if not cleaned:
+        return fallback
+    if cleaned[0].isdigit():
+        cleaned = "N" + cleaned
+    return cleaned
+
+
+def _escape_mermaid_label(raw: Any) -> str:
+    """Escape characters that break Mermaid label parsing.
+
+    We always wrap labels in double quotes inside shape brackets, so ``&<>``
+    are safe; the one thing we must escape is the double-quote itself.
+    Newlines collapse to spaces — Mermaid does support ``<br/>`` but the
+    rendered look is worse than a single line.
+    """
+    if raw is None:
+        return ""
+    text = str(raw)
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = text.replace('"', "#quot;")
+    return text.strip()
+
+
+def _build_flowchart(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    direction = diagram.get("direction")
+    if not isinstance(direction, str) or direction.upper() not in _FLOWCHART_DIRECTIONS:
+        direction = "LR"
+    else:
+        direction = direction.upper()
+    lines = [f"flowchart {direction}"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        # Avoid id collisions between distinct raw labels.
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, node in enumerate(diagram.get("nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        nid = _resolve_id(node.get("id"), fallback=f"N{index + 1}")
+        label = _escape_mermaid_label(node.get("label") or node.get("id") or nid)
+        shape = node.get("shape") if isinstance(node.get("shape"), str) else "rect"
+        open_b, close_b = _FLOWCHART_SHAPE_BRACKETS.get(shape, ("[", "]"))
+        lines.append(f'    {nid}{open_b}"{label}"{close_b}')
+
+    for edge in diagram.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        src = _resolve_id(edge.get("from"), fallback="A")
+        dst = _resolve_id(edge.get("to"), fallback="B")
+        kind = edge.get("kind") if isinstance(edge.get("kind"), str) else "solid"
+        arrow = _FLOWCHART_EDGE_ARROWS.get(kind, "-->")
+        label = edge.get("label")
+        if isinstance(label, str) and label.strip():
+            escaped = _escape_mermaid_label(label)
+            lines.append(f"    {src} {arrow}|{escaped}| {dst}")
+        else:
+            lines.append(f"    {src} {arrow} {dst}")
+
+    return "\n".join(lines)
+
+
+def _build_sequence_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    lines = ["sequenceDiagram"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, participant in enumerate(diagram.get("participants") or []):
+        if not isinstance(participant, dict):
+            continue
+        pid = _resolve_id(participant.get("id"), fallback=f"P{index + 1}")
+        label = participant.get("label")
+        if isinstance(label, str) and label.strip():
+            lines.append(f'    participant {pid} as "{_escape_mermaid_label(label)}"')
+        else:
+            lines.append(f"    participant {pid}")
+
+    for message in diagram.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        src = _resolve_id(message.get("from"), fallback="A")
+        dst = _resolve_id(message.get("to"), fallback="B")
+        kind = message.get("kind") if isinstance(message.get("kind"), str) else "request"
+        arrow = _SEQUENCE_MESSAGE_ARROWS.get(kind, "->>")
+        label = _escape_mermaid_label(message.get("label"))
+        lines.append(f"    {src}{arrow}{dst}: {label}")
+
+    return "\n".join(lines)
+
+
+def _build_interaction_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    kind = diagram.get("kind")
+    if kind == "flowchart":
+        return _build_flowchart(diagram)
+    return _build_sequence_diagram(diagram)
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
@@ -13,6 +176,141 @@ def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
 
 def _string_array_schema() -> JSONSchema:
     return {"type": "array", "items": {"type": "string"}}
+
+
+def _flowchart_diagram_schema() -> JSONSchema:
+    """Структурированное представление flowchart-диаграммы.
+
+    Никаких сырых Mermaid-строк: модель отдаёт списки узлов/рёбер, Python
+    детерминированно собирает Mermaid через ``_build_flowchart``.
+    """
+    return {
+        "type": "object",
+        "required": ["direction", "nodes", "edges"],
+        "additionalProperties": False,
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _interaction_diagram_schema() -> JSONSchema:
+    """Объединённая схема для interaction_view: sequence- или flowchart-диаграмма.
+
+    Один tag-discriminator ``kind`` ∈ {sequence, flowchart}. Списки участников
+    / сообщений нужны для sequence; nodes/edges/direction — для flowchart.
+    Все остальные поля optional, чтобы LLM не путалась.
+    """
+    return {
+        "type": "object",
+        "required": ["kind"],
+        "additionalProperties": False,
+        "properties": {
+            "kind": {"type": "string", "enum": ["sequence", "flowchart"]},
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "participants": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                    },
+                },
+            },
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_SEQUENCE_MESSAGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
 
 
 def _analysis_meta_properties() -> JSONSchema:
@@ -847,6 +1145,123 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "dependency_risks": _string_array_schema(),
             },
         ),
+        "design_document": _analysis_object(
+            ["title", "executive_summary"],
+            {
+                "title": {"type": "string"},
+                "executive_summary": {"type": "string"},
+                # Секции — passthrough из upstream-артефактов. Структура
+                # этих объектов уже валидирована собственными контрактами
+                # (system_context_definition / component_decomposition /
+                # interaction_view / deployment_topology). Здесь принимаем
+                # как opaque-payload и оставляем рендеру разобрать.
+                "system_context": {"type": "object", "additionalProperties": True},
+                "components": {"type": "object", "additionalProperties": True},
+                "interactions": {"type": "object", "additionalProperties": True},
+                "deployment": {"type": "object", "additionalProperties": True},
+                "risks": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "non_functional_requirements": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        "component_decomposition": _analysis_object(
+            ["components", "component_diagram"],
+            {
+                "summary": {"type": "string"},
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "responsibilities"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "responsibilities": {"type": "string"},
+                            "owns_data": _string_array_schema(),
+                            "dependencies": _string_array_schema(),
+                        },
+                    },
+                },
+                "component_diagram": _flowchart_diagram_schema(),
+                "cross_cutting_concerns": _string_array_schema(),
+                "open_design_questions": _string_array_schema(),
+            },
+        ),
+        "interaction_view": _analysis_object(
+            ["flows", "interaction_diagram"],
+            {
+                "summary": {"type": "string"},
+                "flows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "trigger", "participants", "steps"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "trigger": {"type": "string"},
+                            "participants": _string_array_schema(),
+                            "steps": _string_array_schema(),
+                        },
+                    },
+                },
+                "interaction_diagram": _interaction_diagram_schema(),
+                "data_contracts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["from", "to", "payload"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                            "payload": {"type": "string"},
+                            "format": {"type": "string"},
+                        },
+                    },
+                },
+                "failure_modes": _string_array_schema(),
+            },
+        ),
+        "system_context_definition": _analysis_object(
+            ["system_name", "system_purpose", "actors", "external_systems", "context_diagram"],
+            {
+                "system_name": {"type": "string"},
+                "system_purpose": {"type": "string"},
+                "actors": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "kind"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+                "external_systems": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "role"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "role": {"type": "string"},
+                            "interactions": _string_array_schema(),
+                        },
+                    },
+                },
+                "context_diagram": _flowchart_diagram_schema(),
+                "system_boundaries": _string_array_schema(),
+                "assumptions": _string_array_schema(),
+            },
+        ),
         "ui_requirements_outline": _analysis_object(
             ["user_roles", "user_flows", "screens", "ux_constraints"],
             {
@@ -885,45 +1300,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "required": requirements_spec_required,
             "additionalProperties": False,
             "properties": requirements_spec_properties,
-        },
-        "review_report": {
-            "type": "object",
-            "required": ["overall_status", "summary", "strengths", "issues", "recommendations"],
-            "additionalProperties": False,
-            "properties": {
-                "overall_status": {
-                    "type": "string",
-                    # Расширено: prompt задачи `requirements_spec_review` использует
-                    # более выразительные значения. Старые `needs_changes` и
-                    # `needs_user_input` остаются для обратной совместимости.
-                    "enum": [
-                        "passed",
-                        "passed_with_remarks",
-                        "needs_changes",
-                        "needs_user_input",
-                        "failed_needs_rework",
-                    ],
-                },
-                "confidence": {"type": "number"},
-                "summary": {"type": "string"},
-                "strengths": _string_array_schema(),
-                "issues": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["severity", "message"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "area": {"type": "string"},
-                            "severity": {"type": "string", "enum": ["info", "warning", "error", "critical"]},
-                            "message": {"type": "string"},
-                            "requires_user_input": {"type": "boolean"},
-                        },
-                    },
-                },
-                "recommendations": _string_array_schema(),
-                "blocking_questions": _string_array_schema(),
-            },
         },
     }
     if artifact_role not in schemas:
@@ -2155,26 +2531,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     if artifact_role == "requirements_spec":
         return _render_requirements_spec(payload)
 
-    if artifact_role == "review_report":
-        lines = [
-            "# Отчёт ревью",
-            f"## Статус\n{payload['overall_status']}",
-            f"## Резюме\n{payload['summary']}",
-        ]
-        # Уверенность вынесена в метаданные артефакта (overall_confidence)
-        # и отображается отдельно в UI — в markdown-теле её не дублируем.
-        lines.extend(["\n## Сильные стороны", *[f"- {item}" for item in payload["strengths"]], "\n## Замечания"])
-        for issue in payload["issues"]:
-            area = issue.get("area")
-            prefix = f"[{area}] " if area else ""
-            user_flag = " (нужен ввод пользователя)" if issue.get("requires_user_input") else ""
-            lines.append(f"- [{issue['severity']}] {prefix}{issue['message']}{user_flag}")
-        if payload.get("blocking_questions"):
-            lines.extend(["\n## Блокирующие вопросы", *[f"- {item}" for item in payload["blocking_questions"]]])
-        lines.append("\n## Рекомендации")
-        lines.extend(f"- {item}" for item in payload["recommendations"])
-        return "\n".join(lines)
-
     if artifact_role == "glossary_terms":
         entries = payload.get("entries") or []
         lines = ["# Глоссарий"]
@@ -2296,4 +2652,286 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines.append(payload["retention_policy"])
         return "\n".join(lines)
 
+    if artifact_role == "system_context_definition":
+        return _render_system_context_definition(payload)
+
+    if artifact_role == "component_decomposition":
+        return _render_component_decomposition(payload)
+
+    if artifact_role == "interaction_view":
+        return _render_interaction_view(payload)
+
+    if artifact_role == "design_document":
+        return _render_design_document(payload)
+
     raise ValidationError(f"Неизвестный рендерер артефакта: {artifact_role}")
+
+
+def _render_design_document(payload: dict[str, Any]) -> str:
+    title = payload.get("title", "Архитектурный документ")
+    lines = [f"# {title}"]
+    summary = payload.get("executive_summary")
+    if summary:
+        lines.append("\n## Краткое резюме")
+        lines.append(summary)
+
+    sc = payload.get("system_context") or {}
+    if sc:
+        lines.append("\n## Системный контекст")
+        if sc.get("system_purpose"):
+            lines.append(sc["system_purpose"])
+        actors = sc.get("actors") or []
+        if actors:
+            lines.append("\n**Акторы:**")
+            for actor in actors:
+                if not isinstance(actor, dict):
+                    continue
+                kind = actor.get("kind", "—")
+                description = actor.get("description")
+                line = f"- **{actor.get('name', '—')}** _({kind})_"
+                if description:
+                    line += f" — {description}"
+                lines.append(line)
+        ext = sc.get("external_systems") or []
+        if ext:
+            lines.append("\n**Внешние системы:**")
+            for system in ext:
+                if not isinstance(system, dict):
+                    continue
+                lines.append(f"- **{system.get('name', '—')}** — {system.get('role', '—')}")
+                for interaction in system.get("interactions") or []:
+                    lines.append(f"  - {interaction}")
+        context_diagram_mmd = _build_flowchart(sc.get("context_diagram"))
+        if context_diagram_mmd:
+            lines.append("\n**Контекстная диаграмма:**")
+            lines.append("```mermaid")
+            lines.append(context_diagram_mmd)
+            lines.append("```")
+
+    comp = payload.get("components") or {}
+    if comp:
+        lines.append("\n## Компоненты")
+        if comp.get("summary"):
+            lines.append(comp["summary"])
+        items = comp.get("components") or comp.get("items") or []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"\n### {item.get('name', '—')}")
+            if item.get("responsibilities"):
+                lines.append(item["responsibilities"])
+            owns = item.get("owns_data") or []
+            if owns:
+                lines.append("**Владеет данными:**")
+                lines.extend(f"- {entry}" for entry in owns)
+            deps = item.get("dependencies") or []
+            if deps:
+                lines.append("**Зависимости:**")
+                lines.extend(f"- {entry}" for entry in deps)
+        component_diagram_mmd = _build_flowchart(comp.get("component_diagram"))
+        if component_diagram_mmd:
+            lines.append("\n**Диаграмма компонентов:**")
+            lines.append("```mermaid")
+            lines.append(component_diagram_mmd)
+            lines.append("```")
+
+    interactions = payload.get("interactions") or {}
+    if interactions:
+        lines.append("\n## Потоки взаимодействия")
+        if interactions.get("summary"):
+            lines.append(interactions["summary"])
+        flows = interactions.get("flows") or []
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            lines.append(f"\n### {flow.get('name', '—')}")
+            if flow.get("trigger"):
+                lines.append(f"**Триггер:** {flow['trigger']}")
+            participants = flow.get("participants") or []
+            if participants:
+                lines.append(f"**Участники:** {', '.join(participants)}")
+            steps = flow.get("steps") or []
+            if steps:
+                lines.append("**Шаги:**")
+                for i, step in enumerate(steps, 1):
+                    lines.append(f"{i}. {step}")
+        interaction_diagram = interactions.get("interaction_diagram") or {}
+        interaction_diagram_mmd = _build_interaction_diagram(interaction_diagram)
+        if interaction_diagram_mmd:
+            kind = interaction_diagram.get("kind", "sequence")
+            heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
+            lines.append(f"\n**{heading}:**")
+            lines.append("```mermaid")
+            lines.append(interaction_diagram_mmd)
+            lines.append("```")
+
+    deployment = payload.get("deployment") or {}
+    if deployment:
+        lines.append("\n## Развёртывание")
+        envs = deployment.get("environments") or []
+        if envs:
+            lines.append("\n**Среды:**")
+            for env in envs:
+                if not isinstance(env, dict):
+                    continue
+                name = env.get("name", "—")
+                purpose = env.get("purpose", "")
+                lines.append(f"- **{name}** — {purpose}")
+        components_dep = deployment.get("components") or []
+        if components_dep:
+            lines.append("\n| Компонент | Размещение | Технология | Зона ответственности |")
+            lines.append("|-----------|------------|------------|----------------------|")
+            for c in components_dep:
+                if not isinstance(c, dict):
+                    continue
+                lines.append(
+                    f"| {c.get('name', '—')} | {c.get('placement', '—')} "
+                    f"| {c.get('technology', '—')} | {c.get('responsibilities', '—')} |"
+                )
+        if deployment.get("deployment_flow"):
+            lines.append("\n**Процесс развёртывания:**")
+            lines.append(deployment["deployment_flow"])
+
+    risks = payload.get("risks") or []
+    if risks:
+        lines.append("\n## Риски")
+        lines.append("\n| # | Риск | Категория | Вероятность | Влияние | Митигация |")
+        lines.append("|---|------|-----------|-------------|---------|-----------|")
+        for i, r in enumerate(risks, 1):
+            if not isinstance(r, dict):
+                continue
+            lines.append(
+                f"| {i} | {r.get('title', '—')} | {r.get('category', '—')} "
+                f"| {r.get('probability', '—')} | {r.get('impact', '—')} "
+                f"| {str(r.get('mitigation', '—')).replace(chr(10), ' ')} |"
+            )
+
+    nfrs = payload.get("non_functional_requirements") or []
+    if nfrs:
+        lines.append("\n## Нефункциональные требования")
+        lines.extend(f"- {item}" for item in nfrs)
+
+    open_questions = payload.get("open_questions") or []
+    if open_questions:
+        lines.append("\n## Открытые вопросы")
+        lines.extend(f"- {item}" for item in open_questions)
+
+    blocking = payload.get("blocking_questions") or []
+    if blocking:
+        lines.append("\n## Блокирующие вопросы")
+        lines.extend(f"- {item}" for item in blocking)
+
+    return "\n".join(lines)
+
+
+def _render_component_decomposition(payload: dict[str, Any]) -> str:
+    lines = ["# Декомпозиция на компоненты"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    lines.append("\n## Компоненты")
+    for component in payload["components"]:
+        lines.append(f"### {component['name']}")
+        lines.append(component["responsibilities"])
+        owns = component.get("owns_data") or []
+        if owns:
+            lines.append("**Владеет данными:**")
+            lines.extend(f"- {item}" for item in owns)
+        deps = component.get("dependencies") or []
+        if deps:
+            lines.append("**Зависимости:**")
+            lines.extend(f"- {item}" for item in deps)
+        lines.append("")
+    lines.append("## Диаграмма компонентов")
+    lines.append("```mermaid")
+    lines.append(_build_flowchart(payload["component_diagram"]))
+    lines.append("```")
+    cross = payload.get("cross_cutting_concerns") or []
+    if cross:
+        lines.append("\n## Сквозные аспекты")
+        lines.extend(f"- {item}" for item in cross)
+    questions = payload.get("open_design_questions") or []
+    if questions:
+        lines.append("\n## Открытые вопросы дизайна")
+        lines.extend(f"- {item}" for item in questions)
+    blocking = payload.get("blocking_questions") or []
+    if blocking:
+        lines.append("\n## Блокирующие вопросы")
+        lines.extend(f"- {item}" for item in blocking)
+    return "\n".join(lines)
+
+
+def _render_interaction_view(payload: dict[str, Any]) -> str:
+    lines = ["# Потоки взаимодействия"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    lines.append("\n## Сценарии")
+    for flow in payload["flows"]:
+        lines.append(f"### {flow['name']}")
+        lines.append(f"**Триггер:** {flow['trigger']}")
+        lines.append(f"**Участники:** {', '.join(flow['participants'])}")
+        lines.append("**Шаги:**")
+        for i, step in enumerate(flow["steps"], 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+    diagram = payload["interaction_diagram"]
+    kind = diagram.get("kind", "sequence")
+    heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
+    lines.append(f"## {heading}")
+    lines.append("```mermaid")
+    lines.append(_build_interaction_diagram(diagram))
+    lines.append("```")
+    contracts = payload.get("data_contracts") or []
+    if contracts:
+        lines.append("\n## Контракты данных")
+        lines.append("\n| От | К | Полезная нагрузка | Формат |")
+        lines.append("|----|---|--------------------|--------|")
+        for contract in contracts:
+            fmt = contract.get("format", "—")
+            lines.append(f"| {contract['from']} | {contract['to']} | {contract['payload']} | {fmt} |")
+    failures = payload.get("failure_modes") or []
+    if failures:
+        lines.append("\n## Режимы сбоев")
+        lines.extend(f"- {item}" for item in failures)
+    blocking = payload.get("blocking_questions") or []
+    if blocking:
+        lines.append("\n## Блокирующие вопросы")
+        lines.extend(f"- {item}" for item in blocking)
+    return "\n".join(lines)
+
+
+def _render_system_context_definition(payload: dict[str, Any]) -> str:
+    lines = ["# Системный контекст"]
+    lines.append(f"\n**Система:** {payload['system_name']}")
+    lines.append(f"\n**Назначение:** {payload['system_purpose']}")
+    lines.append("\n## Акторы")
+    for actor in payload["actors"]:
+        kind = actor.get("kind", "—")
+        description = actor.get("description")
+        line = f"- **{actor['name']}** _({kind})_"
+        if description:
+            line += f" — {description}"
+        lines.append(line)
+    lines.append("\n## Внешние системы")
+    for system in payload["external_systems"]:
+        lines.append(f"- **{system['name']}** — {system['role']}")
+        for interaction in system.get("interactions") or []:
+            lines.append(f"  - {interaction}")
+    boundaries = payload.get("system_boundaries") or []
+    if boundaries:
+        lines.append("\n## Границы системы")
+        lines.extend(f"- {item}" for item in boundaries)
+    assumptions = payload.get("assumptions") or []
+    if assumptions:
+        lines.append("\n## Допущения")
+        lines.extend(f"- {item}" for item in assumptions)
+    lines.append("\n## Контекстная диаграмма")
+    lines.append("```mermaid")
+    lines.append(_build_flowchart(payload["context_diagram"]))
+    lines.append("```")
+    blocking = payload.get("blocking_questions") or []
+    if blocking:
+        lines.append("\n## Блокирующие вопросы")
+        lines.extend(f"- {item}" for item in blocking)
+    return "\n".join(lines)

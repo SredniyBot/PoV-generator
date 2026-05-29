@@ -685,6 +685,15 @@ def create_app(
         pack_ref = _required_str(payload, "pack_ref")
         return to_primitive(command_service.set_methodology(project_id, pack_ref=pack_ref))
 
+    @app.post("/api/projects/{project_id}/commands/activate-next-objective")
+    def activate_next_objective(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        new_objective_ref = _required_str(payload, "objective_ref")
+        return to_primitive(
+            command_service.activate_next_objective(
+                project_id, new_objective_ref=new_objective_ref
+            )
+        )
+
     # ---- W5.1: defer / reopen / events / next ---------------------------
 
     @app.post("/api/projects/{project_id}/commands/defer-clarification")

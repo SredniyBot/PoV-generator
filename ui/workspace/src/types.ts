@@ -54,6 +54,9 @@ export interface ProjectShellView {
   goal: string | null;
   status_label: string;
   updated_at: string;
+  objective_history: string[];
+  compatible_next_objectives: string[];
+  objective_complete: boolean;
 }
 
 export interface TaskNodeView {

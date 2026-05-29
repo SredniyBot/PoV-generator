@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: architecture.component_decomposition
+version: 1.0.0
+title: Декомпозиция на компоненты
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

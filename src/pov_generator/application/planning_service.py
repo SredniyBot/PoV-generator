@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from ..common.errors import NotFoundError
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.process_state import SetRootTaskPatch
@@ -177,7 +178,17 @@ class PlanningService:
             for task in tasks:
                 if task.template_type != "composite" or task.status in {"obsolete", "skipped"}:
                     continue
-                template = snapshot.resolve_template(task.template_ref)
+                try:
+                    template = snapshot.resolve_template(task.template_ref)
+                except NotFoundError:
+                    # Шаблон composite-задачи отсутствует в текущем реестре —
+                    # например, удалён при рефакторинге (вариант B убрал
+                    # common.review_requirements_spec). Сохранённая в графе
+                    # задача осиротела: пропускаем её при развёртывании, не
+                    # роняя планирование. Иначе один stranded-проект (со старым
+                    # review-поддеревом) валит весь list_projects → 409 на
+                    # /api/projects → пустой сайдбар.
+                    continue
                 for child in template.children:
                     child_template = snapshot.resolve_template(child.task_ref)
                     stable_key = f"{task.stable_key}:child:{child.identifier}:{child.task_ref.as_string()}"
@@ -276,7 +287,13 @@ class PlanningService:
         for task in leaf_tasks:
             if task.status in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
                 continue
-            template = snapshot.resolve_template(task.template_ref)
+            try:
+                template = snapshot.resolve_template(task.template_ref)
+            except NotFoundError:
+                # Осиротевшая leaf-задача (шаблон удалён из реестра, напр.
+                # requirements_spec_review после варианта B) не может быть
+                # допущена к исполнению — пропускаем, не роняя планирование.
+                continue
             checks: list[AdmissionCheck] = []
 
             missing_fields = [

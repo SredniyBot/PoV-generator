@@ -42,7 +42,6 @@ from ..domain.project_state import ProjectManifest, ProjectState, StateEvent
 from ..domain.registry import DomainPackSpec, ObjectRef
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
-
 _INITIAL_REQUEST_POSITION_ID = "project.business_request"
 
 
@@ -69,9 +68,19 @@ class ProjectService:
         objective_ref: ObjectRef,
         request_text: str,
         domain_packs: tuple[DomainPackSpec, ...] = (),
-        default_methodology_pack_ref: str | None = "process.lean_jtbd@1.0.0",
+        default_methodology_pack_ref: str | None = None,
     ) -> ProjectBootstrap:
-        """Создать новый проект и записать его начальное состояние."""
+        """Создать новый проект и записать его начальное состояние.
+
+        ``default_methodology_pack_ref`` ожидается от вызывающего слоя — он
+        обычно подставляет ``ObjectiveSpec.default_methodology_pack_ref`` из
+        реестра (см. ``workspace_command_service.create_project`` и CLI
+        ``project init``). Если поле в YAML objective не задано и caller
+        ничего не передал — используем глобальный fallback
+        ``process.lean_jtbd@1.0.0``.
+        """
+        if default_methodology_pack_ref is None:
+            default_methodology_pack_ref = "process.lean_jtbd@1.0.0"
         project_id = str(uuid.uuid4())
         created_at = utc_now_iso()
         manifest = ProjectManifest(
@@ -390,3 +399,64 @@ class ProjectService:
             actor=actor,
             reason=reason,
         )
+
+    # --- цепочка objective'ов -----------------------------------------------
+
+    def activate_next_objective(
+        self,
+        workspace: Path,
+        new_objective_ref: ObjectRef,
+        *,
+        default_methodology_pack_ref: str | None = None,
+        actor: str = "operator",
+        reason: str = "objective activation",
+    ) -> ProjectManifest:
+        """Активировать следующий objective в рамках того же workspace.
+
+        Прошлый ``objective_ref`` уходит в конец ``objective_history``;
+        ``objective_ref`` становится ``new_objective_ref``.
+        ``knowledge`` и ``process`` состояние не сбрасываются — артефакты,
+        gaps, readiness, активные доменные паки продолжают жить.
+
+        Если ``default_methodology_pack_ref`` передан и отличается от
+        текущей активной методологии — переключаем через ``set_methodology``.
+        Если совпадает (или ``None``) — методология не меняется.
+
+        Caller (CLI / API / workspace_command_service) после активации
+        обязан вызвать ``planning_service.expand_graph`` — новый root task
+        будет создан под новый objective автоматически (stable key по
+        ``project_id + root_task_ref``).
+        """
+        manifest = self._runtime.load_manifest(workspace)
+        new_ref_str = new_objective_ref.as_string()
+        if new_ref_str == manifest.objective_ref:
+            raise ValueError(
+                f"Objective '{new_ref_str}' уже является активным; "
+                f"нечего активировать."
+            )
+
+        updated_manifest = ProjectManifest(
+            project_id=manifest.project_id,
+            name=manifest.name,
+            objective_ref=new_ref_str,
+            business_request=manifest.business_request,
+            created_at=manifest.created_at,
+            objective_history=manifest.objective_history + (manifest.objective_ref,),
+        )
+        self._runtime.update_manifest(workspace, updated_manifest)
+
+        if default_methodology_pack_ref is not None:
+            process = self._runtime.load_process_state(workspace)
+            already_active = any(
+                ref == default_methodology_pack_ref and record.status == "active"
+                for ref, record in process.active_methodology_packs.items()
+            )
+            if not already_active:
+                self.set_methodology(
+                    workspace,
+                    default_methodology_pack_ref,
+                    actor=actor,
+                    reason=f"activated for {new_ref_str}",
+                )
+
+        return updated_manifest

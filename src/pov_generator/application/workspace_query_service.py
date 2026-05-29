@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import to_primitive
+from ..domain.project_state import ProjectManifest, ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
@@ -45,7 +46,6 @@ from ..domain.workspace_views import (
     TaskNodeView,
     TimelineEntryView,
 )
-from ..domain.project_state import ProjectManifest, ProjectState
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
 from .registry_service import RegistryService
@@ -111,6 +111,17 @@ class WorkspaceQueryService:
         snapshot, report = self._registry_service.validate()
         if not report.is_valid:
             raise ConflictError("Registry невалиден. Невозможно отобразить список целей.")
+        # Цели-продолжения цепочки (объявленные в чьём-то
+        # compatible_next_objectives) достижимы только через
+        # activate_next_objective и НЕ предлагаются как точка входа при
+        # создании проекта: например, architecture.system_design формируется
+        # из артефактов ТЗ, а не из сырого бизнес-запроса. Сама цель остаётся
+        # в реестре — цепочка её по-прежнему резолвит.
+        chain_targets = {
+            next_ref.as_string()
+            for objective in snapshot.objectives.values()
+            for next_ref in objective.compatible_next_objectives
+        }
         return tuple(
             sorted(
                 (
@@ -121,6 +132,7 @@ class WorkspaceQueryService:
                         required_artifact_count=len(objective.done_artifact_refs),
                     )
                     for objective in snapshot.objectives.values()
+                    if objective.ref.as_string() not in chain_targets
                 ),
                 key=lambda item: item.title,
             )
@@ -186,6 +198,7 @@ class WorkspaceQueryService:
     def project_shell(self, project_id: str) -> ProjectShellView:
         context = self._load_context(project_id)
         situation = self._build_situation(context)
+        objective = context.snapshot.resolve_objective(context.manifest.objective_ref)
         return ProjectShellView(
             project_id=context.manifest.project_id,
             name=context.manifest.name,
@@ -195,6 +208,11 @@ class WorkspaceQueryService:
             goal=context.state.knowledge.goal_statement(),
             status_label=situation.status_label,
             updated_at=context.state.process.updated_at,
+            objective_history=context.manifest.objective_history,
+            compatible_next_objectives=tuple(
+                ref.as_string() for ref in objective.compatible_next_objectives
+            ),
+            objective_complete=self._objective_done(context),
         )
 
     def project_task_graph(self, project_id: str) -> ProjectTaskGraphView:

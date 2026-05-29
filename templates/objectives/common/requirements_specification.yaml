@@ -3,10 +3,15 @@ id: common.requirements_specification
 version: 1.0.0
 title: Подготовить техническое задание из бизнес-запроса
 root: common.prepare_requirements_spec@1.0.0
+# Decision-style декомпозиция: цели → JTBD → варианты → решения.
+default_methodology_pack: process.lean_jtbd@1.0.0
+# После завершения ТЗ workspace можно «продолжить» архитектурой — её
+# задачи подхватят normalized_request, constraint_inventory,
+# solution_option_inventory и др. как upstream-артефакты.
+compatible_next_objectives:
+  - architecture.system_design@1.0.0
 done_when:
   artifacts:
     - common.requirements_spec@1.0.0
-    - common.review_report@1.0.0
   gates:
-    - common.requirements_spec_review_passed@1.0.0
     - client.requirements_signoff@1.0.0

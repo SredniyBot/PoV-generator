@@ -63,6 +63,16 @@ class ProjectShellView:
     goal: str | None
     status_label: str
     updated_at: str
+    # История прошлых активных objective'ов (без текущего). Появляется,
+    # когда workspace прошёл хотя бы одну смену цели через
+    # ``activate_next_objective`` — например, ТЗ → архитектура.
+    objective_history: tuple[str, ...] = ()
+    # Сслыки на objective'ы, которые можно активировать как следующие
+    # после текущего. Берутся из ``ObjectiveSpec.compatible_next_objectives``.
+    compatible_next_objectives: tuple[str, ...] = ()
+    # Все ``done_when.artifacts`` текущего objective'а созданы — UI
+    # может показать кнопку перехода на следующий objective.
+    objective_complete: bool = False
 
 
 @dataclass(frozen=True)

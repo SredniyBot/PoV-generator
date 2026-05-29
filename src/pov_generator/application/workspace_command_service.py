@@ -257,6 +257,42 @@ class WorkspaceCommandService:
             resource_id=pack_ref,
         )
 
+    def activate_next_objective(
+        self,
+        project_id: str,
+        *,
+        new_objective_ref: str,
+    ) -> CommandResultView:
+        """Переключить workspace на следующий objective (ТЗ → архитектура).
+
+        Состояние (knowledge + process) сохраняется; новый objective получает
+        собственное дерево задач рядом со старым. Существующие артефакты
+        автоматически становятся доступны новым задачам через
+        ``requires.artifacts.optional``.
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        snapshot = self._validated_snapshot()
+        new_ref_obj = ObjectRef.parse(new_objective_ref)
+        new_spec = snapshot.resolve_objective(new_ref_obj)
+        methodology_ref = (
+            new_spec.default_methodology_pack_ref.as_string()
+            if new_spec.default_methodology_pack_ref is not None
+            else None
+        )
+        self._project_service.activate_next_objective(
+            workspace_ref.workspace,
+            new_ref_obj,
+            default_methodology_pack_ref=methodology_ref,
+        )
+        self._planning_service.expand_graph(workspace_ref.workspace, snapshot)
+        return CommandResultView(
+            status="accepted",
+            command_name="activate-next-objective",
+            summary=f"Активирован следующий objective: '{new_objective_ref}'.",
+            changed_projections=("shell", "situation", "task_graph", "timeline", "state"),
+            resource_id=new_objective_ref,
+        )
+
     def create_project(
         self,
         *,
@@ -289,12 +325,19 @@ class WorkspaceCommandService:
                 f"Обоснование: {selection.rationale}"
             )
         workspace = self._allocate_workspace(name)
+        objective_spec = snapshot.resolve_objective(objective_object_ref)
+        methodology_ref = (
+            objective_spec.default_methodology_pack_ref.as_string()
+            if objective_spec.default_methodology_pack_ref is not None
+            else None
+        )
         bootstrap = self._project_service.init_project(
             workspace=workspace,
             name=name.strip(),
             objective_ref=objective_object_ref,
             request_text=request_text.strip(),
             domain_packs=packs,
+            default_methodology_pack_ref=methodology_ref,
         )
         self._project_service.add_fact(
             workspace,

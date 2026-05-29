@@ -11,7 +11,7 @@ from ..common.errors import ConflictError
 class ClaudeSdkConfig:
     api_key: str
     model: str
-    max_tokens: int = 8192
+    max_tokens: int = 32768
     temperature: float = 0.2
 
 
@@ -52,7 +52,7 @@ class ClaudeSdkClient:
                 "Не задан POV_ANTHROPIC_API_KEY (или ANTHROPIC_API_KEY) для провайдера claude_sdk."
             )
         active_model = model or os.environ.get("POV_CLAUDE_MODEL", "claude-sonnet-4-6")
-        max_tokens_raw = os.environ.get("POV_CLAUDE_MAX_TOKENS", "8192")
+        max_tokens_raw = os.environ.get("POV_CLAUDE_MAX_TOKENS", "32768")
         try:
             max_tokens = int(max_tokens_raw)
         except ValueError as exc:

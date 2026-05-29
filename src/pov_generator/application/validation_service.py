@@ -156,32 +156,26 @@ class ValidationService:
                     )
                 findings.extend(semantic_findings)
 
-                if output.artifact_role == "review_report":
-                    if payload.get("overall_status") != "passed":
-                        findings.append(
-                            ValidationFinding(
-                                finding_id=str(uuid.uuid4()),
-                                finding_type="quality_risk",
-                                severity="error",
-                                blocking=True,
-                                message="Ревью не прошло: документ требует доработки.",
-                                related_artifact_ids=(artifact.artifact_id,),
-                            )
-                        )
-                    else:
-                        gate_candidates = self._maybe_emit_gate_candidates(
-                            workspace=workspace,
-                            snapshot=snapshot,
-                            project_id=manifest.project_id,
-                            task_id=task_id,
-                            artifact_role=output.artifact_role,
-                            artifact_id=artifact.artifact_id,
-                        )
-                        if gate_candidates:
-                            decisions = self._clarification_service.register_candidates(
-                                workspace, tuple(gate_candidates)
-                            )
-                            clarification_candidate_ids.extend(d.candidate_id for d in decisions)
+                # Human-approval gate'ы (например client.requirements_signoff)
+                # блокируют завершение цели до решения человека. Эмитим кандидата
+                # при создании любого primary-артефакта — _maybe_emit_gate_candidates
+                # сам фильтрует gate'ы по required-роли (для ТЗ-цели это
+                # requirements_spec). Раньше эмиссия висела на LLM-ревью
+                # (artifact_role == "review_report"); ревью удалён (вариант B) —
+                # человеческий sign-off остаётся единственным валидатором ТЗ.
+                gate_candidates = self._maybe_emit_gate_candidates(
+                    workspace=workspace,
+                    snapshot=snapshot,
+                    project_id=manifest.project_id,
+                    task_id=task_id,
+                    artifact_role=output.artifact_role,
+                    artifact_id=artifact.artifact_id,
+                )
+                if gate_candidates:
+                    decisions = self._clarification_service.register_candidates(
+                        workspace, tuple(gate_candidates)
+                    )
+                    clarification_candidate_ids.extend(d.candidate_id for d in decisions)
 
                 if (
                     output.artifact_role == "requirements_spec"
@@ -402,11 +396,6 @@ class ValidationService:
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))
 
-        if artifact_role == "review_report" and template_ref == "common.requirements_spec_review@2.0.0":
-            findings.extend(
-                self._validate_review_report(payload, artifact_id, overall_confidence=overall_confidence)
-            )
-
         return findings, candidates
 
     def _validate_enterprise_spec(
@@ -505,40 +494,6 @@ class ValidationService:
             any(pack_ref.startswith(f"{pack_prefix}@") for pack_prefix in pack_prefixes)
             for pack_ref in active_domain_pack_refs
         )
-
-    def _validate_review_report(
-        self,
-        payload: dict[str, Any],
-        artifact_id: str,
-        *,
-        overall_confidence: float | None = None,
-    ) -> list[ValidationFinding]:
-        findings: list[ValidationFinding] = []
-        confidence = _resolve_confidence(overall_confidence, payload)
-        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.55:
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="review_confidence",
-                    severity="error",
-                    blocking=True,
-                    message=f"Ревью имеет недостаточную уверенность ({confidence:.2f}) и требует участия пользователя.",
-                    related_artifact_ids=(artifact_id,),
-                )
-            )
-
-        if payload.get("overall_status") == "needs_user_input":
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="needs_user_input",
-                    severity="critical",
-                    blocking=True,
-                    message="Ревью показывает, что без дополнительного ввода пользователя продолжать нельзя.",
-                    related_artifact_ids=(artifact_id,),
-                )
-            )
-        return findings
 
     def _evaluate_methodology_rules(
         self,

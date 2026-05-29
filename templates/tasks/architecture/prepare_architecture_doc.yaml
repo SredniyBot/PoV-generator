@@ -1,0 +1,33 @@
+kind: task_template
+id: architecture.prepare_architecture_doc
+version: 1.0.0
+title: Подготовить архитектурный документ
+type: composite
+status: active
+domain: architecture
+children:
+  - id: system_context_definition
+    task: architecture.system_context_definition@1.0.0
+  - id: component_decomposition
+    task: architecture.component_decomposition@1.0.0
+  - id: interaction_view
+    task: architecture.interaction_view@1.0.0
+  - id: deployment_topology
+    task: common.deployment_topology@1.0.0
+    required: false
+  - id: project_risk_register
+    task: common.project_risk_register@1.0.0
+    required: false
+  - id: design_synthesis
+    task: architecture.design_synthesis@1.0.0
+# deployment_topology и project_risk_register помечены required: false —
+# они требуют артефактов ТЗ-потока (normalized_request,
+# solution_option_inventory, constraint_inventory). Если ТЗ-цепочка
+# отрабатывала в этом workspace ранее (через activate_next_objective),
+# они выполняются и обогащают финальный документ. Если же architecture
+# запущена «с нуля» от business_request без ТЗ — задачи останутся
+# заблокированными по входам, и design_synthesis соберёт документ без
+# секций Deployment / Risks (это согласовано — см. design_synthesis.yaml).
+#
+# slots — отложены. Доменные расширения (architecture.* domain packs)
+# планируются на отдельный этап roadmap.

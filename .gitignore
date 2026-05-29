@@ -18,3 +18,4 @@ ui/workspace/dist/
 ui/workspace/*.tsbuildinfo
 ui/workspace/vite.config.js
 ui/workspace/vite.config.d.ts
+.claude/settings.local.json

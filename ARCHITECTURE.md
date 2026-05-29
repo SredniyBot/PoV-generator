@@ -12,6 +12,13 @@ PoV Generator — фреймворк управляемого получения
 
 ## 1. Поток одной leaf-задачи
 
+Сегодня реестр содержит несколько objective'ов (`common.requirements_specification` —
+коммерческое ТЗ, `architecture.system_design` — архитектурный документ); проект
+привязан к одному objective. Для каждого активна одна методология: ТЗ-поток
+использует `process.lean_jtbd` (decision-style), архитектурный — `process.descriptive_decomposition`
+(descriptive-style); выбор делается в `project_service.init_project` по префиксу
+`objective_ref.identifier`.
+
 ```
 бизнес-запрос
   └─ Objective (templates/objectives/*.yaml)
@@ -198,8 +205,12 @@ execution_run, provider, model, context_manifest.
 1. **DAG методологии** вместо линейной последовательности стадий — для условных переходов.
 2. **CLI scaffold** для bootstrap новой задачи / методологии / domain.
 3. **Несколько активных методологий на проект** (PS10 ограничивает MVP).
-4. **Цепочки objective** (ТЗ → архитектура → реализация).
-5. **Cost tracking** токенов и денег в `ExecutionResult`.
+4. **Цепочки objective** (ТЗ → архитектура → реализация). Сегодня один проект = один objective.
+5. **Multi-objective `ProjectManifest`** — пока `objective_ref` singular; чтобы в одном workspace получить и ТЗ, и архитектуру, нужны два workspace'а.
+6. **Архитектурные аналоги deployment/risk-задач** — `common.deployment_topology` и `common.project_risk_register` сейчас требуют артефактов ТЗ-потока (`normalized_request`, `solution_option_inventory`, `constraint_inventory`), поэтому не включены в архитектурный композит; финальный документ опускает соответствующие секции. Решение — тонкие task-обёртки `architecture.*` с тем же артефактом, но другими `requires`.
+7. **Server-side Mermaid → SVG для PDF** — UI рендерит диаграммы через mermaid.js, в PDF (xhtml2pdf) они остаются как fenced code-блоки.
+8. **Schema-driven рендеринг markdown** — сегодня `render_markdown` в `application/artifact_contracts.py` это hand-coded switch по `artifact_role`. Новый артефакт = новая ветка в Python.
+9. **Cost tracking** токенов и денег в `ExecutionResult`.
 
 Уже сделано (для справки): per-stage CoT mode (`stage_execution_mode: per_stage_cot`),
 pre-selector сложности (`POV_COMPLEXITY_SELECTOR=on`), stub-payloads вынесены

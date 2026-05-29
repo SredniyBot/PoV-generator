@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -853,9 +852,9 @@ class ExecutionService:
         # W3.3: статические payload'ы вынесены в `templates/stub_fixtures/`.
         # Добавление нового task_template со статическим stub'ом теперь — это
         # JSON-файл + новая запись в реестре, без правки этого Python.
-        # Compose-payload'ы (requirements_spec, review_report,
-        # solution_tradeoff_matrix) — ниже, потому что они зависят от
-        # parsed_inputs и domain flags.
+        # Compose-payload'ы (requirements_spec, solution_tradeoff_matrix,
+        # design_document) — ниже, потому что они зависят от parsed_inputs
+        # и domain flags.
         fixture_payload = self._load_stub_fixture(artifact_role, business_request, goal)
         if fixture_payload is not None:
             return fixture_payload
@@ -1056,45 +1055,74 @@ class ExecutionService:
                     "dependency_risks": integration_model.get("dependency_risks", []),
                 }
             return spec
-        if artifact_role == "review_report":
-            spec_payload = self._find_payload(parsed_inputs, "Подготовить структурированное ТЗ", "Подготовка структурированного ТЗ")
-            if not spec_payload:
-                spec_payload = self._find_payload(parsed_inputs, "Подготовка черновика ТЗ")
-            issues = []
-            blocking_questions: list[str] = []
-            if not isinstance(spec_payload, dict) or not spec_payload.get("functional_requirements"):
-                issues.append({"severity": "error", "message": "В ТЗ отсутствуют функциональные требования."})
-            if frontend_enabled and (
-                not isinstance(spec_payload, dict)
-                or "frontend_requirements" not in spec_payload
-                or not spec_payload["frontend_requirements"].get("screens")
-            ):
-                issues.append({"severity": "error", "message": "Для проекта с интерфейсом не заполнен раздел требований к интерфейсу."})
-            if ml_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("ml_requirements")):
-                issues.append({"severity": "critical", "message": "Для проекта с аналитикой и ML в ТЗ отсутствует раздел требований к модели и данным.", "area": "ml", "requires_user_input": False})
-            if security_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("security_constraints_detail")):
-                issues.append({"severity": "critical", "message": "Для проекта с ограничениями ИБ в ТЗ отсутствует раздел безопасности и приватности.", "area": "security", "requires_user_input": False})
-            if integration_enabled and (not isinstance(spec_payload, dict) or not spec_payload.get("integration_model")):
-                issues.append({"severity": "critical", "message": "Для проекта с интеграциями в ТЗ отсутствует раздел интеграционной модели.", "area": "integration", "requires_user_input": False})
-            if isinstance(spec_payload, dict) and not spec_payload.get("open_questions"):
-                blocking_questions = []
-            status = "passed" if not issues else "needs_changes"
-            return {
-                "overall_status": status,
-                "summary": "Черновик ТЗ можно принимать." if status == "passed" else "Черновик ТЗ требует доработки.",
-                "confidence": 0.9 if status == "passed" else 0.62,
-                "strengths": [
-                    "Структура документа выдержана",
-                    "Есть связь с целями, рамкой этапа и требованиями к результату",
-                ],
-                "issues": issues,
-                "blocking_questions": blocking_questions,
-                "recommendations": (
-                    ["Можно переходить к следующему этапу."]
-                    if status == "passed"
-                    else ["Исправить замечания и повторно провести ревью."]
-                ),
+        if artifact_role == "design_document":
+            system_context = self._find_payload(
+                parsed_inputs, "Описать системный контекст", "Системный контекст"
+            )
+            components = self._find_payload(
+                parsed_inputs, "Выделить компоненты системы", "Декомпозиция на компоненты"
+            )
+            interactions = self._find_payload(
+                parsed_inputs, "Описать потоки взаимодействия", "Потоки взаимодействия"
+            )
+            deployment = self._find_payload(
+                parsed_inputs, "Описать топологию развёртывания", "Топология развёртывания"
+            )
+            risk_register = self._find_payload(
+                parsed_inputs, "Собрать реестр рисков проекта", "Реестр рисков проекта"
+            )
+
+            title = (
+                system_context.get("system_name")
+                if isinstance(system_context, dict) and system_context.get("system_name")
+                else "Архитектурный документ"
+            )
+            summary_parts: list[str] = []
+            if isinstance(system_context, dict) and system_context.get("system_purpose"):
+                summary_parts.append(system_context["system_purpose"])
+            if isinstance(components, dict) and components.get("components"):
+                summary_parts.append(
+                    f"Декомпозирована на {len(components['components'])} ключевых компонента(ов)."
+                )
+            if isinstance(interactions, dict) and interactions.get("flows"):
+                summary_parts.append(
+                    f"Описано {len(interactions['flows'])} сценариев взаимодействия."
+                )
+            if not summary_parts:
+                snippet = (business_request or "").strip()[:200]
+                summary_parts.append(
+                    f"Архитектурный документ по запросу: {snippet}." if snippet else "Архитектурный документ."
+                )
+
+            result: dict[str, object] = {
+                "title": title,
+                "executive_summary": " ".join(summary_parts),
+                "confidence": 0.78,
+                "blocking_questions": [],
             }
+            if isinstance(system_context, dict) and system_context:
+                # Очищаем blocking_questions/confidence — они метаданные
+                # upstream-артефакта, не наши.
+                result["system_context"] = {
+                    k: v for k, v in system_context.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(components, dict) and components:
+                result["components"] = {
+                    k: v for k, v in components.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(interactions, dict) and interactions:
+                result["interactions"] = {
+                    k: v for k, v in interactions.items()
+                    if k not in {"blocking_questions", "confidence"}
+                }
+            if isinstance(deployment, dict) and deployment:
+                result["deployment"] = deployment
+            if isinstance(risk_register, dict) and risk_register.get("risks"):
+                result["risks"] = risk_register["risks"]
+            return result
+
         raise ConflictError(f"Stub не умеет генерировать артефакт роли '{artifact_role}'.")
 
 

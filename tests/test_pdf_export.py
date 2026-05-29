@@ -12,10 +12,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from test_m9_api import init_project, run_stub_workflow  # type: ignore
 
-from pov_generator.application.pdf_export import render_artifact_pdf
+from pov_generator.application import mermaid_render, pdf_export
+from pov_generator.application.pdf_export import (
+    _replace_mermaid_blocks_with_images,
+    render_artifact_pdf,
+)
 from pov_generator.interfaces.api import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -210,3 +215,107 @@ def test_download_pdf_endpoint_returns_404_when_no_markdown(tmp_path: Path) -> N
 
     assert response.status_code == 404
     assert "markdown" in response.json()["detail"].lower()
+
+
+# --- Mermaid preprocessing (PDF) ------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def _reset_mermaid_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    mermaid_render.clear_cache()
+    monkeypatch.delenv("POV_MERMAID_DISABLED", raising=False)
+
+
+def test_replace_mermaid_blocks_leaves_markdown_unchanged_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """С POV_MERMAID_DISABLED preprocessing никого не подменяет."""
+    mermaid_render.clear_cache()
+    monkeypatch.setenv("POV_MERMAID_DISABLED", "1")
+    md = "# Title\n\n```mermaid\nflowchart LR\nA --> B\n```\n\nДалее текст."
+    assert _replace_mermaid_blocks_with_images(md) == md
+
+
+def test_replace_mermaid_blocks_inserts_data_uri_image_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """При успешном рендере ```mermaid``` блок становится <img> с data-URI."""
+    mermaid_render.clear_cache()
+    monkeypatch.setattr(
+        pdf_export,
+        "render_mermaid_to_png",
+        lambda _src: b"\x89PNG\r\n\x1a\nMINIMAL",
+    )
+    md = "Введение.\n\n```mermaid\nflowchart LR\nA --> B\n```\n\nЗаключение."
+    out = _replace_mermaid_blocks_with_images(md)
+    assert "```mermaid" not in out
+    assert '<img src="data:image/png;base64,' in out
+    assert 'class="mermaid-pdf"' in out
+    # Исходный markdown вокруг блока сохраняется.
+    assert "Введение." in out
+    assert "Заключение." in out
+
+
+def test_replace_mermaid_blocks_falls_back_on_render_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если render_mermaid_to_png возвращает None — оставляем code-block."""
+    mermaid_render.clear_cache()
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_png", lambda _src: None)
+    md = "```mermaid\nflowchart LR\nA --> B\n```"
+    out = _replace_mermaid_blocks_with_images(md)
+    assert out == md
+
+
+def test_replace_mermaid_blocks_handles_multiple_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mermaid_render.clear_cache()
+    counter = {"i": 0}
+
+    def fake_render(_src: str) -> bytes:
+        counter["i"] += 1
+        return f"PNG-{counter['i']}".encode()
+
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_png", fake_render)
+    md = (
+        "```mermaid\nflowchart LR\nA --> B\n```\n\n"
+        "Между.\n\n"
+        "```mermaid\nsequenceDiagram\nA->>B: ping\n```\n"
+    )
+    out = _replace_mermaid_blocks_with_images(md)
+    assert out.count('<img src="data:image/png;base64,') == 2
+    assert counter["i"] == 2
+
+
+def test_render_artifact_pdf_embeds_mermaid_image_when_render_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end PDF: при успешном рендере PNG попадает в финальные байты."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    mermaid_render.clear_cache()
+    buf = BytesIO()
+    Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(buf, format="PNG")
+    one_pixel_png = buf.getvalue()
+
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_png", lambda _src: one_pixel_png)
+    md = "# Doc\n\n```mermaid\nflowchart LR\nA --> B\n```\n"
+
+    pdf_bytes = render_artifact_pdf(markdown_content=md, title="Mermaid in PDF")
+    assert pdf_bytes.startswith(b"%PDF-")
+    # В сыром PDF должен присутствовать встроенный image-object.
+    assert b"/Image" in pdf_bytes or b"/XObject" in pdf_bytes
+
+
+def test_render_artifact_pdf_keeps_codeblock_when_render_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """С POV_MERMAID_DISABLED PDF собирается без image-object'а (текущее поведение)."""
+    mermaid_render.clear_cache()
+    monkeypatch.setenv("POV_MERMAID_DISABLED", "1")
+    md = "# Doc\n\n```mermaid\nflowchart LR\nA --> B\n```\n"
+    pdf_bytes = render_artifact_pdf(markdown_content=md, title="No Mermaid")
+    assert pdf_bytes.startswith(b"%PDF-")
