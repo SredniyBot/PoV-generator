@@ -18,7 +18,9 @@ TaskStatus = Literal[
     "skipped",
     "obsolete",
 ]
-TaskCommand = Literal["start", "complete", "fail", "retry", "obsolete", "skip", "mark_ready", "mark_blocked"]
+TaskCommand = Literal[
+    "start", "complete", "fail", "retry", "obsolete", "skip", "mark_ready", "mark_blocked", "cancel"
+]
 TaskOriginKind = Literal["objective_root", "base_child", "domain_contribution", "repair", "user_request", "system"]
 
 
@@ -100,6 +102,15 @@ def apply_task_command(task: TaskRecord, command: TaskCommand, *, error_message:
         return TaskRecord(
             **{**task.__dict__, "status": "ready", "attempt": task.attempt + 1, "error_message": None, "updated_at": now}
         )
+    if command == "cancel":
+        # Принудительная остановка шага: сбрасываем активную задачу обратно
+        # в `ready`, чтобы следующий запуск продолжил с неё. В отличие от
+        # `retry`, не инкрементируем `attempt` — это не повтор после ошибки,
+        # а отмена незавершённой попытки. Терминальные состояния не трогаем
+        # (отменять уже нечего) — идемпотентно, как `mark_ready`.
+        if current in {"completed", "obsolete", "skipped"}:
+            return task
+        return TaskRecord(**{**task.__dict__, "status": "ready", "error_message": None, "updated_at": now})
     if command == "obsolete":
         if current in {"completed", "obsolete"}:
             raise ConflictError(f"Cannot obsolete task from status '{current}'.")

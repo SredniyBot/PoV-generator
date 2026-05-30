@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..common.cancellation import CancellationError, CancellationToken
 from ..common.serialization import utc_now_iso
 from ..domain.positions import Position
 from ..domain.process_state import CloseGapPatch, UpsertReadinessPatch
@@ -50,6 +51,7 @@ class WorkflowService:
         *,
         provider: str | None = None,
         model: str | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> WorkflowStepResult:
         decision = self._planning_service.plan(workspace, snapshot, mode="apply")
         if decision.outcome != "selected" or not decision.selected_task_id:
@@ -72,6 +74,7 @@ class WorkflowService:
             provider=provider,
             model=model,
             reasons=decision.reasons,
+            cancellation=cancellation,
         )
 
     def retry_task(
@@ -107,6 +110,7 @@ class WorkflowService:
         provider: str | None,
         model: str | None,
         reasons: tuple[str, ...],
+        cancellation: CancellationToken | None = None,
     ) -> WorkflowStepResult:
         self._planning_service.transition_task(workspace, task_id, "start")
         try:
@@ -116,6 +120,7 @@ class WorkflowService:
                 task_id,
                 provider=provider,
                 model=model,
+                cancellation=cancellation,
             )
             validation_run = self._validation_service.validate_execution(
                 workspace,
@@ -123,6 +128,13 @@ class WorkflowService:
                 task_id=task_id,
                 execution_bundle=execution_bundle,
             )
+        except CancellationError:
+            # Принудительная остановка: возвращаем шаг в `ready` (не `failed`),
+            # чтобы следующий запуск продолжил ровно с него. Артефакты не
+            # записаны (отмена случилась до коммита), откатывать нечего.
+            # Пробрасываем дальше — runner финализирует run как `cancelled`.
+            self._planning_service.transition_task(workspace, task_id, "cancel")
+            raise
         except Exception as exc:
             message = str(exc).strip() or "Во время исполнения шага произошла ошибка."
             self._planning_service.transition_task(

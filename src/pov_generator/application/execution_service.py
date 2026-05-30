@@ -5,6 +5,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..common.cancellation import (
+    CancellationError,
+    CancellationToken,
+    cancellation_scope,
+)
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
@@ -53,6 +58,51 @@ class ExecutionService:
         *,
         provider: str | None = None,
         model: str | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> ExecutionBundle:
+        """Выполнить шаг задачи.
+
+        При переданном ``cancellation`` устанавливается ambient-скоуп отмены
+        (провайдер может форсированно оборвать LLM-вызов) и проверяется
+        отмена в безопасных точках: на входе и перед коммитом артефакта.
+
+        Контракт отмены: артефакты пишутся одним коммитом в конце; отмена в
+        любой момент до него => ``CancellationError`` и НОЛЬ записанных
+        результатов (нечего откатывать). Если шаг успел закоммитить
+        артефакт — он завершается штатно (без partial-состояния).
+        """
+        with cancellation_scope(cancellation):
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
+            try:
+                return self._execute_task_impl(
+                    workspace,
+                    snapshot,
+                    task_id,
+                    provider=provider,
+                    model=model,
+                    cancellation=cancellation,
+                )
+            except CancellationError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Если ошибка возникла на фоне уже запрошенной отмены —
+                # трактуем её как отмену (типично: форсированный обрыв
+                # LLM-ресурса всплывает как транспортная ошибка), чтобы
+                # оркестратор сбросил шаг в ready, а не пометил failed.
+                if cancellation is not None and cancellation.is_cancelled:
+                    raise CancellationError("Шаг прерван во время исполнения.") from exc
+                raise
+
+    def _execute_task_impl(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        task_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> ExecutionBundle:
         state = self._runtime.load_project_state(workspace)
         manifest = state.manifest
@@ -270,6 +320,12 @@ class ExecutionService:
             ),
         )
         markdown_path = f"artifacts/{artifact_id}.md"
+        # Граница отмены = точка коммита. Всё выше (LLM-вызов, сборка payload,
+        # reasoning/trace) — in-memory, ничего ещё не записано. Если отмену
+        # запросили в любой момент до сюда — сворачиваемся без единого
+        # артефакта в БД: результаты обнуляются сами собой, откатывать нечего.
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
         if previous_active is not None:
             # Сначала записываем новый, потом помечаем старый — атомарность

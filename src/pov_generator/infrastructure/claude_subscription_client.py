@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
 
 
@@ -159,9 +160,14 @@ class ClaudeSubscriptionClient:
         # обычно проходит. Без retry падает вся pipeline.
         attempts = max(int(os.environ.get("POV_CLAUDE_MAX_RETRIES", "3")), 1)
         last_exc: ConflictError | None = None
+        # Токен отмены текущего шага (если исполнение идёт под runner'ом).
+        # Берём из ambient-скоупа, чтобы не менять сигнатуру chat_json /
+        # интерфейс LLMProvider. CancellationError — НЕ ConflictError,
+        # поэтому отмена не попадает в retry-ветку и всплывает сразу.
+        token = current_cancellation()
         for attempt in range(1, attempts + 1):
             try:
-                text = asyncio.run(self._collect(system_prompt, full_prompt))
+                text = asyncio.run(self._collect_cancellable(system_prompt, full_prompt, token))
                 return self._extract_json(text)
             except ConflictError as exc:
                 if not _is_transient_cli_error(str(exc)) or attempt == attempts:
@@ -173,6 +179,38 @@ class ClaudeSubscriptionClient:
         # Недостижимо — последний attempt в except поднимает.
         assert last_exc is not None
         raise last_exc
+
+    async def _collect_cancellable(
+        self, system_prompt: str, user_prompt: str, token: CancellationToken | None
+    ) -> str:
+        """Запустить ``_collect`` с возможностью форсированной отмены.
+
+        Без токена — обычный await. С токеном — оборачиваем сбор в asyncio-
+        таску и подписываемся на отмену: при ``token.cancel()`` из другого
+        потока (HTTP-обработчик) безопасно отменяем таску через
+        ``loop.call_soon_threadsafe`` — это корректный кросс-тред способ
+        прервать asyncio. Отмена таски рвёт ``async for`` по ``query`` →
+        SDK закрывает CLI-subprocess. Получение ответа LLM прекращается, не
+        дожидаясь завершения.
+        """
+        if token is None:
+            return await self._collect(system_prompt, user_prompt)
+
+        loop = asyncio.get_running_loop()
+        collect_task: asyncio.Task[str] = asyncio.ensure_future(
+            self._collect(system_prompt, user_prompt)
+        )
+        unregister = token.register(
+            lambda: loop.call_soon_threadsafe(collect_task.cancel)
+        )
+        try:
+            return await collect_task
+        except asyncio.CancelledError as exc:
+            if token.is_cancelled:
+                raise CancellationError("LLM-вызов прерван пользователем.") from exc
+            raise
+        finally:
+            unregister()
 
     async def _collect(self, system_prompt: str, user_prompt: str) -> str:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.

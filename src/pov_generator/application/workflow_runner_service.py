@@ -15,8 +15,12 @@ API:
 - `start_run_until_blocked(workspace, project_id, *, provider, model,
   max_steps)` — создаёт запись `pending`, стартует thread, возвращает
   свежесозданный `WorkflowRunRecord`. Запрос не блокируется.
-- `cancel_run(workspace, run_id)` — ставит флаг `cancel_requested=1`.
-  Runner проверяет его между шагами и переходит в `cancelled`.
+- `cancel_run(workspace, run_id)` — форсированная остановка: ставит
+  persistent-флаг `cancel_requested=1` (ловится между шагами, переживает
+  рестарт) И дёргает in-memory `CancellationToken` текущего run'а, который
+  прерывает уже идущий шаг — в т.ч. получение ответа LLM. Прерванная
+  задача сбрасывается в `ready`, её результаты не коммитятся; следующий
+  запуск продолжает с неё.
 - `get_run(workspace, run_id)` / `list_runs(workspace, project_id)` —
   чтение state.
 
@@ -35,6 +39,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
+from ..common.cancellation import CancellationError, CancellationToken
 from ..common.serialization import utc_now_iso
 from ..domain.registry import RegistrySnapshot
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
@@ -56,6 +61,13 @@ class WorkflowRunnerService:
         self._registry_service = registry_service
         self._workflow_service = workflow_service
         self._planning_service = planning_service
+        # In-memory реестр токенов отмены активных run'ов. Позволяет
+        # `cancel_run` форсированно прервать идущий LLM-вызов того же
+        # процесса (в дополнение к persistent-флагу в БД, который ловится
+        # между шагами и переживает рестарт). Доступ из потока runner'а и
+        # HTTP-потока — под локом.
+        self._tokens: dict[str, CancellationToken] = {}
+        self._tokens_lock = threading.Lock()
 
     # ---- public API ------------------------------------------------------
 
@@ -105,6 +117,10 @@ class WorkflowRunnerService:
         )
         self._runtime.create_workflow_run(workspace, record)
 
+        token = CancellationToken()
+        with self._tokens_lock:
+            self._tokens[run_id] = token
+
         thread = threading.Thread(
             target=self._run_loop,
             args=(
@@ -114,6 +130,7 @@ class WorkflowRunnerService:
                 provider,
                 model,
                 int(max_steps),
+                token,
                 bool(continue_past_validation_failure),
             ),
             daemon=True,
@@ -123,13 +140,27 @@ class WorkflowRunnerService:
         return record
 
     def cancel_run(self, workspace: Path, run_id: str) -> bool:
-        """Идемпотентный cancel. Возвращает True если запись существует
-        (флаг проставлен), False если run_id не найден.
+        """Идемпотентная принудительная остановка run'а.
 
-        Runner проверяет флаг МЕЖДУ шагами; уже идущий LLM-вызов не
-        прерывается — это известный trade-off.
+        Двухуровневый сигнал:
+
+        1. **Persistent-флаг в БД** (``request_workflow_cancel``) — ловится
+           runner'ом между шагами и переживает рестарт процесса (startup-
+           recovery подхватит зомби-run).
+        2. **In-memory токен** — если run идёт в этом же процессе,
+           форсированно прерывает уже идущий шаг (в т.ч. получение ответа
+           от LLM). Текущая задача сбрасывается в ``ready`` и продолжится
+           со следующего запуска.
+
+        Возвращает True, если запись run'а существует ИЛИ есть активный
+        токен (т.е. отмена кому-то адресована).
         """
-        return self._runtime.request_workflow_cancel(workspace, run_id)
+        flagged = self._runtime.request_workflow_cancel(workspace, run_id)
+        with self._tokens_lock:
+            token = self._tokens.get(run_id)
+        if token is not None:
+            token.cancel()
+        return flagged or token is not None
 
     def get_run(self, workspace: Path, run_id: str) -> WorkflowRunRecord | None:
         return self._runtime.get_workflow_run(workspace, run_id)
@@ -152,6 +183,35 @@ class WorkflowRunnerService:
         provider: str | None,
         model: str | None,
         max_steps: int,
+        token: CancellationToken,
+        continue_past_validation_failure: bool = False,
+    ) -> None:
+        """Тонкая обёртка: гарантированно снимает токен из реестра в finally,
+        чтобы он не утёк после завершения run'а (любым исходом)."""
+        try:
+            self._run_loop_inner(
+                workspace,
+                snapshot,
+                run_id,
+                provider,
+                model,
+                max_steps,
+                token,
+                continue_past_validation_failure,
+            )
+        finally:
+            with self._tokens_lock:
+                self._tokens.pop(run_id, None)
+
+    def _run_loop_inner(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        run_id: str,
+        provider: str | None,
+        model: str | None,
+        max_steps: int,
+        token: CancellationToken,
         continue_past_validation_failure: bool = False,
     ) -> None:
         # pending → running
@@ -174,8 +234,21 @@ class WorkflowRunnerService:
             step_started_at = utc_now_iso()
             try:
                 result = self._workflow_service.run_next(
-                    workspace, snapshot, provider=provider, model=model
+                    workspace, snapshot, provider=provider, model=model, cancellation=token
                 )
+            except CancellationError:
+                # Форсированная остановка во время шага. Текущая задача уже
+                # сброшена в `ready` в WorkflowService (artifacts не
+                # записаны — отмена случилась до коммита). Финализируем run
+                # как cancelled; следующий запуск продолжит с этой задачи.
+                self._finalize(
+                    workspace,
+                    run_id,
+                    status="cancelled",
+                    stop_reason="cancelled_by_user",
+                    summary="Прервано пользователем: текущий шаг отменён, продолжите запуском.",
+                )
+                return
             except Exception as exc:  # ловим всё — runner не должен падать
                 message = str(exc).strip() or "Неизвестная ошибка в run_next."
                 self._append_step_and_finalize(
