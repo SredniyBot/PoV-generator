@@ -137,50 +137,6 @@ export interface ProjectTimelineView {
   total_entries: number;
 }
 
-export interface ClarificationOptionView {
-  option_id: string;
-  label: string;
-  description: string;
-  effect_preview: string;
-  confidence: number | null;
-}
-
-export interface ClarificationItemView {
-  clarification_id: string;
-  status: string;
-  priority: string;
-  title: string;
-  question: string;
-  description: string;
-  reason: string;
-  impact: string;
-  answer_mode: string;
-  options: ClarificationOptionView[];
-  recommended_option_id: string | null;
-  min_participation_mode: string;
-  default_assumption: string | null;
-  blocking_scope: string;
-  decision_owner_role: string;
-  auto_resolved: boolean;
-  affected_task_ids: string[];
-  related_artifact_ids: string[];
-  selected_option_ids: string[];
-  free_text: string | null;
-  resolution_summary: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ProjectClarificationsView {
-  project_id: string;
-  mode: string;
-  open_count: number;
-  answered_count: number;
-  assumed_count: number;
-  blocking_count: number;
-  items: ClarificationItemView[];
-}
-
 export interface ArtifactSummaryView {
   artifact_id: string;
   artifact_role: string;
@@ -195,6 +151,14 @@ export interface ArtifactValidationView {
   status: string;
   finding_messages: string[];
   created_at: string;
+}
+
+export interface TokenUsageStage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
 }
 
 export interface ArtifactDetailView {
@@ -220,6 +184,8 @@ export interface ArtifactDetailView {
   parent_artifact_id: string | null;
   is_superseded: boolean;
   overall_confidence: number | null;
+  // v3.5: разбивка токенов по стадиям сборки.
+  token_usage: Record<string, TokenUsageStage>;
 }
 
 export interface ReviewIssueView {
@@ -510,38 +476,6 @@ export interface ArtifactSkeletonView {
   created_at: string;
 }
 
-export type DecisionKind = "answered" | "assumed";
-
-export interface DecisionLogEntryView {
-  decision_id: string;
-  kind: DecisionKind;
-  title: string;
-  question: string;
-  resolution_summary: string | null;
-  selected_option_ids: string[];
-  free_text: string | null;
-  rationale: string;
-  impact: string;
-  blocking_scope: string;
-  decision_owner_role: string;
-  source_type: string;
-  source_id: string | null;
-  affected_task_ids: string[];
-  related_artifact_ids: string[];
-  alternatives: ClarificationOptionView[];
-  auto_resolved: boolean;
-  decided_at: string;
-  created_at: string;
-}
-
-export interface ProjectDecisionLogView {
-  project_id: string;
-  entries: DecisionLogEntryView[];
-  total_count: number;
-  answered_count: number;
-  assumed_count: number;
-}
-
 export interface ArtifactVersionItemView {
   artifact_id: string;
   artifact_role: string;
@@ -624,4 +558,131 @@ export interface TestResultView {
   latency_ms: number;
   sample_response: string | null;
   tested_at: string;
+}
+
+// --- v3.0 — Decision ledger + checkpoint sessions ---------------------------
+//
+// Зеркалирует `domain/workspace_views.py` (DecisionItemView,
+// ProjectDecisionsView, CheckpointSessionView, ProjectCheckpointsView).
+// Уровни и статусы — точные строковые литералы в синхроне с backend
+// `domain/decisions.py` и `domain/checkpoints.py`.
+
+export type DecisionLevel = "business" | "architecture" | "detail";
+export type DecisionStatus =
+  | "proposed"
+  | "accepted_default"
+  | "user_overridden"
+  | "deferred"
+  | "locked_in"
+  | "superseded";
+export type DecisionSource =
+  | "pre_flight"
+  | "emergent"
+  | "reactive_validation"
+  | "user_manual";
+export type DecisionUserAction =
+  | "not_shown"
+  | "accepted_default"
+  | "modified"
+  | "deferred"
+  | "pending";
+// v3.1: пришёл из legacy ClarificationCandidate.answer_mode после миграции
+export type DecisionAnswerMode = "single" | "multiple" | "free_text" | "confirmation";
+export type CheckpointStatus = "pending" | "finalized" | "expired" | "cancelled";
+export type CheckpointAnswerKind =
+  | "accept_default"
+  | "select_alternative"
+  | "free_text"
+  | "defer";
+
+export interface DecisionAlternativeView {
+  option_id: string;
+  label: string;
+  description: string;
+  pros: string[];
+  cons: string[];
+  confidence: number | null;
+  is_chosen: boolean;
+}
+
+export interface DecisionItemView {
+  decision_id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  category: string;
+  level: DecisionLevel;
+  raw_level: DecisionLevel;
+  level_rationale: string;
+  rationale: string;
+  chosen_option_id: string;
+  chosen_option_label: string;
+  alternatives: DecisionAlternativeView[];
+  confidence: number;
+  is_low_confidence: boolean;
+  status: DecisionStatus;
+  source: DecisionSource;
+  source_task_id: string | null;
+  affected_artifact_ids: string[];
+  depends_on_decision_ids: string[];
+  user_action: DecisionUserAction;
+  was_user_modified: boolean;
+  user_free_text_answer: string | null;
+  created_at: string;
+  updated_at: string;
+  // v3.1: режим ответа + multi-select поддержка
+  answer_mode: DecisionAnswerMode;
+  chosen_option_ids: string[];
+  // v3.4: пользователь явно «верифицировал» рискованное решение
+  user_verified: boolean;
+  user_verified_at: string | null;
+  // false means list endpoint returned a compact item; load detail for
+  // alternatives/rationale/description.
+  details_included: boolean;
+}
+
+export interface ProjectDecisionsView {
+  project_id: string;
+  mode: string;
+  // На уровне режима пользователя — сколько всего и сколько ждут реакции
+  surfaced_total: number;
+  surfaced_pending: number;
+  // По уровням (всегда все три)
+  business_count: number;
+  architecture_count: number;
+  detail_count: number;
+  // По статусам
+  proposed_count: number;
+  accepted_count: number;
+  overridden_count: number;
+  low_confidence_count: number;
+  items: DecisionItemView[];
+}
+
+export interface CheckpointSessionView {
+  session_id: string;
+  project_id: string;
+  task_id: string;
+  task_title: string;
+  artifact_role: string;
+  status: CheckpointStatus;
+  created_at: string;
+  finalized_at: string | null;
+  finalized_by: string | null;
+  decisions: DecisionItemView[];
+}
+
+export interface ProjectCheckpointsView {
+  project_id: string;
+  pending_count: number;
+  items: CheckpointSessionView[];
+}
+
+export interface CheckpointAnswerPayload {
+  decision_id: string;
+  kind: CheckpointAnswerKind;
+  selected_option_id?: string | null;
+  // v3.1: multi-select. Если задано — используется (selected_option_id игнор)
+  selected_option_ids?: string[] | null;
+  free_text?: string | null;
 }

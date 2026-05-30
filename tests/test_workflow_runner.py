@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from pov_generator.application.clarification_service import ClarificationService
+from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.planning_service import PlanningService
@@ -42,8 +42,7 @@ def _bootstrap(tmp_path: Path):
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    clarification_service = ClarificationService(runtime, provider="stub")
-    validation_service = ValidationService(runtime, clarification_service)
+    validation_service = ValidationService(runtime, CheckpointService(runtime))
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     runner = WorkflowRunnerService(runtime, registry_service, workflow_service, planning_service)
 
@@ -134,9 +133,11 @@ def test_cancel_run_marks_request_and_returns_true(tmp_path: Path, monkeypatch) 
 
     original_run_next = WorkflowService.run_next
 
-    def slow_run_next(self, workspace, snapshot, *, provider=None, model=None):
+    def slow_run_next(self, workspace, snapshot, *, provider=None, model=None, cancellation=None):
         time.sleep(0.5)
-        return original_run_next(self, workspace, snapshot, provider=provider, model=model)
+        return original_run_next(
+            self, workspace, snapshot, provider=provider, model=model, cancellation=cancellation
+        )
 
     monkeypatch.setattr(WorkflowService, "run_next", slow_run_next)
 

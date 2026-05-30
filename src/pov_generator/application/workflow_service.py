@@ -23,6 +23,11 @@ class WorkflowStepResult:
     validation_status: str | None
     applied_patches: tuple[str, ...] = field(default_factory=tuple)
     reasons: tuple[str, ...] = field(default_factory=tuple)
+    # v3.0: если задача приостановлена pre-flight checkpoint'ом — id
+    # сессии, которую пользователь должен закрыть. validation_status
+    # тогда = "paused_for_checkpoint" (псевдо-статус; настоящих
+    # validation_runs не создаётся).
+    checkpoint_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,35 @@ class WorkflowService:
                 model=model,
                 cancellation=cancellation,
             )
+            # v3.0: pre-flight checkpoint может остановить задачу до
+            # основной генерации. В этом случае:
+            #   - не запускаем валидацию (артефакта нет);
+            #   - task возвращаем в статус "blocked" (через `fail`-transition
+            #     это даст возможность retry после submit_answers);
+            #   - возвращаем step с маркером paused_for_checkpoint.
+            if execution_bundle.result.status == "paused_for_checkpoint":
+                pause_message = (
+                    "Pre-flight checkpoint: ждём ответа пользователя в "
+                    f"сессии {execution_bundle.result.checkpoint_session_id}"
+                )
+                self._planning_service.transition_task(
+                    workspace,
+                    task_id,
+                    "fail",
+                    payload={
+                        "error_message": pause_message,
+                        "error_type": "paused_for_checkpoint",
+                    },
+                )
+                return WorkflowStepResult(
+                    planning_outcome=planning_outcome,
+                    task_id=task_id,
+                    selected_step_id=selected_step_id,
+                    execution_run_id=None,
+                    validation_status="paused_for_checkpoint",
+                    reasons=(pause_message,),
+                    checkpoint_session_id=execution_bundle.result.checkpoint_session_id,
+                )
             validation_run = self._validation_service.validate_execution(
                 workspace,
                 snapshot,

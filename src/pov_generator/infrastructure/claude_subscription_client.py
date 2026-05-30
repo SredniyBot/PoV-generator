@@ -36,6 +36,7 @@ from typing import Any
 
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
+from .llm.protocol import LLMUsage
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,10 @@ class ClaudeSubscriptionClient:
                 "и убедитесь, что CLI 'claude' установлен и выполнен 'claude login'."
             ) from exc
         self._sdk = claude_agent_sdk
+        # v3.5: usage последнего вызова. Заполняется в _collect через
+        # ResultMessage SDK (см. duck-typing там). При отсутствии — empty.
+        self.last_usage: LLMUsage = LLMUsage.empty()
+        self._last_usage_raw: dict[str, int] = {}
 
     @classmethod
     def from_env(cls, *, model: str | None = None) -> "ClaudeSubscriptionClient":
@@ -165,9 +170,29 @@ class ClaudeSubscriptionClient:
         # интерфейс LLMProvider. CancellationError — НЕ ConflictError,
         # поэтому отмена не попадает в retry-ветку и всплывает сразу.
         token = current_cancellation()
+        # v3.5: сбрасываем raw-usage перед серией ретраев — финальный
+        # successful вызов перезапишет; неуспех оставит empty.
+        self._last_usage_raw = {}
         for attempt in range(1, attempts + 1):
             try:
                 text = asyncio.run(self._collect_cancellable(system_prompt, full_prompt, token))
+                # Поднимаем raw → LLMUsage только при успешной экстракции,
+                # чтобы случайно не записать прошлый usage поверх свежего.
+                if self._last_usage_raw:
+                    self.last_usage = LLMUsage(
+                        input_tokens=self._last_usage_raw.get("input_tokens", 0),
+                        output_tokens=self._last_usage_raw.get("output_tokens", 0),
+                        cache_read_tokens=self._last_usage_raw.get("cache_read_tokens", 0),
+                        cache_write_tokens=self._last_usage_raw.get("cache_write_tokens", 0),
+                        total_tokens=(
+                            self._last_usage_raw.get("input_tokens", 0)
+                            + self._last_usage_raw.get("output_tokens", 0)
+                        ),
+                        provider="claude_subscription",
+                        model=self._config.model or "claude-code-default",
+                    )
+                else:
+                    self.last_usage = LLMUsage(provider="claude_subscription", model=self._config.model or "claude-code-default")
                 return self._extract_json(text)
             except ConflictError as exc:
                 if not _is_transient_cli_error(str(exc)) or attempt == attempts:
@@ -264,6 +289,25 @@ class ClaudeSubscriptionClient:
         chunks: list[str] = []
         try:
             async for message in self._sdk.query(prompt=user_prompt, options=options):
+                # v3.5: ResultMessage (последнее сообщение в стриме) обычно
+                # несёт usage по подписке: u.input_tokens / u.output_tokens
+                # / u.cache_read_input_tokens. Ловим через duck-typing,
+                # чтобы не зависеть от конкретного класса SDK.
+                msg_usage = getattr(message, "usage", None)
+                if msg_usage is not None:
+                    try:
+                        self._last_usage_raw = {
+                            "input_tokens": int(getattr(msg_usage, "input_tokens", 0) or 0),
+                            "output_tokens": int(getattr(msg_usage, "output_tokens", 0) or 0),
+                            "cache_read_tokens": int(
+                                getattr(msg_usage, "cache_read_input_tokens", 0) or 0
+                            ),
+                            "cache_write_tokens": int(
+                                getattr(msg_usage, "cache_creation_input_tokens", 0) or 0
+                            ),
+                        }
+                    except (TypeError, ValueError):
+                        pass
                 content = getattr(message, "content", None)
                 if not content:
                     continue

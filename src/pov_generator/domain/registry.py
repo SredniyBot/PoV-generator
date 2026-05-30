@@ -220,6 +220,12 @@ class TemplateSpec:
     #   skip       — методология не применяется (чистая экстракция, нет
     #                 решений и нет альтернатив).
     methodology_mode: str = "full"
+    # v3.6: включён ли task-level identification «выявление решений»
+    # для этого шаблона. По умолчанию True. Ставится False в YAML
+    # для pure-transform/review/merge задач, которые ничего нового по
+    # проекту не решают — там identification только генерирует мета-шум
+    # (см. docs/decision_subsystem_design_v3.6.md).
+    decision_identification_enabled: bool = True
     source_path: Path = Path("")
 
     @property
@@ -773,6 +779,11 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         summary=optional_str(raw, "summary") or "",
         merge=merge_config,
         methodology_mode=_parse_methodology_mode(raw.get("methodology"), owner),
+        # v3.6: identification per-template flag. По умолчанию True.
+        # Транспорт через YAML: `decision_identification: false` в task-шаблоне.
+        decision_identification_enabled=bool(
+            raw.get("decision_identification", True)
+        ),
         source_path=source_path,
     )
 

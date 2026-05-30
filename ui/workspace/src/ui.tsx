@@ -12,6 +12,7 @@ import {
   CircleDot,
   FileCog,
   FileText,
+  GitBranch,
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
@@ -23,6 +24,8 @@ import {
   Waypoints,
   X,
 } from "lucide-react";
+// MessageSquareWarning остаётся в импорте — используется в actionIcon()
+// и SituationPanel'е, не только в legacy «Вопросы: N»-кнопке.
 
 import type {
   ActionDescriptor,
@@ -170,7 +173,10 @@ export function SectionCard({
   className,
   children,
 }: PropsWithChildren<{
-  title: string;
+  // ReactNode (а не только string) — чтобы в title можно было передать
+  // композицию с кнопкой возврата / иконкой (v3.0 CheckpointSessionPage).
+  // h2 принимает любой children, обратной несовместимости не возникает.
+  title: ReactNode;
   subtitle?: string;
   actions?: ReactNode;
   tone?: "default" | "warning" | "danger" | "accent";
@@ -353,17 +359,18 @@ export function ProjectRail({
 }
 
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
-  // 6 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
+  // 5 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
   // root-level страницей `/settings` (LLM-провайдеры). Содержимое
   // прошлого таба (Состояние / Замечания / Технические детали) — это
   // диагностические страницы; доступ к ним остаётся через прямые
   // URL `/state`, `/review`, `/debug` для bookmarks / power-users.
+  // v3.1: legacy «Вопросы» и «Журнал решений» удалены — Decision (v3.0
+  // реестр) полностью покрывает оба сценария.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
-    { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Журнал решений" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
   return (
@@ -423,9 +430,9 @@ export function WorkspaceHeader({
   onClarificationModeChange,
   modePending,
   actions,
-  openClarificationCount,
-  blockingClarificationCount,
-  onOpenClarifications,
+  pendingCheckpointCount,
+  pendingCheckpointSessionId,
+  onOpenCheckpoints,
   onActivateNextObjective,
   activatingNextObjective,
 }: {
@@ -435,10 +442,12 @@ export function WorkspaceHeader({
   onClarificationModeChange?: (mode: string) => void;
   modePending?: boolean;
   actions?: ReactNode;
-  // W5.2: счётчики из ProjectClarificationsView. Клик ведёт на /clarifications.
-  openClarificationCount?: number;
-  blockingClarificationCount?: number;
-  onOpenClarifications?: () => void;
+  // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
+  // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
+  // (список) или сразу на /checkpoints/{id} если одна.
+  pendingCheckpointCount?: number;
+  pendingCheckpointSessionId?: string | null;
+  onOpenCheckpoints?: () => void;
   // Цепочка objective'ов: когда текущий objective завершён и у него есть
   // compatible_next_objectives, UI показывает кнопку перехода.
   onActivateNextObjective?: (objectiveRef: string) => void;
@@ -493,25 +502,15 @@ export function WorkspaceHeader({
                 </button>
               ))
             : null}
-          {openClarificationCount && openClarificationCount > 0 ? (
+          {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
             <button
               type="button"
-              className={cx(
-                "meta-chip meta-chip--button",
-                (blockingClarificationCount ?? 0) > 0 && "meta-chip--warning",
-              )}
-              onClick={onOpenClarifications}
-              title={
-                blockingClarificationCount && blockingClarificationCount > 0
-                  ? `${blockingClarificationCount} вопросов блокируют работу`
-                  : "Открытые вопросы"
-              }
+              className="meta-chip meta-chip--button meta-chip--danger"
+              onClick={onOpenCheckpoints}
+              title="Workflow приостановлен — нужны ваши решения перед сборкой артефакта"
             >
-              <MessageSquareWarning size={14} />
-              Вопросов: {openClarificationCount}
-              {blockingClarificationCount && blockingClarificationCount > 0
-                ? ` (${blockingClarificationCount} блок.)`
-                : null}
+              <GitBranch size={14} />
+              Решения ждут: {pendingCheckpointCount}
             </button>
           ) : null}
         </div>

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..common.errors import ConflictError
+from .llm.protocol import LLMUsage
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class ClaudeSdkClient:
 
     def __init__(self, config: ClaudeSdkConfig) -> None:
         self._config = config
+        # v3.5: usage последнего chat_json-вызова
+        self.last_usage: LLMUsage = LLMUsage.empty()
         try:
             import anthropic  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover
@@ -92,6 +95,23 @@ class ClaudeSdkClient:
         except Exception as exc:  # pragma: no cover
             raise ConflictError(f"Ошибка запроса к Claude SDK: {exc}") from exc
 
+        # v3.5: usage перед поиском tool_use, чтобы даже на ошибке знать
+        # сколько токенов улетело.
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            input_tok = int(getattr(usage, "input_tokens", 0) or 0)
+            output_tok = int(getattr(usage, "output_tokens", 0) or 0)
+            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            self.last_usage = LLMUsage(
+                input_tokens=input_tok,
+                output_tokens=output_tok,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                total_tokens=input_tok + output_tok,
+                provider="claude_sdk",
+                model=self._config.model,
+            )
         for block in response.content:
             block_type = getattr(block, "type", None)
             if block_type == "tool_use":

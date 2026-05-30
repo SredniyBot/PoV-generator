@@ -8,6 +8,7 @@ from typing import Any
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
 from ...claude_sdk_client import ClaudeSdkClient, ClaudeSdkConfig, model_for_complexity
+from ..protocol import LLMUsage
 
 
 class ClaudeSdkProvider:
@@ -32,6 +33,8 @@ class ClaudeSdkProvider:
         self._client = ClaudeSdkClient(
             ClaudeSdkConfig(api_key=api_key, model=model, max_tokens=max_tokens)
         )
+        # v3.5: token usage последнего вызова (см. LLMProvider protocol)
+        self.last_usage: LLMUsage = LLMUsage.empty()
 
     @classmethod
     def from_env(
@@ -81,8 +84,11 @@ class ClaudeSdkProvider:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> dict[str, Any]:
-        return self._client.chat_json(
+        result = self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
         )
+        # v3.5: проброс usage из вложенного клиента
+        self.last_usage = self._client.last_usage
+        return result

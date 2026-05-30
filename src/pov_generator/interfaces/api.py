@@ -7,11 +7,13 @@ from typing import Any
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
-from ..application.clarification_service import ClarificationService
+from ..application.checkpoint_service import CheckpointService
 from ..application.context_service import ContextService
+from ..application.decision_extraction_service import DecisionExtractionService
+from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
-from ..application.pdf_export import render_artifact_pdf
+from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
 from ..application.provider_settings_service import (
@@ -83,12 +85,32 @@ def create_app(
     except Exception:  # noqa: BLE001
         pass
 
-    clarification_service = ClarificationService(runtime, llm_registry=llm_registry)
+    # v3.0: sync новых purpose-assignments. При добавлении нового purpose
+    # в RECOMMENDED_BY_PURPOSE (например, decision_planning) — назначаем
+    # рекомендуемую модель для существующих пользователей. Без этого
+    # пользователь видит «не назначено» для нового сценария.
+    try:
+        provider_settings_service.sync_missing_purpose_assignments()
+    except Exception:  # noqa: BLE001
+        pass
+
+    checkpoint_service = CheckpointService(runtime)
+    decision_identification_service = DecisionIdentificationService(llm_registry=llm_registry)
+    decision_extraction_service = DecisionExtractionService(
+        runtime, llm_registry=llm_registry
+    )
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
-    execution_service = ExecutionService(runtime, context_service, llm_registry=llm_registry)
-    validation_service = ValidationService(runtime, clarification_service)
+    execution_service = ExecutionService(
+        runtime,
+        context_service,
+        llm_registry=llm_registry,
+        decision_identification_service=decision_identification_service,
+        decision_extraction_service=decision_extraction_service,
+        checkpoint_service=checkpoint_service,
+    )
+    validation_service = ValidationService(runtime, checkpoint_service=checkpoint_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     workflow_runner_service = WorkflowRunnerService(
         runtime, registry_service, workflow_service, planning_service
@@ -103,12 +125,13 @@ def create_app(
         planning_service,
         workflow_service,
         domain_pack_selection_service,
-        clarification_service,
+        checkpoint_service,
     )
 
     app.state.query_service = query_service
     app.state.command_service = command_service
     app.state.provider_settings_service = provider_settings_service
+    app.state.checkpoint_service = checkpoint_service
     app.state.llm_registry = llm_registry
     app.state.poll_interval = websocket_poll_interval
 
@@ -408,13 +431,236 @@ def create_app(
     def project_timeline(project_id: str, after_sequence: int = 0) -> Any:
         return to_primitive(query_service.project_timeline(project_id, after_sequence=after_sequence))
 
-    @app.get("/api/projects/{project_id}/clarifications")
-    def project_clarifications(project_id: str) -> Any:
-        return to_primitive(query_service.project_clarifications(project_id))
+    # --- v3.0 — Decision ledger ---------------------------------------------
 
-    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}")
-    def project_clarification_detail(project_id: str, clarification_id: str) -> Any:
-        return to_primitive(query_service.clarification_detail(project_id, clarification_id))
+    @app.get("/api/projects/{project_id}/decisions")
+    def project_decisions(
+        project_id: str,
+        level: str | None = None,
+        status: str | None = None,
+        include_details: bool = True,
+    ) -> Any:
+        """Реестр решений проекта.
+
+        Опциональные query-параметры:
+        - ``level``: business | architecture | detail
+        - ``status``: proposed | accepted_default | user_overridden | deferred | locked_in | superseded
+        - ``include_details``: false returns lightweight items; use detail
+          endpoint for alternatives/rationale/description.
+
+        Возвращает items + агрегаты по уровням и статусам (агрегаты
+        считаются по всему реестру, не по отфильтрованному виду).
+        """
+        return to_primitive(
+            query_service.project_decisions(
+                project_id,
+                level=level,
+                status=status,
+                include_details=include_details,
+            )
+        )
+
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/decisions")
+    def project_artifact_decisions(
+        project_id: str,
+        artifact_id: str,
+        include_details: bool = True,
+    ) -> Any:
+        """Решения, принятые при сборке конкретного артефакта (v3.0).
+
+        Связь — через ``Decision.affected_artifact_ids``. Используется в
+        ArtifactDetailPage для отдельной вкладки «Решения».
+        """
+        return to_primitive(
+            query_service.decisions_for_artifact(
+                project_id,
+                artifact_id,
+                include_details=include_details,
+            )
+        )
+
+    @app.get("/api/projects/{project_id}/decisions/export.pdf")
+    def download_decisions_pdf(project_id: str) -> Response:
+        """v3.5 — выгрузка реестра решений в виде PDF-таблицы.
+
+        Берёт текущий реестр (без фильтров), сериализует в широкую таблицу
+        markdown и прогоняет через общий PDF-pipeline. Landscape применяется
+        автоматически если строки длинные (см. pdf_export._enhance_tables_in_html).
+        """
+        view = query_service.project_decisions(project_id)
+        shell = query_service.project_shell(project_id)
+        decisions_payload = to_primitive(view.items)
+        pdf_bytes = render_decisions_pdf(
+            decisions=decisions_payload,  # type: ignore[arg-type]
+            project_name=shell.name or project_id,
+            mode=view.mode,
+        )
+        filename = _safe_pdf_filename(
+            f"Реестр решений — {shell.name or project_id}", project_id
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": _content_disposition_header(filename),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.get("/api/projects/{project_id}/decisions/{decision_id}")
+    def project_decision_detail(project_id: str, decision_id: str) -> Any:
+        """Детали решения по id.
+
+        Возвращает 404 при отсутствии (внутренний NotFoundError по
+        дефолту даёт 409 через глобальный handler, но для GET по id 404
+        семантически правильнее — повторяем паттерн download.pdf).
+        """
+        from ..common.errors import NotFoundError
+        try:
+            return to_primitive(query_service.decision_detail(project_id, decision_id))
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/projects/{project_id}/decisions/{decision_id}/verify")
+    def project_decision_verify(
+        project_id: str, decision_id: str, body: dict[str, Any] | None = None
+    ) -> Any:
+        """v3.4 — пометить рискованное решение как «просмотрено и согласовано».
+
+        Снимает индикатор `is_low_confidence` в UI без изменения самого
+        решения (ни choice, ни alternatives). Это аудит-метка для случаев,
+        когда дефолт LLM на самом деле адекватен, а низкая уверенность —
+        артефакт общей неопределённости задачи.
+
+        Body (optional):
+            ``{"verified": true}`` — поставить метку (default).
+            ``{"verified": false}`` — снять метку.
+
+        Returns:
+            Обновлённое решение в формате DecisionItemView.
+        """
+        from ..common.errors import NotFoundError
+
+        verified = True if body is None else bool(body.get("verified", True))
+        # Сначала валидируем принадлежность решения проекту (404 если нет).
+        try:
+            query_service.decision_detail(project_id, decision_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.set_decision_verified(
+            workspace,
+            decision_id=decision_id,
+            verified=verified,
+        )
+        return to_primitive(query_service.decision_detail(project_id, decision_id))
+
+    # --- v3.0 — Checkpoint sessions -----------------------------------------
+
+    @app.get("/api/projects/{project_id}/checkpoints")
+    def project_checkpoints(project_id: str) -> Any:
+        """Все checkpoint-сессии проекта + pending_count для UI-бейджа."""
+        return to_primitive(query_service.project_checkpoints(project_id))
+
+    @app.get("/api/projects/{project_id}/checkpoints/{session_id}")
+    def project_checkpoint_detail(project_id: str, session_id: str) -> Any:
+        """Развёрнутая сессия: метаданные + Decision-карточки.
+
+        Returns 404 если сессии нет или она принадлежит другому проекту.
+        """
+        from ..common.errors import NotFoundError
+        try:
+            return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/projects/{project_id}/checkpoints/{session_id}/answer")
+    def project_checkpoint_answer(
+        project_id: str, session_id: str, body: dict[str, Any]
+    ) -> Any:
+        """Применить ответы пользователя на checkpoint-сессию.
+
+        Body:
+            ``{ "answers": [{ "decision_id": "...", "kind": "accept_default" | "select_alternative" | "free_text" | "defer", "selected_option_id": "..." | None, "free_text": "..." | None }] }``
+
+        Все ответы применяются атомарно. На решения сессии, по которым
+        ответа не передано — применяется ``accept_default`` (массовое
+        подтверждение оставшихся при закрытии сессии).
+
+        Returns:
+            Финализированная сессия (status=finalized) с обновлёнными
+            Decision-объектами.
+        """
+        from ..common.errors import NotFoundError
+        from ..domain.checkpoints import CheckpointAnswer
+
+        # Проверяем, что сессия принадлежит проекту, до применения
+        # (вызов нужен ради side-effect — бросает NotFoundError, если нет).
+        try:
+            query_service.checkpoint_session_detail(project_id, session_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        raw_answers = body.get("answers") or []
+        if not isinstance(raw_answers, list):
+            raise HTTPException(status_code=400, detail="'answers' должен быть массивом")
+        answers: list[CheckpointAnswer] = []
+        for raw in raw_answers:
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=400, detail="каждый answer — объект")
+            try:
+                answers.append(
+                    CheckpointAnswer(
+                        decision_id=str(raw["decision_id"]),
+                        kind=str(raw["kind"]),  # type: ignore[arg-type]
+                        selected_option_id=(
+                            str(raw["selected_option_id"])
+                            if raw.get("selected_option_id") is not None
+                            else None
+                        ),
+                        free_text=(
+                            str(raw["free_text"])
+                            if raw.get("free_text") is not None
+                            else None
+                        ),
+                    )
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=f"answer без поля {exc}")
+
+        workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.submit_answers(
+            workspace, session_id=session_id, answers=tuple(answers)
+        )
+
+        # v3.0 auto-continue: после финализации сессии задача переведена в
+        # ready (см. CheckpointService.submit_answers). Сразу запускаем новый
+        # workflow run, чтобы пользователь не нажимал «Run» вручную.
+        #
+        # Если active run уже есть — не запускаем повторный (он сам подхватит
+        # ready-task на следующей итерации планировщика). Provider/model берём
+        # из последнего запущенного run проекта (если нет — None = режим
+        # «из настроек»).
+        try:
+            already_active = workflow_runner_service.latest_active_run(workspace, project_id)
+            if already_active is None:
+                runs = workflow_runner_service.list_runs(workspace, project_id=project_id, limit=1)
+                last_run = runs[0] if runs else None
+                workflow_runner_service.start_run_until_blocked(
+                    workspace,
+                    project_id,
+                    provider=last_run.provider if last_run else None,
+                    model=last_run.model if last_run else None,
+                    max_steps=1000,
+                )
+        except Exception:  # noqa: BLE001
+            # Не блокируем submit, если auto-continue не сработал — пользователь
+            # сможет вручную нажать «Run». Логирование внутри runner'а.
+            pass
+
+        # Перечитываем финализированную сессию через query_service,
+        # чтобы UI получил тот же view-формат, что и при GET
+        return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
 
     @app.get("/api/projects/{project_id}/artifacts")
     def project_artifacts(project_id: str) -> Any:
@@ -474,10 +720,6 @@ def create_app(
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/skeleton")
     def project_artifact_skeleton(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_skeleton(project_id, artifact_id))
-
-    @app.get("/api/projects/{project_id}/decisions")
-    def project_decision_log(project_id: str) -> Any:
-        return to_primitive(query_service.project_decision_log(project_id))
 
     @app.get("/api/projects/{project_id}/artifact-versions")
     def project_artifact_versions(project_id: str) -> Any:
@@ -588,105 +830,37 @@ def create_app(
             command_service.enable_domain_pack(project_id, pack_ref=_required_str(payload, "pack_ref"))
         )
 
-    def _autoresume_workflow_if_unblocked(project_id: str) -> None:
-        """Авто-продолжает workflow когда у проекта не осталось blocking
-        clarifications в статусе open. Идемпотентно: если запущен
-        активный run, ничего не делает.
-
-        Решает жалобу: после ответа на последний вопрос workflow стоял
-        пока пользователь не нажмёт «Run» вручную.
-
-        Особенности:
-        - Provider/model берём из последнего workflow_run этого проекта,
-          чтобы auto-resume использовал ту же модель, что и manual «Run».
-          Иначе runner мог свалиться в stub-провайдер из env и выдать
-          мусор, который проваливал валидацию.
-        - `continue_past_validation_failure=True`: одна валящаяся задача
-          (например, низкоуверенный goal_hypothesis) не должна
-          блокировать весь pipeline. Planner после её failed-статуса
-          сам перейдёт к следующей готовой задаче (например,
-          request_normalization).
-        """
-        try:
-            workspace_ref = catalog.resolve_workspace(project_id)
-        except Exception:
-            return
-        if workflow_runner_service.latest_active_run(workspace_ref.workspace, project_id) is not None:
-            return
-        runtime_local = workflow_runner_service._runtime  # type: ignore[attr-defined]
-        try:
-            blocking = [
-                req
-                for req in runtime_local.list_clarification_requests(
-                    workspace_ref.workspace, statuses=("open",)
-                )
-                if req.blocking_scope != "none"
-            ]
-        except Exception:
-            return
-        if blocking:
-            return
-
-        # Подхватываем provider/model из последнего run проекта —
-        # пользователь явно выбрал их через UI, не теряем настройку.
-        provider: str | None = None
-        model: str | None = None
-        try:
-            recent_runs = workflow_runner_service.list_runs(
-                workspace_ref.workspace, project_id=project_id, limit=1
-            )
-            if recent_runs:
-                provider = recent_runs[0].provider
-                model = recent_runs[0].model
-        except Exception:
-            pass
-
-        try:
-            workflow_runner_service.start_run_until_blocked(
-                workspace_ref.workspace,
-                project_id,
-                provider=provider,
-                model=model,
-                max_steps=1000,
-                continue_past_validation_failure=True,
-            )
-        except Exception:
-            # Best-effort: ошибка авто-resume не должна ломать ответ пользователя.
-            pass
-
-    @app.post("/api/projects/{project_id}/commands/answer-clarification")
-    def answer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        selected_option_ids = payload.get("selected_option_ids", [])
-        if not isinstance(selected_option_ids, list):
-            raise PovGeneratorError("Поле 'selected_option_ids' должно быть списком.")
-        result = to_primitive(
-            command_service.answer_clarification(
-                project_id,
-                clarification_id=_required_str(payload, "clarification_id"),
-                selected_option_ids=tuple(_required_string_list(selected_option_ids, "selected_option_ids")),
-                free_text=_optional_str(payload, "free_text"),
-            )
-        )
-        _autoresume_workflow_if_unblocked(project_id)
-        return result
-
-    @app.post("/api/projects/{project_id}/commands/accept-assumption")
-    def accept_assumption(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        result = to_primitive(
-            command_service.accept_assumption(
-                project_id,
-                clarification_id=_required_str(payload, "clarification_id"),
-            )
-        )
-        _autoresume_workflow_if_unblocked(project_id)
-        return result
-
     @app.post("/api/projects/{project_id}/commands/set-clarification-mode")
     def set_clarification_mode(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         mode = _required_str(payload, "mode")
         if mode not in {"autopilot", "balanced", "control", "expert"}:
             raise PovGeneratorError("Режим уточнений должен быть одним из: autopilot, balanced, control, expert.")
-        return to_primitive(command_service.set_clarification_mode(project_id, mode=mode))
+        result = command_service.set_clarification_mode(project_id, mode=mode)
+
+        # v3.2 auto-continue: если смена режима разблокировала задачи —
+        # сразу стартуем workflow run, чтобы пользователь не жал «Run» вручную.
+        # Той же логикой пользуется submit-answers endpoint.
+        try:
+            workspace_ref = catalog.resolve_workspace(project_id)
+            ws = workspace_ref.workspace
+            already_active = workflow_runner_service.latest_active_run(ws, project_id)
+            if already_active is None:
+                # Эвристика: «есть смысл запустить» = есть failed-tasks
+                # (mode change их auto-retry'ит на ready) или просто что-то
+                # есть в очереди. start_run_until_blocked сам поймёт.
+                runs = workflow_runner_service.list_runs(ws, project_id=project_id, limit=1)
+                last_run = runs[0] if runs else None
+                workflow_runner_service.start_run_until_blocked(
+                    ws,
+                    project_id,
+                    provider=last_run.provider if last_run else None,
+                    model=last_run.model if last_run else None,
+                    max_steps=1000,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        return to_primitive(result)
 
     @app.post("/api/projects/{project_id}/commands/set-methodology")
     def set_methodology(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
@@ -702,53 +876,6 @@ def create_app(
             )
         )
 
-    # ---- W5.1: defer / reopen / events / next ---------------------------
-
-    @app.post("/api/projects/{project_id}/commands/defer-clarification")
-    def defer_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        request_id = _required_str(payload, "clarification_id")
-        reason = _optional_str(payload, "reason")
-        return to_primitive(
-            clarification_service.defer_clarification(
-                workspace_ref.workspace, request_id=request_id, reason=reason,
-            )
-        )
-
-    @app.post("/api/projects/{project_id}/commands/reopen-clarification")
-    def reopen_clarification(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        request_id = _required_str(payload, "clarification_id")
-        return to_primitive(
-            clarification_service.reopen_clarification(workspace_ref.workspace, request_id=request_id)
-        )
-
-    @app.get("/api/projects/{project_id}/clarifications/{clarification_id}/events")
-    def clarification_events(project_id: str, clarification_id: str) -> Any:
-        workspace_ref = catalog.resolve_workspace(project_id)
-        return to_primitive(
-            clarification_service.list_events(workspace_ref.workspace, clarification_id)
-        )
-
-    @app.get("/api/projects/{project_id}/clarifications/next")
-    def clarification_next(project_id: str, after_id: str | None = None) -> Any:
-        """Возвращает следующий открытый вопрос (по приоритету), отличный
-        от `after_id`. Это flow-навигация UI wizard'а после ответа."""
-        workspace_ref = catalog.resolve_workspace(project_id)
-        opens = [
-            req for req in runtime.list_clarification_requests(
-                workspace_ref.workspace, statuses=("open",),
-            )
-            if req.request_id != after_id
-        ]
-        # Сортируем по priority desc, потом по created_at asc — старые более
-        # приоритетные сверху.
-        priority_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
-        opens.sort(
-            key=lambda r: (-priority_rank.get(r.priority, 0), r.created_at)
-        )
-        return to_primitive(opens[0]) if opens else None
-
     @app.websocket("/ws/projects/{project_id}")
     async def project_updates(websocket: WebSocket, project_id: str) -> None:
         await websocket.accept()
@@ -762,7 +889,6 @@ def create_app(
                 "situation",
                 "timeline",
                 "artifacts",
-                "clarifications",
                 "review",
                 "state",
                 # Aggregated L1 / L2 projections (W2 UI). realtime_token tracks

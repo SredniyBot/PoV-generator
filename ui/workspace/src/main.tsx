@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import ErrorBoundary from "./ErrorBoundary";
 import "./styles.css";
+import "./decisions.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
