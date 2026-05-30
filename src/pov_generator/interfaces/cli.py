@@ -16,7 +16,10 @@ from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
 from ..common.serialization import json_dumps, to_primitive
 from ..domain.registry import ObjectRef
-from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.filesystem_registry import (
+    CachingRegistryLoader,
+    FilesystemRegistryLoader,
+)
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -26,7 +29,9 @@ def main(argv: list[str] | None = None) -> None:
 
     repo_root = Path(__file__).resolve().parents[3]
     load_repo_env(repo_root)
-    registry_service = RegistryService(FilesystemRegistryLoader(repo_root / "templates"))
+    registry_service = RegistryService(
+        CachingRegistryLoader(FilesystemRegistryLoader(repo_root / "templates"))
+    )
     runtime = SqliteRuntime()
     # Один реестр LLM-провайдеров на процесс — все сервисы DI'ятся одной точкой.
     from ..infrastructure.llm import LLMProviderRegistry

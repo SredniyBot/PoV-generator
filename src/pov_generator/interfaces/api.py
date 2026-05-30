@@ -29,7 +29,10 @@ from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError, ValidationError
 from ..common.serialization import to_primitive, utc_now_iso
 from ..domain.llm_settings import ALL_PURPOSES
-from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.filesystem_registry import (
+    CachingRegistryLoader,
+    FilesystemRegistryLoader,
+)
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -48,7 +51,12 @@ def create_app(
     resolved_runtime_root = runtime_root or (resolved_repo_root / "runtime")
     ui_dist_root = resolved_repo_root / "ui" / "workspace" / "dist"
 
-    registry_service = RegistryService(FilesystemRegistryLoader(resolved_repo_root / "templates"))
+    # Кеширующий декоратор: реестр (73 YAML) парсится один раз и
+    # переиспользуется, пока файлы не изменятся (инвалидация по mtime+size).
+    # Снимает повторный парсинг на каждом запросе/поллинге проекций.
+    registry_service = RegistryService(
+        CachingRegistryLoader(FilesystemRegistryLoader(resolved_repo_root / "templates"))
+    )
     runtime = SqliteRuntime()
     # Persistence слой настроек LLM-провайдеров (system-wide, не per-workspace).
     settings_store = SqliteSettingsStore(resolved_runtime_root)
@@ -762,6 +770,12 @@ def create_app(
                 # which is exactly what L1 Mission Control needs.
                 "overview",
                 "methodology",
+                # Прогресс workflow-ранов — первоклассная realtime-проекция.
+                # realtime_token меняется на каждой записи runner'а, поэтому
+                # клиент получает push и инвалидирует run-запросы без HTTP-
+                # поллинга. (UI присылает свой projections-список; здесь —
+                # дефолт для консистентности и клиентов без явного списка.)
+                "workflow_runs",
             )
         )
         try:

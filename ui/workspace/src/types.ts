@@ -9,7 +9,8 @@ export type ProjectionName =
   | "state"
   | "debug"
   | "overview"
-  | "methodology";
+  | "methodology"
+  | "workflow_runs";
 
 export interface ProjectListItemView {
   project_id: string;

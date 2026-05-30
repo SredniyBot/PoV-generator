@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
+import { activeRunRefetchInterval } from "./realtime";
 import type {
   ArtifactSectionStatus,
   ArtifactSkeletonView,
@@ -70,7 +71,9 @@ export function ProjectOverviewV2({
   const activeRunQuery = useQuery<WorkflowRunView | null>({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
-    refetchInterval: 1500,
+    // Прогресс едет по WS (projection_changed: workflow_runs); полл —
+    // страховка только пока run идёт, на простое off.
+    refetchInterval: activeRunRefetchInterval,
   });
   const activeRun = activeRunQuery.data ?? null;
   const isRunning =

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..domain.registry import RegistryIssue, RegistrySnapshot, ValidationReport
-from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.filesystem_registry import RegistryLoader
 
 
 @dataclass(frozen=True)
@@ -18,14 +18,28 @@ class RegistrySummary:
 
 
 class RegistryService:
-    def __init__(self, loader: FilesystemRegistryLoader) -> None:
+    def __init__(self, loader: RegistryLoader) -> None:
         self._loader = loader
+        # Мемоизация результата валидации по identity снапшота. Кеширующий
+        # лоадер возвращает тот же объект снапшота, пока исходники не
+        # изменились, поэтому дорогие cross-ref проверки достаточно
+        # выполнить один раз на версию реестра.
+        self._cached_snapshot: RegistrySnapshot | None = None
+        self._cached_report: ValidationReport | None = None
 
     def load(self) -> RegistrySnapshot:
         return self._loader.load()
 
     def validate(self) -> tuple[RegistrySnapshot, ValidationReport]:
         snapshot = self.load()
+        if snapshot is self._cached_snapshot and self._cached_report is not None:
+            return snapshot, self._cached_report
+        report = self._validate_snapshot(snapshot)
+        self._cached_snapshot = snapshot
+        self._cached_report = report
+        return snapshot, report
+
+    def _validate_snapshot(self, snapshot: RegistrySnapshot) -> ValidationReport:
         errors: list[RegistryIssue] = []
         warnings: list[RegistryIssue] = []
 
@@ -247,7 +261,7 @@ class RegistryService:
                             )
                         )
 
-        return snapshot, ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
+        return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 
     def summary(self, snapshot: RegistrySnapshot) -> RegistrySummary:
         return RegistrySummary(

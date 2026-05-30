@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 
 import { api as apiClient } from "./api";
+import { activeRunRefetchInterval } from "./realtime";
 import {
   AlertTriangle,
   ArrowRight,
@@ -564,7 +565,9 @@ export function CommandBar({
   const activeRunQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => apiClient.getActiveWorkflowRun(projectId),
-    refetchInterval: 1500,
+    // Прогресс инвалидируется WS-пушем (workflow_runs); полл — страховка
+    // только пока run идёт, на простое off.
+    refetchInterval: activeRunRefetchInterval,
   });
   const pauseMutation = useMutation({
     mutationFn: (runId: string) => apiClient.cancelWorkflow(projectId, runId),

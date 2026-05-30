@@ -55,6 +55,8 @@ function preprocessMarkdownForMermaid(markdown: string): string {
 }
 
 import { api } from "./api";
+import ErrorBoundary from "./ErrorBoundary";
+import { activeRunRefetchInterval } from "./realtime";
 import { DecisionLogPage } from "./DecisionLogPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
@@ -117,6 +119,10 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   // and MethodologyPage queries get invalidated automatically.
   "overview",
   "methodology",
+  // Прогресс workflow-ранов теперь первоклассная realtime-проекция: запись
+  // runner'а меняет realtime_token, WS присылает projection_changed, и
+  // run-запросы инвалидируются по пушу — вместо отдельного HTTP-поллинга.
+  "workflow_runs",
 ];
 
 type ToastTone = "success" | "warning" | "danger";
@@ -319,7 +325,18 @@ function AppFrame() {
           <Route path="/projects/:projectId" element={<Navigate to="overview" replace />} />
           <Route
             path="/projects/:projectId/*"
-            element={<WorkspaceRoute onCreate={() => setCreateOpen(true)} notify={notify} />}
+            element={
+              // key={projectId} — при смене проекта boundary перемонтируется
+              // и сбрасывает ошибку. Краш одного проекта не гасит оболочку
+              // (рельса проектов и навигация остаются доступны).
+              <ErrorBoundary
+                key={selectedProjectId ?? "workspace"}
+                title="Не удалось открыть проект"
+                onReset={() => navigate("/")}
+              >
+                <WorkspaceRoute onCreate={() => setCreateOpen(true)} notify={notify} />
+              </ErrorBoundary>
+            }
           />
         </Routes>
       </main>
@@ -466,11 +483,15 @@ function WorkspaceRoute({
       if (projection === "methodology") {
         void queryClient.invalidateQueries({ queryKey: ["methodology-packs"] });
       }
-      // W4.1 (R1): workflow_runs мутируются runner'ом между шагами, mtime
-      // БД меняется → realtime_token broadcasts на ВСЕ projections.
-      // Инвалидируем активный run и список — UI подхватит прогресс.
-      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
-      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+      // workflow_runs — первоклассная realtime-проекция. Runner пишет в БД
+      // между шагами → realtime_token меняется → приходит этот projection_changed
+      // → инвалидируем активный run и список. Прогресс едет по WS-пушу, без
+      // отдельного HTTP-поллинга. Привязано именно к этой проекции (а не на
+      // каждое событие), чтобы не дёргать run-запросы лишний раз.
+      if (projection === "workflow_runs") {
+        void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+        void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+      }
       setFlashProjection(projection);
       window.setTimeout(() => setFlashProjection(null), 1200);
     },
@@ -606,23 +627,23 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
   const activeQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
-    // Полл каждые 1.5 сек на случай если WS broadcast пропустим (например
-    // если token не сменился из-за внешнего write). Дёшево — endpoint
-    // отвечает за < 5 ms.
-    refetchInterval: 1500,
+    // Прогресс инвалидируется по WS (projection_changed: workflow_runs).
+    // Этот полл — тонкая страховка ТОЛЬКО пока run идёт; на простое — off.
+    refetchInterval: activeRunRefetchInterval,
   });
   const recentQuery = useQuery({
     queryKey: [projectId, "workflow-runs"],
     queryFn: () => api.listWorkflowRuns(projectId, 5),
-    refetchInterval: 5_000,
+    // Без поллинга: список инвалидируется WS-пушем при изменении ранов.
   });
   // Граф задач — нужен, чтобы показать «сейчас выполняется» (status=in_progress).
   // Запись о шаге в `run.steps` появляется только ПОСЛЕ завершения; поэтому
   // в active-режиме без графа мы не увидим, какая задача крутится прямо сейчас.
+  // Без поллинга: task_graph — WS-проекция, инвалидируется пушем на каждой
+  // записи runner'а (старт/смена статуса задачи меняют realtime_token).
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
     queryFn: () => api.getTaskGraph(projectId),
-    refetchInterval: 2500,
   });
   const [stickyRunId, setStickyRunId] = useState<string | null>(null);
   const [logCollapsed, setLogCollapsed] = useState(false);

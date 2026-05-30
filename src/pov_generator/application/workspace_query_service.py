@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -51,6 +52,8 @@ from .planning_service import PlanningService
 from .registry_service import RegistryService
 from .workspace_catalog import WorkspaceCatalog, WorkspaceRef
 
+logger = logging.getLogger(__name__)
+
 ProjectionName = str
 
 
@@ -89,23 +92,96 @@ class WorkspaceQueryService:
         self._planning_service = planning_service
 
     def list_projects(self) -> tuple[ProjectListItemView, ...]:
+        """Список всех проектов воркспейса.
+
+        Каждый проект строится изолированно: если один из них не удаётся
+        отрисовать целиком (например, его граф задач ссылается на шаблон,
+        удалённый из реестра в новой версии), это не должно ронять весь
+        список и оставлять оператора с пустым экраном. Такой проект всё
+        равно попадает в выдачу — в деградированном виде с пометкой об
+        ошибке, чтобы он не «исчезал» и причина была видна в логах.
+        """
+        # Реестр валидируется ОДИН раз на весь список (а не на каждый
+        # проект): это глобальное свойство, не зависящее от конкретного
+        # workspace. Снапшот переиспользуется при сборке каждого проекта.
+        snapshot = self._validated_snapshot()
         items: list[ProjectListItemView] = []
         for workspace_ref in self._catalog.list_workspaces():
-            context = self._load_context_by_ref(workspace_ref)
-            situation = self.project_situation(context.workspace_ref.project_id)
-            task_graph = self.project_task_graph(context.workspace_ref.project_id)
-            current_title = self._find_current_title(task_graph.nodes, task_graph.current_task_id)
-            items.append(
-                ProjectListItemView(
-                    project_id=context.manifest.project_id,
-                    name=context.manifest.name,
-                    status_label=situation.status_label,
-                    updated_at=context.state.process.updated_at,
-                    has_blockers=situation.blocking,
-                    current_step_title=current_title,
+            try:
+                items.append(self._build_project_list_item(workspace_ref, snapshot))
+            except Exception as exc:  # noqa: BLE001 — изоляция на уровне проекта
+                manifest = getattr(workspace_ref, "manifest", None)
+                logger.warning(
+                    "list_projects: не удалось построить полный вид проекта "
+                    "%s (%s): %s",
+                    getattr(manifest, "project_id", "<unknown>"),
+                    getattr(manifest, "name", "<unknown>"),
+                    exc,
                 )
-            )
+                degraded = self._degraded_list_item(workspace_ref, exc)
+                if degraded is not None:
+                    items.append(degraded)
         return tuple(sorted(items, key=lambda item: (item.updated_at, item.project_id), reverse=True))
+
+    def _build_project_list_item(
+        self, workspace_ref: WorkspaceRef, snapshot: RegistrySnapshot
+    ) -> ProjectListItemView:
+        """Построить полный элемент списка для одного проекта.
+
+        Контекст загружается один раз (переданный ``snapshot`` исключает
+        повторную валидацию реестра), планирование выполняется один раз, а
+        situation и task-graph строятся из общего среза задач — вместо трёх
+        независимых перезагрузок контекста и двух планирований, как было
+        при reuse публичных методов ``project_situation`` /
+        ``project_task_graph``.
+        """
+        context = self._load_context_by_ref(workspace_ref, snapshot=snapshot)
+        # Один dry-run план на проект; обе проекции читают один срез задач.
+        self._planning_service.plan(
+            context.workspace, context.snapshot, mode="dry-run", record=False
+        )
+        tasks = self._runtime.list_tasks(context.workspace)
+        situation = self._build_situation(context, tasks=tasks)
+        task_graph = self._build_task_graph(context, tasks=tasks)
+        current_title = self._find_current_title(task_graph.nodes, task_graph.current_task_id)
+        return ProjectListItemView(
+            project_id=context.manifest.project_id,
+            name=context.manifest.name,
+            status_label=situation.status_label,
+            updated_at=context.state.process.updated_at,
+            has_blockers=situation.blocking,
+            current_step_title=current_title,
+        )
+
+    def _degraded_list_item(
+        self, workspace_ref: WorkspaceRef, exc: Exception
+    ) -> ProjectListItemView | None:
+        """Минимальный элемент списка для проекта, который не загрузился.
+
+        Берём только то, что гарантированно доступно из манифеста
+        (id, имя, дата создания), не трогая граф задач/реестр. Для
+        сортировки пытаемся взять ``updated_at`` из состояния процесса;
+        если и оно не читается — откатываемся к ``created_at`` манифеста.
+        Возвращаем ``None`` только если нет даже манифеста — тогда показать
+        нечего.
+        """
+        manifest = getattr(workspace_ref, "manifest", None)
+        if manifest is None:
+            return None
+        updated_at = manifest.created_at
+        try:
+            state = self._runtime.load_project_state(workspace_ref.workspace)
+            updated_at = state.process.updated_at or manifest.created_at
+        except Exception:  # noqa: BLE001 — деградация не должна падать вторично
+            pass
+        return ProjectListItemView(
+            project_id=manifest.project_id,
+            name=manifest.name,
+            status_label="Ошибка загрузки",
+            updated_at=updated_at,
+            has_blockers=True,
+            current_step_title=None,
+        )
 
     def list_objectives(self) -> tuple[ObjectiveCatalogItemView, ...]:
         snapshot, report = self._registry_service.validate()
@@ -205,8 +281,23 @@ class WorkspaceQueryService:
 
     def project_task_graph(self, project_id: str) -> ProjectTaskGraphView:
         context = self._load_context(project_id)
-        self._planning_service.plan(context.workspace, context.snapshot, mode="dry-run", record=False)
-        tasks = self._runtime.list_tasks(context.workspace)
+        return self._build_task_graph(context)
+
+    def _build_task_graph(
+        self, context: ProjectContext, *, tasks: list[TaskRecord] | None = None
+    ) -> ProjectTaskGraphView:
+        """Построить проекцию графа задач из контекста.
+
+        Если ``tasks`` не передан — выполняем dry-run план и читаем задачи
+        сами (поведение standalone-вызова). Если передан (агрегирующий путь
+        уже спланировал и прочитал задачи) — переиспользуем срез, не
+        планируя повторно.
+        """
+        if tasks is None:
+            self._planning_service.plan(
+                context.workspace, context.snapshot, mode="dry-run", record=False
+            )
+            tasks = self._runtime.list_tasks(context.workspace)
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
         nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None)
@@ -955,10 +1046,29 @@ class WorkspaceQueryService:
     def _load_context(self, project_id: str) -> ProjectContext:
         return self._load_context_by_ref(self._catalog.resolve_workspace(project_id))
 
-    def _load_context_by_ref(self, workspace_ref: WorkspaceRef) -> ProjectContext:
+    def _validated_snapshot(self) -> RegistrySnapshot:
+        """Получить валидный снапшот реестра или упасть с понятной ошибкой.
+
+        Валидация мемоизирована в ``RegistryService`` по версии реестра,
+        поэтому повторные вызовы в пределах одного запроса дешёвы.
+        """
         snapshot, report = self._registry_service.validate()
         if not report.is_valid:
             raise ConflictError("Registry невалиден. Невозможно построить UI-проекции.")
+        return snapshot
+
+    def _load_context_by_ref(
+        self, workspace_ref: WorkspaceRef, *, snapshot: RegistrySnapshot | None = None
+    ) -> ProjectContext:
+        """Собрать контекст проекта.
+
+        ``snapshot`` можно передать, чтобы переиспользовать уже
+        провалидированный реестр (агрегирующие пути вроде ``list_projects``
+        валидируют его один раз на всю выборку). Если не передан —
+        валидируем (дёшево за счёт мемоизации).
+        """
+        if snapshot is None:
+            snapshot = self._validated_snapshot()
         workspace = workspace_ref.workspace
         return ProjectContext(
             workspace_ref=workspace_ref,
@@ -1037,9 +1147,14 @@ class WorkspaceQueryService:
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))
 
-    def _build_situation(self, context: ProjectContext) -> ProjectSituationView:
-        self._planning_service.plan(context.workspace, context.snapshot, mode="dry-run", record=False)
-        tasks = self._runtime.list_tasks(context.workspace)
+    def _build_situation(
+        self, context: ProjectContext, *, tasks: list[TaskRecord] | None = None
+    ) -> ProjectSituationView:
+        if tasks is None:
+            self._planning_service.plan(
+                context.workspace, context.snapshot, mode="dry-run", record=False
+            )
+            tasks = self._runtime.list_tasks(context.workspace)
         failed = [task for task in tasks if task.status == "failed"]
         ready = [task for task in tasks if task.status == "ready"]
         blockers: list[SituationBlockerView] = []

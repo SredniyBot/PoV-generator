@@ -175,6 +175,63 @@ def test_api_exposes_operator_projections_for_task_graph(tmp_path: Path) -> None
     assert len(debug["context_manifests"]) >= 11
 
 
+def test_list_projects_isolates_broken_project(tmp_path: Path, monkeypatch) -> None:
+    """Один проект, который не удаётся построить целиком, не должен ронять
+    весь список (регрессия 409 на GET /api/projects).
+
+    Сценарий из практики: проект создан старой версией флоу, его граф задач
+    ссылается на шаблон, удалённый из реестра. Раньше исключение из одного
+    проекта поднималось наружу и весь список отвечал 409 → пустой экран.
+    Теперь битый проект показывается в деградированном виде, остальные —
+    нормально.
+    """
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.common.errors import ConflictError
+
+    runtime_root = tmp_path / "runtime"
+    good_id = init_project(
+        runtime_root / "good",
+        "Подготовить ТЗ для сервиса нормализации входящих заявок.",
+    )
+    bad_id = init_project(
+        runtime_root / "bad",
+        "Подготовить ТЗ для сервиса маршрутизации обращений.",
+    )
+
+    # Падение моделируем на _build_task_graph — это тот же seam, где в
+    # реальном кейсе всплывает "Task template not found" (резолв шаблонов
+    # при построении графа). list_projects строит проекции через приватные
+    # билдеры, а не через публичные project_* методы.
+    original_build_task_graph = WorkspaceQueryService._build_task_graph
+
+    def flaky_build_task_graph(self, context, *args, **kwargs):
+        if context.manifest.project_id == bad_id:
+            raise ConflictError(
+                "Task template not found: common.review_requirements_spec@1.0.0"
+            )
+        return original_build_task_graph(self, context, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceQueryService, "_build_task_graph", flaky_build_task_graph)
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.05)
+    client = TestClient(app)
+
+    resp = client.get("/api/projects")
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    by_id = {item["project_id"]: item for item in payload}
+    assert set(by_id) == {good_id, bad_id}
+
+    bad = by_id[bad_id]
+    assert bad["status_label"] == "Ошибка загрузки"
+    assert bad["has_blockers"] is True
+    assert bad["current_step_title"] is None
+
+    good = by_id[good_id]
+    assert good["status_label"] != "Ошибка загрузки"
+
+
 def test_api_websocket_reports_projection_changes_after_command(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     workspace = runtime_root / "case2"
