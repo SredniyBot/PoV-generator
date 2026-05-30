@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,9 @@ from ..application.decision_extraction_service import DecisionExtractionService
 from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
+from ..application.parallel_scheduling import (
+    max_concurrency_for as default_max_concurrency_for,
+)
 from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
 from ..application.planning_service import PlanningService
 from ..application.project_service import ProjectService
@@ -29,6 +33,7 @@ from ..application.workspace_command_service import WorkspaceCommandService
 from ..application.workspace_query_service import WorkspaceQueryService
 from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError, ValidationError
+from ..common.logging import bind, configure_logging, get_logger, new_request_id
 from ..common.serialization import to_primitive, utc_now_iso
 from ..domain.llm_settings import ALL_PURPOSES
 from ..infrastructure.filesystem_registry import (
@@ -48,7 +53,51 @@ def create_app(
 ) -> FastAPI:
     resolved_repo_root = repo_root or Path(__file__).resolve().parents[3]
     load_repo_env(resolved_repo_root)
+    configure_logging()
+    log = get_logger("api")
+    http_log = get_logger("http")
     app = FastAPI(title="PoV Generator Operator API", version="0.1.0")
+
+    # Единое HTTP-логирование (вместо uvicorn.access). На каждый запрос —
+    # request_id (трассировка сквозь все нижележащие логи), метод, путь,
+    # статус, длительность. Политика уровней против спама:
+    #   * GET (чтения/поллинг) → DEBUG — не зашумляем INFO;
+    #   * мутации (POST/DELETE/...) → INFO — это действия пользователя;
+    #   * 4xx → WARNING, 5xx/исключение → ERROR;
+    #   * медленный ответ (> SLOW_MS) → WARNING независимо от метода.
+    _SLOW_MS = 2000
+
+    @app.middleware("http")
+    async def _logging_middleware(request, call_next):  # type: ignore[no-untyped-def]
+        request_id = new_request_id()
+        method = request.method
+        path = request.url.path
+        start = time.perf_counter()
+        with bind(request_id=request_id):
+            try:
+                response = await call_next(request)
+            except Exception:
+                dur = round((time.perf_counter() - start) * 1000)
+                http_log.error(
+                    f"{method} {path} → unhandled exception",
+                    method=method, path=path, duration_ms=dur, exc_info=True,
+                )
+                raise
+            dur = round((time.perf_counter() - start) * 1000)
+            status = response.status_code
+            msg = f"{method} {path} → {status}"
+            if status >= 500:
+                http_log.error(msg, method=method, path=path, status=status, duration_ms=dur, exc_info=False)
+            elif status >= 400:
+                http_log.warning(msg, method=method, path=path, status=status, duration_ms=dur)
+            elif dur > _SLOW_MS:
+                http_log.warning(f"{msg} (slow)", method=method, path=path, status=status, duration_ms=dur)
+            elif method == "GET":
+                http_log.debug(msg, method=method, path=path, status=status, duration_ms=dur)
+            else:
+                http_log.info(msg, method=method, path=path, status=status, duration_ms=dur)
+            response.headers["X-Request-ID"] = request_id
+            return response
 
     resolved_runtime_root = runtime_root or (resolved_repo_root / "runtime")
     ui_dist_root = resolved_repo_root / "ui" / "workspace" / "dist"
@@ -112,8 +161,43 @@ def create_app(
     )
     validation_service = ValidationService(runtime, checkpoint_service=checkpoint_service)
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
+
+    # Резолвер параллельности: берём per-provider настройку из UI
+    # (ProviderConnection.extras["max_concurrency"]); если не задана — provider-
+    # aware дефолт. provider=None (резолв по purpose) → определяем провайдера
+    # execution-цели и читаем его коннекшн. Best-effort: любой сбой → дефолт.
+    _PROVIDER_TO_CONN_TYPE = {
+        "claude_sdk": "anthropic",
+        "claude_subscription": "claude_cli",
+        "openrouter": "openrouter",
+    }
+
+    def _resolve_max_concurrency(provider: str | None) -> int:
+        effective = provider
+        try:
+            if effective is None:
+                try:
+                    effective = llm_registry.resolve_for_purpose("execution").name
+                except Exception:  # noqa: BLE001
+                    effective = None
+            conn_type = _PROVIDER_TO_CONN_TYPE.get(effective or "")
+            if conn_type:
+                for connection in provider_settings_service.list_connections():
+                    if connection.provider_type == conn_type:
+                        raw = connection.extras.get("max_concurrency")
+                        if raw:
+                            return max(1, int(raw))
+                        break
+        except Exception:  # noqa: BLE001
+            pass
+        return default_max_concurrency_for(effective)
+
     workflow_runner_service = WorkflowRunnerService(
-        runtime, registry_service, workflow_service, planning_service
+        runtime,
+        registry_service,
+        workflow_service,
+        planning_service,
+        concurrency_resolver=_resolve_max_concurrency,
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
@@ -399,6 +483,34 @@ def create_app(
             )
         )
 
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str) -> Any:
+        from ..common.errors import NotFoundError
+
+        # 404, если проекта нет — резолв до любых side-effect'ов.
+        try:
+            workspace_ref = catalog.resolve_workspace(project_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = workspace_ref.workspace
+        # 1. Остановить активный run и ДОЖДАТЬСЯ остановки daemon-потока.
+        #    Иначе in-flight запись через `_connect` пере-создаст папку
+        #    поверх rmtree и проект «воскреснет» частично.
+        active = workflow_runner_service.latest_active_run(workspace, project_id)
+        if active is not None:
+            log.warning(
+                "project delete: останавливаю активный run перед удалением",
+                project_id=project_id, run_id=active.run_id,
+            )
+            workflow_runner_service.cancel_run(workspace, active.run_id)
+            workflow_runner_service.wait_until_idle(active.run_id, timeout_s=15.0)
+        # 2. Удалить workspace целиком. UI инвалидирует список проектов;
+        #    realtime_token (mtime-based) тоже сдвинется и разошлёт
+        #    projection_changed подписчикам.
+        catalog.delete_workspace(project_id)
+        log.info("project deleted", project_id=project_id)
+        return {"status": "deleted", "project_id": project_id}
+
     @app.get("/api/registry/objectives")
     def list_objectives() -> Any:
         return to_primitive(query_service.list_objectives())
@@ -661,6 +773,73 @@ def create_app(
         # Перечитываем финализированную сессию через query_service,
         # чтобы UI получил тот же view-формат, что и при GET
         return to_primitive(query_service.checkpoint_session_detail(project_id, session_id))
+
+    @app.post("/api/projects/{project_id}/decisions/answer")
+    def project_decisions_answer(project_id: str, body: dict[str, Any]) -> Any:
+        """Ответить на ОТКРЫТЫЕ решения проекта скопом (единый экран решений).
+
+        В параллельном режиме несколько шагов могут одновременно ждать
+        решений. Пользователь видит все открытые решения единым списком
+        (``GET /decisions?status=proposed``) и отвечает разом — без понятия
+        «сессия». Тело то же, что у per-session answer, но decision_id'ы
+        могут принадлежать разным сессиям:
+
+            ``{ "answers": [{ "decision_id", "kind", "selected_option_id"?, "free_text"? }] }``
+
+        Все затронутые pending-сессии финализируются (неотвеченные решения —
+        accept_default), затем auto-continue запускает новый run.
+        """
+        from ..domain.checkpoints import CheckpointAnswer
+
+        raw_answers = body.get("answers") or []
+        if not isinstance(raw_answers, list):
+            raise HTTPException(status_code=400, detail="'answers' должен быть массивом")
+        answers: list[CheckpointAnswer] = []
+        for raw in raw_answers:
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=400, detail="каждый answer — объект")
+            try:
+                answers.append(
+                    CheckpointAnswer(
+                        decision_id=str(raw["decision_id"]),
+                        kind=str(raw["kind"]),  # type: ignore[arg-type]
+                        selected_option_id=(
+                            str(raw["selected_option_id"])
+                            if raw.get("selected_option_id") is not None
+                            else None
+                        ),
+                        free_text=(
+                            str(raw["free_text"]) if raw.get("free_text") is not None else None
+                        ),
+                    )
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=f"answer без поля {exc}")
+
+        workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.submit_decision_answers(
+            workspace, project_id=project_id, answers=tuple(answers)
+        )
+
+        # Auto-continue: задачи финализированных сессий переведены в ready;
+        # запускаем новый run, если активного нет (тот же паттерн, что в
+        # per-session answer).
+        try:
+            if workflow_runner_service.latest_active_run(workspace, project_id) is None:
+                runs = workflow_runner_service.list_runs(workspace, project_id=project_id, limit=1)
+                last_run = runs[0] if runs else None
+                workflow_runner_service.start_run_until_blocked(
+                    workspace,
+                    project_id,
+                    provider=last_run.provider if last_run else None,
+                    model=last_run.model if last_run else None,
+                    max_steps=1000,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Возвращаем обновлённый единый список открытых решений.
+        return to_primitive(query_service.project_decisions(project_id, status="proposed"))
 
     @app.get("/api/projects/{project_id}/artifacts")
     def project_artifacts(project_id: str) -> Any:
@@ -958,6 +1137,19 @@ def create_app(
         def ui_spa_fallback(full_path: str):
             if full_path.startswith(("api/", "docs", "openapi.json", "redoc", "assets/")):
                 return HTMLResponse(status_code=404, content="Not found.")
+            # Корневые статические файлы из dist (favicon.svg, robots.txt и т.п.)
+            # отдаём напрямую — иначе SPA-fallback вернул бы index.html, и
+            # browser получил бы text/html вместо иконки. Защита от ../ traversal:
+            # резолвим и проверяем, что путь внутри dist.
+            if full_path:
+                candidate = (ui_dist_root / full_path).resolve()
+                try:
+                    candidate.relative_to(ui_dist_root.resolve())
+                except ValueError:
+                    candidate = None
+                if candidate is not None and candidate.is_file():
+                    return FileResponse(candidate)
+            # Иначе — SPA-маршрут: отдаём index.html (client-side routing).
             index_file = ui_dist_root / "index.html"
             if index_file.exists():
                 return FileResponse(index_file)
@@ -1160,6 +1352,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # Both --reload and --workers >1 require an import string + factory=True
     # so uvicorn can re-import the app per worker / per file change.
+    # access_log=False: HTTP-запросы логирует наш middleware (request_id,
+    # тайминг, уровни) — uvicorn.access дублировал бы их.
     if args.reload or args.workers > 1:
         uvicorn.run(
             "pov_generator.interfaces.api:create_app",
@@ -1169,6 +1363,7 @@ def main(argv: list[str] | None = None) -> None:
             reload=args.reload,
             workers=args.workers if args.workers > 1 and not args.reload else None,
             log_level=args.log_level,
+            access_log=False,
         )
         return
 
@@ -1178,6 +1373,7 @@ def main(argv: list[str] | None = None) -> None:
         host=args.host,
         port=args.port,
         log_level=args.log_level,
+        access_log=False,
     )
 
 

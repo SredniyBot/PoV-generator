@@ -298,6 +298,37 @@ def test_api_can_list_registry_entries_and_create_project(tmp_path: Path) -> Non
     assert shell_payload["active_domain_packs"] == ["frontend.web_workspace@1.0.0"]
 
 
+def test_api_delete_project_removes_workspace(tmp_path: Path) -> None:
+    """DELETE /api/projects/{id} удаляет workspace целиком: проект исчезает
+    из списка, а его папка с диска удаляется."""
+    runtime_root = tmp_path / "runtime"
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/projects",
+        json={
+            "name": "To Be Deleted",
+            "objective_ref": OBJECTIVE_REF,
+            "request_text": "Тестовый проект для удаления.",
+            "domain_pack_refs": ["frontend.web_workspace@1.0.0"],
+        },
+    ).json()
+    project_id = created["project_id"]
+    assert any(p["project_id"] == project_id for p in client.get("/api/projects").json())
+
+    deleted = client.delete(f"/api/projects/{project_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    # Исчез из списка и его shell больше недоступен.
+    assert all(p["project_id"] != project_id for p in client.get("/api/projects").json())
+    assert client.get(f"/api/projects/{project_id}/shell").status_code in (404, 409, 500)
+
+    # Повторное удаление — 404 (резолв до side-effect'ов).
+    assert client.delete(f"/api/projects/{project_id}").status_code == 404
+
+
 def test_api_retry_task_reexecutes_failed_task(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     workspace = runtime_root / "case-retry"

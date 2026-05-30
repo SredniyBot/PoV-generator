@@ -163,6 +163,13 @@ code {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* Обёртка карточки проекта: positioning-контекст для кнопки удаления
+   (она сиблинг <Link>, а не потомок — button внутри <a> невалиден). */
+.project-item-wrap {
+  position: relative;
+  display: block;
+}
+
 .project-item {
   border: 1px solid var(--border-subtle);
   background: rgba(24, 27, 31, 0.92);
@@ -172,6 +179,44 @@ code {
   flex-direction: column;
   gap: 8px;
   transition: border-color 180ms ease, transform 180ms ease, background-color 180ms ease;
+}
+
+/* Кнопка удаления — в правом нижнем углу карточки, проявляется на hover
+   обёртки или при фокусе с клавиатуры (доступность). */
+.project-item__delete {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.project-item-wrap:hover .project-item__delete,
+.project-item__delete:focus-visible {
+  opacity: 1;
+}
+
+.project-item__delete:hover {
+  color: var(--danger, #d78383);
+  background: rgba(215, 131, 131, 0.12);
+  border-color: rgba(215, 131, 131, 0.32);
+}
+
+.project-item__delete:disabled {
+  opacity: 1;
+  cursor: progress;
+  color: var(--text-tertiary);
 }
 
 .project-item:hover {
@@ -392,6 +437,55 @@ code {
   color: var(--text-primary);
 }
 
+/* Под-навигация раздела «Решения» (Открытые / Реестр). Вторичный уровень
+   под основными вкладками проекта — те же pills, чуть компактнее. */
+.decisions-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.decisions-subnav__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.decisions-subnav__item:hover {
+  border-color: rgba(120, 184, 201, 0.2);
+}
+
+.decisions-subnav__item--active {
+  background: rgba(95, 167, 184, 0.14);
+  border-color: rgba(120, 184, 201, 0.28);
+  color: var(--text-primary);
+}
+
+/* Счётчик открытых решений. Тёплый акцент = «требует внимания». */
+.decisions-subnav__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(214, 158, 96, 0.22);
+  border: 1px solid rgba(214, 158, 96, 0.4);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .command-bar {
   display: flex;
   flex-direction: column;
@@ -512,6 +606,40 @@ code {
 
 .field--stacked {
   gap: 10px;
+}
+
+/* Контрол параллельности в карточке провайдера (Settings). */
+.llm-row__concurrency {
+  margin-top: 8px;
+  max-width: 220px;
+}
+
+.llm-row__concurrency-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.llm-row__concurrency-input input {
+  width: 96px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  padding: 7px 10px;
+  font: inherit;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.llm-row__concurrency-input input::placeholder {
+  color: var(--text-muted);
+}
+
+.llm-row__concurrency-input input:focus {
+  border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .checkbox-field {

@@ -82,6 +82,39 @@ class WorkflowService:
             cancellation=cancellation,
         )
 
+    def execute_step(
+        self,
+        workspace: Path,
+        snapshot,
+        *,
+        task_id: str,
+        selected_step_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> WorkflowStepResult:
+        """Выполнить КОНКРЕТНУЮ (уже выбранную) задачу — точка входа для
+        параллельного шедулера.
+
+        В отличие от :meth:`run_next` (который сам планирует и выбирает одну
+        задачу), здесь задача уже выбрана шедулером из набора admissible.
+        Жизненный цикл тот же: start → execute → validate → apply → complete
+        (или cancel→ready / fail). ``cancellation`` пробрасывается, чтобы
+        воркер можно было форсированно прервать.
+        """
+        task = self._runtime.get_task(workspace, task_id)
+        return self._execute_existing_task(
+            workspace,
+            snapshot,
+            task_id=task_id,
+            planning_outcome="selected",
+            selected_step_id=selected_step_id or task.task_key,
+            provider=provider,
+            model=model,
+            reasons=("Запущена параллельным шедулером.",),
+            cancellation=cancellation,
+        )
+
     def retry_task(
         self,
         workspace: Path,
@@ -134,9 +167,12 @@ class WorkflowService:
             #     это даст возможность retry после submit_answers);
             #   - возвращаем step с маркером paused_for_checkpoint.
             if execution_bundle.result.status == "paused_for_checkpoint":
+                # Сообщение — user-facing: НЕ упоминаем «сессию» и её id
+                # (пользователь не должен знать о сущности сессии вопросов).
+                # Привязываемся к понятному названию задачи/артефакта.
+                paused_task = self._runtime.get_task(workspace, task_id)
                 pause_message = (
-                    "Pre-flight checkpoint: ждём ответа пользователя в "
-                    f"сессии {execution_bundle.result.checkpoint_session_id}"
+                    f"Ожидает ваших решений перед сборкой «{paused_task.title}»"
                 )
                 self._planning_service.transition_task(
                     workspace,

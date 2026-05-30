@@ -14,6 +14,7 @@ from ..application.validation_service import ValidationService
 from ..application.workflow_service import WorkflowService
 from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
+from ..common.logging import configure_logging
 from ..common.serialization import json_dumps, to_primitive
 from ..domain.registry import ObjectRef
 from ..infrastructure.filesystem_registry import (
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> None:
 
     repo_root = Path(__file__).resolve().parents[3]
     load_repo_env(repo_root)
+    configure_logging()
     registry_service = RegistryService(
         CachingRegistryLoader(FilesystemRegistryLoader(repo_root / "templates"))
     )

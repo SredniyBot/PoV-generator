@@ -167,6 +167,14 @@ function ProvidersTab() {
 }
 
 
+// Auto-дефолты параллельности (зеркало backend parallel_scheduling):
+// subscription (claude_cli) осторожнее, API-провайдеры — быстрее.
+const AUTO_CONCURRENCY: Record<string, number> = {
+  anthropic: 5,
+  claude_cli: 2,
+  openrouter: 5,
+};
+
 function ProviderRow({
   provider,
   onTest,
@@ -204,6 +212,26 @@ function ProviderRow({
     return <span className="llm-badge llm-badge--neutral">не протестирован</span>;
   })();
 
+  // Параллельность workflow для ЭТОГО провайдера. Хранится в
+  // extras.max_concurrency; пусто = авто-дефолт (subscription осторожнее,
+  // API-провайдеры агрессивнее). Сохраняем по blur, если значение изменилось.
+  const queryClient = useQueryClient();
+  const [concurrency, setConcurrency] = useState(provider.extras.max_concurrency ?? "");
+  const concurrencyMutation = useMutation({
+    mutationFn: (value: string) =>
+      api.updateProvider(provider.connection_id, {
+        extras: { ...provider.extras, max_concurrency: value },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
+    },
+  });
+  const saveConcurrency = () => {
+    if (concurrency !== (provider.extras.max_concurrency ?? "")) {
+      concurrencyMutation.mutate(concurrency.trim());
+    }
+  };
+
   return (
     <li className="llm-row">
       <div className="llm-row__main">
@@ -215,6 +243,30 @@ function ProviderRow({
             <span className="llm-badge llm-badge--neutral"> из .env</span>
           ) : null}
         </span>
+        <label className="llm-row__concurrency field">
+          <span>Параллельных шагов</span>
+          <div className="llm-row__concurrency-input">
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={concurrency}
+              placeholder={`авто · ${AUTO_CONCURRENCY[provider.provider_type] ?? 3}`}
+              title="Сколько шагов workflow выполнять одновременно для этого провайдера. Пусто = авто-дефолт."
+              onChange={(e) => setConcurrency(e.target.value)}
+              onBlur={saveConcurrency}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            {concurrencyMutation.isPending ? (
+              <Loader2 size={13} className="spin" />
+            ) : null}
+          </div>
+          <span className="field__hint">
+            Пусто — авто ({AUTO_CONCURRENCY[provider.provider_type] ?? 3} для этого провайдера).
+          </span>
+        </label>
         {provider.last_test_message ? (
           <p className="llm-row__hint">{provider.last_test_message}</p>
         ) : null}

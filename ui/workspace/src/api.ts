@@ -50,6 +50,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  deleteProject: (projectId: string) =>
+    request<{ status: string; project_id: string }>(`/api/projects/${projectId}`, {
+      method: "DELETE",
+    }),
   listObjectives: () => request<ObjectiveCatalogItemView[]>("/api/registry/objectives"),
   listDomainPacks: () => request<DomainPackCatalogItemView[]>("/api/registry/domain-packs"),
   listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
@@ -218,6 +222,19 @@ export const api = {
   ) =>
     request<import("./types").CheckpointSessionView>(
       `/api/projects/${projectId}/checkpoints/${sessionId}/answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers }),
+      },
+    ),
+  // Единый bulk-ответ на ВСЕ открытые решения проекта (поверх сессий).
+  // Используется единым экраном открытых решений в параллельном режиме.
+  answerDecisions: (
+    projectId: string,
+    answers: import("./types").CheckpointAnswerPayload[],
+  ) =>
+    request<import("./types").ProjectDecisionsView>(
+      `/api/projects/${projectId}/decisions/answer`,
       {
         method: "POST",
         body: JSON.stringify({ answers }),

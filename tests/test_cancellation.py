@@ -173,7 +173,18 @@ class _BlockingWorkflowService:
     def __init__(self) -> None:
         self.entered = threading.Event()
 
-    def run_next(self, workspace, snapshot, *, provider=None, model=None, cancellation=None):
+    def execute_step(
+        self,
+        workspace,
+        snapshot,
+        *,
+        task_id=None,
+        selected_step_id=None,
+        provider=None,
+        model=None,
+        cancellation=None,
+    ):
+        # Параллельный шедулер запускает шаги через execute_step.
         self.entered.set()
         # Блокируемся как реальный LLM-вызов; выходим только по отмене.
         deadline = time.monotonic() + 5.0

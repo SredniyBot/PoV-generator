@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar
 
 from ..common.errors import NotFoundError
 from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
@@ -22,7 +26,6 @@ from ..domain.decisions import (
     DecisionLevel,
     DecisionSource,
     DecisionStatus,
-    DecisionUserAction,
 )
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
@@ -453,6 +456,56 @@ def _context_item_from_row(row: sqlite3.Row) -> ContextItem:
     )
 
 
+# --- per-workspace write-coordinator -----------------------------------------
+#
+# Параллельное выполнение шагов workflow означает несколько потоков-воркеров,
+# одновременно мутирующих один и тот же workspace (артефакты, состояние,
+# решения, статусы задач). SQLite сам по себе допускает только одного писателя,
+# а наши read-modify-write мутации (apply_*_patch: load → compute → commit)
+# без блокировки дали бы потерянные обновления.
+#
+# Поэтому ВСЕ мутации сериализуются per-workspace реентрантным локом. LLM-
+# вызовы (медленная часть) идут вне лока и реально параллелятся; критическая
+# секция записи — микросекунды. Лок процесс-глобальный (ключ — resolved-путь
+# workspace), потому что SqliteRuntime инстанцируется в нескольких местах, но
+# файл БД у workspace один.
+_WORKSPACE_WRITE_LOCKS: dict[str, threading.RLock] = {}
+_WORKSPACE_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _workspace_write_lock(workspace: Path) -> threading.RLock:
+    key = str(Path(workspace).resolve())
+    lock = _WORKSPACE_WRITE_LOCKS.get(key)
+    if lock is None:
+        with _WORKSPACE_WRITE_LOCKS_GUARD:
+            lock = _WORKSPACE_WRITE_LOCKS.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                _WORKSPACE_WRITE_LOCKS[key] = lock
+    return lock
+
+
+_RuntimeMethod = TypeVar("_RuntimeMethod", bound=Callable[..., object])
+
+
+def _serialized_write(method: _RuntimeMethod) -> _RuntimeMethod:
+    """Сериализовать мутирующий метод runtime per-workspace.
+
+    Применяется к методам с сигнатурой ``(self, workspace, ...)``. Держит
+    per-workspace лок на ВЕСЬ метод — это критично для read-modify-write
+    (load внутри тоже под локом → второй писатель видит коммит первого, нет
+    потерянных обновлений). Лок реентрантный, поэтому вложенные мутации того
+    же потока не дедлочат.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, workspace, *args, **kwargs):  # type: ignore[no-untyped-def]
+        with _workspace_write_lock(workspace):
+            return method(self, workspace, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
 class SqliteRuntime:
     DB_FILENAME = "runtime.db"
     MANIFEST_FILENAME = "project.json"
@@ -462,6 +515,7 @@ class SqliteRuntime:
         # на каждом ``_connect`` не нужно. Один раз на workspace.
         self._schema_ensured: set[Path] = set()
 
+    @_serialized_write
     def create_workspace(
         self,
         workspace: Path,
@@ -545,6 +599,7 @@ class SqliteRuntime:
             objective_history=tuple(str(item) for item in history),
         )
 
+    @_serialized_write
     def update_manifest(self, workspace: Path, manifest: ProjectManifest) -> None:
         """Перезаписать ``project.json`` новым manifest'ом.
 
@@ -615,6 +670,7 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    @_serialized_write
     def apply_knowledge_patch(
         self,
         workspace: Path,
@@ -661,6 +717,7 @@ class SqliteRuntime:
             connection.commit()
         return next_knowledge
 
+    @_serialized_write
     def apply_process_patch(
         self,
         workspace: Path,
@@ -707,6 +764,7 @@ class SqliteRuntime:
             connection.commit()
         return next_state
 
+    @_serialized_write
     def create_task(self, workspace: Path, task: TaskRecord) -> TaskRecord:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -758,6 +816,7 @@ class SqliteRuntime:
             row = connection.execute("select * from tasks where stable_key = ?", (stable_key,)).fetchone()
         return None if row is None else _task_from_row(row)
 
+    @_serialized_write
     def transition_task(
         self,
         workspace: Path,
@@ -810,6 +869,7 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    @_serialized_write
     def record_planning_decision(self, workspace: Path, decision: PlanningDecision) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -862,6 +922,7 @@ class SqliteRuntime:
             )
         return decisions
 
+    @_serialized_write
     def store_artifact(self, workspace: Path, *, artifact: ArtifactRecord, content: str) -> ArtifactRecord:
         artifact_path = workspace / artifact.storage_path
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -897,6 +958,7 @@ class SqliteRuntime:
             connection.commit()
         return artifact
 
+    @_serialized_write
     def mark_artifact_superseded(self, workspace: Path, artifact_id: str) -> None:
         """B4: помечает артефакт устаревшим (заменён новой версией).
         Используется при retry-task создании новой версии того же role.
@@ -1049,6 +1111,7 @@ class SqliteRuntime:
             and not artifact.is_superseded
         ]
 
+    @_serialized_write
     def record_context_manifest(self, workspace: Path, manifest: ContextManifest) -> ContextManifest:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1161,6 +1224,7 @@ class SqliteRuntime:
             )
         return result
 
+    @_serialized_write
     def record_execution_run(
         self,
         workspace: Path,
@@ -1221,6 +1285,7 @@ class SqliteRuntime:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    @_serialized_write
     def record_validation_run(self, workspace: Path, run: ValidationRun) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1264,6 +1329,7 @@ class SqliteRuntime:
             )
         return runs
 
+    @_serialized_write
     def record_escalation_ticket(self, workspace: Path, ticket: EscalationTicket) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1290,6 +1356,7 @@ class SqliteRuntime:
 
     # ---- workflow runs (W4.1 R1: async run-until-blocked) ----------------
 
+    @_serialized_write
     def create_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1323,7 +1390,15 @@ class SqliteRuntime:
             connection.commit()
         return run
 
+    @_serialized_write
     def update_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
+        # ВАЖНО (параллельный режим): cancel_requested НЕ пишется здесь.
+        # Этим флагом владеет только request_workflow_cancel (его дёргает
+        # HTTP-поток отмены). Прогресс-обновления ранера делают read-modify-
+        # write через get_workflow_run (без лока) + update, и записывать сюда
+        # cancel_requested из устаревшего снимка ранера означало бы затереть
+        # флаг, поставленный отменой между get и update (lost update). Поэтому
+        # колонку cancel_requested оставляем как есть в БД.
         with self._connect(workspace) as connection:
             connection.execute(
                 """
@@ -1335,7 +1410,6 @@ class SqliteRuntime:
                   last_step_summary = ?,
                   stop_reason = ?,
                   error_message = ?,
-                  cancel_requested = ?,
                   steps_json = ?
                 where run_id = ?
                 """,
@@ -1347,7 +1421,6 @@ class SqliteRuntime:
                     run.last_step_summary,
                     run.stop_reason,
                     run.error_message,
-                    int(run.cancel_requested),
                     json_dumps([self._step_to_dict(s) for s in run.steps]),
                     run.run_id,
                 ),
@@ -1355,6 +1428,7 @@ class SqliteRuntime:
             connection.commit()
         return run
 
+    @_serialized_write
     def request_workflow_cancel(self, workspace: Path, run_id: str) -> bool:
         """Идемпотентно ставит cancel_requested=1. Возвращает True, если
         строка с таким run_id существует."""
@@ -1487,6 +1561,7 @@ class SqliteRuntime:
     # жизненный цикл независим от Decision (статус сессии меняется
     # атомарно, не привязан к статусу отдельных решений).
 
+    @_serialized_write
     def upsert_checkpoint_session(
         self, workspace: Path, session: CheckpointSession
     ) -> CheckpointSession:
@@ -1584,6 +1659,7 @@ class SqliteRuntime:
     # фильтрации. Хранилище — единственный source of truth, никакого
     # in-memory кэша.
 
+    @_serialized_write
     def upsert_decision(self, workspace: Path, decision: Decision) -> Decision:
         """Создать или обновить запись о решении.
 
@@ -1750,15 +1826,23 @@ class SqliteRuntime:
     @contextmanager
     def _connect(self, workspace: Path):
         workspace.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(workspace / self.DB_FILENAME)
+        connection = sqlite3.connect(workspace / self.DB_FILENAME, timeout=5.0)
         connection.row_factory = sqlite3.Row
-        # Pragma'ы: writes без fsync и журнал в памяти. Это single-process
-        # SQLite (один процесс на workspace), потеря данных при крахе
-        # допустима в dev-сценарии — а ускорение для test-suite и live
-        # workflow'а ~5–10×.
+        # Pragma'ы под КОНКУРЕНТНЫЙ доступ (параллельные шаги workflow):
+        #   - journal_mode=MEMORY + synchronous=OFF: быстрый single-writer
+        #     режим (как и было). Корректность при параллельных шагах даёт НЕ
+        #     журнал, а write-coordinator: per-workspace лок (@_serialized_write)
+        #     гарантирует ровно одного писателя на workspace в любой момент,
+        #     а read-modify-write выполняется под этим же локом целиком.
+        #     (WAL давал ~3× замедление тест-сьюта на множестве мелких БД и
+        #     при наличии лока не нужен.)
+        #   - busy_timeout=5000: пока writer держит файловую блокировку,
+        #     конкурентные ЧИТАТЕЛИ (WS-поллер, query-service) ждут до 5с
+        #     вместо мгновенного "database is locked".
         connection.execute("PRAGMA journal_mode = MEMORY")
         connection.execute("PRAGMA synchronous = OFF")
         connection.execute("PRAGMA temp_store = MEMORY")
+        connection.execute("PRAGMA busy_timeout = 5000")
         try:
             # Schema идемпотентна; проверяем один раз на workspace.
             if workspace not in self._schema_ensured:

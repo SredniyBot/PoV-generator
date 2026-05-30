@@ -5,8 +5,11 @@ import uuid
 from pathlib import Path
 
 from ..common.errors import ConflictError
+from ..common.logging import get_logger
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
+
+logger = get_logger("project")
 from .checkpoint_service import CheckpointService
 from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
@@ -322,6 +325,12 @@ class WorkspaceCommandService:
             taken_by_label="domain_pack_selector",
         )
         self._planning_service.expand_graph(workspace, snapshot)
+        logger.info(
+            "project created",
+            project_id=bootstrap.manifest.project_id,
+            objective=bootstrap.manifest.objective_ref,
+            domain_packs=len(resolved_pack_refs),
+        )
         return ProjectCreatedView(
             project_id=bootstrap.manifest.project_id,
             name=bootstrap.manifest.name,

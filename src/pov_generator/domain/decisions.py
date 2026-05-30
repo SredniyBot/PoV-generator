@@ -354,8 +354,15 @@ class Decision:
         `effective_confidence` (min из overall + chosen-alt confidence).
         Это даёт более точную картину: даже если общая уверенность задачи
         высокая, но LLM не уверена в выбранном варианте — флаг загорится.
+
+        v3.9: если пользователь выбрал вариант ВРУЧНУЮ (override /
+        free-text), это эквивалентно явному подтверждению — флаг «система не
+        уверена» снимается. Низкая уверенность LLM в её собственном дефолте
+        больше не релевантна: решение принял человек.
         """
-        return self.effective_confidence < 0.5 and not self.user_verified
+        if self.user_verified or self.was_user_modified:
+            return False
+        return self.effective_confidence < 0.5
 
     @property
     def was_user_modified(self) -> bool:

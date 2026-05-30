@@ -63,6 +63,30 @@ class PlanningService:
         self._expand_composites(workspace, snapshot)
         return tuple(self._runtime.list_tasks(workspace))
 
+    def admissible_candidates(
+        self, workspace: Path, snapshot: RegistrySnapshot
+    ) -> tuple[CandidateEvaluation, ...]:
+        """Полный набор допустимых leaf-задач для параллельного диспатча.
+
+        Делает ту же подготовку, что и :meth:`plan` (расширение графа,
+        пересчёт завершённости композитов, ре-адмиссия), но НЕ выбирает одну
+        задачу и НЕ пишет PlanningDecision — возвращает все admissible, чтобы
+        шедулер мог запустить независимые из них одновременно. Выбор «какие
+        именно запускать» (с учётом непересечения write-set и cap) — забота
+        шедулера, а не планировщика (SRP).
+
+        Сериализация записей внутри (transition mark_ready/blocked,
+        expand_graph) обеспечивается per-workspace локом runtime.
+        """
+        self.expand_graph(workspace, snapshot)
+        self._refresh_composite_completion(workspace)
+        tasks = list(self._runtime.list_tasks(workspace))
+        candidates = self._recompute_admission(workspace, snapshot, tasks)
+        admitted = tuple(c for c in candidates if c.admissible)
+        # Стабильный порядок: по приоритету (score) убыв., затем по task_key —
+        # детерминированный диспатч даже при равных приоритетах.
+        return tuple(sorted(admitted, key=lambda c: (-c.score, c.task_key)))
+
     def plan(
         self,
         workspace: Path,

@@ -121,6 +121,19 @@ def test_was_user_modified_true_only_on_real_override() -> None:
     assert via_action.was_user_modified is True
 
 
+def test_manual_choice_clears_low_confidence_flag() -> None:
+    """v3.9: если вариант выбрал пользователь вручную — это подтверждение,
+    флаг «система не уверена» снимается, даже при низкой уверенности LLM."""
+    low = _make_decision(confidence=0.2)
+    assert low.is_low_confidence is True
+    # Ручной override статусом
+    overridden = Decision(**{**low.__dict__, "status": "user_overridden"})
+    assert overridden.is_low_confidence is False
+    # Ручной выбор через user_action
+    via_action = Decision(**{**low.__dict__, "user_action": "modified"})
+    assert via_action.is_low_confidence is False
+
+
 def test_normalized_signature_uses_explicit_category() -> None:
     decision = _make_decision(title="Выбор   СУБД?", category="tech_stack")
 

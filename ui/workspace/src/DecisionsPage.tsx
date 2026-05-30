@@ -15,7 +15,7 @@
  */
 
 import { useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
+import { useNavigate, useParams, Link, NavLink } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
 
@@ -515,6 +515,42 @@ function DecisionCard({
 type LevelFilter = "all" | DecisionLevel;
 type StatusFilter = "all" | DecisionStatus;
 
+/**
+ * Под-навигация раздела «Решения». Два JTBD:
+ *   • «Открытые» — что от меня ждут СЕЙЧАС (bulk-ответ, цель бейджа
+ *     «Решения ждут»). Счётчик горит, пока есть proposed-решения.
+ *   • «Реестр» — что система решила/решит (справочник + фильтры + PDF).
+ * Рендерится вверху обеих страниц, чтобы переключение было очевидным и
+ * экран открытых решений был достижим без бейджа.
+ */
+export function DecisionsSubNav({ projectId }: { projectId: string }) {
+  // Тот же queryKey, что у PendingDecisionsPage — кэш и realtime-инвалидация
+  // общие, счётчик в под-вкладке всегда совпадает с содержимым экрана.
+  const pendingQuery = useQuery({
+    queryKey: ["pending-decisions", projectId],
+    queryFn: () => api.getDecisionsRegistry(projectId, { status: "proposed" }),
+  });
+  const pendingCount = pendingQuery.data?.items.length ?? 0;
+  return (
+    <nav className="decisions-subnav" aria-label="Разделы решений">
+      <NavLink
+        to={`/projects/${projectId}/decisions/pending`}
+        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
+      >
+        Открытые
+        {pendingCount > 0 ? <span className="decisions-subnav__badge">{pendingCount}</span> : null}
+      </NavLink>
+      <NavLink
+        end
+        to={`/projects/${projectId}/decisions`}
+        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
+      >
+        Реестр
+      </NavLink>
+    </nav>
+  );
+}
+
 export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -561,6 +597,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
 
   return (
     <div className="decisions-page">
+      <DecisionsSubNav projectId={projectId} />
       <SectionCard
         title={
           <div className="decisions-page__header">
@@ -882,6 +919,127 @@ export function CheckpointsListPage({ projectId }: { projectId: string }) {
           </details>
         ) : null}
       </SectionCard>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PendingDecisionsPage — ЕДИНЫЙ экран всех открытых решений (параллельный режим).
+//
+// В параллельном режиме несколько шагов могут одновременно ждать решений.
+// Пользователь видит НЕ «сессии вопросов», а единый список всех открытых
+// (proposed) решений по проекту и отвечает на все разом — bulk-submit
+// разводит ответы по сессиям на бэкенде и финализирует их (auto-resume).
+// ---------------------------------------------------------------------------
+
+export function PendingDecisionsPage({ projectId }: { projectId: string }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ["pending-decisions", projectId],
+    queryFn: () => api.getDecisionsRegistry(projectId, { status: "proposed" }),
+  });
+  const [answers, setAnswers] = useState<Record<string, CheckpointAnswerPayload>>({});
+
+  const submitMutation = useMutation({
+    mutationFn: (payload: CheckpointAnswerPayload[]) => api.answerDecisions(projectId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      navigate(`/projects/${projectId}/overview`);
+    },
+  });
+
+  if (query.isLoading || !query.data) {
+    return <LoadingPanel title="Загружаем открытые решения…" />;
+  }
+  const items = query.data.items;
+
+  if (items.length === 0) {
+    return (
+      <div className="checkpoint-page">
+        <DecisionsSubNav projectId={projectId} />
+        <SectionCard title="Открытые решения">
+          <EmptyState
+            title="Нет открытых решений"
+            description="Когда параллельные шаги дойдут до точек, где нужны ваши решения — они появятся здесь все вместе."
+          />
+          <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/overview`)}>
+            К проекту
+          </Button>
+        </SectionCard>
+      </div>
+    );
+  }
+
+  const overriddenCount = Object.values(answers).filter((a) => a.kind !== "accept_default").length;
+  const handleSubmit = () => submitMutation.mutate(Object.values(answers));
+
+  return (
+    <div className="checkpoint-page">
+      <DecisionsSubNav projectId={projectId} />
+      <SectionCard
+        title={
+          <div className="checkpoint-page__title">
+            <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/overview`)}>
+              <ArrowLeft size={14} /> К проекту
+            </Button>
+            <span>Открытые решения</span>
+          </div>
+        }
+      >
+        <p className="checkpoint-intro__lead">
+          {items.length === 1 ? "1 решение" : `${items.length} решений`} из параллельных шагов ждут
+          вашего ответа. Варианты по умолчанию уже выбраны — измените нужные и отправьте все разом.
+        </p>
+
+        <div className="checkpoint-decisions">
+          {items.map((decision) => (
+            <DecisionCard
+              key={decision.decision_id}
+              decision={decision}
+              defaultExpanded
+              interactive={{
+                currentAnswer: answers[decision.decision_id] ?? null,
+                onAnswerChange: (ans) => {
+                  setAnswers((prev) => {
+                    const next = { ...prev };
+                    if (ans === null) {
+                      delete next[decision.decision_id];
+                    } else {
+                      next[decision.decision_id] = ans;
+                    }
+                    return next;
+                  });
+                },
+              }}
+            />
+          ))}
+        </div>
+
+        <div className="checkpoint-footer">
+          <div className="checkpoint-footer__hint">
+            {overriddenCount === 0
+              ? "Будут применены варианты по умолчанию."
+              : `Изменено: ${overriddenCount} из ${items.length}.`}
+          </div>
+          <Button tone="primary" disabled={submitMutation.isPending} onClick={handleSubmit}>
+            <Lock size={14} />
+            {submitMutation.isPending ? "Отправка…" : "Ответить на все и продолжить"}
+          </Button>
+        </div>
+      </SectionCard>
+
+      {submitMutation.isError ? (
+        <SectionCard title="Ошибка отправки" tone="danger">
+          <p>{(submitMutation.error as Error).message}</p>
+        </SectionCard>
+      ) : null}
     </div>
   );
 }

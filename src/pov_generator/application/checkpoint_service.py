@@ -32,7 +32,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..domain.process_state import ProcessState  # noqa: F401
 
-from ..common.errors import ConflictError, NotFoundError
+from ..common.errors import ConflictError
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.checkpoints import (
     CheckpointAnswer,
@@ -41,11 +42,12 @@ from ..domain.checkpoints import (
 from ..domain.decisions import (
     Decision,
     DecisionInput,
-    levels_for_mode,
     should_surface_to_user,
     split_decision_category_prefix,
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
+
+logger = get_logger("checkpoint")
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,12 @@ class CheckpointService:
             decision_ids=tuple(surfaced_ids),
         )
         saved_session = self._runtime.upsert_checkpoint_session(workspace, session)
+        logger.info(
+            "checkpoint opened: задача ждёт решений пользователя",
+            task=task_id,
+            surfaced=len(surfaced_ids),
+            silent=len(silent),
+        )
         return CheckpointCreationResult(
             session=saved_session,
             surfaced_count=len(surfaced_ids),
@@ -219,13 +227,23 @@ class CheckpointService:
         # Decision'ы, на которые пользователь не ответил → массовое accept_default
         # (это поведение «закрой сессию, дефолты применятся»). Если он явно
         # хотел иначе — должен был явно ответить.
+        #
+        # v3.9: помечаем их user_verified=True. На едином экране открытых
+        # решений показаны ВСЕ proposed-решения, а кнопка «Ответить на все и
+        # продолжить» = «я просмотрел и согласен со всеми, включая дефолты».
+        # Поэтому «система не уверена» больше не светим — пользователь прошёл
+        # через эти решения сознательно. (Тихий autopilot-путь сюда не заходит:
+        # он принимает дефолты напрямую с user_action="not_shown".)
+        now = utc_now_iso()
         for decision_id in valid_ids - answered_ids:
             decision = self._runtime.get_decision(workspace, decision_id)
             saved = replace(
                 decision,
                 status="accepted_default",
                 user_action="accepted_default",
-                updated_at=utc_now_iso(),
+                user_verified=True,
+                user_verified_at=now,
+                updated_at=now,
             )
             self._runtime.upsert_decision(workspace, saved)
 
@@ -237,6 +255,13 @@ class CheckpointService:
             finalized_by=actor,
         )
         saved_session = self._runtime.upsert_checkpoint_session(workspace, finalized)
+        logger.info(
+            "checkpoint answered: решения приняты, задача продолжится",
+            task=session.task_id,
+            answered=len(answered_ids),
+            auto_accepted=len(valid_ids - answered_ids),
+            actor=actor,
+        )
 
         # v3.0 — auto-resume: задача, которая была failed из-за паузы,
         # переводится обратно в ready. Это позволит планнеру при следующем
@@ -262,6 +287,45 @@ class CheckpointService:
             pass
 
         return saved_session
+
+    def submit_decision_answers(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        answers: tuple[CheckpointAnswer, ...],
+        actor: str = "user",
+    ) -> list[CheckpointSession]:
+        """Ответить на открытые решения проекта СКОПОМ, поверх границ сессий.
+
+        UX-контракт параллельного режима: пользователь видит единый список
+        открытых решений (все ``proposed`` по всем pending-сессиям), а не
+        отдельные «сессии вопросов». Этот метод принимает ответы по
+        ``decision_id`` без привязки к сессии, разводит их по pending-сессиям
+        и финализирует КАЖДУЮ из них (решения без явного ответа уходят в
+        ``accepted_default`` — массовое подтверждение). Каждая финализация
+        триггерит auto-resume своей задачи (см. :meth:`submit_answers`).
+
+        Возвращает список финализированных сессий.
+        """
+        pending = self.list_pending(workspace, project_id=project_id)
+        by_decision: dict[str, CheckpointAnswer] = {a.decision_id: a for a in answers}
+        finalized: list[CheckpointSession] = []
+        for session in pending:
+            session_answers = tuple(
+                by_decision[decision_id]
+                for decision_id in session.decision_ids
+                if decision_id in by_decision
+            )
+            finalized.append(
+                self.submit_answers(
+                    workspace,
+                    session_id=session.session_id,
+                    answers=session_answers,
+                    actor=actor,
+                )
+            )
+        return finalized
 
     def _apply_answer(
         self,
@@ -350,6 +414,14 @@ class CheckpointService:
             )
         else:
             raise ConflictError(f"неизвестный CheckpointAnswerKind: {answer.kind!r}")
+
+        # v3.9: любой ЯВНЫЙ ответ пользователя = осознанное подтверждение.
+        # Помечаем решение как user_verified — это снимает индикатор «система
+        # не уверена» (см. Decision.is_low_confidence), даже если выбран был
+        # дефолтный (низкоуверенный) вариант: его выбрал человек.
+        # ИСКЛЮЧЕНИЕ — defer: «решу позже» не является подтверждением.
+        if answer.kind != "defer":
+            saved = replace(saved, user_verified=True, user_verified_at=utc_now_iso())
 
         self._runtime.upsert_decision(workspace, saved)
 

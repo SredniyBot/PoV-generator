@@ -41,6 +41,7 @@ def _make_decision(
     level: str,
     project_id: str = "p-1",
     chosen: str = "opt-a",
+    confidence: float = 0.8,
 ) -> Decision:
     return Decision(
         decision_id=decision_id,
@@ -52,7 +53,7 @@ def _make_decision(
         rationale="rationale",
         level=level,  # type: ignore[arg-type]
         level_rationale="...",
-        confidence=0.8,
+        confidence=confidence,
         status="proposed",
         source="pre_flight",
         source_task_id="task-1",
@@ -331,6 +332,53 @@ def test_unanswered_decisions_default_on_finalize(service) -> None:
     d2 = runtime.get_decision(ws, "d-2")
     assert d2.status == "accepted_default"
     assert d2.user_action == "accepted_default"
+
+
+def test_explicit_answer_clears_low_confidence_flag(service) -> None:
+    """v3.9: явный ответ пользователя (включая accept_default низкоуверенного
+    дефолта) = подтверждение → user_verified=True → is_low_confidence гаснет.
+    Незатронутые в той же сессии тоже помечаются (кнопка «ответить на все»).
+    defer — НЕ подтверждение, флаг остаётся."""
+    svc, runtime, ws = service
+    low = (
+        _make_decision(decision_id="d-1", level="business", confidence=0.2),
+        _make_decision(decision_id="d-2", level="business", confidence=0.2),
+        _make_decision(decision_id="d-3", level="business", confidence=0.2),
+    )
+    result = svc.process_planned_decisions(
+        ws,
+        project_id="p-1",
+        task_id="task-1",
+        task_title="Test",
+        artifact_role="role",
+        decisions=low,
+        mode="balanced",
+    )
+    assert result.session is not None
+    # До ответа все три «низкоуверенные».
+    assert runtime.get_decision(ws, "d-1").is_low_confidence is True
+
+    svc.submit_answers(
+        ws,
+        session_id=result.session.session_id,
+        answers=(
+            CheckpointAnswer(decision_id="d-1", kind="accept_default"),  # явный accept
+            CheckpointAnswer(decision_id="d-2", kind="defer"),           # отложил
+            # d-3 не тронут → массовый accept_default
+        ),
+    )
+
+    d1 = runtime.get_decision(ws, "d-1")
+    assert d1.user_verified is True
+    assert d1.is_low_confidence is False  # ← починка: флаг снят
+
+    d3 = runtime.get_decision(ws, "d-3")
+    assert d3.user_verified is True
+    assert d3.is_low_confidence is False  # незатронутый, но «ответил на все»
+
+    d2 = runtime.get_decision(ws, "d-2")
+    assert d2.user_verified is False
+    assert d2.is_low_confidence is True   # defer ≠ подтверждение
 
 
 # ---------------------------------------------------------------------------

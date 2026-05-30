@@ -119,7 +119,13 @@ export function ProjectOverviewV2({
   const checkpoints = useQuery({
     queryKey: ["checkpoints-list", projectId],
     queryFn: () => api.getCheckpoints(projectId),
-    refetchInterval: 5000,
+    // Чекпоинты создаются ТОЛЬКО во время run'а, а WS (projection_changed:
+    // workflow_runs) уже инвалидирует этот ключ. Поэтому поллим лишь как
+    // страховку, пока run активен; на простое — off (ноль холостого трафика).
+    // ВАЖНО: react-query берёт МИНИМАЛЬНЫЙ интервал среди всех наблюдателей
+    // одного ключа — поэтому условие должно стоять во ВСЕХ местах (см.
+    // также headerCheckpointsQuery в App.tsx).
+    refetchInterval: isRunning ? 5000 : false,
   });
 
   // v3.1: полный реестр решений — заменяет legacy DecisionLog.

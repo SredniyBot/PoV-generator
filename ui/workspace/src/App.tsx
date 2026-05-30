@@ -58,6 +58,7 @@ import {
   CheckpointSessionPage,
   CheckpointsListPage,
   DecisionsRegistryPage,
+  PendingDecisionsPage,
 } from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
@@ -73,6 +74,7 @@ import type {
   ProjectShellView,
   ProjectionName,
   TaskNodeView,
+  WorkflowStepView,
 } from "./types";
 import { useProjectRealtime } from "./useProjectRealtime";
 import {
@@ -258,12 +260,30 @@ function AppFrame() {
   }, [location.pathname]);
   const firstProject = projectsQuery.data?.[0] ?? null;
 
+  const deleteProjectMutation = useMutation({
+    mutationFn: (project: { project_id: string; name: string }) => api.deleteProject(project.project_id),
+    onSuccess: (_result, project) => {
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      notify("success", "Проект удалён", `Кейс «${project.name}» удалён без возможности восстановления.`);
+      // Если удалили открытый сейчас проект — уходим на главную, чтобы не
+      // остаться на «мёртвом» URL (его запросы вернут 404).
+      if (selectedProjectId === project.project_id) {
+        navigate("/");
+      }
+    },
+    onError: (error: Error) => {
+      notify("danger", "Не удалось удалить проект", error.message);
+    },
+  });
+
   return (
     <div className="app-shell">
       <ProjectRail
         projects={projectsQuery.data ?? []}
         selectedProjectId={selectedProjectId}
         onCreate={() => setCreateOpen(true)}
+        onDeleteProject={(project) => deleteProjectMutation.mutate(project)}
+        deletingProjectId={deleteProjectMutation.isPending ? deleteProjectMutation.variables?.project_id ?? null : null}
       />
       <main className="app-main">
         <Routes>
@@ -380,13 +400,28 @@ function WorkspaceRoute({
     queryFn: () => api.getShell(projectId),
     enabled: Boolean(projectId),
   });
+  // Активный run — общий ключ с WorkflowRunProgressPanel (react-query
+  // дедуплицирует). Нужен, чтобы поллинг checkpoints был условным.
+  const headerActiveRunQuery = useQuery({
+    queryKey: [projectId, "workflow-run-active"],
+    queryFn: () => api.getActiveWorkflowRun(projectId),
+    enabled: Boolean(projectId),
+    refetchInterval: activeRunRefetchInterval,
+  });
+  const runActive =
+    headerActiveRunQuery.data?.status === "running" ||
+    headerActiveRunQuery.data?.status === "pending";
   // v3.0: pending-checkpoint бэйдж в header'е.
   const headerCheckpointsQuery = useQuery({
     queryKey: ["checkpoints-list", projectId],
     queryFn: () => api.getCheckpoints(projectId),
     enabled: Boolean(projectId),
-    // Pollим раз в 5 сек чтобы бэйдж появился даже при отсутствии WS-события.
-    refetchInterval: 5000,
+    // Чекпоинты создаются ТОЛЬКО во время run'а, и WS (projection_changed:
+    // workflow_runs) уже инвалидирует этот ключ на каждой записи runner'а.
+    // Поэтому поллинг — лишь страховка к WS И ТОЛЬКО пока run активен; на
+    // простое новых чекпоинтов не появляется → polling off, ноль холостого
+    // трафика (тот же принцип, что и для workflow-run-active).
+    refetchInterval: runActive ? 5000 : false,
   });
   // v3.1: clarification_mode теперь хранится в Layer A state-снапшоте.
   // Используем его как источник истины для селектора режима в шапке.
@@ -460,6 +495,13 @@ function WorkspaceRoute({
       if (projection === "workflow_runs") {
         void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
         void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+        // Решения и checkpoint'ы меняются по ходу run'а (identification/
+        // extraction/финализация сессий) — это тоже двигает realtime_token,
+        // поэтому обновляем их в реальном времени, без перезагрузки сайта.
+        // Префиксная инвалидация покрывает варианты ключей с фильтрами.
+        void queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
+        void queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
+        void queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
       }
     },
   });
@@ -503,12 +545,10 @@ function WorkspaceRoute({
           headerCheckpointsQuery.data?.items.find((s) => s.status === "pending")?.session_id ?? null
         }
         onOpenCheckpoints={() => {
-          const pending = headerCheckpointsQuery.data?.items.filter((s) => s.status === "pending") ?? [];
-          if (pending.length === 1 && pending[0]) {
-            navigate(`/projects/${projectId}/checkpoints/${pending[0].session_id}`);
-          } else {
-            navigate(`/projects/${projectId}/checkpoints`);
-          }
+          // Единый экран открытых решений (сессии скрыты от пользователя):
+          // отвечает на все pending-решения разом, поверх границ сессий.
+          // Живёт под-вкладкой «Открытые» раздела «Решения».
+          navigate(`/projects/${projectId}/decisions/pending`);
         }}
         onActivateNextObjective={commandMutations.activateNextObjective}
         activatingNextObjective={commandMutations.busy}
@@ -541,7 +581,16 @@ function WorkspaceRoute({
         <Route path="task-graph" element={<TaskGraphPage projectId={projectId} />} />
         {/* v3.1: legacy /clarifications и /decision-log удалены — Decision
             (v3.0 реестр) полностью покрывает эти сценарии. */}
+        {/* «Решения» — раздел с двумя под-вкладками (см. DecisionsSubNav):
+            • decisions/pending — «Открытые» (bulk-ответ, цель бейджа)
+            • decisions — «Реестр» (справочник + фильтры + PDF) */}
         <Route path="decisions" element={<DecisionsRegistryPage projectId={projectId} />} />
+        <Route path="decisions/pending" element={<PendingDecisionsPage projectId={projectId} />} />
+        {/* Старый плоский URL — редирект, чтобы bookmarks не ломались. */}
+        <Route
+          path="pending-decisions"
+          element={<Navigate to={`/projects/${projectId}/decisions/pending`} replace />}
+        />
         <Route path="checkpoints" element={<CheckpointsListPage projectId={projectId} />} />
         <Route
           path="checkpoints/:sessionId"
@@ -626,12 +675,41 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
   const statusLabel = labelForRunStatus(display.status);
   const statusTone = toneForRunStatus(display.status);
 
+  // run.steps — append-only audit log: одна задача может иметь НЕСКОЛЬКО
+  // шагов в одном run'е (пауза на checkpoint → fail, затем после ответа
+  // пользователя — повторный проход в том же run'е; либо ретраи). Старый
+  // `paused_for_checkpoint` остаётся в логе навсегда. Для счётчиков берём
+  // ТОЛЬКО последний шаг каждой задачи, иначе «Ждут решений» не гаснет
+  // после возобновления, а «Задач выполнено» удваивается на ретраях.
+  // Шаги без task_id (планировщик) — пропускаем как есть.
+  const latestStepByTask = new Map<string, WorkflowStepView>();
+  const standaloneSteps: WorkflowStepView[] = [];
+  for (const s of display.steps) {
+    if (!s.task_id) {
+      standaloneSteps.push(s);
+      continue;
+    }
+    const prev = latestStepByTask.get(s.task_id);
+    if (!prev || s.sequence > prev.sequence) latestStepByTask.set(s.task_id, s);
+  }
+  const effectiveSteps = [...latestStepByTask.values(), ...standaloneSteps];
+
   // Считаем выполненные задачи именно из шагов с successful validation,
   // а не из `total_steps_completed` — это поле в БД включает ретраи и
   // шаги планировщика, что менеджеру не интересно.
-  const successfulSteps = display.steps.filter((s) => s.validation_status === "passed");
-  const failedSteps = display.steps.filter(
-    (s) => s.validation_status === "failed" || (s.error_message && s.validation_status !== "passed"),
+  const successfulSteps = effectiveSteps.filter((s) => s.validation_status === "passed");
+  // Пауза на решениях (paused_for_checkpoint) — НЕ ошибка: задача ждёт
+  // ответа пользователя, а не упала. Выносим в отдельную категорию, чтобы
+  // не светить красным и не путать с реальными провалами. Учитываем только
+  // если это ПОСЛЕДНИЙ шаг задачи (т.е. она всё ещё ждёт, а не возобновилась).
+  const awaitingSteps = effectiveSteps.filter(
+    (s) => s.validation_status === "paused_for_checkpoint",
+  );
+  const failedSteps = effectiveSteps.filter(
+    (s) =>
+      s.validation_status !== "paused_for_checkpoint" &&
+      (s.validation_status === "failed" ||
+        (s.error_message && s.validation_status !== "passed")),
   );
 
   // Сейчас в работе: leaf-задачи проекта со статусом in_progress. Список
@@ -679,6 +757,12 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
           <div className="workflow-run__counter-item workflow-run__counter-item--danger">
             <span className="workflow-run__counter-value">{failedSteps.length}</span>
             <span className="workflow-run__counter-label">С ошибкой</span>
+          </div>
+        ) : null}
+        {awaitingSteps.length > 0 ? (
+          <div className="workflow-run__counter-item workflow-run__counter-item--active">
+            <span className="workflow-run__counter-value">{awaitingSteps.length}</span>
+            <span className="workflow-run__counter-label">Ждут решений</span>
           </div>
         ) : null}
         {inProgressTasks.length > 0 ? (
@@ -829,6 +913,7 @@ function labelForStepStatus(
 ): string {
   if (validationStatus === "passed") return "успех";
   if (validationStatus === "failed") return "ошибка валидации";
+  if (validationStatus === "paused_for_checkpoint") return "ждёт решений";
   if (planningOutcome === "selected" || planningOutcome === "retried") return "идёт";
   if (planningOutcome === "objective_completed") return "цель достигнута";
   if (planningOutcome === "blocked") return "заблокирована";
@@ -865,6 +950,7 @@ function labelForStopReason(reason: string): string {
     case "max_steps_reached": return "лимит шагов";
     case "execution_error": return "ошибка исполнения";
     case "cancelled_by_user": return "прервано пользователем";
+    case "awaiting_checkpoint": return "ждёт ваших решений";
     default: return reason;
   }
 }
@@ -2435,9 +2521,15 @@ function CreateProjectModal({
   const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
-    const firstObjective = objectivesQuery.data?.[0];
-    if (firstObjective && !objectiveRef) {
-      setObjectiveRef(firstObjective.objective_ref);
+    const objectives = objectivesQuery.data;
+    if (!objectives?.length || objectiveRef) return;
+    // По умолчанию цель — создание ТЗ (common.requirements_specification):
+    // самый частый сценарий. Если его нет в реестре — первый в списке.
+    const defaultObjective =
+      objectives.find((item) => item.objective_ref.startsWith("common.requirements_specification")) ??
+      objectives[0];
+    if (defaultObjective) {
+      setObjectiveRef(defaultObjective.objective_ref);
     }
   }, [objectiveRef, objectivesQuery.data]);
 

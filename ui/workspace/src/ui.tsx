@@ -21,6 +21,7 @@ import {
   RefreshCcw,
   Settings,
   Sparkles,
+  Trash2,
   Waypoints,
   X,
 } from "lucide-react";
@@ -293,10 +294,14 @@ export function ProjectRail({
   projects,
   selectedProjectId,
   onCreate,
+  onDeleteProject,
+  deletingProjectId,
 }: {
   projects: ProjectListItemView[];
   selectedProjectId: string | null;
   onCreate: () => void;
+  onDeleteProject: (project: { project_id: string; name: string }) => void;
+  deletingProjectId: string | null;
 }) {
   return (
     <aside className="project-rail">
@@ -325,25 +330,49 @@ export function ProjectRail({
           />
         ) : (
           projects.map((project) => (
-            <Link
-              key={project.project_id}
-              className={cx(
-                "project-item",
-                selectedProjectId === project.project_id && "project-item--active",
-                project.has_blockers && "project-item--blocked",
-              )}
-              to={`/projects/${project.project_id}/overview`}
-            >
-              <div className="project-item__topline">
-                <strong>{project.name}</strong>
-                {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
-              </div>
-              <div className="project-item__meta">
-                <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
-                <span>{formatDateTime(project.updated_at)}</span>
-              </div>
-              <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
-            </Link>
+            // Кнопка удаления — сиблинг <Link>, а не потомок (button внутри
+            // <a> невалиден по HTML5). Обёртка задаёт positioning-контекст.
+            <div key={project.project_id} className="project-item-wrap">
+              <Link
+                className={cx(
+                  "project-item",
+                  selectedProjectId === project.project_id && "project-item--active",
+                  project.has_blockers && "project-item--blocked",
+                )}
+                to={`/projects/${project.project_id}/overview`}
+              >
+                <div className="project-item__topline">
+                  <strong>{project.name}</strong>
+                  {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
+                </div>
+                <div className="project-item__meta">
+                  <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
+                  <span>{formatDateTime(project.updated_at)}</span>
+                </div>
+                <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
+              </Link>
+              <button
+                type="button"
+                className="project-item__delete"
+                title="Удалить проект"
+                aria-label={`Удалить проект «${project.name}»`}
+                disabled={deletingProjectId === project.project_id}
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    `Удалить проект «${project.name}»?\n\nБудут безвозвратно удалены все артефакты, решения и история. Действие необратимо.`,
+                  );
+                  if (confirmed) {
+                    onDeleteProject({ project_id: project.project_id, name: project.name });
+                  }
+                }}
+              >
+                {deletingProjectId === project.project_id ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
+              </button>
+            </div>
           ))
         )}
       </nav>

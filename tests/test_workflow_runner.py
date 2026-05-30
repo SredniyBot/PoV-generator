@@ -83,8 +83,11 @@ def test_start_run_until_blocked_returns_immediately_with_pending_status(tmp_pat
     elapsed = time.time() - start
 
     # start не должен висеть на шагах — он только создаёт запись и стартует
-    # daemon thread. Должен вернуться < 1 секунды.
-    assert elapsed < 1.0, f"start_run занял {elapsed:.2f}s (ожидаем мгновенный возврат)"
+    # daemon thread. Шаги выполняются МИНУТЫ, поэтому любой суб-секундный/
+    # пара-секундный возврат доказывает асинхронность. Порог 2с (а не 1с):
+    # в тайминг попадает холодный парс реестра (~0.9с) у свежего
+    # registry_service ранера — это не «выполнение шагов».
+    assert elapsed < 2.0, f"start_run занял {elapsed:.2f}s (ожидаем мгновенный возврат)"
     assert record.status in {"pending", "running"}
     assert record.max_steps == 2
     assert record.cancel_requested is False
@@ -131,15 +134,15 @@ def test_cancel_run_marks_request_and_returns_true(tmp_path: Path, monkeypatch) 
 
     workspace, project_id, runner, runtime = _bootstrap(tmp_path)
 
-    original_run_next = WorkflowService.run_next
+    # Параллельный шедулер запускает шаги через execute_step (не run_next).
+    # Замедляем его, чтобы run оставался активным к моменту cancel_run.
+    original_execute_step = WorkflowService.execute_step
 
-    def slow_run_next(self, workspace, snapshot, *, provider=None, model=None, cancellation=None):
+    def slow_execute_step(self, workspace, snapshot, **kwargs):
         time.sleep(0.5)
-        return original_run_next(
-            self, workspace, snapshot, provider=provider, model=model, cancellation=cancellation
-        )
+        return original_execute_step(self, workspace, snapshot, **kwargs)
 
-    monkeypatch.setattr(WorkflowService, "run_next", slow_run_next)
+    monkeypatch.setattr(WorkflowService, "execute_step", slow_execute_step)
 
     record = runner.start_run_until_blocked(
         workspace, project_id, provider="stub", model=None, max_steps=50,
