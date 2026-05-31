@@ -2,7 +2,7 @@
 
 ## npm install нужен перед первым `npm run dev`
 
-`CLAUDE.md` говорит запускать UI так:
+UI dev-сервер запускается так:
 
 ```bash
 npm --prefix ui/workspace run dev

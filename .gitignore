@@ -22,3 +22,5 @@ prompt_draft.md
 prompt.context/
 *context_anchor.txt
 .playwright-mcp/
+# LLM-specific guidance files: kept on disk for local dev, not tracked in git.
+CLAUDE.md
