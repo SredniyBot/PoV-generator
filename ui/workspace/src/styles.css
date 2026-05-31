@@ -437,35 +437,40 @@ code {
   color: var(--text-primary);
 }
 
-/* Под-навигация раздела «Решения» (Открытые / Реестр). Вторичный уровень
-   под основными вкладками проекта — те же pills, чуть компактнее. */
+/* Под-навигация раздела «Решения» (Открытые / Реестр). Стилизована как
+   segmented-переключатель (как Документ/JSON в артефактах), а НЕ как второй
+   ряд вкладок: единый bordered-трек с залитым активным сегментом. Так он
+   читается как «переключатель вида внутри раздела» и не дублирует визуально
+   основной ряд вкладок проекта. */
 .decisions-subnav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .decisions-subnav__item {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
+  border: 0;
+  background: transparent;
   color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 7px 14px;
+  border-radius: 10px;
+  padding: 8px 14px;
   font-size: 13px;
-  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .decisions-subnav__item:hover {
-  border-color: rgba(120, 184, 201, 0.2);
+  color: var(--text-primary);
 }
 
 .decisions-subnav__item--active {
-  background: rgba(95, 167, 184, 0.14);
-  border-color: rgba(120, 184, 201, 0.28);
+  background: rgba(95, 167, 184, 0.16);
   color: var(--text-primary);
 }
 
@@ -1919,6 +1924,58 @@ code {
   background: rgba(95, 167, 184, 0.18);
   color: var(--text-primary);
   border-color: rgba(95, 167, 184, 0.45);
+}
+
+/* Раскладка документа: кликабельное оглавление НАД документом. */
+.document-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.document-layout .document-surface {
+  /* min-width:0 — чтобы широкие таблицы/код не растягивали элемент. */
+  min-width: 0;
+}
+.document-toc {
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: rgba(23, 26, 30, 0.96);
+  padding: 14px 18px;
+}
+.document-toc__title {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #8a93a3);
+}
+.document-toc__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.document-toc__item a {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #c9cfd9);
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.document-toc__item a:hover {
+  background: rgba(120, 184, 201, 0.14);
+  color: var(--text-primary, #e8ecf3);
+}
+.document-toc__item--sub a {
+  padding-left: 18px;
+  font-size: 0.8rem;
+  color: var(--text-muted, #9aa4b2);
 }
 
 .document-surface {

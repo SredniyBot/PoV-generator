@@ -1615,7 +1615,9 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
     return null;
   }
   const stageLabel = (k: string): string => {
-    if (k === "pre_flight_planning") return "Pre-flight планирование";
+    // v3.10: pre_flight_planning → decision_identification (старый ключ
+    // оставлен для legacy-артефактов).
+    if (k === "decision_identification" || k === "pre_flight_planning") return "Выявление решений";
     if (k === "primary_generation") return "Основная сборка";
     if (k.startsWith("methodology_stage:")) return `Стадия методологии · ${k.slice("methodology_stage:".length)}`;
     return k;
@@ -1681,14 +1683,35 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
-  const html = useMemo<string>(
-    () =>
-      detail.markdown_content
-        ? (marked.parse(preprocessMarkdownForMermaid(detail.markdown_content)) as string)
-        : "<p>Markdown-представление отсутствует.</p>",
-    [detail.markdown_content],
-  );
+  // За один разбор: рендерим markdown → HTML, проставляем стабильные id на
+  // заголовки и собираем кликабельное оглавление. DOMParser — нативный, без
+  // зависимостей; mermaid-host блоки переживают re-serialize.
+  const { html, toc } = useMemo(() => {
+    const raw = detail.markdown_content
+      ? (marked.parse(preprocessMarkdownForMermaid(detail.markdown_content)) as string)
+      : "<p>Markdown-представление отсутствует.</p>";
+    const parsed = new DOMParser().parseFromString(raw, "text/html");
+    const headings = Array.from(parsed.querySelectorAll("h2, h3")) as HTMLElement[];
+    const tocEntries = headings
+      .map((heading, index) => {
+        const id = `doc-sec-${index + 1}`;
+        heading.id = id;
+        return {
+          id,
+          text: heading.textContent?.trim() ?? "",
+          level: heading.tagName === "H3" ? 3 : 2,
+        };
+      })
+      .filter((entry) => entry.text.length > 0);
+    return { html: parsed.body.innerHTML, toc: tocEntries };
+  }, [detail.markdown_content]);
   const articleRef = useRef<HTMLElement | null>(null);
+  const scrollToSection = (id: string) => {
+    // Скроллим к разделу внутри текущего документа, без смены URL-хеша
+    // (чтобы не конфликтовать с роутером).
+    const target = articleRef.current?.querySelector(`#${CSS.escape(id)}`);
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   useEffect(() => {
     if (mode !== "doc") return;
     const root = articleRef.current;
@@ -1915,11 +1938,36 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         )}
       </Modal>
       {mode === "doc" ? (
-        <article
-          ref={articleRef}
-          className="document-surface"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div className="document-layout">
+          {toc.length >= 2 ? (
+            <nav className="document-toc" aria-label="Содержание документа">
+              <p className="document-toc__title">Содержание</p>
+              <ul className="document-toc__list">
+                {toc.map((item) => (
+                  <li
+                    key={item.id}
+                    className={cx("document-toc__item", item.level === 3 && "document-toc__item--sub")}
+                  >
+                    <a
+                      href={`#${item.id}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        scrollToSection(item.id);
+                      }}
+                    >
+                      {item.text}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          ) : null}
+          <article
+            ref={articleRef}
+            className="document-surface"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        </div>
       ) : null}
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />

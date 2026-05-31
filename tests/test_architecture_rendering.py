@@ -345,7 +345,28 @@ def test_build_flowchart_emits_header_and_nodes_and_edges() -> None:
     assert lines[0] == "flowchart TD"
     assert '    A["Alpha"]' in lines
     assert '    B[("Beta")]' in lines
-    assert "    A -->|calls| B" in lines
+    # Подпись ребра закавычена (иначе спецсимволы ломают парсер mermaid).
+    assert '    A -->|"calls"| B' in lines
+
+
+def test_build_flowchart_quotes_edge_label_with_parentheses() -> None:
+    """Регрессия: подпись ребра со скобкой/пайпом ОБЯЗАНА быть в кавычках.
+
+    Без кавычек mermaid токенизирует «(» как начало узла и падает с
+    «Parse error ... got 'PS'» (воспроизведено на реальном прогоне).
+    """
+    mmd = _build_flowchart(
+        {
+            "direction": "LR",
+            "nodes": [{"id": "A", "label": "Узел A"}, {"id": "B", "label": "Узел B"}],
+            "edges": [
+                {"from": "A", "to": "B", "label": "импорт флага (оформитель побеждает) | конфликт"},
+            ],
+        }
+    )
+    assert '|"импорт флага (оформитель побеждает) | конфликт"|' in mmd
+    # Незакавыченной (ломающей) формы быть не должно.
+    assert "|импорт флага (оформитель побеждает)" not in mmd
 
 
 def test_build_flowchart_quotes_special_chars_via_escaper() -> None:

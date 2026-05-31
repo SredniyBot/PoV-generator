@@ -111,7 +111,11 @@ def _build_flowchart(diagram: dict[str, Any] | None) -> str:
         label = edge.get("label")
         if isinstance(label, str) and label.strip():
             escaped = _escape_mermaid_label(label)
-            lines.append(f"    {src} {arrow}|{escaped}| {dst}")
+            # Кавычки вокруг подписи ребра ОБЯЗАТЕЛЬНЫ: без них спецсимволы в
+            # тексте (в первую очередь «(», а также «|») ломают парсер mermaid —
+            # он токенизирует «(» как начало узла (ошибка «got 'PS'»). Узлы уже
+            # закавычены; теперь и рёбра — единообразно и безопасно.
+            lines.append(f'    {src} {arrow}|"{escaped}"| {dst}')
         else:
             lines.append(f"    {src} {arrow} {dst}")
 
@@ -363,7 +367,34 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "business_goal": {"type": "string"},
         "success_criteria": _string_array_schema(),
         "actors": _string_array_schema(),
-        "user_stories": _string_array_schema(),
+        # Сценарий — структурный объект (роль + цель + упорядоченные шаги),
+        # а НЕ плоская строка. Это позволяет рендерить честный нумерованный
+        # список (каждый шаг с новой строки) вместо «слипшегося» абзаца с
+        # инлайновыми «1) 2) 3)». Единое правило с потоками interaction_view:
+        # упорядоченная процедура — это массив шагов, не нумерация в прозе.
+        "user_stories": {
+            "type": "array",
+            "description": (
+                "Пользовательские сценарии. Для каждой ключевой роли — её цель "
+                "и упорядоченные шаги взаимодействия с решением. Шаги задаются "
+                "массивом steps (по одному действию на шаг), а НЕ нумерацией "
+                "внутри одной строки."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["actor", "goal"],
+                "additionalProperties": False,
+                "properties": {
+                    "actor": {"type": "string", "description": "Роль или действующее лицо сценария."},
+                    "goal": {"type": "string", "description": "Что роль хочет получить в этом сценарии."},
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Упорядоченные шаги сценария, по одному действию на шаг.",
+                    },
+                },
+            },
+        },
         "functional_requirements": _string_array_schema(),
         "non_functional_requirements": _string_array_schema(),
         "assumptions": _string_array_schema(),
@@ -1363,7 +1394,7 @@ def schema_instruction(role: str, domain_pack_refs: tuple[str, ...]) -> str:
         "`confidence` (0..1) — это поле необязательное и будет вынесено в "
         "метаданные артефакта, поэтому в самом содержании цифру повторять "
         "не нужно. Вопросы к пользователю формируются отдельно через "
-        "pre-flight планирование и реестр решений — не записывай их в артефакт.\n"
+        "выявление решений и реестр решений — не записывай их в артефакт.\n"
         f"Роль артефакта: {role}\n"
         f"Схема: {schema}"
     )
@@ -1380,6 +1411,46 @@ def _render_bulleted(lines: list[str], items: list[Any]) -> None:
         # внутри одного пункта рендерились нормально.
         text = text.replace("\n", "  \n  ")
         lines.append(f"- {text}")
+
+
+def _render_user_scenarios(lines: list[str], scenarios: list[Any]) -> None:
+    """Render user scenarios as readable blocks with a real numbered list.
+
+    A scenario is an inherently structured object — an actor, a goal and an
+    ordered list of steps. Modelling it as ``{actor, goal, steps[]}`` (instead
+    of a flat string) lets us emit each step on its own line under a clear
+    sub-heading, the same way ``interaction_view`` renders its flows. One
+    consistent rule across the codebase: an ordered procedure is a list of
+    steps, never inline-numbered prose.
+
+    Resilience: a plain-string item (legacy artifact or an occasional flat
+    answer from the model) still renders — as a single bullet — so older
+    documents never break.
+    """
+    index = 0
+    for raw in scenarios:
+        if isinstance(raw, dict):
+            index += 1
+            actor = str(raw.get("actor") or "").strip()
+            goal = str(raw.get("goal") or "").strip()
+            steps = [str(step).strip() for step in (raw.get("steps") or []) if str(step).strip()]
+            heading = f"### Сценарий {index}"
+            if actor:
+                heading += f". {actor}"
+            lines.append(heading)
+            lines.append("")
+            if goal:
+                lines.append(f"**Цель.** {goal}")
+                lines.append("")
+            for step_no, step in enumerate(steps, start=1):
+                lines.append(f"{step_no}. {step}")
+            if steps:
+                lines.append("")
+        else:
+            text = str(raw).strip()
+            if text:
+                lines.append(f"- {text}")
+                lines.append("")
 
 
 def _intro_for(label: str, count: int) -> str:
@@ -1406,7 +1477,8 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     • Риски — таблицей, а не списком: даёт сразу видимую структуру.
     • Доменные расширения (frontend / ml / security / integration) идут в
       собственных подразделах с горизонтальной чертой-разделителем.
-    • Маркеры разделов (🎯, 🛡, 🔌, 💡) — лёгкая визуальная навигация.
+    • Заголовки — без декоративных пиктограмм: навигацию даёт структура и
+      оглавление, а не эмодзи (это согласуется с запретом эмодзи для модели).
     """
     lines: list[str] = []
 
@@ -1421,28 +1493,29 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("> " + summary.replace("\n", "\n> "))
         lines.append("")
 
+    # Контекст и цель — единый верхний раздел: постановка проблемы, цель и
+    # целевые результаты вместе, без дробления на три почти одинаковых блока.
     business_context = (payload.get("business_context") or "").strip()
-    if business_context:
-        lines.append("## Контекст и постановка задачи")
-        lines.append("")
-        lines.append(business_context)
-        lines.append("")
-
     business_goal = (payload.get("business_goal") or "").strip()
-    if business_goal:
-        lines.append("## 🎯 Бизнес-цель")
-        lines.append("")
-        lines.append(business_goal)
-        lines.append("")
-
     target_outcomes = payload.get("target_outcomes") or []
-    if target_outcomes:
-        lines.append("### Целевые результаты")
+    if business_context or business_goal or target_outcomes:
+        lines.append("## Контекст и цель")
         lines.append("")
-        lines.append(_intro_for("целевые результаты", len(target_outcomes)))
-        lines.append("")
-        _render_bulleted(lines, target_outcomes)
-        lines.append("")
+        if business_context:
+            lines.append(business_context)
+            lines.append("")
+        if business_goal:
+            lines.append("### Бизнес-цель")
+            lines.append("")
+            lines.append(business_goal)
+            lines.append("")
+        if target_outcomes:
+            lines.append("### Целевые результаты")
+            lines.append("")
+            lines.append(_intro_for("целевые результаты", len(target_outcomes)))
+            lines.append("")
+            _render_bulleted(lines, target_outcomes)
+            lines.append("")
 
     # ----- Границы проекта ----------------------------------------------------
     scope_in = payload.get("scope_in") or []
@@ -1459,12 +1532,12 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         )
         lines.append("")
         if scope_in:
-            lines.append("**✅ Входит в этап**")
+            lines.append("**Входит в этап**")
             lines.append("")
             _render_bulleted(lines, scope_in)
             lines.append("")
         if scope_out:
-            lines.append("**⛔️ Не входит в этап (отнесено к следующим этапам)**")
+            lines.append("**Не входит в этап (отнесено к следующим этапам)**")
             lines.append("")
             _render_bulleted(lines, scope_out)
             lines.append("")
@@ -1472,7 +1545,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     # ----- Стейкхолдеры -------------------------------------------------------
     stakeholders = payload.get("stakeholders") or payload.get("actors") or []
     if stakeholders:
-        lines.append("## 👥 Стейкхолдеры и роли")
+        lines.append("## Стейкхолдеры и роли")
         lines.append("")
         lines.append(
             "Здесь перечислены ключевые роли, влияющие на проект: владелец, "
@@ -1495,7 +1568,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if user_stories:
         lines.append("---")
         lines.append("")
-        lines.append("## 📋 Пользовательские сценарии")
+        lines.append("## Пользовательские сценарии")
         lines.append("")
         lines.append(
             "Сценарии описывают типовые пути использования решения "
@@ -1503,7 +1576,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             "интерфейса и приёмки."
         )
         lines.append("")
-        _render_bulleted(lines, user_stories)
+        _render_user_scenarios(lines, user_stories)
         lines.append("")
 
     # ----- Требования ---------------------------------------------------------
@@ -1545,13 +1618,13 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             lines.append("")
 
         if integration_reqs:
-            lines.append("### 🔌 Интеграционные требования")
+            lines.append("### Интеграционные требования")
             lines.append("")
             _render_bulleted(lines, integration_reqs)
             lines.append("")
 
         if security_reqs:
-            lines.append("### 🛡 Требования ИБ и комплаенса")
+            lines.append("### Требования ИБ и комплаенса")
             lines.append("")
             _render_bulleted(lines, security_reqs)
             lines.append("")
@@ -1567,7 +1640,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if frontend:
         lines.append("---")
         lines.append("")
-        lines.append("## 🖥 Требования к интерфейсу")
+        lines.append("## Требования к интерфейсу")
         lines.append("")
         lines.append(
             "Этот блок описывает пользовательскую часть решения: кто будет "
@@ -1610,7 +1683,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if ml_requirements:
         lines.append("---")
         lines.append("")
-        lines.append("## 🤖 ML-задача и данные")
+        lines.append("## ML-задача и данные")
         lines.append("")
         prediction_target = (ml_requirements.get("prediction_target") or "").strip()
         prediction_horizon = (ml_requirements.get("prediction_horizon") or "").strip()
@@ -1649,7 +1722,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if security_detail:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔒 Детальные ограничения ИБ и комплаенса")
+        lines.append("## Детальные ограничения ИБ и комплаенса")
         lines.append("")
         lines.append(
             "Раздел раскрывает требования к контуру решения: где живут данные, "
@@ -1686,7 +1759,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if integration_model:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔌 Интеграционная модель")
+        lines.append("## Интеграционная модель")
         lines.append("")
         lines.append(
             "Описание того, откуда поступают данные, в каком виде, как часто, "
@@ -1723,7 +1796,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if deployment_topology:
         lines.append("---")
         lines.append("")
-        lines.append("## 🏗 Топология развёртывания")
+        lines.append("## Топология развёртывания")
         lines.append("")
         lines.append(
             "Раздел описывает, как и где физически разворачивается решение: "
@@ -1778,7 +1851,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if privacy_impact:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔐 Оценка воздействия на персональные данные (DPIA)")
+        lines.append("## Оценка воздействия на персональные данные (DPIA)")
         lines.append("")
         lines.append(
             "Формальный раздел для DPO/ИБ заказчика: какие категории ПДн "
@@ -1846,7 +1919,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if delivery_artifacts or acceptance or success:
         lines.append("---")
         lines.append("")
-        lines.append("## ✅ Результаты и приёмка")
+        lines.append("## Результаты и приёмка")
         lines.append("")
         lines.append(
             "Конкретные результаты этапа и измеримые критерии, по которым "
@@ -1874,7 +1947,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if phased:
         lines.append("---")
         lines.append("")
-        lines.append("## 🗓 Этапы реализации")
+        lines.append("## Этапы реализации")
         lines.append("")
         lines.append(
             "Крупная декомпозиция работы по фазам. Конкретные сроки и "
@@ -1891,7 +1964,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     open_questions = payload.get("open_questions") or []
 
     if alternatives:
-        lines.append("## 🧭 Рассмотренные альтернативы")
+        lines.append("## Рассмотренные альтернативы")
         lines.append("")
         lines.append(
             "Альтернативные варианты архитектуры, между которыми сделан "
@@ -1903,7 +1976,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("")
 
     if assumptions:
-        lines.append("## 💡 Допущения")
+        lines.append("## Допущения")
         lines.append("")
         lines.append(
             "Рабочие предположения, на которых строится решение. При "
@@ -1915,7 +1988,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
 
     risks_detail = payload.get("project_risks_detail") or []
     if risks_detail:
-        lines.append("## ⚠️ Реестр рисков")
+        lines.append("## Реестр рисков")
         lines.append("")
         lines.append(
             "Структурированный реестр известных рисков PoV с оценкой "
@@ -1956,7 +2029,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
                 lines.append(f"- **{title_risk}.** {desc}")
             lines.append("")
     elif risks:
-        lines.append("## ⚠️ Риски")
+        lines.append("## Риски")
         lines.append("")
         lines.append(
             "Известные риски проекта с указанием митигации. Список не "
@@ -1967,7 +2040,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("")
 
     if open_questions:
-        lines.append("## ❓ Открытые вопросы")
+        lines.append("## Открытые вопросы")
         lines.append("")
         lines.append(
             "Вопросы, которые остаются на согласование с заказчиком. Их "
@@ -1983,7 +2056,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if glossary:
         lines.append("---")
         lines.append("")
-        lines.append("## 📖 Глоссарий")
+        lines.append("## Глоссарий")
         lines.append("")
         lines.append(
             "Словарь ключевых терминов, ролей, систем и метрик, упомянутых "
