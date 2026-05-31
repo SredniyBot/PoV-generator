@@ -18,6 +18,7 @@ from test_m9_api import init_project, run_stub_workflow  # type: ignore
 
 from pov_generator.application import mermaid_render, pdf_export
 from pov_generator.application.pdf_export import (
+    _enhance_tables_in_html,
     _replace_mermaid_blocks_with_images,
     render_artifact_pdf,
 )
@@ -215,6 +216,65 @@ def test_download_pdf_endpoint_returns_404_when_no_markdown(tmp_path: Path) -> N
 
     assert response.status_code == 404
     assert "markdown" in response.json()["detail"].lower()
+
+
+# --- Оглавление + вынос широких таблиц в приложение -----------------------
+
+
+def _wide_table_html() -> str:
+    headers = "".join(
+        f"<th>Колонка номер {i} с довольно длинным заголовком</th>" for i in range(7)
+    )
+    cells = "".join(
+        f"<td>Достаточно длинное значение ячейки номер {i}</td>" for i in range(7)
+    )
+    return (
+        "<h1>Документ</h1>"
+        "<h2>Риски проекта</h2>"
+        "<p>Вступление к разделу.</p>"
+        f"<table><thead><tr>{headers}</tr></thead>"
+        f"<tbody><tr>{cells}</tr></tbody></table>"
+        "<h2>Дальнейшие шаги</h2>"
+        "<p>Текст после таблицы.</p>"
+    )
+
+
+def test_wide_table_moves_to_appendix_with_clickable_reference() -> None:
+    out, landscape_used = _enhance_tables_in_html(_wide_table_html(), extract_wide_tables=True)
+    assert landscape_used is True
+    # На месте таблицы — кликабельная ссылка на приложение.
+    assert 'class="table-ref"' in out
+    assert 'href="#appendix-1"' in out
+    assert "Приложение 1" in out
+    # Раздел «Приложения» с якорем для ссылки.
+    assert ">Приложения<" in out
+    assert 'name="appendix-1"' in out
+    # Подпись приложения берётся из ближайшего заголовка секции.
+    assert "Риски проекта" in out
+
+
+def test_clickable_toc_is_injected_for_multi_section_document() -> None:
+    out, _ = _enhance_tables_in_html(_wide_table_html(), extract_wide_tables=True)
+    assert 'class="doc-toc"' in out
+    assert ">Содержание<" in out
+    # Якоря на заголовки + кликабельные ссылки в оглавлении.
+    assert 'href="#sec-' in out
+    assert 'name="sec-' in out
+
+
+def test_toc_omitted_when_single_section() -> None:
+    html = "<h1>Док</h1><h2>Единственный раздел</h2><p>Текст.</p>"
+    out, _ = _enhance_tables_in_html(html, extract_wide_tables=True)
+    assert 'class="doc-toc"' not in out
+
+
+def test_wide_table_stays_inline_when_extraction_disabled() -> None:
+    out, landscape_used = _enhance_tables_in_html(_wide_table_html(), extract_wide_tables=False)
+    assert landscape_used is True
+    # Никакого приложения и ссылки — таблица разворачивается на месте.
+    assert 'class="table-ref"' not in out
+    assert "Приложение 1" not in out
+    assert "pdf:nextpage" in out
 
 
 # --- Mermaid preprocessing (PDF) ------------------------------------------
