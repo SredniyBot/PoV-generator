@@ -15,16 +15,15 @@ import pytest
 
 from pov_generator.common.errors import NotFoundError
 from pov_generator.domain.decisions import (
+    ENGAGEMENT_LEVELS,
     Decision,
     DecisionAlternative,
-    ENGAGEMENT_LEVELS,
+    levels_for_mode,
     normalized_decision_signature,
     normalized_decision_title_key,
-    levels_for_mode,
     should_surface_to_user,
 )
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
-
 
 # ---------------------------------------------------------------------------
 # Доменная модель
@@ -72,7 +71,7 @@ def _make_decision(
         level_rationale="Решение затрагивает несколько компонентов; обратимо только с миграцией данных",
         confidence=confidence,
         status="proposed",
-        source="pre_flight",
+        source="identification",
         source_task_id="task-arch-1",
         affected_artifact_ids=("artifact-arch-design",),
         depends_on_decision_ids=(),

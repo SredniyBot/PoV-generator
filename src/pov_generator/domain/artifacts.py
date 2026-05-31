@@ -111,7 +111,7 @@ class ArtifactMetadata:
     # фиксируются на этапе сборки артефакта и не пересчитываются.
     #
     # Ожидаемые стадии:
-    #   - `pre_flight_planning` — DecisionPlanningService (1 вызов).
+    #   - `decision_identification` — выявление решений до сборки (1 вызов).
     #   - `primary_generation`  — основная сборка артефакта (1 вызов
     #                              single_call ИЛИ N+1 для per_stage_cot).
     #   - `methodology_stage:<id>` — отдельные стадии per_stage_cot (если есть).

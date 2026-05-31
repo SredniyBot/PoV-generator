@@ -1,7 +1,7 @@
 """Выявление решений на уровне отдельной задачи (v3.6).
 
 ИСТОРИЯ. Раньше назывался ``decision_planning_service`` и работал по
-парадигме «pre-flight planning»: LLM спрашивали «какие решения ТЫ
+парадигме «предварительного планирования»: LLM спрашивали «какие решения ТЫ
 примешь, чтобы написать этот артефакт». Парадигма оказалась
 архитектурно неверной — она генерировала **меta-решения** (формат,
 глубина разделов, оформление) и дубли между задачами. Полный анализ —
@@ -51,21 +51,21 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
-
-import logging
 
 from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import (
     DECISION_CATEGORIES,
+    SOURCE_IDENTIFICATION,
     Decision,
     DecisionAlternative,
     strip_decision_category_prefix,
 )
-from ..domain.llm_settings import PURPOSE_DECISION_PLANNING, PURPOSE_EXECUTION_STANDARD
+from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
 from ..infrastructure.llm import LLMProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -82,9 +82,8 @@ class IdentificationResult:
     """Результат выявления решений для одной задачи.
 
     Содержит готовые к сохранению ``Decision`` объекты со статусом
-    ``proposed``. Каждый имеет ``source = "pre_flight"`` (исторический
-    enum в БД сохраняем для backward-compat; терминологию обновили в
-    коде) и привязку к задаче через ``source_task_id``.
+    ``proposed``. Каждый имеет ``source = "identification"`` (выявление
+    решений до сборки артефакта) и привязку к задаче через ``source_task_id``.
 
     Args:
         decisions: упорядоченный список выявленных решений.
@@ -330,7 +329,7 @@ class DecisionIdentificationService:
 
         Returns:
             IdentificationResult с готовыми Decision-объектами
-            (status="proposed", source="pre_flight"). Сохранение в реестр —
+            (status="proposed", source="identification"). Сохранение в реестр —
             ответственность вызывающего кода.
 
         Raises:
@@ -607,7 +606,7 @@ class DecisionIdentificationService:
             level_rationale=str(raw.get("level_rationale") or ""),
             confidence=float(raw.get("confidence") or 0.5),
             status="proposed",
-            source="pre_flight",
+            source=SOURCE_IDENTIFICATION,
             source_task_id=task_id,
             created_at=now,
             updated_at=now,

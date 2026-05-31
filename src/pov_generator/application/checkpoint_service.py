@@ -1,4 +1,4 @@
-"""Сервис управления pre-flight checkpoint-сессиями (v3.0).
+"""Сервис управления checkpoint-сессиями выявления решений (v3.0).
 
 Что делает:
     - Принимает результат :class:`DecisionPlanningService` (список
@@ -115,7 +115,7 @@ class CheckpointService:
             project_id: проект.
             task_id: задача, перед которой создаётся checkpoint.
             task_title, artifact_role: для UI checkpoint'а.
-            decisions: результат pre-flight планирования.
+            decisions: результат выявления решений до сборки.
             mode: текущий режим проекта (clarification_mode).
         """
         surfaced: list[Decision] = []
@@ -263,8 +263,8 @@ class CheckpointService:
 
         # v3.0 — auto-resume: задача, которая была failed из-за паузы,
         # переводится обратно в ready. Это позволит планнеру при следующем
-        # run_next / start_run немедленно её подобрать; pre-flight в
-        # ExecutionService увидит finalized session и пропустит планирование,
+        # run_next / start_run немедленно её подобрать; выявление в
+        # ExecutionService увидит finalized session и пропустит его,
         # сразу подтянет locked-in decisions в основной промпт.
         try:
             task = self._runtime.get_task(workspace, session.task_id)
@@ -496,7 +496,7 @@ class CheckpointService:
         # форсированно поднимались — это ломало обещание autopilot
         # «никогда не блокировать»: пользователь переключался в autopilot,
         # тогда set_participation_mode auto-resolve'ил pending decisions,
-        # задача ретрайнилась, и НОВЫЕ pre-flight/validation decisions
+        # задача ретрайнилась, и НОВЫЕ решения (выявление/валидация)
         # снова форсированно поднимались, опять блокируя workflow.
         try:
             current_mode = self._runtime.load_process_state(workspace).clarification_mode

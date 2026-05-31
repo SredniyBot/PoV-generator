@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 from test_m9_api import init_project  # type: ignore
 
@@ -66,7 +65,7 @@ def _make_decision(
         level_rationale="Affects multiple components",
         confidence=confidence,
         status=status,  # type: ignore[arg-type]
-        source="pre_flight",
+        source="identification",
         source_task_id="task-1",
         affected_artifact_ids=("art-1",),
         category=category,

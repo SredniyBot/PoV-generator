@@ -55,7 +55,7 @@ def _make_decision(
         level_rationale="...",
         confidence=confidence,
         status="proposed",
-        source="pre_flight",
+        source="identification",
         source_task_id="task-1",
     )
 

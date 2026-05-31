@@ -120,7 +120,7 @@ def test_plan_returns_decisions_parsed_from_llm_response() -> None:
     assert d.title == "Выбор СУБД"
     assert d.project_id == "p-1"
     assert d.source_task_id == "task-arch"
-    assert d.source == "pre_flight"
+    assert d.source == "identification"
     assert d.status == "proposed"
     assert d.chosen_option_id == "opt-postgres"
     assert d.category == "tech_stack"

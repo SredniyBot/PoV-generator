@@ -1,0 +1,87 @@
+"""Идея А (v3.10): самоотчётные решения из ответа генерации.
+
+DecisionExtractionService больше не делает отдельный LLM-вызов — он персистит
+«сырые» решения, которые модель вернула в поле `decisions` ответа генерации,
+с дедупликацией относительно реестра.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pov_generator.application.decision_extraction_service import (
+    DecisionExtractionService,
+    decisions_schema,
+)
+from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
+
+
+def _raw(title: str) -> dict:
+    return {
+        "title": title,
+        "description": "Краткое описание выбора",
+        "category": "tech_stack",
+        "alternatives": [
+            {"option_id": "a", "label": "Вариант A", "description": "да", "confidence": 0.7},
+            {"option_id": "b", "label": "Вариант B", "description": "дб", "confidence": 0.4},
+        ],
+        "chosen_in_artifact_option_id": "a",
+        "rationale": "так лучше ложится на требования",
+        "level": "architecture",
+        "confidence": 0.6,
+    }
+
+
+def test_persist_self_reported_saves_as_accepted_default(tmp_path: Path) -> None:
+    runtime = SqliteRuntime()
+    ws = tmp_path / "ws"
+    svc = DecisionExtractionService(runtime)
+
+    saved = svc.persist_self_reported(
+        ws,
+        project_id="p1",
+        artifact_id="art-1",
+        task_id="t-1",
+        raw_decisions=[_raw("Выбор СУБД"), _raw("Выбор OCR-движка")],
+    )
+    assert len(saved) == 2
+    for d in saved:
+        assert d.status == "accepted_default"
+        assert d.source == "emergent"
+        assert d.user_action == "not_shown"
+        assert d.affected_artifact_ids == ("art-1",)
+
+
+def test_persist_self_reported_dedups_against_registry(tmp_path: Path) -> None:
+    runtime = SqliteRuntime()
+    ws = tmp_path / "ws"
+    svc = DecisionExtractionService(runtime)
+
+    svc.persist_self_reported(
+        ws, project_id="p1", artifact_id="art-1", task_id="t-1",
+        raw_decisions=[_raw("Выбор СУБД"), _raw("Выбор OCR-движка")],
+    )
+    # Повторный заголовок (в т.ч. с другим регистром/пробелами) не дублируется.
+    saved2 = svc.persist_self_reported(
+        ws, project_id="p1", artifact_id="art-2", task_id="t-2",
+        raw_decisions=[_raw("выбор  субд"), _raw("Выбор очереди задач")],
+    )
+    assert {d.title for d in saved2} == {"Выбор очереди задач"}
+    assert len(runtime.list_decisions(ws, project_id="p1")) == 3
+
+
+def test_persist_self_reported_empty_is_noop(tmp_path: Path) -> None:
+    runtime = SqliteRuntime()
+    ws = tmp_path / "ws"
+    svc = DecisionExtractionService(runtime)
+    assert svc.persist_self_reported(
+        ws, project_id="p1", artifact_id="a", task_id="t", raw_decisions=[]
+    ) == ()
+
+
+def test_decisions_schema_is_optional_array_of_decisions() -> None:
+    schema = decisions_schema()
+    assert schema["type"] == "array"
+    item = schema["items"]
+    assert "title" in item["properties"]
+    assert "chosen_in_artifact_option_id" in item["properties"]

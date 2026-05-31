@@ -582,7 +582,7 @@ export type DecisionStatus =
   | "locked_in"
   | "superseded";
 export type DecisionSource =
-  | "pre_flight"
+  | "identification"
   | "emergent"
   | "reactive_validation"
   | "user_manual";

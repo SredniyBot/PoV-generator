@@ -6,8 +6,8 @@ from typing import Literal
 from .decisions import DecisionInput
 
 ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
-# v3.0: добавлен статус `paused_for_checkpoint` — задача дошла до точки
-# pre-flight, есть решения на уровне пользователя; workflow ждёт submit
+# v3.0: добавлен статус `paused_for_checkpoint` — задача дошла до этапа
+# выявления решений, есть решения на уровне пользователя; workflow ждёт submit
 # сессии в /api/projects/.../checkpoints/.../answer, после чего задача
 # будет ретрайнута и подхватит финализированные решения.
 ExecutionStatus = Literal["succeeded", "failed", "cancelled", "paused_for_checkpoint"]

@@ -336,7 +336,7 @@ class ArtifactDetailView:
     user_verified: bool = False
     user_verified_at: str | None = None
     # v3.5: разбивка токенов по стадиям сборки этого артефакта.
-    # Ключи стадий: pre_flight_planning, primary_generation,
+    # Ключи стадий: decision_identification, primary_generation,
     # methodology_stage:<id>. Значения: {input_tokens, output_tokens,
     # cache_read_tokens, cache_write_tokens, total_tokens}.
     token_usage: dict[str, dict[str, int]] = field(default_factory=dict)

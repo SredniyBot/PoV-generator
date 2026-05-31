@@ -9,7 +9,7 @@ from ..common.errors import ValidationError
 from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.artifacts import LOW_CONFIDENCE_THRESHOLD
-from ..domain.decisions import DecisionAlternative, DecisionInput
+from ..domain.decisions import SOURCE_IDENTIFICATION, DecisionAlternative, DecisionInput
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -39,7 +39,7 @@ _SOURCE_TYPE_TO_DECISION_SOURCE: dict[str, str] = {
     "validation": "reactive_validation",
     "quality_gate": "reactive_validation",
     "methodology_pack": "emergent",
-    "planning": "pre_flight",
+    "planning": SOURCE_IDENTIFICATION,
     "task": "reactive_validation",
     "domain_pack": "emergent",
 }

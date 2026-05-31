@@ -581,7 +581,7 @@ def test_methodology_reasoning_applied_decisions_come_from_ledger_not_legacy_kno
             level_rationale="Меняет scope поставки",
             confidence=0.8,
             status="accepted_default",
-            source="pre_flight",
+            source="identification",
             source_task_id="task-a",
             category="scope",
         ),

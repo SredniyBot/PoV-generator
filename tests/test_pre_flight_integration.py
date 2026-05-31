@@ -20,20 +20,21 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-from test_m9_api import init_project, run_stub_workflow  # type: ignore
+from test_m9_api import init_project  # type: ignore
 
 from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.decision_identification_service import (
     DecisionIdentificationService as DecisionPlanningService,
+)
+from pov_generator.application.decision_identification_service import (
     IdentificationResult as PlanningResult,
 )
 from pov_generator.application.execution_service import ExecutionService
-from pov_generator.application.registry_service import RegistryService
-from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.application.planning_service import PlanningService
+from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
+from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.decisions import Decision, DecisionAlternative
 from pov_generator.domain.positions import Position
@@ -115,7 +116,7 @@ def _make_business_decision(*, project_id: str, task_id: str, artifact_role: str
             level_rationale="Меняет, ДЛЯ КОГО продукт; видимо заказчику",
             confidence=0.7,
             status="proposed",
-            source="pre_flight",
+            source="identification",
             source_task_id=task_id,
         ),
     )
@@ -139,7 +140,7 @@ def _make_detail_decision(*, project_id: str, task_id: str, artifact_role: str) 
             level_rationale="Только REST-контракт, легко поменять",
             confidence=0.85,
             status="proposed",
-            source="pre_flight",
+            source="identification",
             source_task_id=task_id,
         ),
     )
@@ -229,7 +230,7 @@ def test_balanced_business_decision_pauses_execution(tmp_path: Path) -> None:
     project_id = runtime.load_project_state(workspace).manifest.project_id
 
     # Mode по умолчанию — balanced (см. ProcessState).
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
 
     assert bundle.result.status == "paused_for_checkpoint"
     assert bundle.result.checkpoint_session_id is not None
@@ -266,7 +267,7 @@ def test_autopilot_silent_accepts_and_continues(tmp_path: Path) -> None:
         reason="set autopilot",
     )
 
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
     # autopilot → ничего не surfaced → не paused, идём в основную генерацию (stub)
     assert bundle.result.status == "succeeded"
     # Решение всё равно в реестре, но как accepted_default
@@ -278,6 +279,57 @@ def test_autopilot_silent_accepts_and_continues(tmp_path: Path) -> None:
     # И никакой сессии не было создано
     sessions = runtime.list_checkpoint_sessions(workspace, project_id=project_id)
     assert sessions == []
+
+
+# ---------------------------------------------------------------------------
+# Сценарий 2b (регрессия): режим переключён НА autopilot ВО ВРЕМЯ выявления.
+# Параллельный прогон: задача стартовала в balanced, но пока шёл (долгий)
+# LLM-вызов выявления, пользователь переключил режим на autopilot. Surfacing
+# обязан читать АКТУАЛЬНЫЙ режим, а не захваченный на старте задачи — иначе
+# задача всплывёт с вопросами вопреки autopilot.
+# ---------------------------------------------------------------------------
+
+
+def test_mode_switch_during_identification_is_respected(tmp_path: Path) -> None:
+    workspace = tmp_path / "case_switch_midflight"
+    init_project(workspace, "Бизнес-запрос для проверки смены режима на лету.")
+
+    holder: dict[str, Any] = {}
+
+    def factory(*, project_id: str, task_id: str, artifact_role: str) -> tuple[Decision, ...]:
+        # Имитируем завершение LLM-вызова выявления: ровно в этот момент
+        # пользователь переключает режим на autopilot.
+        from pov_generator.domain.process_state import SetClarificationModePatch
+
+        holder["runtime"].apply_process_patch(
+            holder["workspace"],
+            SetClarificationModePatch(mode="autopilot"),
+            actor="test",
+            reason="user switched to autopilot mid-identification",
+        )
+        return _make_business_decision(
+            project_id=project_id, task_id=task_id, artifact_role=artifact_role
+        )
+
+    runtime, snapshot, _wf, _cp, planning_svc, _exec = _bootstrap_services(workspace, factory)
+    holder["runtime"] = runtime
+    holder["workspace"] = workspace
+    planning_svc.expand_graph(workspace, snapshot)
+    task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
+    project_id = runtime.load_project_state(workspace).manifest.project_id
+
+    bundle = _exec.execute_task(
+        workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True
+    )
+
+    # Режим на старте — balanced; переключён на autopilot во время выявления.
+    # Surfacing читает актуальный (autopilot) → тихо принять, без паузы/сессии.
+    assert bundle.result.status == "succeeded"
+    decisions = runtime.list_decisions(workspace, project_id=project_id)
+    assert len(decisions) == 1
+    assert decisions[0].status == "accepted_default"
+    assert decisions[0].user_action == "not_shown"
+    assert runtime.list_checkpoint_sessions(workspace, project_id=project_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +345,7 @@ def test_balanced_detail_decision_silent_no_pause(tmp_path: Path) -> None:
     )
     planning_svc.expand_graph(workspace, snapshot)
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
-    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    bundle = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
 
     # balanced + detail → silent → задача проходит
     assert bundle.result.status == "succeeded"
@@ -316,7 +368,7 @@ def test_submit_then_retry_uses_finalized_session(tmp_path: Path) -> None:
     project_id = runtime.load_project_state(workspace).manifest.project_id
 
     # 1. Первый запуск: pause
-    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
     assert first.result.status == "paused_for_checkpoint"
     session_id = first.result.checkpoint_session_id
 
@@ -335,7 +387,7 @@ def test_submit_then_retry_uses_finalized_session(tmp_path: Path) -> None:
 
     # 3. Повторный запуск задачи: pre-flight видит finalized session,
     #    НЕ создаёт новых решений, идёт в stub-генерацию
-    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
     assert second.result.status == "succeeded"
 
     # 4. В реестре по-прежнему одно решение — с обновлённым выбором
@@ -361,7 +413,7 @@ def test_decision_constraints_appear_in_prompt(tmp_path: Path) -> None:
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
 
     # Запускаем, финализируем, ретраим
-    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    first = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
     checkpoint_svc.submit_answers(
         workspace,
         session_id=first.result.checkpoint_session_id,
@@ -371,7 +423,7 @@ def test_decision_constraints_appear_in_prompt(tmp_path: Path) -> None:
             ),
         ),
     )
-    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True)
+    second = _exec.execute_task(workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True)
 
     # Достаём prompt_bundle trace, проверяем что в user_prompt есть блок
     user_prompt = _user_prompt_from_bundle(second)
@@ -391,7 +443,7 @@ def test_identification_uses_compact_context_not_generation_prompt(tmp_path: Pat
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
 
     bundle = exec_svc.execute_task(
-        workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True
+        workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True
     )
     assert bundle.result.status == "paused_for_checkpoint"
 
@@ -478,7 +530,7 @@ def test_previous_task_decision_constraints_appear_in_downstream_prompt(tmp_path
             level_rationale="Меняет целевую аудиторию продукта.",
             confidence=0.8,
             status="accepted_default",
-            source="pre_flight",
+            source="identification",
             source_task_id="task-a",
         ),
     )
@@ -504,7 +556,7 @@ def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
     paused → WorkflowService должен пометить task как failed.
 
     Здесь без WorkflowService.run_next — он зовёт execute_task без
-    force_pre_flight, и для stub-провайдера pre-flight пропускается.
+    force_decision_identification, и для stub-провайдера pre-flight пропускается.
     Эмулируем ту же логику вручную (transition_task fail), чтобы
     проверить именно auto-resume через submit_answers."""
     workspace = tmp_path / "case_wf"
@@ -515,9 +567,9 @@ def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
     planning_svc.expand_graph(workspace, snapshot)
     task = _first_leaf_task_with_artifact(runtime, workspace, snapshot)
 
-    # 1. execute_task возвращает paused (force_pre_flight=True для stub)
+    # 1. execute_task возвращает paused (force_decision_identification=True для stub)
     bundle = exec_svc.execute_task(
-        workspace, snapshot, task.task_id, provider="stub", force_pre_flight=True
+        workspace, snapshot, task.task_id, provider="stub", force_decision_identification=True
     )
     assert bundle.result.status == "paused_for_checkpoint"
     session_id = bundle.result.checkpoint_session_id

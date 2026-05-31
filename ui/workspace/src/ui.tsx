@@ -397,9 +397,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   // реестр) полностью покрывает оба сценария.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
+    { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
     { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
-    { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
   return (

@@ -1,386 +1,199 @@
-"""Post-artifact извлечение неявных проектных решений (v3.6).
+"""Самоотчётные эмерджентные решения из ответа генерации (v3.10, идея А).
 
-ИСТОЧНИК 2 из трёх в подсистеме реестра решений (см. также
-:mod:`decision_identification_service` и :mod:`phase_gap_analysis_service`).
+ИСТОЧНИК 2 из подсистемы реестра решений (см. также
+:mod:`decision_identification_service` — выявление решений ДО сборки).
 
-ЗАЧЕМ ЭТОТ СЕРВИС СУЩЕСТВУЕТ. Task-level identification (источник 1)
-работает на запуске задачи и спрашивает LLM «какие развилки возникают».
-LLM хорошо ловит **явные** развилки (длительность пилота, KPI, scope),
-но **молчаливо** закладывает в артефакты технические выборы:
-конкретные модели LLM, фреймворки, библиотеки, OCR-движки. Эти
-выборы никогда не звучат как «решение» — они просто появляются в
-тексте артефакта. Пользователь обнаруживает их только когда читает
-финальное ТЗ и видит «PostgreSQL» / «Llama-3 8B» / «PaddleOCR» —
-и удивляется, почему он эти решения не принимал.
+ЗАЧЕМ. Выявление до сборки (источник 1) спрашивает модель «какие развилки
+предстоят» и при необходимости останавливает задачу для участия человека.
+Оно хорошо ловит **явные** развилки (длительность пилота, KPI, scope), но
+модель **молчаливо** закладывает в артефакт технические выборы: конкретные
+СУБД, фреймворки, LLM-модели, OCR-движки. Эти выборы не звучат как
+«решение» — они просто появляются в тексте, и заказчик обнаруживает их
+постфактум.
 
-Этот сервис — **страховка**. После каждого сгенерированного primary-
-артефакта запускает короткий LLM-pass с двумя входами:
+КАК ЭТО РАБОТАЕТ ТЕПЕРЬ. Раньше после сборки шёл ОТДЕЛЬНЫЙ LLM-вызов,
+который перечитывал готовый артефакт и вытаскивал из него имплицитные
+решения. Идея А (v3.10) убрала этот вызов: модель, которая собирала
+артефакт, в ТОМ ЖЕ ответе возвращает поле ``decisions`` со списком принятых
+ею решений — она знает их точнее любого «перечитывателя», и это экономит и
+сам вызов, и повторную отправку всего артефакта на вход.
 
-  1. Содержимое только что сгенерированного артефакта (payload).
-  2. Title'ы уже существующих в реестре решений.
+РОЛЬ ЭТОГО СЕРВИСА. Принять «сырые» решения из ответа генерации, отсеять
+дубли (то, что уже есть в реестре — в т.ч. переданные в промпт сборки как
+ограничения), собрать доменные :class:`Decision` и сохранить как
+``accepted_default`` (source = identification-независимый ``emergent``).
+Пользователь видит их в реестре постфактум и может переиграть override'ом.
+Сервис LLM НЕ вызывает — только парсит и персистит (чистый SRP).
 
-И спрашивает: «какие *проектные* решения зашиты в этот артефакт, но
-которых ещё нет в реестре?»
-
-Найденные сохраняются как ``Decision`` со source="emergent" (отличается
-от "pre_flight"), status="accepted_default", без checkpoint. Пользователь
-видит их в реестре пост-фактум, может переиграть любое в обычном
-порядке override.
-
-ПОЧЕМУ НЕ ДЕЛАТЬ ВСЁ ЧЕРЕЗ EXTRACTION (отказавшись от identification).
-Extraction видит **уже принятые** решения, но не может *предупредить* о
-проблемных дефолтах ДО сборки артефакта. Identification — это «дай мне
-выбор», extraction — это «вот что я уже выбрал, к сведению». Они
-комплементарны.
-
-СТОИМОСТЬ. Один LLM-вызов на каждый primary-артефакт. Маленький промпт
-(один артефакт, не вся история), маленький output (часто 0-2 решения).
-По бюджету в разы дешевле identification. Размер LLM — standard.
-
-Спецификация: ``specs/12_clarification_escalation.md`` раздел v3.6.
+Схему массива решений (:func:`decisions_schema`) встраивает в combined-схему
+генерации ExecutionService.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..common.errors import ConflictError
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import (
     DECISION_CATEGORIES,
+    SOURCE_EMERGENT,
     Decision,
     DecisionAlternative,
+    normalized_decision_title_key,
     strip_decision_category_prefix,
 )
-from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
-from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 logger = logging.getLogger(__name__)
 
 
-_EXTRACTION_COMPLEXITY = "standard"
+def decisions_schema() -> dict[str, Any]:
+    """JSON-schema массива самоотчётных решений.
 
-
-_EXTRACTION_SYSTEM_PROMPT = """\
-<role>
-Ты — аналитик, ведущий реестр решений по PoV-проекту. Сейчас ты
-читаешь только что сгенерированный артефакт проекта и ищешь в нём
-**имплицитные проектные решения**, которые автор артефакта принял
-молча, не объявив их как развилки.
-</role>
-
-<purpose>
-Артефакты PoV (нормализованный запрос, ТЗ, архитектурная карта и т.д.)
-часто содержат конкретные технологические и продуктовые выборы — выбор
-конкретной СУБД, фреймворка, LLM-модели, библиотеки, OCR-движка,
-канала уведомлений, конкретного подразделения для пилота и т.п. Такие
-выборы нередко появляются «по умолчанию», без явного обсуждения. Они
-должны быть в реестре, чтобы заказчик мог увидеть «а, мы тут зашили
-Llama-3, а могли Qwen — это важно».
-</purpose>
-
-ЧТО СЧИТАЕМ ИМПЛИЦИТНЫМ ПРОЕКТНЫМ РЕШЕНИЕМ.
-
-ВЫНОСИ (это имплицитное проектное решение):
-- В артефакте упомянута конкретная технология / модель / библиотека
-  без обоснования альтернатив (PostgreSQL, FAISS, FastAPI, Llama-3,
-  Tesseract, etc.).
-- В артефакте принят конкретный численный параметр (порог 80%,
-  таймаут 5 сек, 50 одновр. пользователей), который мог бы быть
-  существенно другим.
-- В артефакте зафиксирована конкретная архитектурная развилка
-  (монолит vs микросервисы, sync vs async, on-prem vs cloud),
-  выбранная без явных альтернатив в тексте.
-
-НЕ ВЫНОСИ:
-- Решения, которые уже есть в реестре (даже под другой формулировкой).
-- Тривиальные/обратимые детали (имя переменной, цвет UI, формат даты).
-- Прямые цитаты из бизнес-запроса заказчика (это не решение, это вход).
-- Мета-про-документ (формат раздела, глубина списка, оформление).
-
-ФОРМАТ ВЫВОДА.
-Для каждого найденного решения возвращай:
-- title: короткое название (3-7 слов).
-- description: 1-2 предложения о выборе.
-- category: одна из категорий (см. enum). Если ни одна не подходит —
-  не выноси.
-- alternatives: 2-3 реальных варианта (включая тот, который зашит в
-  артефакте, и хотя бы один-два альтернативных). У каждого — label,
-  description, confidence (0..1).
-- chosen_in_artifact_option_id: id того варианта из alternatives,
-  который реально зашит в артефакте. Это будет proposed/chosen.
-- rationale: почему именно тот вариант оказался в артефакте (если
-  явно сказано — повторить, если нет — короткое объяснение).
-- level: business / architecture / detail.
-- confidence: 0..1, уверенность что это реально решение (не шум).
-
-КОЛИЧЕСТВО. От 0 до 3 на один артефакт. Лучше 0, чем шум. Если в
-артефакте не видно ярких имплицитных выборов — возвращай пустой массив.
-
-Верни ТОЛЬКО валидный JSON по схеме. Без markdown.
-"""
-
-
-def _build_extraction_schema() -> dict[str, Any]:
+    Встраивается ExecutionService как поле ``decisions`` объединённой схемы
+    генерации: модель вместе с артефактом перечисляет имплицитные проектные
+    решения, которые она приняла при сборке. Поле опциональное — пустой
+    массив, если ярких выборов нет.
+    """
     return {
-        "type": "object",
-        "required": ["decisions"],
-        "additionalProperties": False,
-        "properties": {
-            "decisions": {
-                "type": "array",
-                "maxItems": 3,
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "title",
-                        "description",
-                        "category",
-                        "alternatives",
-                        "chosen_in_artifact_option_id",
-                        "rationale",
-                        "level",
-                        "confidence",
-                    ],
-                    "additionalProperties": False,
-                    "properties": {
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
-                        "category": {
-                            "type": "string",
-                            "enum": list(DECISION_CATEGORIES),
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+            "type": "object",
+            "required": [
+                "title",
+                "description",
+                "category",
+                "alternatives",
+                "chosen_in_artifact_option_id",
+                "rationale",
+                "level",
+                "confidence",
+            ],
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "category": {"type": "string", "enum": list(DECISION_CATEGORIES)},
+                "alternatives": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "required": ["option_id", "label", "description", "confidence"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "option_id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "description": {"type": "string"},
+                            "pros": {"type": "array", "items": {"type": "string"}},
+                            "cons": {"type": "array", "items": {"type": "string"}},
+                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                         },
-                        "alternatives": {
-                            "type": "array",
-                            "minItems": 2,
-                            "maxItems": 4,
-                            "items": {
-                                "type": "object",
-                                "required": ["option_id", "label", "description", "confidence"],
-                                "additionalProperties": False,
-                                "properties": {
-                                    "option_id": {"type": "string"},
-                                    "label": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "pros": {"type": "array", "items": {"type": "string"}},
-                                    "cons": {"type": "array", "items": {"type": "string"}},
-                                    "confidence": {
-                                        "type": "number",
-                                        "minimum": 0.0,
-                                        "maximum": 1.0,
-                                    },
-                                },
-                            },
-                        },
-                        "chosen_in_artifact_option_id": {"type": "string"},
-                        "rationale": {"type": "string"},
-                        "level": {
-                            "type": "string",
-                            "enum": ["business", "architecture", "detail"],
-                        },
-                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
                 },
-            }
+                "chosen_in_artifact_option_id": {"type": "string"},
+                "rationale": {"type": "string"},
+                "level": {"type": "string", "enum": ["business", "architecture", "detail"]},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
         },
     }
 
 
-@dataclass(frozen=True)
-class ExtractionResult:
-    """Результат post-artifact extraction.
+def decisions_instruction() -> str:
+    """Инструкция для модели: как заполнять поле ``decisions`` при сборке.
 
-    Args:
-        decisions: вытащенные проектные решения. Все автоматически
-            ``accepted_default``, без checkpoint. Привязка к артефакту
-            — на вызывающей стороне (через ``affected_artifact_ids``).
-        token_usage: usage LLM-вызова.
+    Добавляется к system-промпту генерации, когда поле решений запрошено.
     """
-
-    decisions: tuple[Decision, ...]
-    token_usage: dict[str, Any] = field(default_factory=dict)
+    return (
+        "<decisions_self_report>\n"
+        "Собирая артефакт, ты неизбежно принимаешь имплицитные проектные "
+        "решения: конкретные СУБД, фреймворки, LLM-модели, библиотеки, "
+        "численные пороги, архитектурные развилки (монолит/микросервисы, "
+        "sync/async, on-prem/cloud). Перечисли такие принятые тобой выборы в "
+        "поле `decisions` — чтобы они попали в реестр решений, а не остались "
+        "молча зашитыми в текст.\n"
+        "ВЫНОСИ только содержательные выборы, которые могли бы быть иными. "
+        "НЕ выноси: тривиальные/обратимые детали, прямые цитаты из запроса "
+        "заказчика, оформление документа. Если ярких выборов нет — верни "
+        "пустой массив. От 0 до 3 на артефакт; лучше 0, чем шум.\n"
+        "Для каждого: title (3-7 слов), description (1-2 предложения), "
+        "category (из enum), alternatives (2-4 реальных варианта с label/"
+        "description/confidence), chosen_in_artifact_option_id (что зашито в "
+        "артефакте), rationale, level (business/architecture/detail), "
+        "confidence (0..1).\n"
+        "</decisions_self_report>"
+    )
 
 
 class DecisionExtractionService:
-    """Извлечение имплицитных проектных решений из готового артефакта."""
+    """Персистер самоотчётных эмерджентных решений (без вызовов LLM).
 
-    def __init__(
-        self,
-        runtime: SqliteRuntime,
-        *,
-        llm_registry: LLMProviderRegistry | None = None,
-    ) -> None:
+    Принимает «сырые» решения из ответа генерации, дедуплицирует относительно
+    реестра и сохраняет как ``accepted_default``. Не зависит от
+    LLM-провайдера — это чистая трансформация + персистентность.
+    """
+
+    def __init__(self, runtime: SqliteRuntime) -> None:
         self._runtime = runtime
-        self._llm = llm_registry or LLMProviderRegistry()
 
-    def extract_from_artifact(
+    def persist_self_reported(
         self,
-        *,
         workspace: Path,
+        *,
         project_id: str,
         artifact_id: str,
-        artifact_role: str,
-        artifact_content: str,
-        task_id: str | None = None,
-        provider: str | None = None,
-        model: str | None = None,
-        token_usage_out: dict[str, int] | None = None,
+        task_id: str | None,
+        raw_decisions: list[Any],
     ) -> tuple[Decision, ...]:
-        """Извлечь имплицитные проектные решения из артефакта.
+        """Сохранить самоотчётные решения из ответа генерации.
 
-        Сохраняет в реестр и возвращает upserted Decision'ы. Не вызывает
-        checkpoint (все идут как ``accepted_default``).
+        Дедупликация по нормализованному заголовку относительно ВСЕГО реестра
+        проекта — чтобы не задвоить решения, уже принятые до сборки и
+        переданные в промпт как ограничения. Все сохраняются как
+        ``accepted_default`` (пользователь не блокируется, но видит их).
 
-        v3.8.4: принимает уже **отрендеренный текст** артефакта (обычно
-        markdown через :func:`render_markdown`), а не сырой JSON. Markdown —
-        это смысловое сжатое представление содержимого артефакта без
-        технического шума (имена полей, кавычки, escape-последовательности,
-        нулевые поля). Для крупных артефактов это даёт −40-60% размера
-        промпта в input-токенах при той же информации для LLM.
-
-        Универсальность: artifact-specific markdown-рендереры уже
-        существуют для всех ролей через
-        :func:`artifact_contracts.render_markdown`; никаких per-role
-        выжимок здесь городить не надо. Если вызывающий код не смог
-        отрендерить markdown (rare — KeyError из-за неполного payload),
-        он передаёт сюда сырой JSON-снимок — extraction всё равно
-        отработает, просто на более громоздком входе.
-
-        Args:
-            workspace: путь workspace проекта.
-            project_id: id проекта.
-            artifact_id: id артефакта (для привязки).
-            artifact_role: роль артефакта (для контекста промпта).
-            artifact_content: текстовое представление содержимого
-                артефакта (markdown / plain text / fallback JSON).
-            task_id: задача, породившая артефакт (для source_task_id).
-            provider/model: override (тесты).
-            token_usage_out: если передан — заполняется usage'ом
-                (input/output/total tokens).
-
-        Returns:
-            Tuple созданных Decision-объектов. Может быть пустым.
+        Returns: сохранённые Decision'ы (может быть пусто).
         """
-        # Подгружаем существующие title'ы — для антидублирующей
-        # инструкции в промпте.
+        if not raw_decisions:
+            return ()
         existing = self._runtime.list_decisions(workspace, project_id=project_id)
-        existing_titles = tuple(d.title for d in existing)
+        seen_keys = {normalized_decision_title_key(d.title) for d in existing}
 
-        llm = self._resolve_llm(provider=provider, model=model)
-
-        user_prompt = self._build_user_prompt(
-            artifact_role=artifact_role,
-            artifact_content=artifact_content,
-            existing_titles=existing_titles,
-        )
-        schema = _build_extraction_schema()
-
-        try:
-            response = llm.chat_json(
-                system_prompt=_EXTRACTION_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                schema=schema,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise ConflictError(
-                f"Ошибка post-artifact extraction через {llm.name}: {exc}"
-            ) from exc
-
-        usage = getattr(llm, "last_usage", None)
-        if usage is not None and token_usage_out is not None:
-            token_usage_out.update(
-                {
-                    "input_tokens": int(usage.input_tokens),
-                    "output_tokens": int(usage.output_tokens),
-                    "cache_read_tokens": int(usage.cache_read_tokens),
-                    "cache_write_tokens": int(usage.cache_write_tokens),
-                    "total_tokens": int(usage.total_tokens),
-                }
-            )
-
-        decisions = self._build_decisions(
-            response=response,
+        built = self._build_decisions(
+            raw_decisions=raw_decisions,
             project_id=project_id,
             task_id=task_id,
             artifact_id=artifact_id,
         )
-
-        # Сохраняем сразу же. Все extracted-решения идут как
-        # accepted_default — пользователь не блокируется, но видит их.
         saved: list[Decision] = []
-        for d in decisions:
+        for decision in built:
+            key = normalized_decision_title_key(decision.title)
+            if key in seen_keys:
+                continue  # уже в реестре — не дублируем
             try:
-                self._runtime.upsert_decision(workspace, d)
-                saved.append(self._runtime.get_decision(workspace, d.decision_id))
-            except Exception:  # noqa: BLE001
-                # Не валим всё из-за одной битой записи.
+                self._runtime.upsert_decision(workspace, decision)
+                saved.append(self._runtime.get_decision(workspace, decision.decision_id))
+                seen_keys.add(key)
+            except Exception:  # noqa: BLE001 — одна битая запись не валит остальные
                 continue
         return tuple(saved)
 
     # ---- helpers ---------------------------------------------------------
 
-    def _resolve_llm(self, *, provider: str | None, model: str | None):
-        if provider is not None:
-            return self._llm.get(
-                provider=provider, model=model, complexity=_EXTRACTION_COMPLEXITY
-            )
-        try:
-            return self._llm.resolve_for_purpose(
-                PURPOSE_DECISION_PLANNING,
-                complexity=_EXTRACTION_COMPLEXITY,
-                override_model=model,
-            )
-        except ConflictError:
-            return self._llm.resolve_for_purpose(
-                "execution",
-                complexity="standard",
-                override_model=model,
-            )
-
-    def _build_user_prompt(
-        self,
-        *,
-        artifact_role: str,
-        artifact_content: str,
-        existing_titles: tuple[str, ...],
-    ) -> str:
-        # Лимитируем 60 последних title'ов чтобы промпт не разрастался.
-        recent = existing_titles[-60:]
-        registry_block = ""
-        if recent:
-            bullets = "\n".join(f"- {t}" for t in recent)
-            registry_block = (
-                f"### Уже в реестре ({len(existing_titles)} решений; "
-                f"показаны последние {len(recent)})\n"
-                f"{bullets}\n\n"
-                f"НЕ дублируй эти решения, даже если формулировка отличается.\n\n"
-            )
-
-        return (
-            f"### Артефакт\n"
-            f"**Роль:** {artifact_role}\n\n"
-            f"{registry_block}"
-            f"### Содержимое артефакта\n"
-            f"{artifact_content}\n\n"
-            f"### Запрос\n"
-            f"Вытащи из артефакта **имплицитные проектные решения**, которых "
-            f"ещё нет в реестре. От 0 до 3 — лучше 0, чем шум."
-        )
-
     def _build_decisions(
         self,
         *,
-        response: dict[str, Any],
+        raw_decisions: list[Any],
         project_id: str,
         task_id: str | None,
         artifact_id: str,
     ) -> tuple[Decision, ...]:
-        raw_decisions = response.get("decisions") or []
         if not isinstance(raw_decisions, list):
             return ()
         now = utc_now_iso()
@@ -389,16 +202,17 @@ class DecisionExtractionService:
             if not isinstance(raw, dict):
                 continue
             try:
-                d = self._build_single(
-                    raw=raw,
-                    project_id=project_id,
-                    task_id=task_id,
-                    artifact_id=artifact_id,
-                    now=now,
+                out.append(
+                    self._build_single(
+                        raw=raw,
+                        project_id=project_id,
+                        task_id=task_id,
+                        artifact_id=artifact_id,
+                        now=now,
+                    )
                 )
             except (KeyError, TypeError, ValueError):
                 continue
-            out.append(d)
         return tuple(out)
 
     def _build_single(
@@ -419,22 +233,20 @@ class DecisionExtractionService:
                 pros=tuple(alt.get("pros") or ()),
                 cons=tuple(alt.get("cons") or ()),
                 confidence=(
-                    float(alt["confidence"])
-                    if alt.get("confidence") is not None
-                    else None
+                    float(alt["confidence"]) if alt.get("confidence") is not None else None
                 ),
             )
             for alt in raw_alts
             if isinstance(alt, dict) and "option_id" in alt
         )
         if len(alternatives) < 2:
-            raise ValueError("extracted decision: need >= 2 alternatives")
+            raise ValueError("self-reported decision: need >= 2 alternatives")
         if any(alt.confidence is None for alt in alternatives):
-            raise ValueError("extracted decision: confidence required on alts")
+            raise ValueError("self-reported decision: confidence required on alts")
 
         category = str(raw.get("category") or "").strip()
         if category not in DECISION_CATEGORIES:
-            raise ValueError(f"extracted decision: bad category {category!r}")
+            raise ValueError(f"self-reported decision: bad category {category!r}")
 
         chosen = str(raw.get("chosen_in_artifact_option_id") or "")
         if chosen not in {alt.option_id for alt in alternatives}:
@@ -446,27 +258,23 @@ class DecisionExtractionService:
 
         description = strip_decision_category_prefix(str(raw.get("description") or ""))
 
-        # source="emergent" — этот enum уже существует в v3.0 для
-        # незапланированных решений, возникших по ходу генерации.
-        # Идеально подходит под extraction.
         return Decision(
             decision_id=str(uuid.uuid4()),
             project_id=project_id,
-            title=str(raw.get("title") or "Untitled extracted decision"),
+            title=str(raw.get("title") or "Untitled decision"),
             description=description,
             category=category,
             chosen_option_id=chosen,
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),
             level=level,  # type: ignore[arg-type]
-            level_rationale="Вытащено пост-фактум из артефакта (источник: extraction).",
+            level_rationale="Указано генерацией как принятое при сборке артефакта.",
             confidence=float(raw.get("confidence") or 0.5),
-            # Auto-accepted: это уже зафиксировано в артефакте, мы только
-            # отражаем в реестре. Пользователь может переиграть в любой
-            # момент через override.
+            # Auto-accepted: уже зафиксировано в артефакте, отражаем в реестре.
+            # Пользователь может переиграть override'ом в любой момент.
             status="accepted_default",
             user_action="not_shown",
-            source="emergent",
+            source=SOURCE_EMERGENT,
             source_task_id=task_id,
             affected_artifact_ids=(artifact_id,),
             created_at=now,

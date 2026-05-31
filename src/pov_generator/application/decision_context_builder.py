@@ -5,7 +5,11 @@ from datetime import datetime
 from pathlib import Path
 
 from ..domain.artifacts import ContextManifest
-from ..domain.decisions import Decision, normalized_decision_signature
+from ..domain.decisions import (
+    SOURCE_IDENTIFICATION,
+    Decision,
+    normalized_decision_signature,
+)
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -302,7 +306,7 @@ class DecisionContextBuilder:
         pieces: list[str] = []
         if decision.source_task_id and decision.source_task_id != task_id:
             pieces.append(f"задача {decision.source_task_id}")
-        if decision.source != "pre_flight":
+        if decision.source != SOURCE_IDENTIFICATION:
             pieces.append(decision.source)
         if decision.affected_artifact_ids:
             preview = ", ".join(decision.affected_artifact_ids[:2])

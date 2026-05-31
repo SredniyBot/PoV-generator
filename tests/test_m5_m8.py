@@ -122,10 +122,12 @@ def test_context_builder_collects_previous_artifacts_for_spec_generation(tmp_pat
     manifest = context_result.manifest
 
     assert manifest.template_ref == "common.requirements_spec_generation@1.0.0"
+    # v3.10: артефакты называются по имени ДОКУМЕНТА (title контракта),
+    # а не задачи-производителя.
     artifact_titles = {item.title for item in manifest.items if item.item_type == "artifact"}
-    assert any("Нормализовать запрос" in title for title in artifact_titles)
-    assert any("Определить бизнес-результат" in title for title in artifact_titles)
-    assert any("Сформировать варианты решения" in title for title in artifact_titles)
+    assert any("Нормализованный бизнес-запрос" in title for title in artifact_titles)
+    assert any("Модель бизнес-результата" in title for title in artifact_titles)
+    assert any("Набор вариантов решения" in title for title in artifact_titles)
     assert manifest.budget.used_tokens > 0
 
 

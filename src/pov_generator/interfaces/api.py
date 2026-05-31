@@ -144,9 +144,9 @@ def create_app(
 
     checkpoint_service = CheckpointService(runtime)
     decision_identification_service = DecisionIdentificationService(llm_registry=llm_registry)
-    decision_extraction_service = DecisionExtractionService(
-        runtime, llm_registry=llm_registry
-    )
+    # v3.10 (идея А): сервис больше не вызывает LLM — он персистит решения,
+    # которые модель вернула в ответе генерации. LLM-зависимость не нужна.
+    decision_extraction_service = DecisionExtractionService(runtime)
     project_service = ProjectService(runtime)
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)

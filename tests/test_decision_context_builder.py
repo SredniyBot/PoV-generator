@@ -53,7 +53,7 @@ def _decision(
         level_rationale="Тестовая классификация.",
         confidence=0.8,
         status=status,  # type: ignore[arg-type]
-        source="pre_flight",
+        source="identification",
         source_task_id=source_task_id,
         affected_artifact_ids=affected_artifact_ids,
         depends_on_decision_ids=depends_on_decision_ids,

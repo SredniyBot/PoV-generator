@@ -27,7 +27,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 # --- Типы и vocabulary -------------------------------------------------------
 
 
@@ -56,8 +55,8 @@ PURPOSE_EXECUTION_COMPLEX = "execution.complex"
 PURPOSE_DOMAIN_PACK_SELECTOR = "domain_pack_selector"
 PURPOSE_CLARIFICATION_CE11 = "clarification_ce11"
 PURPOSE_COMPLEXITY_SELECTOR = "complexity_selector"
-# v3.0: отдельный purpose для pre-flight планирования решений перед
-# генерацией артефакта. Обычно дешёвая/быстрая модель — задача
+# v3.0: отдельный purpose для выявления решений до сборки артефакта.
+# Обычно дешёвая/быстрая модель — задача
 # структурного перечисления, не глубокого анализа.
 PURPOSE_DECISION_PLANNING = "decision_planning"
 

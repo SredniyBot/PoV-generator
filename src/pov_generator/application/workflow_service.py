@@ -23,7 +23,7 @@ class WorkflowStepResult:
     validation_status: str | None
     applied_patches: tuple[str, ...] = field(default_factory=tuple)
     reasons: tuple[str, ...] = field(default_factory=tuple)
-    # v3.0: если задача приостановлена pre-flight checkpoint'ом — id
+    # v3.0: если задача приостановлена checkpoint'ом выявления решений — id
     # сессии, которую пользователь должен закрыть. validation_status
     # тогда = "paused_for_checkpoint" (псевдо-статус; настоящих
     # validation_runs не создаётся).
@@ -160,7 +160,7 @@ class WorkflowService:
                 model=model,
                 cancellation=cancellation,
             )
-            # v3.0: pre-flight checkpoint может остановить задачу до
+            # v3.0: checkpoint выявления решений может остановить задачу до
             # основной генерации. В этом случае:
             #   - не запускаем валидацию (артефакта нет);
             #   - task возвращаем в статус "blocked" (через `fail`-transition

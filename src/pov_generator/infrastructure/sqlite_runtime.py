@@ -2199,6 +2199,11 @@ class SqliteRuntime:
         self._ensure_column(
             connection, "decisions", "user_verified_at", "text"
         )
+        # v3.10: source "pre_flight" переименован в "identification" (этап
+        # выявления решений до сборки). Мигрируем legacy-строки идемпотентно.
+        connection.execute(
+            "update decisions set source = 'identification' where source = 'pre_flight'"
+        )
 
         # W4.1 (R1): async workflow runs.
         connection.executescript(

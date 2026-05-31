@@ -3,8 +3,8 @@
 
 Что такое checkpoint:
     Перед задачей, которая генерирует артефакт, ExecutionService делает
-    pre-flight вызов LLM: «перечисли решения, которые ты собираешься
-    принять для этой задачи». Получив список, система фильтрует его по
+    вызов LLM на этапе выявления решений: «перечисли решения, которые ты
+    собираешься принять для этой задачи». Получив список, система фильтрует его по
     уровню вовлечения пользователя (см. levels_for_mode).
 
     Если после фильтра остались решения — создаётся CheckpointSession.
@@ -30,9 +30,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
-
 
 #: Жизненный цикл сессии.
 #:
