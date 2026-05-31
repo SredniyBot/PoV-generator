@@ -51,6 +51,8 @@ povgen-api                 # prod ; --reload — dev hot-reload ; --port / --hos
 python -m pov_generator.interfaces.api --reload   # если console scripts недоступны
 
 # UI dev-server (vite проксирует /api и /ws на 8788) → http://127.0.0.1:5173/
+# При первом запуске (нет node_modules): сначала npm --prefix ui/workspace install
+# подробнее: docs/dev_startup_notes.md
 npm --prefix ui/workspace run dev
 npm --prefix ui/workspace run build      # tsc + vite сборка (CI гоняет это)
 
