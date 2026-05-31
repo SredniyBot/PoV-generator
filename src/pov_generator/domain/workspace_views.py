@@ -210,6 +210,21 @@ class ArtifactSummaryView:
 
 
 @dataclass(frozen=True)
+class AttachmentView:
+    """Проекция входного файла-вложения для UI (вкладка «Входные файлы»)."""
+
+    attachment_id: str
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    extraction_status: str
+    extraction_error: str | None
+    used_in_context: bool
+    can_delete: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
 class ArtifactValidationView:
     validation_run_id: str
     status: str
@@ -242,6 +257,14 @@ class ArtifactDetailView:
     parent_artifact_id: str | None = None
     is_superseded: bool = False
     overall_confidence: float | None = None
+    # Учёт токенов задачи, создавшей артефакт (агрегат всех её LLM-вызовов).
+    # None во всех полях usage_* = «n/a» (провайдер не дал данных).
+    usage_input_tokens: int | None = None
+    usage_output_tokens: int | None = None
+    usage_total_tokens: int | None = None
+    # "actual" | "estimated" | None. estimated → UI помечает «оценка».
+    usage_source: str | None = None
+    usage_call_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -303,6 +326,9 @@ class ProjectDebugView:
     escalations: tuple[dict[str, object], ...]
     clarification_candidates: tuple[dict[str, object], ...] = ()
     clarification_requests: tuple[dict[str, object], ...] = ()
+    # Учёт токенов: детализация по вызовам + агрегат по проекту.
+    llm_usage: tuple[dict[str, object], ...] = ()
+    llm_usage_total: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

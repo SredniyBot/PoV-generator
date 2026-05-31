@@ -205,7 +205,22 @@ class ContextService:
             used_position_ids=self.collect_used_position_ids(state),
         )
         self._runtime.record_context_manifest(workspace, context_manifest)
+        self._mark_used_attachments(workspace, context_manifest.used_position_ids)
         return ContextBuildResult(manifest=context_manifest)
+
+    def _mark_used_attachments(self, workspace: Path, used_position_ids: tuple[str, ...]) -> None:
+        """Пометить вложения, чей текст реально вошёл в контекст задачи.
+
+        После этого вложение нельзя удалить (воспроизводимость). Текст вложения
+        внесён в Layer A как положение ``attachment.<id>``; если такое положение
+        попало в ``used_position_ids`` — фиксируем использование.
+        """
+        from .attachment_service import attachment_id_from_position_id
+
+        for position_id in used_position_ids:
+            attachment_id = attachment_id_from_position_id(position_id)
+            if attachment_id is not None:
+                self._runtime.mark_attachment_used(workspace, attachment_id)
 
     def _effective_max_tokens(self, template_max_tokens: int) -> int | None:
         raw_disable = os.environ.get("POV_DISABLE_TEMPLATE_CONTEXT_BUDGET", "").strip().lower()

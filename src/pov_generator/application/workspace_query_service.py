@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import to_primitive
+from ..domain.project_state import ProjectManifest, ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
@@ -17,6 +18,7 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ArtifactVersionItemView,
+    AttachmentView,
     ClarificationItemView,
     ClarificationOptionView,
     ContextManifestSummaryView,
@@ -45,7 +47,6 @@ from ..domain.workspace_views import (
     TaskNodeView,
     TimelineEntryView,
 )
-from ..domain.project_state import ProjectManifest, ProjectState
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
 from .registry_service import RegistryService
@@ -70,6 +71,7 @@ class WorkspaceQueryService:
         "situation",
         "timeline",
         "artifacts",
+        "attachments",
         "clarifications",
         "review",
         "state",
@@ -257,10 +259,31 @@ class WorkspaceQueryService:
             for artifact in self._runtime.list_artifacts(context.workspace)
         )
 
+    def project_attachments(self, project_id: str) -> tuple[AttachmentView, ...]:
+        context = self._load_context(project_id)
+        return tuple(
+            AttachmentView(
+                attachment_id=attachment.attachment_id,
+                original_filename=attachment.original_filename,
+                mime_type=attachment.mime_type,
+                size_bytes=attachment.size_bytes,
+                extraction_status=attachment.extraction_status,
+                extraction_error=attachment.extraction_error,
+                used_in_context=attachment.used_in_context,
+                can_delete=attachment.can_delete,
+                created_at=attachment.created_at,
+            )
+            for attachment in self._runtime.list_attachments(context.workspace)
+        )
+
     def artifact_detail(self, project_id: str, artifact_id: str) -> ArtifactDetailView:
         context = self._load_context(project_id)
         artifact = self._runtime.load_artifact(context.workspace, artifact_id)
         markdown_path = context.workspace / artifact.storage_path.replace(".json", ".md")
+        # Учёт токенов задачи, создавшей артефакт (агрегат всех её вызовов).
+        usage = None
+        if artifact.created_by_task_id is not None:
+            usage = self._runtime.llm_usage_by_task(context.workspace).get(artifact.created_by_task_id)
         return ArtifactDetailView(
             artifact_id=artifact.artifact_id,
             artifact_role=artifact.artifact_role,
@@ -284,6 +307,11 @@ class WorkspaceQueryService:
             parent_artifact_id=artifact.relations.parent_artifact_id,
             is_superseded=artifact.is_superseded,
             overall_confidence=artifact.metadata.overall_confidence,
+            usage_input_tokens=usage.input_tokens if usage else None,
+            usage_output_tokens=usage.output_tokens if usage else None,
+            usage_total_tokens=usage.total_tokens if usage else None,
+            usage_source=("estimated" if usage and usage.has_estimated else "actual") if usage else None,
+            usage_call_count=usage.call_count if usage else 0,
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:
@@ -542,6 +570,10 @@ class WorkspaceQueryService:
             escalations=tuple(to_primitive(item) for item in self._runtime.list_escalations(context.workspace)),
             clarification_candidates=tuple(to_primitive(item) for item in self._runtime.list_clarification_candidates(context.workspace)),
             clarification_requests=tuple(to_primitive(item) for item in self._runtime.list_clarification_requests(context.workspace)),
+            llm_usage=tuple(to_primitive(item) for item in self._runtime.list_llm_usage(context.workspace)),
+            llm_usage_total=(
+                to_primitive(project_usage) if (project_usage := self._runtime.llm_usage_for_project(context.workspace)) is not None else None
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -919,6 +951,8 @@ class WorkspaceQueryService:
                 values[name] = self.project_timeline(project_id)
             elif name == "artifacts":
                 values[name] = self.project_artifacts(project_id)
+            elif name == "attachments":
+                values[name] = self.project_attachments(project_id)
             elif name == "clarifications":
                 values[name] = self.project_clarifications(project_id)
             elif name == "review":

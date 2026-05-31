@@ -3513,6 +3513,11 @@ code {
   color: rgba(140, 196, 153, 0.85);
 }
 
+.artifact-meta-strip__tokens {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
 .artifact-meta-extra {
   margin: 0 0 0.8rem;
   font-size: 0.83rem;
@@ -4435,4 +4440,88 @@ code {
 
 @keyframes llm-spin {
   to { transform: rotate(360deg); }
+}
+
+/* --- Входные файлы (вложения) на странице артефактов --------------------- */
+.artifacts-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.attachment-list__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+}
+
+.attachment-list__title strong {
+  display: block;
+  color: var(--text-primary);
+}
+
+.attachment-list__title p {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-meta);
+  color: var(--text-tertiary);
+}
+
+.attachment-list__error {
+  color: var(--danger);
+}
+
+.attachment-list__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.attachment-list__action {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-meta);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.attachment-list__action:hover {
+  border-color: var(--border-accent);
+}
+
+.attachment-list__action--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.attachment-list__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* MD/PDF/zip экспорт артефактов (фича: экспорт в Markdown). */
+.artifact-detail__downloads {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.artifact-list__export {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
 }

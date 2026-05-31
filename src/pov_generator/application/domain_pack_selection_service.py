@@ -207,7 +207,7 @@ class DomainPackSelectionService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
-        )
+        ).payload
         raw_selected = payload.get("selected_pack_refs", [])
         if not isinstance(raw_selected, list):
             raise ConflictError("LLM-модуль подбора вернул невалидное поле selected_pack_refs.")

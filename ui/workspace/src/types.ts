@@ -4,12 +4,25 @@ export type ProjectionName =
   | "situation"
   | "timeline"
   | "artifacts"
+  | "attachments"
   | "clarifications"
   | "review"
   | "state"
   | "debug"
   | "overview"
   | "methodology";
+
+export interface AttachmentView {
+  attachment_id: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  extraction_status: "pending" | "succeeded" | "failed" | "unsupported";
+  extraction_error: string | null;
+  used_in_context: boolean;
+  can_delete: boolean;
+  created_at: string;
+}
 
 export interface ProjectListItemView {
   project_id: string;
@@ -216,6 +229,12 @@ export interface ArtifactDetailView {
   parent_artifact_id: string | null;
   is_superseded: boolean;
   overall_confidence: number | null;
+  // Учёт токенов задачи, создавшей артефакт. null = «n/a».
+  usage_input_tokens: number | null;
+  usage_output_tokens: number | null;
+  usage_total_tokens: number | null;
+  usage_source: "actual" | "estimated" | null;
+  usage_call_count: number;
 }
 
 export interface ReviewIssueView {

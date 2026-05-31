@@ -30,7 +30,7 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
-from pov_generator.infrastructure.llm import LLMProviderRegistry
+from pov_generator.infrastructure.llm import LLMProviderRegistry, LLMResult, LLMUsage
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,9 +46,12 @@ class _RecordingLLMProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def chat_json(self, *, system_prompt: str, user_prompt: str, schema: dict) -> dict:
+    def chat_json(self, *, system_prompt: str, user_prompt: str, schema: dict) -> LLMResult:
         self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt, "schema": schema})
-        return _fabricate_payload_for_schema(schema)
+        return LLMResult(
+            payload=_fabricate_payload_for_schema(schema),
+            usage=LLMUsage(input_tokens=10, output_tokens=5, total_tokens=15, source="actual"),
+        )
 
 
 class _RecordingLLMRegistry(LLMProviderRegistry):

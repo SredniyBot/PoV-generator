@@ -35,6 +35,36 @@ from pathlib import Path
 from typing import Any
 
 from ..common.errors import ConflictError
+from .llm.protocol import LLMResult, LLMUsage
+
+
+def _usage_from_subscription(raw: dict[str, Any] | None) -> LLMUsage | None:
+    """Нормализует usage из ``ResultMessage`` claude-agent-sdk.
+
+    ``raw`` — ``{"usage": {...}, "total_cost_usd": ...}``. Возвращает None,
+    если фактических токенов нет (тогда вызывающий применит оценку).
+    """
+    if not raw:
+        return None
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    if input_tokens == 0 and output_tokens == 0:
+        return None
+    cache_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0) + int(
+        usage.get("cache_read_input_tokens", 0) or 0
+    )
+    cost = raw.get("total_cost_usd")
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        source="actual",
+        cache_tokens=cache_tokens or None,
+        cost_usd=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -114,7 +144,7 @@ class ClaudeSubscriptionClient:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         full_prompt = (
             user_prompt
             + "\n\n---\n"
@@ -132,8 +162,14 @@ class ClaudeSubscriptionClient:
         last_exc: ConflictError | None = None
         for attempt in range(1, attempts + 1):
             try:
-                text = asyncio.run(self._collect(system_prompt, full_prompt))
-                return self._extract_json(text)
+                text, raw_usage = asyncio.run(self._collect(system_prompt, full_prompt))
+                payload = self._extract_json(text)
+                # Факт из ResultMessage; если SDK его не отдал (старые версии) —
+                # оценка по длине (source=estimated).
+                usage = _usage_from_subscription(raw_usage) or LLMUsage.estimated(
+                    input_text=system_prompt + full_prompt, output_text=text
+                )
+                return LLMResult(payload=payload, usage=usage)
             except ConflictError as exc:
                 if not _is_transient_cli_error(str(exc)) or attempt == attempts:
                     raise
@@ -145,7 +181,7 @@ class ClaudeSubscriptionClient:
         assert last_exc is not None
         raise last_exc
 
-    async def _collect(self, system_prompt: str, user_prompt: str) -> str:
+    async def _collect(self, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any] | None]:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
@@ -195,8 +231,18 @@ class ClaudeSubscriptionClient:
                 )
 
         chunks: list[str] = []
+        raw_usage: dict[str, Any] | None = None
         try:
             async for message in self._sdk.query(prompt=user_prompt, options=options):
+                # ResultMessage в конце стрима несёт фактический usage и
+                # total_cost_usd. Раньше он молча пропускался (нет content) —
+                # теперь читаем токены отсюда (оценка остаётся только fallback).
+                message_usage = getattr(message, "usage", None)
+                if message_usage is not None:
+                    raw_usage = {
+                        "usage": message_usage,
+                        "total_cost_usd": getattr(message, "total_cost_usd", None),
+                    }
                 content = getattr(message, "content", None)
                 if not content:
                     continue
@@ -244,7 +290,7 @@ class ClaudeSubscriptionClient:
                     sp_tmpfile.unlink(missing_ok=True)
                 except OSError:
                     pass
-        return "".join(chunks)
+        return "".join(chunks), raw_usage
 
     @staticmethod
     def _format_load_timeout_msg(seconds: int) -> str:  # for tests

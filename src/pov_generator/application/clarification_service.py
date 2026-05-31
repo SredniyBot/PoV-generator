@@ -825,7 +825,7 @@ class ClarificationService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
-        )
+        ).payload
         return self._normalize_draft_payload(payload, fallback=fallback)
 
     def _active_provider(self) -> str:

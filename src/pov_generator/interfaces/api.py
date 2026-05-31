@@ -4,9 +4,10 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
+from ..application.attachment_service import AttachmentService
 from ..application.clarification_service import ClarificationService
 from ..application.context_service import ContextService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
@@ -26,7 +27,7 @@ from ..application.workspace_catalog import WorkspaceCatalog
 from ..application.workspace_command_service import WorkspaceCommandService
 from ..application.workspace_query_service import WorkspaceQueryService
 from ..common.env import load_repo_env
-from ..common.errors import PovGeneratorError, ValidationError
+from ..common.errors import NotFoundError, PovGeneratorError, ValidationError
 from ..common.serialization import to_primitive, utc_now_iso
 from ..domain.llm_settings import ALL_PURPOSES
 from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
@@ -86,6 +87,7 @@ def create_app(
         runtime, registry_service, workflow_service, planning_service
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
+    attachment_service = AttachmentService(runtime)
     query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
     domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
     command_service = WorkspaceCommandService(
@@ -446,6 +448,100 @@ def create_app(
             },
         )
 
+    @app.get("/api/projects/{project_id}/attachments")
+    def project_attachments(project_id: str) -> Any:
+        return to_primitive(query_service.project_attachments(project_id))
+
+    @app.post("/api/projects/{project_id}/attachments")
+    async def upload_attachment(project_id: str, file: UploadFile = File(...)) -> Any:
+        """Загрузить входной файл проекта (multipart).
+
+        Сохраняет файл со статусом ``pending`` и ставит извлечение текста в
+        фон; отвечает быстро.
+        """
+        workspace = catalog.resolve_workspace(project_id).workspace
+        content = await file.read()
+        record = attachment_service.upload(
+            workspace,
+            project_id,
+            filename=file.filename or "file",
+            content=content,
+            mime_type=file.content_type,
+        )
+        return {
+            "attachment_id": record.attachment_id,
+            "original_filename": record.original_filename,
+            "extraction_status": record.extraction_status,
+        }
+
+    @app.get("/api/projects/{project_id}/attachments/{attachment_id}/download")
+    def download_attachment(project_id: str, attachment_id: str) -> Response:
+        workspace = catalog.resolve_workspace(project_id).workspace
+        try:
+            record = runtime.load_attachment(workspace, attachment_id)
+            content = runtime.load_attachment_content(workspace, attachment_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(
+            content=content,
+            media_type=record.mime_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": _content_disposition_header(record.original_filename),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.delete("/api/projects/{project_id}/attachments/{attachment_id}")
+    def delete_attachment(project_id: str, attachment_id: str) -> Any:
+        """Удалить вложение (только пока оно не использовано в контексте → иначе 409)."""
+        workspace = catalog.resolve_workspace(project_id).workspace
+        try:
+            attachment_service.delete(workspace, attachment_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"status": "deleted", "attachment_id": attachment_id}
+
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/download.md")
+    def download_artifact_md(project_id: str, artifact_id: str) -> Response:
+        """Скачивание артефакта в формате Markdown (готовый .md файл)."""
+        try:
+            detail = query_service.artifact_detail(project_id, artifact_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not detail.markdown_content:
+            raise HTTPException(
+                status_code=404,
+                detail="У артефакта нет markdown-представления.",
+            )
+        filename = _safe_md_filename(detail.title or detail.artifact_role, artifact_id)
+        return Response(
+            content=detail.markdown_content,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": _content_disposition_header(filename),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.get("/api/projects/{project_id}/export.zip")
+    def export_project_zip(project_id: str) -> Response:
+        """Массовый экспорт: zip со всеми MD-артефактами проекта.
+
+        В архив входят только артефакты, у которых есть markdown
+        (артефакты без MD пропускаются с записью в MANIFEST.txt — не молча).
+        Вложения в архив не входят (только сгенерированные артефакты).
+        """
+        archive_bytes, _ = _build_markdown_zip(query_service, project_id)
+        filename = _safe_zip_filename(project_id)
+        return Response(
+            content=archive_bytes,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": _content_disposition_header(filename),
+                "Cache-Control": "no-store",
+            },
+        )
+
     @app.get("/api/projects/{project_id}/review")
     def project_review(project_id: str) -> Any:
         return to_primitive(query_service.project_review(project_id))
@@ -745,6 +841,7 @@ def create_app(
                 "situation",
                 "timeline",
                 "artifacts",
+                "attachments",
                 "clarifications",
                 "review",
                 "state",
@@ -854,8 +951,15 @@ def _content_disposition_header(filename: str) -> str:
         .encode("ascii", "ignore")
         .decode("ascii")
     )
-    if not ascii_fallback.strip("._"):
-        ascii_fallback = "artifact.pdf"
+    # Если содержательная часть имени потерялась при транслитерации (например,
+    # чисто кириллический заголовок), берём родовое имя, СОХРАНЯЯ расширение
+    # (.md / .zip / .pdf), чтобы legacy-клиенты не получили чужой суффикс.
+    ext = filename[filename.rfind(".") :] if "." in filename else ""
+    if not ext.isascii():
+        ext = ""
+    stem = ascii_fallback[: -len(ext)] if ext and ascii_fallback.endswith(ext) else ascii_fallback
+    if not any(ch.isalnum() for ch in stem):
+        ascii_fallback = f"artifact{ext}"
 
     percent_encoded = urllib.parse.quote(filename, safe="")
     return (
@@ -879,6 +983,72 @@ def _safe_pdf_filename(title: str, artifact_id: str) -> str:
     safe = re.sub(r"\s+", "_", safe).strip("._")[:80] or "artifact"
     short_id = artifact_id.replace("-", "")[:8]
     return f"{safe}_{short_id}.pdf"
+
+
+def _safe_artifact_stem(title: str, artifact_id: str) -> str:
+    """Файлово-безопасная основа имени артефакта без расширения."""
+    import re
+
+    base = (title or "artifact").strip()
+    safe = re.sub(r"[^\w\sа-яА-ЯёЁ-]", "_", base, flags=re.UNICODE)
+    safe = re.sub(r"\s+", "_", safe).strip("._")[:80] or "artifact"
+    short_id = artifact_id.replace("-", "")[:8]
+    return f"{safe}_{short_id}"
+
+
+def _safe_md_filename(title: str, artifact_id: str) -> str:
+    return f"{_safe_artifact_stem(title, artifact_id)}.md"
+
+
+def _safe_zip_filename(project_id: str) -> str:
+    return f"project_{project_id.replace('-', '')[:8]}_markdown.zip"
+
+
+def _build_markdown_zip(query_service: WorkspaceQueryService, project_id: str) -> tuple[bytes, list[str]]:
+    """Собрать zip со всеми MD-артефактами проекта.
+
+    Возвращает (байты архива, список включённых имён). Артефакты без MD —
+    пропускаются с пометкой в ``MANIFEST.txt`` (не молча). Дубли имён
+    разводятся суффиксом ``artifact_id``.
+    """
+    import io
+    import zipfile
+
+    summaries = query_service.project_artifacts(project_id)
+    included: list[str] = []
+    skipped: list[str] = []
+    used_names: set[str] = set()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for summary in summaries:
+            if not summary.has_markdown:
+                skipped.append(f"{summary.title} ({summary.artifact_role}) — нет markdown")
+                continue
+            detail = query_service.artifact_detail(project_id, summary.artifact_id)
+            if not detail.markdown_content:
+                skipped.append(f"{summary.title} ({summary.artifact_role}) — нет markdown")
+                continue
+            name = _safe_md_filename(summary.title or summary.artifact_role, summary.artifact_id)
+            # На всякий случай разруливаем коллизии имён (имя уже содержит
+            # short-id, но подстрахуемся).
+            if name in used_names:
+                name = f"{_safe_artifact_stem(summary.title or summary.artifact_role, summary.artifact_id)}_{len(used_names)}.md"
+            used_names.add(name)
+            archive.writestr(name, detail.markdown_content)
+            included.append(name)
+
+        manifest_lines = [
+            f"Экспорт проекта {project_id}",
+            f"Включено артефактов: {len(included)}",
+            *(f"  + {name}" for name in included),
+        ]
+        if skipped:
+            manifest_lines.append(f"Пропущено (без markdown): {len(skipped)}")
+            manifest_lines.extend(f"  - {item}" for item in skipped)
+        if not included and not skipped:
+            manifest_lines.append("В проекте пока нет артефактов.")
+        archive.writestr("MANIFEST.txt", "\n".join(manifest_lines) + "\n")
+    return buffer.getvalue(), included
 
 
 def _optional_str(payload: dict[str, object], key: str) -> str | None:

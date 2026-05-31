@@ -5,6 +5,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..common.errors import ConflictError
+from .llm.protocol import LLMResult, LLMUsage
+
+
+def _usage_from_anthropic(usage: object) -> LLMUsage | None:
+    """Нормализует ``response.usage`` Anthropic SDK в :class:`LLMUsage`."""
+    if usage is None:
+        return None
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_tokens = int(cache_creation) + int(cache_read)
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        source="actual",
+        cache_tokens=cache_tokens or None,
+    )
 
 
 @dataclass(frozen=True)
@@ -71,7 +90,7 @@ class ClaudeSdkClient:
         schema: dict[str, Any],
         tool_name: str = "produce_artifact",
         tool_description: str = "Produce the leaf-task output following the strict schema.",
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         """Запрашивает у Claude структурированный JSON через tool use."""
         try:
             response = self._client.messages.create(
@@ -92,11 +111,12 @@ class ClaudeSdkClient:
         except Exception as exc:  # pragma: no cover
             raise ConflictError(f"Ошибка запроса к Claude SDK: {exc}") from exc
 
+        usage = _usage_from_anthropic(getattr(response, "usage", None))
         for block in response.content:
             block_type = getattr(block, "type", None)
             if block_type == "tool_use":
                 payload = getattr(block, "input", None)
                 if not isinstance(payload, dict):
                     raise ConflictError(f"Claude вернул tool_use без dict-ввода: {payload!r}")
-                return payload
+                return LLMResult(payload=payload, usage=usage)
         raise ConflictError(f"Claude не вернул tool_use блок. Ответ: {response.content!r}")

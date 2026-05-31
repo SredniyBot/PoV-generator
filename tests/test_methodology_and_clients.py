@@ -259,7 +259,7 @@ def test_claude_sdk_client_builds_tool_use_request() -> None:
             tool_name="produce_artifact",
         )
 
-    assert result == expected_payload
+    assert result.payload == expected_payload
     fake_anthropic_module.Anthropic.assert_called_once()
     # Конструктор должен получить api_key; timeout — implementation detail.
     kwargs_anthropic = fake_anthropic_module.Anthropic.call_args.kwargs
@@ -325,7 +325,7 @@ def test_claude_subscription_client_extracts_json_from_text_response(
             schema={"type": "object"},
         )
 
-    assert result == expected
+    assert result.payload == expected
 
 
 # --- CE11 draft preparation across providers --------------------------------
@@ -380,10 +380,12 @@ def test_clarification_draft_uses_selected_claude_provider(provider_name: str) -
     runtime, ServiceCls = _build_clarification_service_with_runtime()
 
     # Готовим фейковый провайдер, удовлетворяющий протоколу LLMProvider.
+    from pov_generator.infrastructure.llm import LLMResult
+
     fake_provider = MagicMock()
     fake_provider.name = provider_name
     fake_provider.model = "fake-model"
-    fake_provider.chat_json.return_value = _valid_draft_payload()
+    fake_provider.chat_json.return_value = LLMResult(payload=_valid_draft_payload())
 
     fake_registry = MagicMock(spec=LLMProviderRegistry)
     fake_registry.get.return_value = fake_provider

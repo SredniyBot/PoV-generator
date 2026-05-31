@@ -20,3 +20,5 @@ ui/workspace/vite.config.js
 ui/workspace/vite.config.d.ts
 prompt_draft.md
 prompt.context/
+*context_anchor.txt
+.playwright-mcp/

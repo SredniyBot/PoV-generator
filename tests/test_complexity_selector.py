@@ -94,9 +94,11 @@ def test_selector_llm_calls_provider_with_correct_schema(monkeypatch) -> None:
 
     from pov_generator.application import complexity_selector_service as mod
 
+    from pov_generator.infrastructure.llm import LLMResult
+
     fake_response = {"complexity": "complex", "rationale": "LLM решил — многомодальный сценарий."}
     fake_provider = MagicMock()
-    fake_provider.chat_json.return_value = fake_response
+    fake_provider.chat_json.return_value = LLMResult(payload=fake_response)
 
     # После рефакторинга на LLMProviderRegistry мокаем точку резолва
     # провайдера, а не конкретный клиент.
@@ -142,8 +144,10 @@ def test_selector_coerces_invalid_llm_output(monkeypatch, llm_value: str, expect
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR", "on")
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR_PROVIDER", "claude_sdk")
 
+    from pov_generator.infrastructure.llm import LLMResult
+
     fake_provider = MagicMock()
-    fake_provider.chat_json.return_value = {"complexity": llm_value, "rationale": "ok"}
+    fake_provider.chat_json.return_value = LLMResult(payload={"complexity": llm_value, "rationale": "ok"})
 
     from pov_generator.infrastructure.llm import LLMProviderRegistry
 

@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +9,9 @@ from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
+from ..domain.llm_usage import LLMUsageRecord
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
-from ..infrastructure.llm import LLMProvider, LLMProviderRegistry
+from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
 from .complexity_selector_service import select_complexity
@@ -133,6 +133,9 @@ class ExecutionService:
         # обходим LLM/stub и собираем результат детерминированно из входных
         # артефактов. Strategy=synthetic идёт обычным LLM-путём; metadata
         # отметит, что это была merge-операция. Strategy=hybrid зарезервирована.
+        # Учёт токенов: usages всех LLM-вызовов задачи, заполняется ниже
+        # (для stub — оценка по длине; для structural-merge — пусто, n/a).
+        llm_usages: list[tuple[str | None, LLMUsage | None]] = []
         if template.merge is not None and template.merge.strategy == "structural":
             payload = self._execute_structural_merge(
                 workspace=workspace,
@@ -153,6 +156,17 @@ class ExecutionService:
                 domain_pack_refs=active_domain_refs,
             )
             live_reasoning = None
+            # Stub не зовёт LLM — usage детерминированно оцениваем по длине
+            # (source=estimated), чтобы учёт работал в тестах.
+            llm_usages = [
+                (
+                    None,
+                    LLMUsage.estimated(
+                        input_text=system_prompt + user_prompt,
+                        output_text=json_dumps(payload),
+                    ),
+                )
+            ]
         elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
             primary_schema = artifact_schema(artifact_role, active_domain_refs)
             # W3.1: выбор между single_call (один LLM-вызов на primary+reasoning)
@@ -165,7 +179,7 @@ class ExecutionService:
                 active_methodology is not None
                 and active_methodology.stage_execution_mode == "per_stage_cot"
             ):
-                payload, live_reasoning = self._execute_per_stage_cot(
+                payload, live_reasoning, llm_usages = self._execute_per_stage_cot(
                     llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
@@ -174,7 +188,7 @@ class ExecutionService:
                     primary_schema=primary_schema,
                 )
             else:
-                payload, live_reasoning = self._execute_single_call(
+                payload, live_reasoning, llm_usages = self._execute_single_call(
                     llm=llm_provider,
                     base_system_prompt=system_prompt,
                     base_user_prompt=user_prompt,
@@ -345,7 +359,62 @@ class ExecutionService:
             methodology_candidates=methodology_candidates,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
+        self._record_llm_usages(
+            workspace,
+            project_id=manifest.project_id,
+            task_id=task.task_id,
+            artifact_id=artifact_id,
+            execution_run_id=execution_run_id,
+            provider=active_provider,
+            model=active_model,
+            usages=llm_usages,
+        )
         return ExecutionBundle(request=request, result=result, traces=traces)
+
+    def _record_llm_usages(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        task_id: str,
+        artifact_id: str,
+        execution_run_id: str,
+        provider: str,
+        model: str,
+        usages: list[tuple[str | None, LLMUsage | None]],
+    ) -> None:
+        """Записать usage каждого LLM-вызова задачи (best-effort).
+
+        Сбой записи usage не должен ронять исполнение задачи — поэтому
+        оборачиваем в try/except и не пробрасываем ошибку наружу.
+        """
+        for stage, usage in usages:
+            if usage is None:
+                # Провайдер не дал данных — n/a, строку не пишем (без выдумок).
+                continue
+            try:
+                self._runtime.record_llm_usage(
+                    workspace,
+                    LLMUsageRecord(
+                        usage_id=str(uuid.uuid4()),
+                        project_id=project_id,
+                        task_id=task_id,
+                        artifact_id=artifact_id,
+                        execution_run_id=execution_run_id,
+                        provider=provider,
+                        model=model,
+                        stage=stage,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        total_tokens=usage.total_tokens,
+                        cache_tokens=usage.cache_tokens,
+                        source=usage.source,
+                        cost_usd=usage.cost_usd,
+                        created_at=utc_now_iso(),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — учёт не критичен для исполнения
+                pass
 
     def _execute_structural_merge(
         self,
@@ -416,10 +485,13 @@ class ExecutionService:
         methodology: MethodologyPackSpec | None,
         complexity: str | None,
         primary_schema: dict,
-    ) -> tuple[dict, dict | None]:
+    ) -> tuple[dict, dict | None, list[tuple[str | None, LLMUsage | None]]]:
         """`single_call` mode (default): один LLM-вызов, объединённая схема
         `primary + reasoning` (если есть активная методология) либо просто
-        `primary` (если методология не наложена)."""
+        `primary` (если методология не наложена).
+
+        Третий элемент кортежа — usages вызовов (для учёта токенов):
+        список ``(stage, usage)``; для single_call stage всегда None."""
         if methodology is not None:
             methodology_schema = self._build_methodology_schema(methodology, complexity)
             combined_schema = {
@@ -433,14 +505,19 @@ class ExecutionService:
                 + "\n\n"
                 + self._methodology_system_section(methodology, complexity)
             )
-            full_payload = llm.chat_json(
+            result = llm.chat_json(
                 system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
             )
-            return (full_payload.get("primary", {}) or {}, full_payload.get("reasoning"))
-        full_payload = llm.chat_json(
+            full_payload = result.payload
+            return (
+                full_payload.get("primary", {}) or {},
+                full_payload.get("reasoning"),
+                [(None, result.usage)],
+            )
+        result = llm.chat_json(
             system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
         )
-        return (full_payload, None)
+        return (result.payload, None, [(None, result.usage)])
 
     def _execute_per_stage_cot(
         self,
@@ -451,7 +528,7 @@ class ExecutionService:
         methodology: MethodologyPackSpec,
         complexity: str | None,
         primary_schema: dict,
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict, dict, list[tuple[str | None, LLMUsage | None]]]:
         """`per_stage_cot` mode (W3.1, vision «После MVP» точка #1): отдельный
         LLM-вызов на каждую активную стадию методологии с накопительным
         контекстом, плюс финальный вызов на primary с собранным reasoning.
@@ -463,6 +540,7 @@ class ExecutionService:
         стадиями (например per-domain reasoning packs)."""
         active_stages = methodology.stages_for_complexity(complexity)
         stage_outputs: dict[str, dict] = {}
+        usages: list[tuple[str | None, LLMUsage | None]] = []
 
         for stage in active_stages:
             stage_schema = self._build_single_stage_schema(stage)
@@ -475,7 +553,10 @@ class ExecutionService:
             stage_result = llm.chat_json(
                 system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
             )
-            stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
+            usages.append((stage.identifier, stage_result.usage))
+            stage_outputs[stage.identifier] = (
+                stage_result.payload if isinstance(stage_result.payload, dict) else {}
+            )
 
         # Финальный вызов: primary artifact с reasoning как структурированный контекст.
         primary_system = (
@@ -488,10 +569,11 @@ class ExecutionService:
             + "\n\n### Reasoning через стадии (per-stage CoT):\n"
             + json_dumps(stage_outputs)
         )
-        primary_payload = llm.chat_json(
+        primary_result = llm.chat_json(
             system_prompt=primary_system, user_prompt=primary_user, schema=primary_schema,
         )
-        return (primary_payload, stage_outputs)
+        usages.append((None, primary_result.usage))
+        return (primary_result.payload, stage_outputs, usages)
 
     def _build_single_stage_schema(self, stage) -> dict:
         """JSON-schema для одной стадии — только её produces-поля."""
