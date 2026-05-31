@@ -19,8 +19,8 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ArtifactVersionItemView,
-    ContextManifestSummaryView,
     CheckpointSessionView,
+    ContextManifestSummaryView,
     DecisionAlternativeView,
     DecisionItemView,
     DomainPackCatalogItemView,
@@ -30,8 +30,8 @@ from ..domain.workspace_views import (
     OverviewArtifactItem,
     OverviewClarificationItem,
     ProjectArtifactVersionsView,
-    ProjectDebugView,
     ProjectCheckpointsView,
+    ProjectDebugView,
     ProjectDecisionsView,
     ProjectFailurePinsView,
     ProjectListItemView,
@@ -360,7 +360,7 @@ class WorkspaceQueryService:
         уровне» в текущем режиме проекта. Это основной индикатор для
         пользователя: «N решений ждут моего внимания».
         """
-        from ..domain.decisions import levels_for_mode, should_surface_to_user
+        from ..domain.decisions import should_surface_to_user
 
         context = self._load_context(project_id)
         mode = context.state.process.clarification_mode
@@ -520,6 +520,9 @@ class WorkspaceQueryService:
                 created_at=artifact.created_at,
                 created_by_task_id=artifact.created_by_task_id,
                 has_markdown=(context.workspace / artifact.storage_path.replace(".json", ".md")).exists(),
+                overall_confidence=artifact.metadata.overall_confidence,
+                is_low_confidence=artifact.is_low_confidence,
+                user_verified=artifact.user_verified,
             )
             for artifact in self._runtime.list_artifacts(context.workspace)
         )
@@ -551,6 +554,9 @@ class WorkspaceQueryService:
             parent_artifact_id=artifact.relations.parent_artifact_id,
             is_superseded=artifact.is_superseded,
             overall_confidence=artifact.metadata.overall_confidence,
+            is_low_confidence=artifact.is_low_confidence,
+            user_verified=artifact.user_verified,
+            user_verified_at=artifact.user_verified_at,
             token_usage={k: dict(v) for k, v in artifact.metadata.token_usage.items()},
         )
 

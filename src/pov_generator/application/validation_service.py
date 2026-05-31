@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..common.errors import ValidationError
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
+from ..domain.artifacts import LOW_CONFIDENCE_THRESHOLD
 from ..domain.decisions import DecisionAlternative, DecisionInput
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
@@ -138,6 +140,8 @@ def _build_decision_input(
         source_task_id=source_task_id,
         affected_artifact_ids=related_artifact_ids,
     )
+
+logger = get_logger("validation")
 
 
 class ValidationService:
@@ -303,6 +307,17 @@ class ValidationService:
         )
         self._runtime.record_validation_run(workspace, validation_run)
 
+        _blocking = [f for f in findings if f.blocking]
+        if status == "passed":
+            logger.info("валидация пройдена", task=task.title or task.task_key, findings=len(findings))
+        else:
+            logger.warning(
+                "валидация не пройдена",
+                task=task.title or task.task_key,
+                findings=len(findings),
+                reason=(_blocking[0].message if _blocking else None),
+            )
+
         if status != "passed" and any(finding.finding_type != "needs_user_input" for finding in findings):
             ticket = EscalationTicket(
                 escalation_ticket_id=str(uuid.uuid4()),
@@ -337,14 +352,25 @@ class ValidationService:
         # Fallback на payload['confidence'] — для backward-compat с
         # уже сохранёнными ранее артефактами и legacy-фикстурами.
         confidence = _resolve_confidence(overall_confidence, payload)
-        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.45:
+        if (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and confidence < LOW_CONFIDENCE_THRESHOLD
+        ):
+            # НЕ блокирующая находка: низкая уверенность больше не роняет
+            # задачу. Артефакт создаётся и помечается is_low_confidence —
+            # пользователь подтверждает его одним кликом (как и низкоуверенные
+            # решения). Сама находка остаётся информационной (warning).
             findings.append(
                 ValidationFinding(
                     finding_id=str(uuid.uuid4()),
                     finding_type="low_confidence",
-                    severity="error",
-                    blocking=True,
-                    message=f"Артефакт '{artifact_role}' имеет слишком низкую уверенность ({confidence:.2f}).",
+                    severity="warning",
+                    blocking=False,
+                    message=(
+                        f"Низкая уверенность артефакта '{artifact_role}' ({confidence:.2f}) — "
+                        "требуется подтверждение пользователя."
+                    ),
                     related_artifact_ids=(artifact_id,),
                 )
             )

@@ -269,7 +269,7 @@ class WorkflowRunnerService:
                 dur = round((time.perf_counter() - started) * 1000)
                 if final is not None:
                     logger.info(
-                        "run finished",
+                        "прогон завершён",
                         status=final.status,
                         reason=final.stop_reason,
                         steps=len(final.steps),
@@ -334,11 +334,9 @@ class WorkflowRunnerService:
         self._mutate(workspace, run_id, status="running", last_step_summary="Запуск шагов...")
         concurrency = max(1, self._concurrency_resolver(provider))
         logger.info(
-            "run started",
-            provider=provider or "(auto)",
-            model=model,
+            "запуск прогона",
+            provider=provider or "авто",
             concurrency=concurrency,
-            max_steps=max_steps,
         )
 
         def write_set_of(candidate) -> frozenset:
@@ -366,9 +364,8 @@ class WorkflowRunnerService:
                     # CancellationError и сбросят свои задачи в ready. Ждём их
                     # завершения и финализируем run как cancelled.
                     logger.warning(
-                        "run cancelling: прерываем in-flight шаги",
+                        "останавливаю прогон: прерываю текущие шаги",
                         in_flight=len(in_flight),
-                        dispatched=dispatched,
                     )
                     if in_flight:
                         futures_wait(set(in_flight), return_when=ALL_COMPLETED)
@@ -402,10 +399,8 @@ class WorkflowRunnerService:
                             started_perf=time.perf_counter(),
                         )
                         logger.debug(
-                            "step dispatched",
-                            task=candidate.task_key,
-                            step=meta.step_index,
-                            in_flight=len(in_flight) + 1,
+                            "шаг запущен",
+                            task=candidate.task_key.split("@")[0],
                         )
                         try:
                             # copy_context() переносит run-scoped лог-контекст
@@ -460,8 +455,8 @@ class WorkflowRunnerService:
                         saw_validation_failure = True
                         dur = round((time.perf_counter() - meta.started_perf) * 1000)
                         logger.error(
-                            "step crashed",
-                            task=meta.task_key,
+                            "шаг упал с ошибкой",
+                            task=meta.task_key.split("@")[0],
                             duration_ms=dur,
                             error=str(exc).strip() or type(exc).__name__,
                             exc_info=False,
@@ -485,8 +480,8 @@ class WorkflowRunnerService:
                     # passed/paused → INFO (норма), прочее (failed-валидация) → WARNING.
                     _done = logger.info if status in ("passed", "paused_for_checkpoint") else logger.warning
                     _done(
-                        "step done",
-                        task=meta.task_key,
+                        "шаг выполнен",
+                        task=meta.task_key.split("@")[0],
                         status=status,
                         duration_ms=dur,
                     )

@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.positions import (
     Position,
@@ -51,6 +52,8 @@ class ProjectBootstrap:
 
     manifest: ProjectManifest
     state: ProjectState
+
+logger = get_logger("project")
 
 
 class ProjectService:
@@ -191,6 +194,7 @@ class ProjectService:
         Цель — положение типа ``fact`` с уровнем ``principal`` и
         ``scope='global'``. Стабильный id — :data:`GOAL_POSITION_ID`.
         """
+        logger.info("цель проекта обновлена", chars=len(text.strip()))
         return self._upsert_position(
             workspace,
             identifier=GOAL_POSITION_ID,
@@ -354,6 +358,7 @@ class ProjectService:
         actor: str = "operator",
         reason: str = "manual domain activation",
     ) -> ProcessState:
+        logger.info("доменный пакет активирован", pack=pack.ref.as_string().split("@")[0])
         return self._runtime.apply_process_patch(
             workspace,
             ActivateDomainPackPatch(
@@ -389,6 +394,7 @@ class ProjectService:
                     actor=actor,
                     reason=f"replaced by {pack_ref}",
                 )
+        logger.info("методология активирована", pack=pack_ref.split("@")[0])
         return self._runtime.apply_process_patch(
             workspace,
             ActivateMethodologyPackPatch(
@@ -444,6 +450,11 @@ class ProjectService:
             objective_history=manifest.objective_history + (manifest.objective_ref,),
         )
         self._runtime.update_manifest(workspace, updated_manifest)
+        logger.info(
+            "активирован следующий objective",
+            objective=new_ref_str.split("@")[0],
+            previous=manifest.objective_ref.split("@")[0],
+        )
 
         if default_methodology_pack_ref is not None:
             process = self._runtime.load_process_state(workspace)

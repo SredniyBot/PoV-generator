@@ -269,7 +269,7 @@ def test_requirements_spec_schema_depends_on_active_domain_packs() -> None:
     assert "integration_model" in rich_schema["required"]
 
 
-def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) -> None:
+def test_low_confidence_artifact_marks_for_confirmation_not_fails(tmp_path: Path) -> None:
     (
         workspace,
         snapshot,
@@ -294,7 +294,9 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
         created_by_task_id=task.task_id,
         storage_path=f"artifacts/{uuid.uuid4()}.json",
         created_at="2026-04-20T00:00:00+00:00",
-        metadata=ArtifactMetadata(template_ref=task.template_ref),
+        # Уверенность живёт в метаданных артефакта (так её кладёт реальный
+        # execution_service через _extract_overall_confidence). 0.2 < порога.
+        metadata=ArtifactMetadata(template_ref=task.template_ref, overall_confidence=0.2),
     )
     runtime.store_artifact(
         workspace,
@@ -340,12 +342,29 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
         execution_bundle=bundle,
     )
 
-    assert validation_run.status == "failed"
-    assert any(finding.finding_type == "low_confidence" for finding in validation_run.findings)
-    # v3.1: blocking_questions удалены из контрактов; needs_user_input
-    # больше не поднимается из произвольных артефактов — только из
-    # review_report со статусом "needs_user_input". low_confidence сам по
-    # себе остаётся сигналом и валит статус валидации.
+    # Низкая уверенность больше НЕ роняет задачу: валидация проходит, а
+    # находка остаётся информационной (не блокирующей).
+    assert validation_run.status == "passed"
+    low_conf = [f for f in validation_run.findings if f.finding_type == "low_confidence"]
+    assert low_conf, "ожидали информационную находку low_confidence"
+    assert all(not f.blocking for f in low_conf)
+
+    # Артефакт помечается как «низкая уверенность» (confidence 0.2 < порога,
+    # ещё не подтверждён) — мягкий сигнал «подтвердите» (зеркально решениям).
+    stored = runtime.load_artifact(workspace, artifact.artifact_id)
+    assert stored.is_low_confidence is True
+    assert stored.user_verified is False
+
+    # Подтверждение пользователем снимает индикатор.
+    runtime.mark_artifact_verified(
+        workspace,
+        artifact.artifact_id,
+        verified=True,
+        verified_at="2026-04-20T00:00:00+00:00",
+    )
+    confirmed = runtime.load_artifact(workspace, artifact.artifact_id)
+    assert confirmed.user_verified is True
+    assert confirmed.is_low_confidence is False
 
 
 def test_domain_pack_selector_stub_picks_relevant_packs() -> None:

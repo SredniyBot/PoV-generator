@@ -3656,6 +3656,68 @@ code {
   color: rgba(140, 196, 153, 0.85);
 }
 
+/* Низкая уверенность артефакта — мягкий маркер «подтвердите» (зеркально
+   индикатору «система не уверена» у решений). Тёплый янтарный акцент. */
+.artifact-lowconf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(214, 158, 96, 0.16);
+  border: 1px solid rgba(214, 158, 96, 0.38);
+  color: rgba(231, 188, 130, 0.95);
+  font-size: 0.78rem;
+}
+
+.artifact-lowconf__verify {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 184, 201, 0.4);
+  background: rgba(120, 184, 201, 0.14);
+  color: var(--text-primary, #e8ecf3);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.artifact-lowconf__verify:hover:not(:disabled) {
+  background: rgba(120, 184, 201, 0.26);
+  border-color: rgba(120, 184, 201, 0.6);
+}
+
+.artifact-lowconf__verify:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* Подтверждённый артефакт — спокойный зелёный (как «подтверждено» решения). */
+.artifact-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(140, 196, 153, 0.9);
+  font-size: 0.78rem;
+}
+
+/* Бейдж в списке артефактов слева. */
+.artifact-lowconf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(214, 158, 96, 0.16);
+  border: 1px solid rgba(214, 158, 96, 0.38);
+  color: rgba(231, 188, 130, 0.95);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .artifact-meta-extra {
   margin: 0 0 0.8rem;
   font-size: 0.83rem;

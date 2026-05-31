@@ -203,6 +203,14 @@ export const api = {
         body: JSON.stringify({ verified }),
       },
     ),
+  verifyArtifact: (projectId: string, artifactId: string, verified: boolean = true) =>
+    request<ArtifactDetailView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/verify`,
+      {
+        method: "POST",
+        body: JSON.stringify({ verified }),
+      },
+    ),
   getDecisionsForArtifact: (projectId: string, artifactId: string) =>
     request<import("./types").DecisionItemView[]>(
       `/api/projects/${projectId}/artifacts/${artifactId}/decisions`,

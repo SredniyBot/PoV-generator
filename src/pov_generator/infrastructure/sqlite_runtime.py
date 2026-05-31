@@ -424,6 +424,15 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         is_superseded_value = row["is_superseded"]
     except (KeyError, IndexError):
         is_superseded_value = 0
+    # Защитное чтение для legacy-баз без колонок подтверждения.
+    try:
+        user_verified_value = bool(row["user_verified"])
+    except (KeyError, IndexError):
+        user_verified_value = False
+    try:
+        user_verified_at_value = row["user_verified_at"]
+    except (KeyError, IndexError):
+        user_verified_at_value = None
     metadata = _artifact_metadata_from_payload(json_loads(row["metadata_json"]))
     relations = _artifact_relations_from_row(row)
     return ArtifactRecord(
@@ -440,6 +449,8 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         relations=relations,
         metadata=metadata,
         is_superseded=bool(is_superseded_value),
+        user_verified=user_verified_value,
+        user_verified_at=user_verified_at_value,
     )
 
 
@@ -933,9 +944,9 @@ class SqliteRuntime:
                 insert into artifacts(
                   artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
                   created_by_task_id, parent_artifact_id, input_artifact_ids_json, child_artifact_ids_json,
-                  metadata_json, storage_path, created_at, is_superseded
+                  metadata_json, storage_path, created_at, is_superseded, user_verified, user_verified_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
@@ -953,6 +964,8 @@ class SqliteRuntime:
                     artifact.storage_path,
                     artifact.created_at,
                     1 if artifact.is_superseded else 0,
+                    1 if artifact.user_verified else 0,
+                    artifact.user_verified_at,
                 ),
             )
             connection.commit()
@@ -967,6 +980,21 @@ class SqliteRuntime:
             connection.execute(
                 "update artifacts set is_superseded = 1 where artifact_id = ?",
                 (artifact_id,),
+            )
+            connection.commit()
+
+    @_serialized_write
+    def mark_artifact_verified(
+        self, workspace: Path, artifact_id: str, *, verified: bool, verified_at: str | None
+    ) -> None:
+        """Пометить низкоуверенный артефакт как подтверждённый пользователем
+        (или снять метку). Аудит-метка — содержимое артефакта не меняется.
+        Снимает индикатор is_low_confidence (зеркально decisions.user_verified).
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update artifacts set user_verified = ?, user_verified_at = ? where artifact_id = ?",
+                (1 if verified else 0, verified_at if verified else None, artifact_id),
             )
             connection.commit()
 
@@ -1934,7 +1962,9 @@ class SqliteRuntime:
               metadata_json text not null,
               storage_path text not null,
               created_at text not null,
-              is_superseded integer not null default 0
+              is_superseded integer not null default 0,
+              user_verified integer not null default 0,
+              user_verified_at text
             );
 
             create table if not exists context_manifests (
@@ -2029,6 +2059,20 @@ class SqliteRuntime:
             "artifacts",
             "is_superseded",
             "integer not null default 0",
+        )
+        # Подтверждение низкоуверенного артефакта пользователем (зеркально
+        # decisions.user_verified). Снимает мягкий индикатор is_low_confidence.
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "user_verified",
+            "integer not null default 0",
+        )
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "user_verified_at",
+            "text",
         )
         # Этап 1.3: связи артефактов в графе вынесены в отдельные колонки —
         # input_artifact_ids (lineage по контексту), child_artifact_ids

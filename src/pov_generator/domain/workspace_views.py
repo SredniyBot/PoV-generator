@@ -292,6 +292,10 @@ class ArtifactSummaryView:
     created_at: str
     created_by_task_id: str | None
     has_markdown: bool
+    # Низкая уверенность → мягкий маркер «подтвердите» (зеркально решениям).
+    overall_confidence: float | None = None
+    is_low_confidence: bool = False
+    user_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -327,6 +331,10 @@ class ArtifactDetailView:
     parent_artifact_id: str | None = None
     is_superseded: bool = False
     overall_confidence: float | None = None
+    # Низкая уверенность → мягкий маркер «подтвердите» + метка подтверждения.
+    is_low_confidence: bool = False
+    user_verified: bool = False
+    user_verified_at: str | None = None
     # v3.5: разбивка токенов по стадиям сборки этого артефакта.
     # Ключи стадий: pre_flight_planning, primary_generation,
     # methodology_stage:<id>. Значения: {input_tokens, output_tokens,

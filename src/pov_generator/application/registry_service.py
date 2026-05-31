@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..common.logging import get_logger
 from ..domain.registry import RegistryIssue, RegistrySnapshot, ValidationReport
 from ..infrastructure.filesystem_registry import RegistryLoader
+
+logger = get_logger("registry")
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,16 @@ class RegistryService:
         if snapshot is self._cached_snapshot and self._cached_report is not None:
             return snapshot, self._cached_report
         report = self._validate_snapshot(snapshot)
+        # Логируем только на первой валидации версии реестра (мемоизация выше
+        # отсекает повторы) — не спамим на каждый вызов.
+        if not report.is_valid:
+            logger.warning(
+                "реестр невалиден",
+                errors=len(report.errors),
+                warnings=len(report.warnings),
+            )
+            for issue in report.errors:
+                logger.warning(f"  ошибка реестра: {issue.message}", location=issue.location or None)
         self._cached_snapshot = snapshot
         self._cached_report = report
         return snapshot, report

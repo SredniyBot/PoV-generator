@@ -162,68 +162,76 @@ _LEVEL_COLOR = {
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 
-# Поля контекста, которые рендерятся компактным префиксом [..] перед сообщением
-# (трассировка), а не в общем хвосте key=value.
-_CONTEXT_KEYS = ("request_id", "project_id", "run_id", "task_id")
-_CONTEXT_ABBR = {"request_id": "req", "project_id": "proj", "run_id": "run", "task_id": "task"}
+# Короткие подписи уровней (WARNING длинный — режем до WARN).
+_LEVEL_LABEL = {
+    logging.DEBUG: "DEBUG",
+    logging.INFO: "INFO",
+    logging.WARNING: "WARN",
+    logging.ERROR: "ERROR",
+    logging.CRITICAL: "CRIT",
+}
+
+def _fmt_duration(ms: float) -> str:
+    """Человекочитаемая длительность: 823мс / 1.8с / 2м 05с."""
+    if ms < 1000:
+        return f"{int(round(ms))}мс"
+    sec = ms / 1000
+    if sec < 60:
+        return f"{sec:.1f}с"
+    return f"{int(sec // 60)}м {int(sec % 60):02d}с"
 
 
 def _render_value(value: Any) -> str:
-    text = value if isinstance(value, str) else repr(value) if not isinstance(value, (int, float, bool)) else str(value)
     if isinstance(value, bool):
-        text = "true" if value else "false"
+        return "да" if value else "нет"
+    text = value if isinstance(value, str) else str(value)
     if any(c in text for c in (" ", "=", '"')):
         text = '"' + text.replace('"', '\\"') + '"'
     return text
 
 
 def _render_fields(fields: dict[str, Any]) -> str:
-    return " ".join(f"{k}={_render_value(v)}" for k, v in fields.items())
+    # Ключи полей оставляем английскими (provider=, status=, task=…) — так
+    # привычнее и не выглядит странно; русскими остаются тексты сообщений.
+    return ", ".join(f"{k}={_render_value(v)}" for k, v in fields.items())
 
 
 class PovFormatter(logging.Formatter):
-    """Человекочитаемый формат: `время УРОВЕНЬ логгер [ctx] сообщение поля`."""
+    """Компактный человекочитаемый формат:
+
+        ``время УРОВЕНЬ область  сообщение  поля — длительность``
+
+    Сознательно без UUID-контекста и полного имени логгера — они засоряли
+    строку «случайным текстом». Трассировка (request_id/run_id/...) остаётся
+    в json-режиме (``POV_LOG_FORMAT=json``); человеку важны действие и данные.
+    """
 
     def __init__(self, *, color: bool) -> None:
         super().__init__()
         self._color = color
 
     def format(self, record: logging.LogRecord) -> str:
-        created = time.localtime(record.created)
-        ts = f"{time.strftime('%H:%M:%S', created)}.{int(record.msecs):03d}"
-        level = record.levelname
-        name = record.name
+        ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+        level = _LEVEL_LABEL.get(record.levelno, record.levelname)
+        area = record.name.split(".")[-1]  # pov.runner -> runner
 
-        ctx = _log_context.get()
         fields = dict(getattr(record, "pov_fields", {}) or {})
-
-        # Трассировочный префикс [req=.. run=..] — из контекста + одноимённых полей.
-        trace_parts = []
-        for key in _CONTEXT_KEYS:
-            val = fields.pop(key, None) or ctx.get(key)
-            if val is not None:
-                trace_parts.append(f"{_CONTEXT_ABBR[key]}={val}")
-        # Остальной контекст (не из _CONTEXT_KEYS) добавляем к полям.
-        for k, v in ctx.items():
-            if k not in _CONTEXT_KEYS and k not in fields:
-                fields[k] = v
-
-        trace = f" [{' '.join(trace_parts)}]" if trace_parts else ""
+        dur = fields.pop("duration_ms", None)
         tail = _render_fields(fields)
-        tail = f"  {tail}" if tail else ""
+        dur_s = f" — {_fmt_duration(dur)}" if isinstance(dur, (int, float)) else ""
 
         if self._color:
-            lvl_c = _LEVEL_COLOR.get(record.levelno, "")
-            level_s = f"{lvl_c}{level:<7}{_RESET}"
-            name_s = f"{_DIM}{name:<16}{_RESET}"
+            level_s = f"{_LEVEL_COLOR.get(record.levelno, '')}{level:<5}{_RESET}"
+            area_s = f"{_DIM}{area:<9}{_RESET}"
             ts_s = f"{_DIM}{ts}{_RESET}"
+            tail_s = f"  {_DIM}{tail}{_RESET}" if tail else ""
         else:
-            level_s = f"{level:<7}"
-            name_s = f"{name:<16}"
+            level_s = f"{level:<5}"
+            area_s = f"{area:<9}"
             ts_s = ts
+            tail_s = f"  {tail}" if tail else ""
 
-        line = f"{ts_s} {level_s} {name_s}{trace} {record.getMessage()}{tail}"
-
+        line = f"{ts_s} {level_s} {area_s} {record.getMessage()}{tail_s}{dur_s}"
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return line
@@ -292,12 +300,30 @@ def configure_logging(*, force: bool = False) -> None:
     handler = _DynamicStderrHandler()
     handler.setFormatter(JsonLogFormatter() if fmt == "json" else PovFormatter(color=use_color))
 
-    root = logging.getLogger(_ROOT)
+    # Вешаем единый handler на КОРНЕВОЙ логгер, а не только на «pov.*». Так в
+    # общий формат попадают и наши `get_logger("pov.*")`, и существующие ad-hoc
+    # `logging.getLogger(__name__)` по всему `pov_generator.*` (mermaid, pdf,
+    # decision-сервисы и т.п.) — без правки каждого call-site. PovFormatter
+    # рендерит и %-сообщения (через record.getMessage()), и структурированные.
+    root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
-    root.propagate = False  # не дублируем в root-логгер (uvicorn/прочие)
 
-    # uvicorn.access дублировал бы наше HTTP-логирование (middleware) — глушим.
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Приглушаем шумные сторонние логгеры до WARNING, чтобы INFO не тонул в
+    # их трафике (HTTP-клиенты, SDK, reload-watcher). uvicorn.access — глушим,
+    # т.к. HTTP-запросы логирует наш middleware.
+    for noisy in (
+        "uvicorn.access",
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "anthropic",
+        "openai",
+        "asyncio",
+        "watchfiles",
+        "mcp",
+        "markdown_it",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _configured = True

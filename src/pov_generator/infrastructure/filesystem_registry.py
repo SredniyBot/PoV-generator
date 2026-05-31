@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import yaml
 
 from ..common.errors import ValidationError
+from ..common.logging import get_logger
 from ..domain.registry import (
     RegistrySnapshot,
     parse_artifact_contract,
@@ -16,6 +18,8 @@ from ..domain.registry import (
     parse_task_template,
     parse_vocabulary,
 )
+
+_logger = get_logger("registry")
 
 
 @runtime_checkable
@@ -40,6 +44,7 @@ class FilesystemRegistryLoader:
         self._root = root
 
     def load(self) -> RegistrySnapshot:
+        _started = time.perf_counter()
         vocabularies = {}
         objectives = {}
         templates = {}
@@ -85,6 +90,16 @@ class FilesystemRegistryLoader:
             gate = parse_quality_gate(raw, path)
             quality_gates[gate.ref.as_string()] = gate
 
+        _logger.info(
+            "реестр загружен",
+            objectives=len(objectives),
+            tasks=len(templates),
+            artifacts=len(artifact_contracts),
+            domain_packs=len(domain_packs),
+            methodologies=len(methodology_packs),
+            gates=len(quality_gates),
+            duration_ms=round((time.perf_counter() - _started) * 1000),
+        )
         return RegistrySnapshot(
             vocabularies=vocabularies,
             objectives=objectives,

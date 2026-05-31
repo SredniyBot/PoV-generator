@@ -1552,6 +1552,11 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
                 <div className="artifact-list__title">
                   <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
                   <p>{prettyLabel(artifact.artifact_role)}</p>
+                  {artifact.is_low_confidence ? (
+                    <span className="artifact-lowconf-badge">
+                      <AlertTriangle size={11} /> система не уверена
+                    </span>
+                  ) : null}
                 </div>
                 <div className="artifact-list__meta">
                   <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
@@ -1707,6 +1712,16 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
   });
   const decisionsCount = decisionsQuery.data?.length ?? 0;
 
+  // Подтверждение низкоуверенного артефакта — зеркально verify решения.
+  const queryClient = useQueryClient();
+  const verifyMutation = useMutation({
+    mutationFn: () => api.verifyArtifact(projectId, detail.artifact_id, true),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") });
+      void queryClient.invalidateQueries({ queryKey: [projectId, "artifact-detail", detail.artifact_id] });
+    },
+  });
+
   return (
     <div className="artifact-detail">
       <div className="artifact-detail__toolbar">
@@ -1798,6 +1813,38 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           <>
             <span className="artifact-meta-strip__sep">·</span>
             <StatusPill tone="warning">устарел</StatusPill>
+          </>
+        ) : null}
+        {detail.is_low_confidence ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span className="artifact-lowconf">
+              <AlertTriangle size={12} />
+              <span>низкая уверенность — подтвердите</span>
+              <button
+                type="button"
+                className="artifact-lowconf__verify"
+                disabled={verifyMutation.isPending}
+                title="Я просмотрел артефакт — согласен, снять метку"
+                onClick={() => verifyMutation.mutate()}
+              >
+                <CheckCircle2 size={12} /> подтверждаю
+              </button>
+            </span>
+          </>
+        ) : detail.user_verified ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span
+              className="artifact-verified"
+              title={
+                detail.user_verified_at
+                  ? `Подтверждено вами ${detail.user_verified_at.slice(0, 16).replace("T", " ")}`
+                  : "Подтверждено вами"
+              }
+            >
+              <CheckCircle2 size={12} /> подтверждено
+            </span>
           </>
         ) : null}
       </div>

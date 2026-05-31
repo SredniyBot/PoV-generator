@@ -162,10 +162,9 @@ class CheckpointService:
         )
         saved_session = self._runtime.upsert_checkpoint_session(workspace, session)
         logger.info(
-            "checkpoint opened: задача ждёт решений пользователя",
-            task=task_id,
+            "открыты решения: задача ждёт ответа",
+            task=task_title,
             surfaced=len(surfaced_ids),
-            silent=len(silent),
         )
         return CheckpointCreationResult(
             session=saved_session,
@@ -256,11 +255,10 @@ class CheckpointService:
         )
         saved_session = self._runtime.upsert_checkpoint_session(workspace, finalized)
         logger.info(
-            "checkpoint answered: решения приняты, задача продолжится",
-            task=session.task_id,
+            "решения приняты, задача продолжится",
+            task=session.task_title,
             answered=len(answered_ids),
             auto_accepted=len(valid_ids - answered_ids),
-            actor=actor,
         )
 
         # v3.0 — auto-resume: задача, которая была failed из-за паузы,
@@ -566,6 +564,27 @@ class CheckpointService:
         )
         self._runtime.upsert_decision(workspace, updated)
         return self._runtime.get_decision(workspace, decision_id)
+
+    def set_artifact_verified(
+        self,
+        workspace: Path,
+        *,
+        artifact_id: str,
+        verified: bool,
+    ) -> None:
+        """Пометить низкоуверенный артефакт как «просмотрено и согласовано»
+        (или снять метку) — зеркально :meth:`set_decision_verified`.
+
+        Аудит-метка: содержимое артефакта не меняется, снимается лишь мягкий
+        индикатор ``is_low_confidence``. Сервис уже владеет подтверждением
+        подозрительных решений; здесь та же ответственность для артефактов.
+        """
+        self._runtime.mark_artifact_verified(
+            workspace,
+            artifact_id,
+            verified=bool(verified),
+            verified_at=utc_now_iso() if verified else None,
+        )
 
     # ---- mode (participation level) ------------------------------------------
 

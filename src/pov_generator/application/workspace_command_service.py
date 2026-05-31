@@ -326,10 +326,8 @@ class WorkspaceCommandService:
         )
         self._planning_service.expand_graph(workspace, snapshot)
         logger.info(
-            "project created",
-            project_id=bootstrap.manifest.project_id,
-            objective=bootstrap.manifest.objective_ref,
-            domain_packs=len(resolved_pack_refs),
+            f"проект создан «{bootstrap.manifest.name}»",
+            objective=bootstrap.manifest.objective_ref.split("@")[0],
         )
         return ProjectCreatedView(
             project_id=bootstrap.manifest.project_id,

@@ -144,6 +144,9 @@ export interface ArtifactSummaryView {
   created_at: string;
   created_by_task_id: string | null;
   has_markdown: boolean;
+  overall_confidence: number | null;
+  is_low_confidence: boolean;
+  user_verified: boolean;
 }
 
 export interface ArtifactValidationView {
@@ -184,6 +187,9 @@ export interface ArtifactDetailView {
   parent_artifact_id: string | null;
   is_superseded: boolean;
   overall_confidence: number | null;
+  is_low_confidence: boolean;
+  user_verified: boolean;
+  user_verified_at: string | null;
   // v3.5: разбивка токенов по стадиям сборки.
   token_usage: Record<string, TokenUsageStage>;
 }

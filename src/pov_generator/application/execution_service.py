@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -241,6 +240,14 @@ class ExecutionService:
                 continue
         active_domain_refs = tuple(sorted(state.process.active_domain_pack_records.keys()))
 
+        logger.info(
+            "задача начата",
+            task=task.title or task_id,
+            role=artifact_role,
+            provider=active_provider,
+            model=active_model or None,
+        )
+
         system_prompt, user_prompt = self._build_prompt(
             template_name=template.name,
             task_summary=template.summary,
@@ -352,17 +359,9 @@ class ExecutionService:
                 active_methodology is not None
                 and active_methodology.stage_execution_mode == "per_stage_cot"
             )
-            # LLM-генерация — самая дорогая по времени операция пайплайна
-            # (см. диагностику 187-мин прогона). Логируем старт (DEBUG) и
-            # завершение с таймингом (INFO): провайдер/модель/роль/режим/длит.
-            logger.debug(
-                "llm generation start",
-                provider=active_provider,
-                model=active_model or None,
-                role=artifact_role,
-                mode="per_stage_cot" if _cot else "single_call",
-            )
-            _gen_start = time.perf_counter()
+            # Сам LLM-вызов логируется единой точкой — LoggingLLMProvider
+            # (infrastructure/llm/registry.py): provider/model/purpose/токены/
+            # тайминг на каждый chat_json. Здесь не дублируем.
             if _cot:
                 payload, live_reasoning, stage_token_usage = self._execute_per_stage_cot(
                     llm=llm_provider,
@@ -381,15 +380,6 @@ class ExecutionService:
                     complexity=complexity_value,
                     primary_schema=primary_schema,
                 )
-            logger.info(
-                "llm generation done",
-                provider=active_provider,
-                model=active_model or None,
-                role=artifact_role,
-                mode="per_stage_cot" if _cot else "single_call",
-                complexity=complexity_value,
-                duration_ms=round((time.perf_counter() - _gen_start) * 1000),
-            )
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
         # v3.5: stage_token_usage накапливается только для LLM-провайдеров;
@@ -562,6 +552,12 @@ class ExecutionService:
         if cancellation is not None:
             cancellation.raise_if_cancelled()
         self._runtime.store_artifact(workspace, artifact=artifact_record, content=json_dumps(payload))
+        logger.info(
+            "артефакт сохранён",
+            role=artifact_role,
+            size=len(json_dumps(payload)),
+            versioned=previous_active is not None,
+        )
         # v3.0: связываем все Decision-записи этой задачи с свежесозданным
         # артефактом — это даёт UI «решения этого артефакта» (вкладка в
         # ArtifactDetail). Делается после store_artifact, потому что нужен

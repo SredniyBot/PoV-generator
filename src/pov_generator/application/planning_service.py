@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.process_state import SetRootTaskPatch
@@ -29,6 +30,9 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
     if field_name == "goal":
         return state.knowledge.goal_statement()
     return None
+
+
+logger = get_logger("planner")
 
 
 class PlanningService:
@@ -140,6 +144,13 @@ class PlanningService:
             )
             if record:
                 self._runtime.record_planning_decision(workspace, decision)
+                if outcome == "objective_completed":
+                    logger.info("цель проекта достигнута")
+                else:
+                    logger.warning(
+                        "план заблокирован: нет допустимых задач",
+                        blocked=len(blocked),
+                    )
             return decision
 
         decision = PlanningDecision(
@@ -169,6 +180,11 @@ class PlanningService:
         )
         if record:
             self._runtime.record_planning_decision(workspace, decision)
+            logger.info(
+                "план: выбрана задача",
+                task=selected.title or selected.task_key,
+                admitted=len(admitted),
+            )
         return decision
 
     def planning_history(self, workspace: Path) -> list[PlanningDecision]:

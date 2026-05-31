@@ -73,29 +73,28 @@ def create_app(
         method = request.method
         path = request.url.path
         start = time.perf_counter()
+        # method/path/status уже в тексте сообщения — отдельными полями их не
+        # дублируем (это и был «шум»). В pretty остаётся: «POST /path → 200 — 12мс».
         with bind(request_id=request_id):
             try:
                 response = await call_next(request)
             except Exception:
                 dur = round((time.perf_counter() - start) * 1000)
-                http_log.error(
-                    f"{method} {path} → unhandled exception",
-                    method=method, path=path, duration_ms=dur, exc_info=True,
-                )
+                http_log.error(f"{method} {path} → необработанное исключение", duration_ms=dur, exc_info=True)
                 raise
             dur = round((time.perf_counter() - start) * 1000)
             status = response.status_code
             msg = f"{method} {path} → {status}"
             if status >= 500:
-                http_log.error(msg, method=method, path=path, status=status, duration_ms=dur, exc_info=False)
+                http_log.error(msg, duration_ms=dur, exc_info=False)
             elif status >= 400:
-                http_log.warning(msg, method=method, path=path, status=status, duration_ms=dur)
+                http_log.warning(msg, duration_ms=dur)
             elif dur > _SLOW_MS:
-                http_log.warning(f"{msg} (slow)", method=method, path=path, status=status, duration_ms=dur)
+                http_log.warning(f"{msg} (медленно)", duration_ms=dur)
             elif method == "GET":
-                http_log.debug(msg, method=method, path=path, status=status, duration_ms=dur)
+                http_log.debug(msg, duration_ms=dur)
             else:
-                http_log.info(msg, method=method, path=path, status=status, duration_ms=dur)
+                http_log.info(msg, duration_ms=dur)
             response.headers["X-Request-ID"] = request_id
             return response
 
@@ -235,6 +234,8 @@ def create_app(
     from dataclasses import replace as _dc_replace
 
     from ..common.serialization import utc_now_iso as _utc_now
+    _recovered_runs = 0
+    _recovered_tasks = 0
     try:
         for workspace_ref in catalog.list_workspaces():
             ws = workspace_ref.workspace
@@ -242,6 +243,7 @@ def create_app(
             try:
                 for run in runtime.list_workflow_runs(ws, project_id=workspace_ref.project_id, limit=50):
                     if run.status in {"pending", "running"}:
+                        _recovered_runs += 1
                         runtime.update_workflow_run(
                             ws,
                             _dc_replace(
@@ -271,6 +273,7 @@ def create_app(
                                     "error_type": "process_restart",
                                 },
                             )
+                            _recovered_tasks += 1
                         except Exception:
                             # state-machine может не допускать transition
                             # для каких-то редких статусов — пропускаем.
@@ -280,6 +283,12 @@ def create_app(
     except Exception:
         # Recovery — best-effort. Сбой здесь не должен мешать старту API.
         pass
+    if _recovered_runs or _recovered_tasks:
+        log.warning(
+            "восстановление после рестарта: остановлены зомби прошлого процесса",
+            runs=_recovered_runs,
+            tasks=_recovered_tasks,
+        )
     # ---- end recovery ----------------------------------------------------
 
     @app.exception_handler(PovGeneratorError)
@@ -498,17 +507,14 @@ def create_app(
         #    поверх rmtree и проект «воскреснет» частично.
         active = workflow_runner_service.latest_active_run(workspace, project_id)
         if active is not None:
-            log.warning(
-                "project delete: останавливаю активный run перед удалением",
-                project_id=project_id, run_id=active.run_id,
-            )
+            log.warning("удаление проекта: останавливаю активный прогон")
             workflow_runner_service.cancel_run(workspace, active.run_id)
             workflow_runner_service.wait_until_idle(active.run_id, timeout_s=15.0)
         # 2. Удалить workspace целиком. UI инвалидирует список проектов;
         #    realtime_token (mtime-based) тоже сдвинется и разошлёт
         #    projection_changed подписчикам.
         catalog.delete_workspace(project_id)
-        log.info("project deleted", project_id=project_id)
+        log.info(f"проект удалён ({project_id[:8]})")
         return {"status": "deleted", "project_id": project_id}
 
     @app.get("/api/registry/objectives")
@@ -849,6 +855,32 @@ def create_app(
     def project_artifact_detail(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
 
+    @app.post("/api/projects/{project_id}/artifacts/{artifact_id}/verify")
+    def project_artifact_verify(
+        project_id: str, artifact_id: str, body: dict[str, Any] | None = None
+    ) -> Any:
+        """Пометить низкоуверенный артефакт как «просмотрено и согласовано»
+        (или снять метку). Снимает индикатор is_low_confidence в UI без
+        изменения содержимого — зеркально /decisions/{id}/verify.
+
+        Body (optional): ``{"verified": true}`` (default) | ``{"verified": false}``.
+        Возвращает обновлённый ArtifactDetailView.
+        """
+        from ..common.errors import NotFoundError
+
+        verified = True if body is None else bool(body.get("verified", True))
+        # Валидируем принадлежность артефакта проекту (404 если нет).
+        try:
+            query_service.artifact_detail(project_id, artifact_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.set_artifact_verified(
+            workspace, artifact_id=artifact_id, verified=verified
+        )
+        log.info("артефакт подтверждён пользователем" if verified else "снята метка подтверждения артефакта")
+        return to_primitive(query_service.artifact_detail(project_id, artifact_id))
+
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/download.pdf")
     def download_artifact_pdf(project_id: str, artifact_id: str) -> Response:
         """Скачивание артефакта в формате PDF.
@@ -1129,9 +1161,14 @@ def create_app(
                     return FileResponse(asset_file)
                 return HTMLResponse(status_code=404, content="UI asset not found.")
 
+        # HTML-оболочка SPA НЕ кэшируется (no-cache → браузер ревалидирует),
+        # иначе застревает старый index.html (без favicon-link / со старыми
+        # хэшами ассетов). Сами ассеты в /assets/* хэшированы и кэшируются.
+        _NO_CACHE = {"Cache-Control": "no-cache"}
+
         @app.get("/", include_in_schema=False)
         def ui_index():
-            return FileResponse(ui_dist_root / "index.html")
+            return FileResponse(ui_dist_root / "index.html", headers=_NO_CACHE)
 
         @app.get("/{full_path:path}", include_in_schema=False)
         def ui_spa_fallback(full_path: str):
@@ -1152,7 +1189,7 @@ def create_app(
             # Иначе — SPA-маршрут: отдаём index.html (client-side routing).
             index_file = ui_dist_root / "index.html"
             if index_file.exists():
-                return FileResponse(index_file)
+                return FileResponse(index_file, headers=_NO_CACHE)
             return HTMLResponse(status_code=404, content="UI build not found.")
     else:
         @app.get("/", include_in_schema=False)
