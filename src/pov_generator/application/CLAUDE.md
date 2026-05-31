@@ -70,6 +70,9 @@ Application-слой связывает `domain/` (инварианты) и `inf
 - **workspace_catalog** — каталог доступных воркспейсов (project_id → workspace path).
 - **pdf_export** — markdown артефакта → PDF (markdown→HTML→xhtml2pdf); регистрирует Unicode-TTF
   для кириллицы; авто-ширина колонок + landscape для широких таблиц.
+- **attachment_service** — `AttachmentService`: загрузка входных файлов, фоновое извлечение текста
+  (pypdf/.pdf, python-docx/.docx, plain .txt/.md/.json/.csv), подача в Layer A как `Position`,
+  удаление-до-использования (лимиты ≤25MB/≤50 файлов; failed/unsupported в контекст не попадают).
 
 ## Нетривиальная логика и gotchas
 
@@ -83,6 +86,8 @@ Application-слой связывает `domain/` (инварианты) и `inf
   `ensure_default_settings`. Параметр `provider` у `execute_task` — явный override (CLI/тест).
 - Диспетч генерации (`:136`–`:186`): structural-merge / stub / LLM. `merge.strategy=="hybrid"`
   → `ConflictError` (не реализовано, `:143`).
+- `chat_json` теперь возвращает `LLMResult` (payload + usage); расход токенов на каждый вызов
+  пишется в таблицу `llm_usage` (best-effort, не валит исполнение).
 - **Версионирование:** retry того же role+task связывает версии через `parent_artifact_id`,
   предыдущий помечается superseded (`:228`–`:279`). `overall_confidence` вынесен из тела
   артефакта в метаданные (`:270`).

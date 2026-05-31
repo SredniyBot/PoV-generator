@@ -16,7 +16,8 @@
 | projects (create/list) | `GET/POST /api/projects` (`api.py:351-369`) | список и создание проекта | `WorkspaceQueryService` / `WorkspaceCommandService` |
 | registry | `GET /api/registry/objectives\|domain-packs\|methodology-packs` (`api.py:371-381`) | каталоги для UI | `WorkspaceQueryService` |
 | project projections (read) | `/api/projects/{id}/shell\|overview\|task-graph\|situation\|timeline\|clarifications\|artifacts\|review\|state\|debug\|decisions\|artifact-versions\|failure-pins` (`api.py:383-481`) | проекции для UI (см. spec 11 §2, L1/L2 §6) | `WorkspaceQueryService` |
-| artifacts | `GET …/artifacts/{aid}` (`api.py:415`), `GET …/artifacts/{aid}/download.pdf` (`api.py:419`), `…/skeleton` (`api.py:466`) | детали + экспорт PDF (`render_artifact_pdf`, RFC 5987 имя файла) | query + `pdf_export` |
+| artifacts | `GET …/artifacts/{aid}` (`api.py:415`), `GET …/artifacts/{aid}/download.pdf` (`api.py:419`), `GET …/artifacts/{aid}/download.md`, `GET …/export.zip`, `…/skeleton` (`api.py:466`) | детали + экспорт PDF (`render_artifact_pdf`, RFC 5987 имя файла), MD (text/markdown) и zip всех MD-артефактов (+ MANIFEST.txt) | query + `pdf_export` |
+| attachments | `POST/GET …/attachments`, `GET …/attachments/{aid}/download`, `DELETE …/attachments/{aid}` | загрузка/список входных файлов, скачивание, удаление-до-использования | `AttachmentService` |
 | commands (write) | `POST /api/projects/{id}/commands/run-next\|run-until-blocked\|cancel-workflow\|retry-task\|set-goal\|close-gap\|set-readiness\|enable-domain-pack\|answer-clarification\|accept-assumption\|set-clarification-mode\|set-methodology\|defer-clarification\|reopen-clarification` (`api.py:482-707`) | мутации workflow/clarifications (spec 11 §4-5) | `WorkspaceCommandService`, `WorkflowRunnerService`, `ClarificationService` |
 | workflow runs (async) | `POST …/commands/run-until-blocked` (`api.py:492`) запускает async-run и сразу возвращает `WorkflowRunRecord(status=pending)`; `GET …/workflow-runs/active` (`api.py:525`), `GET …/workflow-runs` (`api.py:531`), `GET …/workflow-runs/{rid}` (`api.py:538`) | запуск/наблюдение/отмена прогона; runner крутит daemon-поток | `WorkflowRunnerService` |
 | clarifications flow | `GET …/clarifications/{cid}/events` (`api.py:709`), `GET …/clarifications/next` (`api.py:716`) | навигация wizard'а | `ClarificationService` / `runtime` |
@@ -26,7 +27,8 @@
 - `answer-clarification` / `accept-assumption` дёргают `_autoresume_workflow_if_unblocked` (`api.py:583`) — авто-возобновляют workflow, когда не осталось blocking-open вопросов; provider/model берутся из последнего run проекта.
 
 ### WebSocket
-`WS /ws/projects/{project_id}` (`api.py:735`). При подключении шлёт `snapshot` со списком проекций и их signature, далее поллит `query_service.realtime_token` каждые `poll_interval` (дефолт 0.75с, `api.py:42`/`api.py:105`) и при смене токена рассылает по `projection_changed` на каждую проекцию (signature-based, не дельты). Набор проекций — из query-param `projections` или дефолтный список (`api.py:743-757`).
+`WS /ws/projects/{project_id}` (`api.py:735`). При подключении шлёт `snapshot` со списком проекций и их signature, далее поллит `query_service.realtime_token` каждые `poll_interval` (дефолт 0.75с, `api.py:42`/`api.py:105`) и при смене токена рассылает по `projection_changed` на каждую проекцию (signature-based, не дельты). Набор проекций — из query-param `projections` или дефолтный список (`api.py:743-757`,
+включает `attachments`).
 
 Расхождение со spec 11 §4: спека описывает канал `/api/projects/{id}/events` и типизированные сообщения (`snapshot_ready`, `task_changed`, `artifact_changed`, …) с per-projection версиями; реализация проще — единый `realtime_token` на весь workspace и только два типа сообщений (`snapshot`, `projection_changed`). При коде истина — реализация.
 

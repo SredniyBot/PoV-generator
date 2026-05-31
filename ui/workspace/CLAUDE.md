@@ -28,11 +28,14 @@ Google Fonts → `tokens.css` → `overview-v2.css` → `home-dash.css` → `cre
   retry 1) → `<App/>` в `StrictMode`; единственная точка импорта `styles.css`.
 - `App.tsx` — ~4215 строк, монолит: роутинг + большинство страниц (Mission Control,
   Activity, Clarifications, Methodology, Reasoning, Artifacts, TaskGraph, State, Review,
-  Debug) определены здесь как локальные компоненты. Точки входа:
+  Debug) определены здесь как локальные компоненты. ArtifactsPage несёт секцию
+  «Входные файлы» (вложения: статусы извлечения, скачать/удалить), кнопки скачивания
+  MD по артефакту + project export.zip и чип расхода токенов (in/out/total) на карточке
+  артефакта; create-form делает реальную загрузку файлов. Точки входа:
   - роутинг: `App.tsx:225` (`<BrowserRouter>`), верхний уровень `:278-301`,
     вложенный `WorkspaceRoute` `:497-557`.
   - realtime-подписка: `App.tsx:435` (`useProjectRealtime`), список проекций
-    `REALTIME_PROJECTIONS` `:85-98`, ключ инвалидации `projectionKey()` `:132`.
+    `REALTIME_PROJECTIONS` `:85-98` (включает `attachments`), ключ инвалидации `projectionKey()` `:132`.
 - `api.ts` — типизированный REST-клиент (объект `api`, `:42-303`) + `createProjectSocket`
   (`:305`) для WS. Все типы импортируются из `types.ts`.
 - `types.ts` — DTO/view-типы backend-проекций (`*View`), `ProjectionName`, `WsMessage`.

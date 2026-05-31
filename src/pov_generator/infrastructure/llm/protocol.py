@@ -72,7 +72,8 @@ class LLMProvider(Protocol):
       логирования / отображения в UI / трассировки.
     * Иметь атрибут ``model`` (str | None) — текущая модель (для
       провайдеров, где модель определяет CLI/подписка, может быть None).
-    * Реализовать ``chat_json(system_prompt, user_prompt, schema) -> dict``.
+    * Реализовать ``chat_json(system_prompt, user_prompt, schema) -> LLMResult``
+      (``payload`` по схеме + ``usage`` — расход токенов; см. :class:`LLMResult`).
 
     Implementations НЕ должны:
 

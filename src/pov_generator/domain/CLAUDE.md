@@ -27,6 +27,8 @@ stdlib + `..common` (errors, serialization). Используется слоем
 | `workflow_runs.py` | Async-прогон: `WorkflowRunRecord` (frozen, `workflow_runs.py:52`) — весь цикл `run_until_blocked` (pending→running→completed/failed/cancelled), `cancel_requested`. `WorkflowStepRecord` (`:36`). НЕ путать с `ExecutionRequest` (один LLM-вызов). |
 | `workspace_views.py` | DTO-проекции для UI/API (~25 frozen `*View`): `Project{Shell,TaskGraph,Situation,Timeline,Clarifications,...}View`, `ArtifactDetailView`, `DecisionLogEntryView`, и т.д. Чисто read-модель, собирается в `application/workspace_query_service`. |
 | `llm_settings.py` | Конфиг LLM-провайдеров (value objects): `ProviderConnection` (`llm_settings.py:97`), `ModelRouting` (`:139`, priority/enabled), `ModelAssignment` (`:161`, purpose→model). Канонические purpose-константы `ALL_PURPOSES` (`:61`). Секреты только в распакованном виде (`ProviderCredentials`). |
+| `attachments.py` | `AttachmentRecord` + `ExtractionStatus` (pending/succeeded/failed/unsupported). Входной файл-вложение — отдельная сущность, НЕ артефакт; извлечённый текст подаётся в контекст через Layer A как `Position` (`source="input"`). |
+| `llm_usage.py` | `LLMUsageRecord` + `LLMUsageAggregate`. Расход токенов на один LLM-вызов (input/output/total, `source` actual|estimated) + агрегаты по задаче/проекту. |
 
 ## Ключевые понятия и инварианты
 

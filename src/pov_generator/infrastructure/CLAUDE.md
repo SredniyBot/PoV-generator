@@ -20,7 +20,8 @@
   «LLM-провайдеры».
 - `openrouter_client.py`, `claude_sdk_client.py`, `claude_subscription_client.py`
   — низкоуровневые HTTP/SDK-клиенты. **НЕ legacy/мёртвый код**: используются
-  адаптерами в `llm/providers/*` (см. «LLM-провайдеры»).
+  адаптерами в `llm/providers/*` (см. «LLM-провайдеры»). Возвращают `LLMResult`
+  (payload + usage по токенам).
 
 ## Хранилище состояния
 
@@ -61,6 +62,13 @@ Pragmas: `journal_mode=MEMORY`, `synchronous=OFF` — single-process, скоро
   `escalation_tickets`, `clarification_candidates`, `clarification_requests`,
   `workflow_runs` — записи аудита/трассировки исполнения, валидации,
   уточнений и асинхронных прогонов.
+- `attachments` — входные файлы-вложения: метаданные + бинарь на диске
+  (`attachments/{attachment_id}{ext}` + `.txt` с извлечённым текстом),
+  `extraction_status`, `used_in_context` (удаление только до первого
+  использования в контексте задачи).
+- `llm_usage` — расход токенов на каждый LLM-вызов (input/output/total,
+  `source` actual|estimated); агрегаты по задаче/проекту считаются запросом,
+  не денормализуются.
 
 Эволюция схемы — без таблицы версий: после `create table if not exists`
 прогоняются idempotent `_ensure_column` (`sqlite_runtime.py:2104`), добавляющие
@@ -84,7 +92,12 @@ foreign_keys = ON`, но CASCADE вручную: routings удаляются п�
 
 - **Протокол** `LLMProvider` (`llm/protocol.py:15`, PEP 544
   `@runtime_checkable`): атрибуты `name: str`, `model: str | None` + метод
-  `chat_json(*, system_prompt, user_prompt, schema) -> dict`. Реализации не
+  `chat_json(*, system_prompt, user_prompt, schema) -> LLMResult`. `LLMResult`
+  (payload + `LLMUsage`) живёт в `llm/protocol.py` (usage: input/output/total
+  токены, `source` actual|estimated, опц. cache_tokens/cost_usd). Каждый
+  провайдер/клиент извлекает реальный usage: openrouter из поля `usage`,
+  claude_sdk из `response.usage`, claude_subscription из `ResultMessage`;
+  stub/fallback — оценка по длине через `estimate_token_count`. Реализации не
   должны читать env (это задача реестра) и не должны делать switch по
   провайдерам.
 - **Резолвер** `LLMProviderRegistry` (`llm/registry.py:104`) — единственное

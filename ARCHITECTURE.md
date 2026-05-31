@@ -65,6 +65,8 @@ src/pov_generator/
 │   ├── project_knowledge.py ─ Layer A: положения + KnowledgePatch
 │   ├── process_state.py     ─ Layer B: пробелы/готовность/паки
 │   ├── project_state.py     ─ ProjectManifest + StateEvent
+│   ├── attachments.py       ─ AttachmentRecord, ExtractionStatus (входные файлы)
+│   ├── llm_usage.py         ─ LLMUsageRecord, LLMUsageAggregate (расход токенов)
 │   └── workspace_views.py   ─ DTO для UI
 │
 ├── application/             ← оркестрация
@@ -77,6 +79,7 @@ src/pov_generator/
 │   ├── methodology_rule_eval.py  ─ AST-эвалюатор `if:` выражений
 │   ├── validation_service.py     ─ проверки + gate candidates
 │   ├── clarification_service.py  ─ role floor, action decision
+│   ├── attachment_service.py     ─ загрузка/извлечение текста вложений
 │   ├── workflow_service.py
 │   └── workspace_query_service.py
 │
@@ -86,6 +89,7 @@ src/pov_generator/
 │   ├── openrouter_client.py
 │   ├── claude_sdk_client.py          ─ Anthropic SDK + tool-use
 │   └── claude_subscription_client.py ─ claude-agent-sdk через локальный CLI
+│       (клиенты возвращают LLMResult: payload + usage по токенам)
 │
 └── interfaces/
     ├── api.py               ─ FastAPI + WebSocket
@@ -166,7 +170,8 @@ Floor по умолчанию: `business/client` — autopilot, `security` — b
 
 ### Новый LLM-провайдер
 
-1. `infrastructure/<name>_client.py` с `chat_json(system, user, schema) -> dict`.
+1. `infrastructure/<name>_client.py` с `chat_json(system, user, schema) -> LLMResult`
+   (payload + usage по токенам).
 2. Зарегистрировать в `execution_service.execute_task` (switch по `active_provider`).
 3. (Опц.) Branch в `clarification_service._build_draft` для CE11.
 
@@ -199,8 +204,11 @@ execution_run, provider, model, context_manifest.
 2. **CLI scaffold** для bootstrap новой задачи / методологии / domain.
 3. **Несколько активных методологий на проект** (PS10 ограничивает MVP).
 4. **Цепочки objective** (ТЗ → архитектура → реализация).
-5. **Cost tracking** токенов и денег в `ExecutionResult`.
+5. **Денежная стоимость ($)** вызовов — учёт токенов уже есть (см. ниже), остаётся
+   маппинг токенов в деньги по тарифам.
 
 Уже сделано (для справки): per-stage CoT mode (`stage_execution_mode: per_stage_cot`),
 pre-selector сложности (`POV_COMPLEXITY_SELECTOR=on`), stub-payloads вынесены
-в `templates/stub_fixtures/<artifact_role>.json`.
+в `templates/stub_fixtures/<artifact_role>.json`, учёт токенов на каждый LLM-вызов
+(`llm_usage`, `LLMResult` + `LLMUsage`), входные файлы-вложения (`attachments` +
+извлечение текста), экспорт артефактов в Markdown и zip.

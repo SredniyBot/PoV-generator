@@ -1,6 +1,6 @@
 # tests/ — pytest-сьют
 
-Pytest-сьют PoV-generator (~35 файлов `test_*.py`). Тесты бьют по слоям
+Pytest-сьют PoV-generator (~38 файлов `test_*.py`). Тесты бьют по слоям
 `pov_generator.application` / `.infrastructure` / `.interfaces`, поднимая реальные сервисы
 поверх временной SQLite-runtime и заменяя реальный LLM stub-провайдером.
 Конфиг минимальный — `[tool.pytest.ini_options]` в `pyproject.toml:45`: `testpaths = ["tests"]`,
@@ -80,7 +80,11 @@ WebSocket проверяется через `client.websocket_connect(...)` + р
   `test_workspace_view_helpers.py`, `test_merge_execution.py`, `test_merge_strategies.py`.
 - PDF/экспорт: `test_pdf_export.py`, `test_pdf_table_layout.py` (markdown→HTML→PDF через
   xhtml2pdf/reportlab, см. зависимости `pyproject.toml:21-24`; проверяется сигнатура `%PDF-`,
-  MediaBox-ориентация, встроенный Unicode-subset для кириллицы).
+  MediaBox-ориентация, встроенный Unicode-subset для кириллицы), `test_markdown_export.py`
+  (download.md, export.zip всех MD-артефактов + MANIFEST.txt).
+- Вложения: `test_attachments.py` (загрузка/извлечение текста pdf/docx/plain, graceful degradation,
+  used_in_context, удаление-до-использования).
+- Учёт токенов: `test_llm_usage.py` (usage по провайдерам/stub, агрегация retry/per_stage_cot, n/a).
 - Провайдеры/настройки LLM: `test_llm_provider_registry.py`, `test_llm_settings_store.py`,
   `test_provider_settings_service.py`, `test_settings_api.py`, `test_env_loading.py`.
 - Stub-фикстуры: `test_stub_fixtures.py` — контракт детерминированных stub-payload'ов.
