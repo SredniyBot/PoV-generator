@@ -48,22 +48,45 @@ def _mmdc_binary() -> str:
     return os.environ.get("POV_MERMAID_CLI", "mmdc")
 
 
-def _resolve_binary() -> str | None:
-    """Найти исполняемый mmdc.
+def _local_bin_candidates() -> list[Path]:
+    """Бинарь mmdc из локальной установки проекта.
 
-    Критично на Windows: npm ставит CLI как ``mmdc.cmd``, а
-    ``subprocess(shell=False)`` сам расширения PATHEXT не подбирает —
-    ``["mmdc", ...]`` упал бы с FileNotFoundError даже при установленном CLI.
-    ``shutil.which`` учитывает PATHEXT и возвращает полный путь к ``mmdc.cmd``.
+    ``@mermaid-js/mermaid-cli`` объявлен optionalDependency UI-воркспейса и
+    ставится штатным ``npm ci`` в ``ui/workspace/node_modules/.bin``. Это
+    основной, воспроизводимый путь: на любой новой среде после стандартной
+    установки UI mmdc доступен — без глобального ``npm i -g`` и возни с PATH.
     """
-    name = _mmdc_binary()
-    resolved = shutil.which(name)
-    if resolved is not None:
-        return resolved
-    # Абсолютный путь, который which не нашёл по PATH, но файл существует.
-    if (os.sep in name or (os.altsep and os.altsep in name)) and Path(name).exists():
-        return name
-    return None
+    # mermaid_render.py: <repo>/src/pov_generator/application/mermaid_render.py
+    repo_root = Path(__file__).resolve().parents[3]
+    node_modules = repo_root / "ui" / "workspace" / "node_modules"
+    # Полнота установки: mmdc бесполезен без peer-зависимости puppeteer
+    # (Chromium). Если её нет (частичная optional-установка) — не подсовываем
+    # сломанный локальный бинарь, пусть сработает глобальный фоллбек.
+    if not (node_modules / "puppeteer").exists():
+        return []
+    bin_dir = node_modules / ".bin"
+    if sys.platform == "win32":
+        # npm кладёт mmdc.cmd (его исполняет _build_command через `cmd /c`).
+        return [bin_dir / "mmdc.cmd", bin_dir / "mmdc"]
+    return [bin_dir / "mmdc"]
+
+
+def _resolve_binary() -> str | None:
+    """Найти исполняемый mmdc. Приоритет:
+
+    1. ``POV_MERMAID_CLI`` — явный путь/имя (override).
+    2. Локальная установка проекта (ui/workspace/node_modules/.bin) — основной
+       путь, работает на любой среде после ``npm ci``.
+    3. Глобальный mmdc в PATH. ``shutil.which`` учитывает PATHEXT (находит
+       ``mmdc.cmd`` на Windows, где subprocess(shell=False) сам .cmd не ищет).
+    """
+    override = os.environ.get("POV_MERMAID_CLI")
+    if override:
+        return shutil.which(override) or (override if Path(override).exists() else None)
+    for candidate in _local_bin_candidates():
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("mmdc")
 
 
 def _build_command(binary: str, args: list[str]) -> list[str]:

@@ -25,5 +25,9 @@
     "@vitejs/plugin-react": "^4.5.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
+  },
+  "optionalDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.4.0",
+    "puppeteer": "^24.0.0"
   }
 }

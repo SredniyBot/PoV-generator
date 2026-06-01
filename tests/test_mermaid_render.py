@@ -27,8 +27,9 @@ def _isolate_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POV_MERMAID_CLI", raising=False)
     monkeypatch.delenv("POV_MERMAID_TIMEOUT", raising=False)
     # Бинарь «находится» как есть: эти тесты мокают сам subprocess.run, реальный
-    # mmdc им не нужен и не должен влиять (resolve через shutil.which —
-    # отдельный путь, проверяется ниже точечно).
+    # mmdc им не нужен и не должен влиять. Локальную установку проекта отключаем
+    # (resolve через локальный путь / which проверяется ниже точечно).
+    monkeypatch.setattr(mermaid_render, "_local_bin_candidates", lambda: [])
     monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: name)
 
 
@@ -214,12 +215,35 @@ def test_render_respects_custom_timeout_from_env(
 
 
 def test_resolve_binary_uses_shutil_which(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_resolve_binary берёт полный путь из shutil.which (учитывает PATHEXT на
-    Windows → mmdc.cmd). which вернул None и файла нет → None."""
+    """Без локальной установки и override _resolve_binary падает в PATH-фоллбек
+    shutil.which (учитывает PATHEXT на Windows → mmdc.cmd). None → None."""
     monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: r"C:\npm\mmdc.cmd")
     assert mermaid_render._resolve_binary() == r"C:\npm\mmdc.cmd"
     monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: None)
     assert mermaid_render._resolve_binary() is None
+
+
+def test_resolve_binary_prefers_local_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Локальная установка (ui/workspace/node_modules/.bin) приоритетнее PATH —
+    значит работает на новой среде после npm ci, без глобального mmdc."""
+    local = tmp_path / "mmdc.cmd"
+    local.write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(mermaid_render, "_local_bin_candidates", lambda: [local])
+    # which вернул бы глобальный, но он не должен использоваться.
+    monkeypatch.setattr(
+        mermaid_render.shutil, "which", lambda name, *a, **k: r"C:\global\mmdc.cmd"
+    )
+    assert mermaid_render._resolve_binary() == str(local)
+
+
+def test_resolve_binary_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POV_MERMAID_CLI имеет наивысший приоритет (override локального и PATH)."""
+    monkeypatch.setenv("POV_MERMAID_CLI", "/opt/custom/mmdc")
+    monkeypatch.setattr(mermaid_render, "_local_bin_candidates", lambda: [Path("/should/not/use")])
+    monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: name)
+    assert mermaid_render._resolve_binary() == "/opt/custom/mmdc"
 
 
 def test_build_command_wraps_cmd_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
