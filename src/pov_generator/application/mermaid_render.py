@@ -22,7 +22,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -44,6 +46,35 @@ def _is_disabled() -> bool:
 
 def _mmdc_binary() -> str:
     return os.environ.get("POV_MERMAID_CLI", "mmdc")
+
+
+def _resolve_binary() -> str | None:
+    """Найти исполняемый mmdc.
+
+    Критично на Windows: npm ставит CLI как ``mmdc.cmd``, а
+    ``subprocess(shell=False)`` сам расширения PATHEXT не подбирает —
+    ``["mmdc", ...]`` упал бы с FileNotFoundError даже при установленном CLI.
+    ``shutil.which`` учитывает PATHEXT и возвращает полный путь к ``mmdc.cmd``.
+    """
+    name = _mmdc_binary()
+    resolved = shutil.which(name)
+    if resolved is not None:
+        return resolved
+    # Абсолютный путь, который which не нашёл по PATH, но файл существует.
+    if (os.sep in name or (os.altsep and os.altsep in name)) and Path(name).exists():
+        return name
+    return None
+
+
+def _build_command(binary: str, args: list[str]) -> list[str]:
+    """Собрать argv с учётом особенностей Windows.
+
+    ``.cmd``/``.bat`` (как npm-обёртка ``mmdc.cmd``) CreateProcess напрямую не
+    исполняет — заворачиваем в ``cmd /c``. На остальных платформах — как есть.
+    """
+    if sys.platform == "win32" and binary.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", binary, *args]
+    return [binary, *args]
 
 
 def _timeout_seconds() -> int:
@@ -95,23 +126,32 @@ def render_mermaid_to_png(source: str) -> bytes | None:
 
 
 def _invoke_mmdc(source: str) -> bytes | None:
-    binary = _mmdc_binary()
+    binary = _resolve_binary()
+    if binary is None:
+        logger.info(
+            "mermaid-cli (%s) не найден; PDF останется с code-block'ами. "
+            "Установите: npm i -g @mermaid-js/mermaid-cli",
+            _mmdc_binary(),
+        )
+        return None
     timeout = _timeout_seconds()
     with tempfile.TemporaryDirectory(prefix="povgen-mmdc-") as tmp_dir:
         input_path = Path(tmp_dir) / "diagram.mmd"
         output_path = Path(tmp_dir) / "diagram.png"
         input_path.write_text(source, encoding="utf-8")
-        cmd = [
+        cmd = _build_command(
             binary,
-            "-i", str(input_path),
-            "-o", str(output_path),
-            # Прозрачный фон чтобы PNG ложился на любую страницу PDF.
-            "-b", "transparent",
-            # 2x масштаб — нормальная плотность для печати без размытия.
-            "-s", "2",
-        ]
+            [
+                "-i", str(input_path),
+                "-o", str(output_path),
+                # Прозрачный фон чтобы PNG ложился на любую страницу PDF.
+                "-b", "transparent",
+                # 2x масштаб — нормальная плотность для печати без размытия.
+                "-s", "2",
+            ],
+        )
         try:
-            result = subprocess.run(  # noqa: S603 — bin path берётся из env
+            result = subprocess.run(  # noqa: S603 — bin path резолвится через which
                 cmd,
                 capture_output=True,
                 timeout=timeout,
@@ -119,8 +159,8 @@ def _invoke_mmdc(source: str) -> bytes | None:
             )
         except FileNotFoundError:
             logger.info(
-                "mermaid-cli (%s) не найден; PDF останется с code-block'ами. "
-                "Установите: npm i -g @mermaid-js/mermaid-cli",
+                "mermaid-cli (%s) не запустился (FileNotFound); PDF останется "
+                "с code-block'ами.",
                 binary,
             )
             return None

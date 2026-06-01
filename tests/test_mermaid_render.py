@@ -26,6 +26,10 @@ def _isolate_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POV_MERMAID_DISABLED", raising=False)
     monkeypatch.delenv("POV_MERMAID_CLI", raising=False)
     monkeypatch.delenv("POV_MERMAID_TIMEOUT", raising=False)
+    # Бинарь «находится» как есть: эти тесты мокают сам subprocess.run, реальный
+    # mmdc им не нужен и не должен влиять (resolve через shutil.which —
+    # отдельный путь, проверяется ниже точечно).
+    monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: name)
 
 
 def _make_fake_run(
@@ -207,3 +211,28 @@ def test_render_respects_custom_timeout_from_env(
     monkeypatch.setattr(subprocess, "run", fake_run)
     mermaid_render.render_mermaid_to_png("flowchart LR\nA --> B")
     assert captured["timeout"] == 5
+
+
+def test_resolve_binary_uses_shutil_which(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_resolve_binary берёт полный путь из shutil.which (учитывает PATHEXT на
+    Windows → mmdc.cmd). which вернул None и файла нет → None."""
+    monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: r"C:\npm\mmdc.cmd")
+    assert mermaid_render._resolve_binary() == r"C:\npm\mmdc.cmd"
+    monkeypatch.setattr(mermaid_render.shutil, "which", lambda name, *a, **k: None)
+    assert mermaid_render._resolve_binary() is None
+
+
+def test_build_command_wraps_cmd_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """На Windows .cmd/.bat (npm-обёртка mmdc.cmd) заворачивается в `cmd /c` —
+    иначе subprocess(shell=False) его не исполнит. .exe и POSIX — как есть."""
+    monkeypatch.setattr(mermaid_render.sys, "platform", "win32")
+    assert mermaid_render._build_command(r"C:\npm\mmdc.cmd", ["-i", "a"]) == [
+        "cmd", "/c", r"C:\npm\mmdc.cmd", "-i", "a",
+    ]
+    assert mermaid_render._build_command(r"C:\npm\mmdc.exe", ["-i", "a"]) == [
+        r"C:\npm\mmdc.exe", "-i", "a",
+    ]
+    monkeypatch.setattr(mermaid_render.sys, "platform", "linux")
+    assert mermaid_render._build_command("/usr/bin/mmdc", ["-i", "a"]) == [
+        "/usr/bin/mmdc", "-i", "a",
+    ]
