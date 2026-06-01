@@ -19,3 +19,12 @@ ui/workspace/*.tsbuildinfo
 ui/workspace/vite.config.js
 ui/workspace/vite.config.d.ts
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+prompt_draft.md
+prompt.context/
+*context_anchor.txt
+.playwright-mcp/
+# LLM-specific guidance files: kept on disk for local dev, not tracked in git.
+CLAUDE.md
+.mermaid_test/
+.pdf_verify/

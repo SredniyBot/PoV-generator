@@ -24,6 +24,7 @@ from pov_generator.application.provider_settings_service import (
     RECOMMENDED_BY_PURPOSE,
 )
 from pov_generator.common.errors import ValidationError
+from pov_generator.infrastructure.llm import LLMResult
 from pov_generator.domain.llm_settings import (
     PURPOSE_CLARIFICATION_CE11,
     PURPOSE_EXECUTION_STANDARD,
@@ -148,7 +149,7 @@ def test_test_connection_records_success(tmp_path: Path, monkeypatch) -> None:
     # Подменяем _build_from_connection на возврат фейкового провайдера,
     # который отвечает {"reply": "OK"}.
     fake_provider = MagicMock()
-    fake_provider.chat_json.return_value = {"reply": "OK"}
+    fake_provider.chat_json.return_value = LLMResult(payload={"reply": "OK"})
     monkeypatch.setattr(
         svc._llm, "_build_from_connection", lambda connection, *, model, complexity: fake_provider
     )
@@ -204,7 +205,7 @@ def test_test_model_uses_top_priority_routing(tmp_path: Path, monkeypatch) -> No
         captured["connection_id"] = connection.connection_id
         captured["model"] = model
         fake = MagicMock()
-        fake.chat_json.return_value = {"reply": "OK"}
+        fake.chat_json.return_value = LLMResult(payload={"reply": "OK"})
         return fake
 
     monkeypatch.setattr(svc._llm, "_build_from_connection", fake_build)

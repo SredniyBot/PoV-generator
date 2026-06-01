@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Sparkles,
   TerminalSquare,
+  Trash2,
   Waypoints,
   XCircle,
 } from "lucide-react";
@@ -66,6 +67,7 @@ import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ArtifactDetailView,
+  AttachmentView,
   CommandResultView,
   DomainPackCatalogItemView,
   ObjectiveCatalogItemView,
@@ -100,6 +102,7 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   "situation",
   "timeline",
   "artifacts",
+  "attachments",
   "review",
   "state",
   // C6: aggregated L1 / L2 projections — when these fire, MissionControl
@@ -111,6 +114,12 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   // run-запросы инвалидируются по пушу — вместо отдельного HTTP-поллинга.
   "workflow_runs",
 ];
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
 
 type ToastTone = "success" | "warning" | "danger";
 
@@ -242,10 +251,34 @@ function AppFrame() {
   };
 
   const createProjectMutation = useMutation({
-    mutationFn: api.createProject,
-    onSuccess: (created: ProjectCreatedView) => {
+    mutationFn: async (payload: {
+      name: string;
+      objective_ref: string;
+      request_text: string;
+      domain_pack_refs: string[];
+      files: File[];
+    }) => {
+      const { files, ...createPayload } = payload;
+      const created = await api.createProject(createPayload);
+      // Файлы грузим после создания проекта (project_id уже есть). Сбой
+      // загрузки одного файла не валит создание проекта.
+      const failed: string[] = [];
+      for (const file of files) {
+        try {
+          await api.uploadAttachment(created.project_id, file);
+        } catch {
+          failed.push(file.name);
+        }
+      }
+      return { created, attachedCount: files.length - failed.length, failed };
+    },
+    onSuccess: ({ created, attachedCount, failed }) => {
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
-      notify("success", "Проект создан", `Создан новый кейс «${created.name}».`);
+      const filesNote = attachedCount > 0 ? ` Приложено файлов: ${attachedCount}.` : "";
+      notify("success", "Проект создан", `Создан новый кейс «${created.name}».${filesNote}`);
+      if (failed.length > 0) {
+        notify("danger", "Часть файлов не загрузилась", failed.join(", "));
+      }
       setCreateOpen(false);
       navigate(`/projects/${created.project_id}/overview`);
     },
@@ -1511,9 +1544,193 @@ function TaskNodeDetail({
   );
 }
 
+const ATTACHMENT_STATUS_LABELS: Record<string, { label: string; tone: "success" | "danger" | "warning" | "muted" }> = {
+  pending: { label: "Извлечение текста…", tone: "muted" },
+  succeeded: { label: "Текст извлечён", tone: "success" },
+  failed: { label: "Текст не извлечён", tone: "danger" },
+  unsupported: { label: "Формат без извлечения", tone: "warning" },
+};
+
+function attachmentStatusLabel(attachment: AttachmentView): string {
+  return ATTACHMENT_STATUS_LABELS[attachment.extraction_status]?.label ?? attachment.extraction_status;
+}
+
+function isPdfAttachment(attachment: AttachmentView): boolean {
+  return (
+    attachment.mime_type === "application/pdf" ||
+    attachment.original_filename.toLowerCase().endsWith(".pdf")
+  );
+}
+
+/**
+ * Карточка входных файлов. Строки оформлены и ведут себя как артефакты:
+ * клик по файлу открывает его просмотр в правом контейнере (см. ArtifactsPage).
+ * Действия (скачать/удалить) живут в просмотрщике, а не в строке — поэтому
+ * строка узкая и не выходит за пределы колонки.
+ */
+function AttachmentsCard({
+  projectId,
+  selectedId,
+  onSelect,
+}: {
+  projectId: string;
+  selectedId: string | null;
+  onSelect: (attachment: AttachmentView) => void;
+}) {
+  const attachmentsQuery = useQuery({
+    queryKey: projectionKey(projectId, "attachments"),
+    queryFn: () => api.getAttachments(projectId),
+  });
+
+  const attachments = attachmentsQuery.data ?? [];
+  if (attachments.length === 0) {
+    return null;
+  }
+
+  return (
+    <SectionCard
+      title="Входные файлы"
+      subtitle="Приложенные материалы; нажмите, чтобы посмотреть содержимое"
+    >
+      <div className="artifact-list">
+        {attachments.map((attachment) => (
+          <button
+            key={attachment.attachment_id}
+            type="button"
+            className={cx(
+              "artifact-list__item",
+              selectedId === attachment.attachment_id && "artifact-list__item--active",
+            )}
+            onClick={() => onSelect(attachment)}
+          >
+            <div className="artifact-list__title">
+              <strong>{attachment.original_filename}</strong>
+              <p>
+                {formatFileSize(attachment.size_bytes)} · {attachmentStatusLabel(attachment)}
+                {attachment.used_in_context ? " · использован" : ""}
+              </p>
+            </div>
+            <div className="artifact-list__meta">
+              <ChevronRight size={14} />
+            </div>
+          </button>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
+ * Просмотр входного файла в правом контейнере — по аналогии с карточкой
+ * артефакта. PDF встраивается во встроенный просмотрщик браузера (iframe),
+ * остальные форматы показываются извлечённым текстом. Действия — скачать
+ * оригинал и удалить (пока файл не использован в контексте).
+ */
+function AttachmentViewerPanel({
+  projectId,
+  attachment,
+  onDeleted,
+}: {
+  projectId: string;
+  attachment: AttachmentView;
+  onDeleted: (attachmentId: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const pdf = isPdfAttachment(attachment);
+  const status = ATTACHMENT_STATUS_LABELS[attachment.extraction_status] ?? {
+    label: attachment.extraction_status,
+    tone: "muted" as const,
+  };
+
+  const textQuery = useQuery({
+    queryKey: [projectId, "attachment-text", attachment.attachment_id],
+    queryFn: () => api.getAttachmentText(projectId, attachment.attachment_id),
+    enabled: !pdf && attachment.extraction_status === "succeeded",
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteAttachment(projectId, attachment.attachment_id),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "attachments") });
+      onDeleted(attachment.attachment_id);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  return (
+    <div className="attachment-viewer">
+      <div className="attachment-viewer__toolbar">
+        <div className="attachment-viewer__status">
+          <StatusPill tone={status.tone}>{status.label}</StatusPill>
+          <span className="attachment-viewer__size">
+            {formatFileSize(attachment.size_bytes)}
+            {attachment.used_in_context ? " · использован в контексте" : ""}
+          </span>
+        </div>
+        <div className="attachment-viewer__actions">
+          <a
+            className="artifact-detail__download"
+            href={api.attachmentDownloadUrl(projectId, attachment.attachment_id)}
+            download
+            title="Скачать оригинал файла"
+          >
+            <Download size={14} /> Скачать
+          </a>
+          <button
+            type="button"
+            className="artifact-detail__download attachment-viewer__delete"
+            disabled={!attachment.can_delete || deleteMutation.isPending}
+            title={
+              attachment.can_delete
+                ? "Удалить файл"
+                : "Файл уже использован в контексте задачи — удаление запрещено"
+            }
+            onClick={() => deleteMutation.mutate()}
+          >
+            <Trash2 size={14} /> Удалить
+          </button>
+        </div>
+      </div>
+      {error ? <p className="form-error">{error}</p> : null}
+      {attachment.extraction_status === "failed" && attachment.extraction_error ? (
+        <p className="attachment-viewer__note">{attachment.extraction_error}</p>
+      ) : null}
+      {pdf ? (
+        <iframe
+          className="attachment-viewer__pdf"
+          src={api.attachmentViewUrl(projectId, attachment.attachment_id)}
+          title={attachment.original_filename}
+        />
+      ) : attachment.extraction_status === "succeeded" ? (
+        textQuery.isLoading ? (
+          <LoadingPanel title="Загрузка содержимого…" />
+        ) : textQuery.data && textQuery.data.text.trim() ? (
+          <pre className="attachment-viewer__text">{textQuery.data.text}</pre>
+        ) : (
+          <EmptyState
+            title="Текст пуст"
+            description="Извлечённого текста нет — скачайте оригинал, чтобы открыть файл."
+          />
+        )
+      ) : (
+        <EmptyState
+          title="Просмотр в браузере недоступен"
+          description="Для этого формата нет извлечённого текста. Скачайте оригинал, чтобы открыть его локально."
+          icon={<FileJson2 size={18} />}
+        />
+      )}
+    </div>
+  );
+}
+
 function ArtifactsPage({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
   const { artifactId } = useParams();
+  // Выбранный входной файл для просмотра справа. Локальное состояние (не URL):
+  // взаимоисключающе с выбранным артефактом — открытие одного снимает другое.
+  const [selectedAttachment, setSelectedAttachment] = useState<AttachmentView | null>(null);
   const artifactsQuery = useQuery({
     queryKey: projectionKey(projectId, "artifacts"),
     queryFn: () => api.getArtifacts(projectId),
@@ -1536,8 +1753,26 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   );
 
   return (
-    <div className={cx("artifacts-layout", artifactId && "artifacts-layout--focused")}>
-      <SectionCard title="Артефакты проекта" subtitle="Документы и промежуточные результаты workflow">
+    <div className="artifacts-page">
+      <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
+      <div className="artifacts-column">
+      <SectionCard
+        title="Артефакты проекта"
+        subtitle="Документы и промежуточные результаты workflow"
+        actions={
+          artifacts.length > 0 ? (
+            <a
+              className="section-card__export"
+              href={api.projectExportZipUrl(projectId)}
+              download
+              title="Скачать все Markdown-артефакты проекта одним архивом"
+            >
+              <Download size={13} />
+              Экспорт MD
+            </a>
+          ) : undefined
+        }
+      >
         {artifacts.length === 0 ? (
           <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
         ) : (
@@ -1546,8 +1781,11 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
               <button
                 key={artifact.artifact_id}
                 type="button"
-                className={cx("artifact-list__item", artifactId === artifact.artifact_id && "artifact-list__item--active")}
-                onClick={() => navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`)}
+                className={cx("artifact-list__item", !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active")}
+                onClick={() => {
+                  setSelectedAttachment(null);
+                  navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`);
+                }}
               >
                 <div className="artifact-list__title">
                   <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
@@ -1568,33 +1806,53 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
           </div>
         )}
       </SectionCard>
+      <AttachmentsCard
+        projectId={projectId}
+        selectedId={selectedAttachment?.attachment_id ?? null}
+        onSelect={(attachment) => {
+          setSelectedAttachment(attachment);
+          navigate(`/projects/${projectId}/artifacts`);
+        }}
+      />
+      </div>
 
-      <SectionCard
-        title={
-          artifactDetailQuery.data
-            ? stripRoleSuffix(artifactDetailQuery.data.title, artifactDetailQuery.data.artifact_role)
-            : "Выберите артефакт"
-        }
-        subtitle={artifactDetailQuery.data?.description ?? "Читабельный документ и структурированные данные"}
-      >
-        {!artifactId ? (
-          <EmptyState
-            title="Выберите артефакт"
-            description="Откройте один из артефактов слева, чтобы посмотреть документ, JSON и результаты проверок."
-            icon={<FileJson2 size={18} />}
+      {selectedAttachment ? (
+        <SectionCard title={selectedAttachment.original_filename} subtitle="Входной файл проекта">
+          <AttachmentViewerPanel
+            projectId={projectId}
+            attachment={selectedAttachment}
+            onDeleted={() => setSelectedAttachment(null)}
           />
-        ) : artifactDetailQuery.isLoading ? (
-          <div className="skeleton-stack">
-            <div className="skeleton skeleton--line skeleton--lg" />
-            <div className="skeleton skeleton--line" />
-            <div className="skeleton skeleton--line skeleton--sm" />
-          </div>
-        ) : artifactDetailQuery.data ? (
-          <ArtifactDetailPanel detail={artifactDetailQuery.data} projectId={projectId} />
-        ) : (
-          <EmptyState title="Артефакт недоступен" description="Не удалось загрузить детальную карточку артефакта." />
-        )}
-      </SectionCard>
+        </SectionCard>
+      ) : (
+        <SectionCard
+          title={
+            artifactDetailQuery.data
+              ? stripRoleSuffix(artifactDetailQuery.data.title, artifactDetailQuery.data.artifact_role)
+              : "Выберите артефакт или файл"
+          }
+          subtitle={artifactDetailQuery.data?.description ?? "Читабельный документ и структурированные данные"}
+        >
+          {!artifactId ? (
+            <EmptyState
+              title="Выберите артефакт или файл"
+              description="Откройте артефакт или входной файл слева, чтобы посмотреть его содержимое здесь."
+              icon={<FileJson2 size={18} />}
+            />
+          ) : artifactDetailQuery.isLoading ? (
+            <div className="skeleton-stack">
+              <div className="skeleton skeleton--line skeleton--lg" />
+              <div className="skeleton skeleton--line" />
+              <div className="skeleton skeleton--line skeleton--sm" />
+            </div>
+          ) : artifactDetailQuery.data ? (
+            <ArtifactDetailPanel detail={artifactDetailQuery.data} projectId={projectId} />
+          ) : (
+            <EmptyState title="Артефакт недоступен" description="Не удалось загрузить детальную карточку артефакта." />
+          )}
+        </SectionCard>
+      )}
+      </div>
     </div>
   );
 }
@@ -1796,15 +2054,26 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         ) : null}
         </div>
         {detail.markdown_content ? (
-          <a
-            className="artifact-detail__download"
-            href={api.artifactPdfUrl(projectId, detail.artifact_id)}
-            download
-            title="Скачать артефакт как PDF"
-          >
-            <Download size={14} />
-            PDF
-          </a>
+          <div className="artifact-detail__downloads">
+            <a
+              className="artifact-detail__download"
+              href={api.artifactMdUrl(projectId, detail.artifact_id)}
+              download
+              title="Скачать артефакт как Markdown"
+            >
+              <Download size={14} />
+              MD
+            </a>
+            <a
+              className="artifact-detail__download"
+              href={api.artifactPdfUrl(projectId, detail.artifact_id)}
+              download
+              title="Скачать артефакт как PDF"
+            >
+              <Download size={14} />
+              PDF
+            </a>
+          </div>
         ) : null}
       </div>
       {/* Компактная одна строка с самой важной мета-инфой.
@@ -1832,6 +2101,25 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             </span>
           </>
         ) : null}
+        {detail.usage_total_tokens !== null && detail.usage_total_tokens !== undefined ? (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span
+              className="artifact-meta-strip__tokens"
+              title={`Вход: ${detail.usage_input_tokens ?? 0} · Выход: ${detail.usage_output_tokens ?? 0} · вызовов: ${detail.usage_call_count}`}
+            >
+              {detail.usage_total_tokens.toLocaleString("ru-RU")} токенов
+              {detail.usage_source === "estimated" ? " (оценка)" : ""}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="artifact-meta-strip__sep">·</span>
+            <span className="artifact-meta-strip__tokens" title="Провайдер не вернул данные о токенах">
+              токены n/a
+            </span>
+          </>
+        )}
         {detail.is_superseded ? (
           <>
             <span className="artifact-meta-strip__sep">·</span>
@@ -2590,6 +2878,7 @@ function CreateProjectModal({
     objective_ref: string;
     request_text: string;
     domain_pack_refs: string[];
+    files: File[];
   }) => void;
   busy: boolean;
 }) {
@@ -2614,6 +2903,7 @@ function CreateProjectModal({
   const [manualPackOverride, setManualPackOverride] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
 
   useEffect(() => {
     const objectives = objectivesQuery.data;
@@ -2637,6 +2927,7 @@ function CreateProjectModal({
       setManualPackOverride(false);
       setAdvancedOpen(false);
       setDragOver(false);
+      setAttachedFiles([]);
     }
   }, [open]);
 
@@ -2647,27 +2938,31 @@ function CreateProjectModal({
     );
   };
 
-  const handleFileChosen = async (file: File | null | undefined) => {
-    if (!file) return;
-    try {
-      const text = await file.text();
-      // Append (а не replace), чтобы пользователь мог накопить материал.
-      setRequestText((current) =>
-        current.trim()
-          ? `${current.trim()}\n\n--- ${file.name} ---\n${text}`
-          : text,
-      );
-    } catch (error) {
-      // на крайний случай — игнорируем; пользователь увидит что текст не вставился
-      console.error("file read failed", error);
-    }
+  const addFiles = (files: FileList | null | undefined) => {
+    if (!files || files.length === 0) return;
+    const incoming = Array.from(files);
+    setAttachedFiles((current) => {
+      const seen = new Set(current.map((f) => `${f.name}:${f.size}`));
+      const merged = [...current];
+      for (const file of incoming) {
+        const key = `${file.name}:${file.size}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
+  };
+
+  const removeFile = (index: number) => {
+    setAttachedFiles((current) => current.filter((_, i) => i !== index));
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragOver(false);
-    const file = event.dataTransfer?.files?.[0];
-    if (file) void handleFileChosen(file);
+    addFiles(event.dataTransfer?.files);
   };
 
   const handleAppendPaste = async () => {
@@ -2705,6 +3000,7 @@ function CreateProjectModal({
             objective_ref: objectiveRef,
             request_text: requestText,
             domain_pack_refs: selectedPacks,
+            files: attachedFiles,
           });
         }}
       >
@@ -2737,11 +3033,15 @@ function CreateProjectModal({
             <label className="create-form__file-button">
               <input
                 type="file"
-                accept=".txt,.md,.rst,.log,text/*"
-                onChange={(event) => void handleFileChosen(event.target.files?.[0] ?? null)}
+                multiple
+                accept=".txt,.md,.json,.csv,.pdf,.docx"
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = "";
+                }}
                 hidden
               />
-              <span>📎 Загрузить файл</span>
+              <span>📎 Прикрепить файлы</span>
             </label>
             <button
               type="button"
@@ -2756,6 +3056,31 @@ function CreateProjectModal({
             </span>
           </div>
         </div>
+
+        {attachedFiles.length > 0 ? (
+          <div className="create-form__files">
+            <small className="field__hint">
+              Файлы будут приложены к проекту и пойдут в контекст (текст из .pdf/.docx/.txt
+              извлекается автоматически): {attachedFiles.length}
+            </small>
+            <ul className="create-form__files-list">
+              {attachedFiles.map((file, index) => (
+                <li key={`${file.name}:${file.size}:${index}`} className="create-form__files-item">
+                  <span className="create-form__files-name">📄 {file.name}</span>
+                  <span className="create-form__files-size">{formatFileSize(file.size)}</span>
+                  <button
+                    type="button"
+                    className="create-form__files-remove"
+                    onClick={() => removeFile(index)}
+                    aria-label={`Убрать ${file.name}`}
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         <button
           type="button"

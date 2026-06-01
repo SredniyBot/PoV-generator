@@ -1,6 +1,7 @@
 import type {
   ArtifactDetailView,
   ArtifactSummaryView,
+  AttachmentView,
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
@@ -66,6 +67,43 @@ export const api = {
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
   artifactPdfUrl: (projectId: string, artifactId: string) =>
     `/api/projects/${projectId}/artifacts/${artifactId}/download.pdf`,
+  artifactMdUrl: (projectId: string, artifactId: string) =>
+    `/api/projects/${projectId}/artifacts/${artifactId}/download.md`,
+  projectExportZipUrl: (projectId: string) => `/api/projects/${projectId}/export.zip`,
+  // --- attachments (входные файлы) --------------------------------------
+  getAttachments: (projectId: string) =>
+    request<AttachmentView[]>(`/api/projects/${projectId}/attachments`),
+  uploadAttachment: async (
+    projectId: string,
+    file: File,
+  ): Promise<{ attachment_id: string; original_filename: string; extraction_status: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    // FormData задаёт multipart boundary сам — Content-Type не выставляем.
+    const response = await fetch(`${API_BASE}/api/projects/${projectId}/attachments`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error((await response.text()) || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deleteAttachment: (projectId: string, attachmentId: string) =>
+    request<{ status: string; attachment_id: string }>(
+      `/api/projects/${projectId}/attachments/${attachmentId}`,
+      { method: "DELETE" },
+    ),
+  attachmentDownloadUrl: (projectId: string, attachmentId: string) =>
+    `/api/projects/${projectId}/attachments/${attachmentId}/download`,
+  // Онлайн-просмотр оригинала (inline-disposition: PDF рендерится в iframe).
+  attachmentViewUrl: (projectId: string, attachmentId: string) =>
+    `/api/projects/${projectId}/attachments/${attachmentId}/download?inline=1`,
+  // Извлечённый текст вложения (для форматов без браузерного рендера, напр. .docx).
+  getAttachmentText: (projectId: string, attachmentId: string) =>
+    request<{ attachment_id: string; extraction_status: string; text: string }>(
+      `/api/projects/${projectId}/attachments/${attachmentId}/text`,
+    ),
   getReview: (projectId: string) => request<ProjectReviewView>(`/api/projects/${projectId}/review`),
   getState: (projectId: string) => request<ProjectStateView>(`/api/projects/${projectId}/state`),
   getDebug: (projectId: string) => request<ProjectDebugView>(`/api/projects/${projectId}/debug`),

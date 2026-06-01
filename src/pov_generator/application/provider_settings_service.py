@@ -384,7 +384,7 @@ class ProviderSettingsService:
                     "additionalProperties": False,
                     "properties": {"reply": {"type": "string"}},
                 },
-            )
+            ).payload
         except Exception as exc:  # noqa: BLE001
             return self._save_test_result(
                 connection,

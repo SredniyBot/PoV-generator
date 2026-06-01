@@ -11,7 +11,7 @@ from ...claude_subscription_client import (
     ClaudeSubscriptionConfig,
     model_for_complexity,
 )
-from ..protocol import LLMUsage
+from ..protocol import LLMResult
 
 
 class ClaudeSubscriptionProvider:
@@ -36,8 +36,6 @@ class ClaudeSubscriptionProvider:
         self._client = ClaudeSubscriptionClient(
             ClaudeSubscriptionConfig(model=model, max_turns=max_turns)
         )
-        # v3.5: usage последнего вызова — проксируется из вложенного клиента.
-        self.last_usage: LLMUsage = LLMUsage.empty()
 
     @classmethod
     def from_env(
@@ -85,11 +83,9 @@ class ClaudeSubscriptionProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
-        result = self._client.chat_json(
+    ) -> LLMResult:
+        return self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
         )
-        self.last_usage = self._client.last_usage
-        return result

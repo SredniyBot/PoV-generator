@@ -19,6 +19,7 @@ from ..domain.artifacts import (
     ContextItem,
     ContextManifest,
 )
+from ..domain.attachments import AttachmentRecord
 from ..domain.checkpoints import CheckpointSession, CheckpointStatus
 from ..domain.decisions import (
     Decision,
@@ -28,6 +29,7 @@ from ..domain.decisions import (
     DecisionStatus,
 )
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
+from ..domain.llm_usage import LLMUsageAggregate, LLMUsageRecord
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.positions import Position, PositionAlternative
 from ..domain.process_state import (
@@ -451,6 +453,56 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         is_superseded=bool(is_superseded_value),
         user_verified=user_verified_value,
         user_verified_at=user_verified_at_value,
+    )
+
+
+def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
+    return AttachmentRecord(
+        attachment_id=row["attachment_id"],
+        project_id=row["project_id"],
+        original_filename=row["original_filename"],
+        mime_type=row["mime_type"],
+        size_bytes=row["size_bytes"],
+        sha256=row["sha256"],
+        storage_path=row["storage_path"],
+        extraction_status=row["extraction_status"],
+        created_at=row["created_at"],
+        extracted_text_ref=row["extracted_text_ref"],
+        extraction_error=row["extraction_error"],
+        linked_position_id=row["linked_position_id"],
+        used_in_context=bool(row["used_in_context"]),
+        is_deleted=bool(row["is_deleted"]),
+    )
+
+
+def _llm_usage_from_row(row: sqlite3.Row) -> LLMUsageRecord:
+    return LLMUsageRecord(
+        usage_id=row["usage_id"],
+        project_id=row["project_id"],
+        provider=row["provider"],
+        model=row["model"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        total_tokens=row["total_tokens"],
+        source=row["source"],
+        created_at=row["created_at"],
+        task_id=row["task_id"],
+        artifact_id=row["artifact_id"],
+        execution_run_id=row["execution_run_id"],
+        stage=row["stage"],
+        cache_tokens=row["cache_tokens"],
+        cost_usd=row["cost_usd"],
+    )
+
+
+def _aggregate_from_row(row: sqlite3.Row) -> LLMUsageAggregate:
+    return LLMUsageAggregate(
+        input_tokens=int(row["input_tokens"] or 0),
+        output_tokens=int(row["output_tokens"] or 0),
+        total_tokens=int(row["total_tokens"] or 0),
+        call_count=int(row["call_count"] or 0),
+        has_estimated=bool(row["has_estimated"]),
+        cost_usd=float(row["cost_sum"]) if row["cost_count"] else None,
     )
 
 
@@ -970,6 +1022,224 @@ class SqliteRuntime:
             )
             connection.commit()
         return artifact
+
+    # --- attachments (входные файлы) ----------------------------------------
+
+    @_serialized_write
+    def store_attachment(
+        self, workspace: Path, *, attachment: AttachmentRecord, content: bytes
+    ) -> AttachmentRecord:
+        """Сохранить бинарь вложения на диск и метаданные в БД."""
+        attachment_path = workspace / attachment.storage_path
+        attachment_path.parent.mkdir(parents=True, exist_ok=True)
+        attachment_path.write_bytes(content)
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into attachments(
+                  attachment_id, project_id, original_filename, mime_type, size_bytes,
+                  sha256, storage_path, extraction_status, extracted_text_ref,
+                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment.attachment_id,
+                    attachment.project_id,
+                    attachment.original_filename,
+                    attachment.mime_type,
+                    attachment.size_bytes,
+                    attachment.sha256,
+                    attachment.storage_path,
+                    attachment.extraction_status,
+                    attachment.extracted_text_ref,
+                    attachment.extraction_error,
+                    attachment.linked_position_id,
+                    1 if attachment.used_in_context else 0,
+                    1 if attachment.is_deleted else 0,
+                    attachment.created_at,
+                ),
+            )
+            connection.commit()
+        return attachment
+
+    @_serialized_write
+    def update_attachment(self, workspace: Path, attachment: AttachmentRecord) -> AttachmentRecord:
+        """Перезаписать изменяемые поля вложения (статус извлечения, флаги)."""
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update attachments set
+                  extraction_status = ?, extracted_text_ref = ?, extraction_error = ?,
+                  linked_position_id = ?, used_in_context = ?, is_deleted = ?
+                where attachment_id = ?
+                """,
+                (
+                    attachment.extraction_status,
+                    attachment.extracted_text_ref,
+                    attachment.extraction_error,
+                    attachment.linked_position_id,
+                    1 if attachment.used_in_context else 0,
+                    1 if attachment.is_deleted else 0,
+                    attachment.attachment_id,
+                ),
+            )
+            connection.commit()
+        return attachment
+
+    def load_attachment(self, workspace: Path, attachment_id: str) -> AttachmentRecord:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from attachments where attachment_id = ?", (attachment_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Attachment not found: {attachment_id}")
+        return _attachment_from_row(row)
+
+    def load_attachment_content(self, workspace: Path, attachment_id: str) -> bytes:
+        attachment = self.load_attachment(workspace, attachment_id)
+        attachment_path = workspace / attachment.storage_path
+        if not attachment_path.exists():
+            raise NotFoundError(f"Attachment content not found: {attachment.storage_path}")
+        return attachment_path.read_bytes()
+
+    def list_attachments(
+        self, workspace: Path, *, include_deleted: bool = False
+    ) -> list[AttachmentRecord]:
+        query = "select * from attachments"
+        if not include_deleted:
+            query += " where is_deleted = 0"
+        query += " order by created_at, attachment_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query).fetchall()
+        return [_attachment_from_row(row) for row in rows]
+
+    @_serialized_write
+    def mark_attachment_used(self, workspace: Path, attachment_id: str) -> None:
+        """Пометить, что текст вложения вошёл в контекст задачи (best-effort).
+
+        Запрещает последующее удаление ради воспроизводимости. Не падает, если
+        вложения нет (id мог прийти из положения, не связанного с вложением).
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update attachments set used_in_context = 1 where attachment_id = ? and is_deleted = 0",
+                (attachment_id,),
+            )
+            connection.commit()
+
+    # --- llm_usage (учёт токенов) -------------------------------------------
+
+    @_serialized_write
+    def record_llm_usage(self, workspace: Path, record: LLMUsageRecord) -> None:
+        """Записать расход токенов на один LLM-вызов (best-effort).
+
+        Сбой записи usage не должен ронять исполнение задачи — вызывающий
+        оборачивает в try/except. Здесь только сериализация и insert.
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into llm_usage(
+                  usage_id, project_id, task_id, artifact_id, execution_run_id,
+                  provider, model, stage, input_tokens, output_tokens, total_tokens,
+                  cache_tokens, source, cost_usd, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.usage_id,
+                    record.project_id,
+                    record.task_id,
+                    record.artifact_id,
+                    record.execution_run_id,
+                    record.provider,
+                    record.model,
+                    record.stage,
+                    record.input_tokens,
+                    record.output_tokens,
+                    record.total_tokens,
+                    record.cache_tokens,
+                    record.source,
+                    record.cost_usd,
+                    record.created_at,
+                ),
+            )
+            connection.commit()
+
+    def list_llm_usage(self, workspace: Path, *, task_id: str | None = None) -> list[LLMUsageRecord]:
+        query = "select * from llm_usage"
+        params: tuple[object, ...] = ()
+        if task_id is not None:
+            query += " where task_id = ?"
+            params = (task_id,)
+        query += " order by created_at, usage_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_llm_usage_from_row(row) for row in rows]
+
+    def llm_usage_by_task(self, workspace: Path) -> dict[str, LLMUsageAggregate]:
+        """Агрегат расхода токенов по каждой задаче (только задачи с вызовами)."""
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                """
+                select task_id,
+                       sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                where task_id is not null
+                group by task_id
+                """
+            ).fetchall()
+        return {row["task_id"]: _aggregate_from_row(row) for row in rows}
+
+    def llm_usage_for_task(self, workspace: Path, task_id: str) -> LLMUsageAggregate | None:
+        """Агрегат расхода токенов одной задачи (без построения словаря по всем).
+
+        Точечная замена ``llm_usage_by_task(...).get(task_id)`` для карточки
+        артефакта: один индексируемый запрос вместо группировки всей таблицы.
+        """
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                where task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None or not row["call_count"]:
+            return None
+        return _aggregate_from_row(row)
+
+    def llm_usage_for_project(self, workspace: Path) -> LLMUsageAggregate | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                """
+            ).fetchone()
+        if row is None or not row["call_count"]:
+            return None
+        return _aggregate_from_row(row)
 
     @_serialized_write
     def mark_artifact_superseded(self, workspace: Path, artifact_id: str) -> None:
@@ -1966,6 +2236,44 @@ class SqliteRuntime:
               user_verified integer not null default 0,
               user_verified_at text
             );
+
+            create table if not exists attachments (
+              attachment_id text primary key,
+              project_id text not null,
+              original_filename text not null,
+              mime_type text not null,
+              size_bytes integer not null,
+              sha256 text not null,
+              storage_path text not null,
+              extraction_status text not null,
+              extracted_text_ref text,
+              extraction_error text,
+              linked_position_id text,
+              used_in_context integer not null default 0,
+              is_deleted integer not null default 0,
+              created_at text not null
+            );
+
+            create table if not exists llm_usage (
+              usage_id text primary key,
+              project_id text not null,
+              task_id text,
+              artifact_id text,
+              execution_run_id text,
+              provider text not null,
+              model text not null,
+              stage text,
+              input_tokens integer not null,
+              output_tokens integer not null,
+              total_tokens integer not null,
+              cache_tokens integer,
+              source text not null,
+              cost_usd real,
+              created_at text not null
+            );
+            -- Выборки usage всегда per-task (карточка артефакта, агрегат задачи);
+            -- таблица растёт на каждый LLM-вызов, поэтому индекс по task_id окупается.
+            create index if not exists llm_usage_task_idx on llm_usage(task_id);
 
             create table if not exists context_manifests (
               manifest_id text primary key,

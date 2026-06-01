@@ -299,6 +299,21 @@ class ArtifactSummaryView:
 
 
 @dataclass(frozen=True)
+class AttachmentView:
+    """Проекция входного файла-вложения для UI (вкладка «Входные файлы»)."""
+
+    attachment_id: str
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    extraction_status: str
+    extraction_error: str | None
+    used_in_context: bool
+    can_delete: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
 class ArtifactValidationView:
     validation_run_id: str
     status: str
@@ -335,11 +350,17 @@ class ArtifactDetailView:
     is_low_confidence: bool = False
     user_verified: bool = False
     user_verified_at: str | None = None
-    # v3.5: разбивка токенов по стадиям сборки этого артефакта.
-    # Ключи стадий: decision_identification, primary_generation,
-    # methodology_stage:<id>. Значения: {input_tokens, output_tokens,
-    # cache_read_tokens, cache_write_tokens, total_tokens}.
+    # Разбивка токенов по стадиям сборки этого артефакта (метадата для карточки).
+    # Ключи: primary_generation, methodology_stage:<id>, decision_identification.
     token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Агрегат расхода токенов задачи (все её LLM-вызовы) из llm_usage-БД.
+    # None в полях usage_* = «n/a» (провайдер не дал данных).
+    usage_input_tokens: int | None = None
+    usage_output_tokens: int | None = None
+    usage_total_tokens: int | None = None
+    # "actual" | "estimated" | None. estimated → UI помечает «оценка».
+    usage_source: str | None = None
+    usage_call_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -401,6 +422,9 @@ class ProjectDebugView:
     escalations: tuple[dict[str, object], ...]
     # v3.1: единый реестр решений вместо двух legacy-полей clarification_*.
     decisions: tuple[dict[str, object], ...] = ()
+    # Учёт токенов: детализация по вызовам + агрегат по проекту.
+    llm_usage: tuple[dict[str, object], ...] = ()
+    llm_usage_total: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

@@ -4,13 +4,25 @@ export type ProjectionName =
   | "situation"
   | "timeline"
   | "artifacts"
-  | "clarifications"
+  | "attachments"
   | "review"
   | "state"
   | "debug"
   | "overview"
   | "methodology"
   | "workflow_runs";
+
+export interface AttachmentView {
+  attachment_id: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  extraction_status: "pending" | "succeeded" | "failed" | "unsupported";
+  extraction_error: string | null;
+  used_in_context: boolean;
+  can_delete: boolean;
+  created_at: string;
+}
 
 export interface ProjectListItemView {
   project_id: string;
@@ -190,8 +202,14 @@ export interface ArtifactDetailView {
   is_low_confidence: boolean;
   user_verified: boolean;
   user_verified_at: string | null;
-  // v3.5: разбивка токенов по стадиям сборки.
+  // Разбивка токенов по стадиям сборки (метадата для карточки).
   token_usage: Record<string, TokenUsageStage>;
+  // Агрегат расхода токенов задачи из llm_usage-БД. null = «n/a».
+  usage_input_tokens: number | null;
+  usage_output_tokens: number | null;
+  usage_total_tokens: number | null;
+  usage_source: "actual" | "estimated" | null;
+  usage_call_count: number;
 }
 
 export interface ReviewIssueView {

@@ -190,7 +190,40 @@ class ContextService:
             used_position_ids=self.collect_used_position_ids(state),
         )
         self._runtime.record_context_manifest(workspace, context_manifest)
+        prompt_text = "\n".join(item.content for item in items)
+        self._mark_used_attachments(
+            workspace, state, context_manifest.used_position_ids, prompt_text
+        )
         return ContextBuildResult(manifest=context_manifest)
+
+    def _mark_used_attachments(
+        self,
+        workspace: Path,
+        state: ProjectState,
+        used_position_ids: tuple[str, ...],
+        prompt_text: str,
+    ) -> None:
+        """Пометить вложения, чей текст РЕАЛЬНО вошёл в промпт задачи.
+
+        После пометки вложение нельзя удалить (ради воспроизводимости артефакта),
+        поэтому маркируем строго: только если полный текст положения
+        ``attachment.<id>`` присутствует в собранном контексте. Если бюджет усёк
+        текст вложения (или секция состояния не попала в промпт) — НЕ маркируем:
+        артефакт этого текста не видел, и запрет удаления был бы ложным.
+        """
+        from .attachment_service import attachment_id_from_position_id
+
+        statements_by_id = {
+            position.identifier: (position.statement or "")
+            for position in state.knowledge.active()
+        }
+        for position_id in used_position_ids:
+            attachment_id = attachment_id_from_position_id(position_id)
+            if attachment_id is None:
+                continue
+            statement = statements_by_id.get(position_id, "").strip()
+            if statement and statement in prompt_text:
+                self._runtime.mark_attachment_used(workspace, attachment_id)
 
     def _effective_max_tokens(self, template_max_tokens: int) -> int | None:
         raw_disable = os.environ.get("POV_DISABLE_TEMPLATE_CONTEXT_BUDGET", "").strip().lower()

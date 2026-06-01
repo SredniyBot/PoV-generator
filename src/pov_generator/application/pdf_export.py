@@ -707,17 +707,22 @@ def _append_table_appendix(
 ) -> None:
     """Добавить раздел «Приложения» с вынесенными широкими таблицами.
 
-    Каждая таблица — на собственной landscape-странице, под заголовком с
-    якорем ``appendix-N`` (на него ссылается плейсхолдер на месте таблицы).
-    После последней таблицы возвращаемся на portrait, чтобы подвал документа
-    не оказался на альбомной странице.
+    Заголовок «Приложения» и первая таблица идут на ОДНОЙ landscape-странице:
+    переход в альбомную ориентацию ставим ПЕРЕД заголовком, иначе он остаётся
+    на portrait-листе и между ним и приложениями возникает полупустая страница.
+    Каждая следующая таблица — на собственной landscape-странице, под заголовком
+    с якорем ``appendix-N`` (на него ссылается плейсхолдер на месте таблицы).
     """
+    # Переход на landscape ДО заголовка раздела.
+    first_break = ET.SubElement(root, "div")
+    first_break.set("data-pov-pdf-page", "landscape_page")
     heading = ET.SubElement(root, "h2")
     heading.text = "Приложения"
     for index, (caption, table) in enumerate(appendix, start=1):
-        # Перед каждой таблицей — переход на landscape-страницу.
-        landscape_break = ET.SubElement(root, "div")
-        landscape_break.set("data-pov-pdf-page", "landscape_page")
+        if index > 1:
+            # Каждая следующая таблица — на новой landscape-странице.
+            landscape_break = ET.SubElement(root, "div")
+            landscape_break.set("data-pov-pdf-page", "landscape_page")
         item_heading = ET.SubElement(root, "h3")
         anchor = ET.SubElement(item_heading, "a", {"name": f"appendix-{index}"})
         # Текст — ВНУТРИ закрытого якоря (а не в .tail): пустой <a/> ломает
@@ -787,6 +792,9 @@ def _inject_toc_and_anchors(root: ET.Element) -> None:
             insert_at = position + 1
             break
     root.insert(insert_at, toc)
+    # Явный разделитель ПОД оглавлением (отдельным элементом, см. CSS .doc-toc-rule)
+    # — чтобы начало документа визуально не сливалось с содержанием.
+    root.insert(insert_at + 1, ET.Element("hr", {"class": "doc-toc-rule"}))
 
 
 def _compute_column_metrics(table: ET.Element) -> list[_ColumnMetrics]:
@@ -1349,12 +1357,21 @@ def _build_base_css(
         }}
         .doc-footer a {{ color: #2a5db0; text-decoration: none; }}
         /* Оглавление — без коробки и без синих ссылок: монохромно, в стиле
-           самого документа. Отделено снизу тонкой линией. */
+           самого документа. Разделитель между TOC и телом — ОТДЕЛЬНЫЙ <hr>
+           (не border-bottom самого блока: xhtml2pdf дублирует border контейнера
+           под каждым дочерним <p>, и оглавление превращается в «таблицу»). */
         .doc-toc {{
             font-family: {body_font};
-            margin: 0 0 16pt 0;
-            padding: 0 0 8pt 0;
+            margin: 0 0 6pt 0;
+            padding: 0;
             page-break-inside: avoid;
+            page-break-after: avoid;
+        }}
+        .doc-toc-rule {{
+            background-color: #bbb;
+            height: 0.75pt;
+            border: none;
+            margin: 4pt 0 18pt 0;
             page-break-after: avoid;
         }}
         .doc-toc-title {{
@@ -1363,9 +1380,13 @@ def _build_base_css(
             font-size: 13pt;
             margin: 0 0 6pt 0;
         }}
-        .doc-toc p {{ margin: 2pt 0; }}
-        .toc-h2 {{ font-size: 10pt; }}
-        .toc-h3 {{ font-size: 9.5pt; color: #555; margin-left: 16pt; }}
+        /* Плотные строки: глобальный line-height 1.4 даёт «воздушный» список,
+           для оглавления он лишний. margin-left для h3 задаём с повышенной
+           специфичностью (`.doc-toc p.toc-h3`), иначе короткая запись margin в
+           `.doc-toc p` обнуляла бы левый отступ и оглавление было бы плоским. */
+        .doc-toc p {{ margin: 0; padding: 0.6pt 0; line-height: 1.05; }}
+        .doc-toc p.toc-h2 {{ font-size: 10pt; margin-left: 0; }}
+        .doc-toc p.toc-h3 {{ font-size: 9.5pt; color: #555; margin-left: 22pt; }}
         .doc-toc a {{ color: #1c1c1c; text-decoration: none; }}
         /* Ссылка на месте вынесенной в приложение широкой таблицы. */
         .table-ref {{

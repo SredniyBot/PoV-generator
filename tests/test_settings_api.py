@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from pov_generator.infrastructure.llm import LLMResult
 from pov_generator.interfaces.api import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -202,7 +203,7 @@ def test_test_provider_endpoint(tmp_path: Path, monkeypatch) -> None:
     ).json()
 
     fake = MagicMock()
-    fake.chat_json.return_value = {"reply": "OK"}
+    fake.chat_json.return_value = LLMResult(payload={"reply": "OK"})
 
     # Подменяем _build_from_connection у того же registry-инстанса, который
     # сидит в app.state. Идём через provider_settings_service.
@@ -229,7 +230,7 @@ def test_test_model_endpoint(tmp_path: Path, monkeypatch) -> None:
     )
 
     fake = MagicMock()
-    fake.chat_json.return_value = {"reply": "OK"}
+    fake.chat_json.return_value = LLMResult(payload={"reply": "OK"})
     svc = client.app.state.provider_settings_service
     monkeypatch.setattr(svc._llm, "_build_from_connection", lambda c, *, model, complexity: fake)
 

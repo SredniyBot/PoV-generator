@@ -3775,6 +3775,12 @@ code {
   line-height: 1.4;
 }
 
+/* Учёт токенов в мета-полосе артефакта (фича: LLM token accounting). */
+.artifact-meta-strip__tokens {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
 .artifact-meta-extra {
   margin: 0 0 0.8rem;
   font-size: 0.83rem;
@@ -4829,4 +4835,136 @@ code {
 
 .error-boundary__actions button:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+/* --- Входные файлы (вложения) на странице артефактов --------------------- */
+.artifacts-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Левая колонка вкладки: карточка артефактов, под ней — карточка входных
+   файлов. Обе занимают первую ячейку грида `.artifacts-layout`. */
+.artifacts-column {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* Список входных файлов использует те же классы .artifact-list*, что и
+   артефакты — формат идентичен, отдельных стилей строки не нужно. Ниже —
+   только просмотрщик файла в правом контейнере (по аналогии с карточкой
+   артефакта). */
+.attachment-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.attachment-viewer__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.attachment-viewer__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.attachment-viewer__size {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.attachment-viewer__actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.attachment-viewer__delete {
+  background: transparent;
+}
+
+.attachment-viewer__delete:not(:disabled):hover {
+  background: rgba(214, 96, 96, 0.16);
+  border-color: rgba(214, 96, 96, 0.45);
+  color: var(--text-primary);
+}
+
+.attachment-viewer__delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attachment-viewer__note {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* Встроенный просмотр PDF — высокий iframe в стиле документа. */
+.attachment-viewer__pdf {
+  width: 100%;
+  height: 70vh;
+  min-height: 420px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: #fff;
+}
+
+/* Извлечённый текст (.docx и т.п.) — читаемый блок с переносами. Без
+   собственного скролла и max-height: документ идёт во всю длину, как
+   артефакт, скроллится сама страница. */
+.attachment-viewer__text {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: rgba(23, 26, 30, 0.96);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* MD/PDF/zip экспорт артефактов (фича: экспорт в Markdown). */
+.artifact-detail__downloads {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+/* Компактная кнопка «Экспорт MD» в шапке карточки артефактов (slot actions).
+   Меньше обычной .artifact-detail__download — чтобы не спорить с заголовком. */
+.section-card__export {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.section-card__export:hover {
+  background: rgba(95, 167, 184, 0.18);
+  color: var(--text-primary);
+  border-color: rgba(95, 167, 184, 0.45);
 }

@@ -39,7 +39,7 @@ from ...domain.llm_settings import (
     PURPOSE_EXECUTION_TRIVIAL,
     ProviderConnection,
 )
-from .protocol import LLMProvider
+from .protocol import LLMProvider, LLMResult
 from .providers.claude_sdk import ClaudeSdkProvider
 from .providers.claude_subscription import ClaudeSubscriptionProvider
 from .providers.openrouter import OpenRouterProvider
@@ -54,7 +54,7 @@ class LoggingLLMProvider:
     chat_json (execution, decision_identification/extraction, complexity,
     domain_pack_selection). Логируем каждый: provider/model/purpose/токены/
     длительность (INFO) или ошибку (ERROR). Проксирует контракт Protocol
-    (name/model/last_usage) на обёрнутый провайдер.
+    (name/model) на обёрнутый провайдер; usage берёт из LLMResult вызова.
     """
 
     def __init__(self, inner: LLMProvider, *, purpose: str | None = None) -> None:
@@ -74,17 +74,13 @@ class LoggingLLMProvider:
     def model(self) -> str | None:
         return self._inner.model
 
-    @property
-    def last_usage(self):  # type: ignore[no-untyped-def]
-        return self._inner.last_usage
-
     def chat_json(
         self,
         *,
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         start = time.perf_counter()
         try:
             result = self._inner.chat_json(
@@ -103,7 +99,7 @@ class LoggingLLMProvider:
             )
             raise
         dur = round((time.perf_counter() - start) * 1000)
-        usage = getattr(self._inner, "last_usage", None)
+        usage = getattr(result, "usage", None)
         _llm_logger.info(
             "LLM-вызов",
             purpose=self._purpose,

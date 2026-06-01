@@ -9,46 +9,57 @@ PEP 544 Protocol с ``runtime_checkable``: любой объект с подхо
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+UsageSource = Literal["actual", "estimated"]
+"""Источник чисел usage: ``actual`` — провайдер реально вернул; ``estimated`` —
+оценка длины (fallback). Где провайдер не дал данных вовсе — usage = None (n/a),
+выдуманные числа не подставляем."""
+
+
+def estimate_token_count(text: str) -> int:
+    """Грубая оценка токенов по длине (≈4 символа на токен).
+
+    Тот же принцип, что у ``ContextBudget`` (см. ``context_service``):
+    используется как fallback, когда провайдер не возвращает фактический usage.
+    """
+    return max(1, len(text) // 4)
 
 
 @dataclass(frozen=True)
 class LLMUsage:
-    """Учёт токенов одного chat_json-вызова (v3.5).
+    """Нормализованный расход токенов на один LLM-вызов."""
 
-    Поля нормализованы под общий API:
-    - ``input_tokens``: вход (system + user prompts + tool/schema overhead).
-    - ``output_tokens``: ответ модели.
-    - ``cache_read_tokens`` / ``cache_write_tokens``: для провайдеров с
-      prompt cache (Claude). 0 если провайдер не сообщает.
-    - ``total_tokens``: сумма input+output (без удвоения по кэшу).
-    - ``provider`` / ``model``: для traceability в UI/логах.
-
-    Сделано frozen — usage иммутабелен, агрегаты считаются вручную.
-    """
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    total_tokens: int = 0
-    provider: str = ""
-    model: str = ""
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    source: UsageSource
+    cache_tokens: int | None = None
+    cost_usd: float | None = None
 
     @classmethod
-    def empty(cls) -> "LLMUsage":
-        return cls()
+    def estimated(cls, *, input_text: str, output_text: str) -> "LLMUsage":
+        """Оценка usage по длине промпта/ответа (source=estimated)."""
+        input_tokens = estimate_token_count(input_text)
+        output_tokens = estimate_token_count(output_text)
+        return cls(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            source="estimated",
+        )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
-            "total_tokens": self.total_tokens,
-            "provider": self.provider,
-            "model": self.model,
-        }
+
+@dataclass(frozen=True)
+class LLMResult:
+    """Результат одного ``chat_json``: распарсенный payload + usage.
+
+    ``usage = None`` означает «провайдер не дал данных» (n/a) — UI показывает
+    «n/a», а не выдуманные числа.
+    """
+
+    payload: dict[str, Any]
+    usage: LLMUsage | None = None
 
 
 @runtime_checkable
@@ -61,10 +72,8 @@ class LLMProvider(Protocol):
       логирования / отображения в UI / трассировки.
     * Иметь атрибут ``model`` (str | None) — текущая модель (для
       провайдеров, где модель определяет CLI/подписка, может быть None).
-    * Реализовать ``chat_json(system_prompt, user_prompt, schema) -> dict``.
-    * v3.5: после каждого ``chat_json`` обновлять атрибут ``last_usage``
-      (см. :class:`LLMUsage`). Если данные о usage недоступны (провайдер
-      не возвращает) — ``LLMUsage.empty()``.
+    * Реализовать ``chat_json(system_prompt, user_prompt, schema) -> LLMResult``
+      (``payload`` по схеме + ``usage`` — расход токенов; см. :class:`LLMResult`).
 
     Implementations НЕ должны:
 
@@ -75,9 +84,6 @@ class LLMProvider(Protocol):
 
     name: str
     model: str | None
-    # v3.5: последний usage от провайдера. После chat_json — данные текущего
-    # вызова; до первого вызова — LLMUsage.empty().
-    last_usage: LLMUsage
 
     def chat_json(
         self,
@@ -85,8 +91,8 @@ class LLMProvider(Protocol):
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Отправить промпт и получить структурированный JSON-ответ.
+    ) -> LLMResult:
+        """Отправить промпт и получить структурированный JSON-ответ + usage.
 
         Args:
             system_prompt: системный промпт (роль, ограничения, стиль).
@@ -96,8 +102,8 @@ class LLMProvider(Protocol):
                 tool-use, json mode и т.п.).
 
         Returns:
-            Распарсенный dict, соответствующий ``schema``. Конкретный
-            формат не нормализуется — он определяется задачей.
+            :class:`LLMResult` — распарсенный ``payload`` (dict по ``schema``) +
+            ``usage`` (расход токенов; None если провайдер не дал данных).
 
         Raises:
             ConflictError: если ответ не валиден / провайдер не настроен /

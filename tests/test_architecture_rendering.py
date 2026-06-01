@@ -51,7 +51,6 @@ def _valid_system_context_payload() -> dict:
                 {"from": "System", "to": "CRM"},
             ],
         },
-        "blocking_questions": [],
     }
 
 
@@ -76,20 +75,16 @@ def test_render_omits_optional_sections_when_missing() -> None:
     md = render_markdown("system_context_definition", _valid_system_context_payload())
     assert "## Границы системы" not in md
     assert "## Допущения" not in md
-    assert "## Блокирующие вопросы" not in md
 
 
 def test_render_emits_optional_sections_when_provided() -> None:
     payload = _valid_system_context_payload()
     payload["system_boundaries"] = ["Не хранит ПДн дольше обработки"]
     payload["assumptions"] = ["LLM-провайдер доступен из контура"]
-    payload["blocking_questions"] = ["Не определён владелец CRM"]
     md = render_markdown("system_context_definition", payload)
     assert "## Границы системы" in md
     assert "## Допущения" in md
-    assert "## Блокирующие вопросы" in md
     assert "Не хранит ПДн дольше обработки" in md
-    assert "Не определён владелец CRM" in md
 
 
 def test_schema_accepts_valid_payload() -> None:
@@ -100,14 +95,6 @@ def test_schema_accepts_valid_payload() -> None:
 def test_schema_rejects_payload_without_context_diagram() -> None:
     payload = _valid_system_context_payload()
     del payload["context_diagram"]
-    schema = artifact_schema("system_context_definition")
-    with pytest.raises(ValidationError):
-        validate_json_schema(payload, schema)
-
-
-def test_schema_rejects_payload_without_blocking_questions() -> None:
-    payload = _valid_system_context_payload()
-    del payload["blocking_questions"]
     schema = artifact_schema("system_context_definition")
     with pytest.raises(ValidationError):
         validate_json_schema(payload, schema)
@@ -172,7 +159,6 @@ def _valid_component_decomposition_payload() -> dict:
                 {"from": "Gateway", "to": "Worker"},
             ],
         },
-        "blocking_questions": [],
     }
 
 
@@ -192,20 +178,16 @@ def test_render_component_decomposition_emits_mermaid_and_sections() -> None:
 def test_render_component_omits_optional_sections_when_missing() -> None:
     md = render_markdown("component_decomposition", _valid_component_decomposition_payload())
     assert "## Сквозные аспекты" not in md
-    assert "## Открытые вопросы дизайна" not in md
-    assert "## Блокирующие вопросы" not in md
 
 
 def test_render_component_emits_optional_sections_when_provided() -> None:
     payload = _valid_component_decomposition_payload()
     payload["summary"] = "Слоистая декомпозиция."
     payload["cross_cutting_concerns"] = ["Логирование с trace-id"]
-    payload["open_design_questions"] = ["Sync vs async?"]
     md = render_markdown("component_decomposition", payload)
     assert "Слоистая декомпозиция." in md
     assert "## Сквозные аспекты" in md
     assert "Логирование с trace-id" in md
-    assert "## Открытые вопросы дизайна" in md
 
 
 def test_component_schema_rejects_payload_without_diagram() -> None:
@@ -262,7 +244,6 @@ def _valid_interaction_view_payload() -> dict:
                 {"from": "W", "to": "G", "label": "ack", "kind": "reply"},
             ],
         },
-        "blocking_questions": [],
     }
 
 

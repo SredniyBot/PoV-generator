@@ -17,8 +17,9 @@ from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
 from ..domain.decisions import SOURCE_IDENTIFICATION, Decision
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
+from ..domain.llm_usage import LLMUsageRecord
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
-from ..infrastructure.llm import LLMProvider, LLMProviderRegistry
+from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
 from .checkpoint_service import CheckpointService
@@ -342,6 +343,9 @@ class ExecutionService:
         # обходим LLM/stub и собираем результат детерминированно из входных
         # артефактов. Strategy=synthetic идёт обычным LLM-путём; metadata
         # отметит, что это была merge-операция. Strategy=hybrid зарезервирована.
+        # Учёт токенов: usages всех LLM-вызовов задачи, заполняется ниже
+        # (для stub — оценка по длине; для structural-merge — пусто, n/a).
+        llm_usages: list[tuple[str | None, LLMUsage | None]] = []
         if template.merge is not None and template.merge.strategy == "structural":
             payload = self._execute_structural_merge(
                 workspace=workspace,
@@ -363,6 +367,17 @@ class ExecutionService:
                 domain_pack_refs=active_domain_refs,
             )
             live_reasoning = None
+            # Stub не зовёт LLM — usage детерминированно оцениваем по длине
+            # (source=estimated), чтобы учёт работал в тестах.
+            llm_usages = [
+                (
+                    None,
+                    LLMUsage.estimated(
+                        input_text=system_prompt + user_prompt,
+                        output_text=json_dumps(payload),
+                    ),
+                )
+            ]
         elif active_provider in ("openrouter", "claude_sdk", "claude_subscription"):
             primary_schema = artifact_schema(artifact_role, active_domain_refs)
             # W3.1: выбор между single_call (один LLM-вызов на primary+reasoning)
@@ -375,21 +390,20 @@ class ExecutionService:
                 active_methodology is not None
                 and active_methodology.stage_execution_mode == "per_stage_cot"
             )
-            # Идея А: на задачах, порождающих решения, просим модель ВЕРНУТЬ
-            # принятые ею решения в том же ответе (поле decisions) — вместо
-            # отдельного послесборочного LLM-вызова. Гейт тот же, что у
-            # выявления до сборки (флаг шаблона). persist_self_reported ниже
-            # дедуплицирует и сохранит их.
+            # Идея А: на задачах, порождающих решения, модель ВЕРНЁТ принятые
+            # ею решения в том же ответе (поле decisions) — без отдельного
+            # послесборочного LLM-вызова. Гейт тот же, что у выявления до
+            # сборки. persist_self_reported ниже дедуплицирует и сохранит их.
             decisions_schema_def = (
                 decisions_schema()
                 if (self._decision_extraction is not None and template_allows_identification)
                 else None
             )
-            # Сам LLM-вызов логируется единой точкой — LoggingLLMProvider
-            # (infrastructure/llm/registry.py): provider/model/purpose/токены/
-            # тайминг на каждый chat_json. Здесь не дублируем.
+            # Каждый LLM-вызов логируется LoggingLLMProvider; usage по вызовам
+            # (llm_usages) пишется в БД через _record_llm_usages ниже, а наша
+            # метадата токенов артефакта строится из них же (см. ниже).
             if _cot:
-                payload, live_reasoning, self_reported_decisions, stage_token_usage = (
+                payload, live_reasoning, self_reported_decisions, llm_usages = (
                     self._execute_per_stage_cot(
                         llm=llm_provider,
                         base_system_prompt=system_prompt,
@@ -401,7 +415,7 @@ class ExecutionService:
                     )
                 )
             else:
-                payload, live_reasoning, self_reported_decisions, stage_token_usage = (
+                payload, live_reasoning, self_reported_decisions, llm_usages = (
                     self._execute_single_call(
                         llm=llm_provider,
                         base_system_prompt=system_prompt,
@@ -414,21 +428,24 @@ class ExecutionService:
                 )
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
-        # v3.5: stage_token_usage накапливается только для LLM-провайдеров;
-        # для stub/structural-merge оставляем пустой dict, чтобы код ниже
-        # не делал branchy-merge.
+        # self_reported_decisions заполняет только LLM-ветка (идея А);
+        # для stub/structural-merge решений модель не самоотчитывает.
         if active_provider not in ("openrouter", "claude_sdk", "claude_subscription"):
-            stage_token_usage = {}
             self_reported_decisions = []
-        # Сливаем primary/stage-токены в общий dict артефакта
+        # Метадата токенов артефакта (карточка UI) — из usage каждого вызова;
+        # те же usage пишутся в БД через _record_llm_usages ниже.
+        stage_token_usage = {
+            stage: self._usage_to_token_dict(usage)
+            for stage, usage in llm_usages
+            if stage and usage is not None
+        }
         artifact_token_usage.update(stage_token_usage)
 
-        # v3.4: defensive strip — LLM по инерции иногда возвращает
-        # blocking_questions / open_questions_for_user в payload, хотя
-        # schema их не требует и в v3.1 они полностью заменены реестром
-        # решений (Decision ledger). Чтобы артефакт не падал на schema-
-        # валидации с extras и не пугал пользователя «лишним» блоком в UI,
-        # вычищаем устаревшие поля прямо в исходнике.
+        # Defensive strip устаревших полей: blocking_questions и
+        # open_questions_for_user — legacy decision-ledger. Открытые/блокирующие
+        # вопросы теперь живут в реестре решений (Decision ledger), отдельного
+        # поля документа нет. Если LLM по инерции вернёт их в payload —
+        # вычищаем, чтобы legacy не попадало в артефакт и его рендер.
         if isinstance(payload, dict):
             for legacy_field in ("blocking_questions", "open_questions_for_user"):
                 payload.pop(legacy_field, None)
@@ -674,6 +691,16 @@ class ExecutionService:
             methodology_decisions=methodology_decisions,
         )
         self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
+        self._record_llm_usages(
+            workspace,
+            project_id=manifest.project_id,
+            task_id=task.task_id,
+            artifact_id=artifact_id,
+            execution_run_id=execution_run_id,
+            provider=active_provider,
+            model=active_model,
+            usages=llm_usages,
+        )
         return ExecutionBundle(request=request, result=result, traces=traces)
 
     # ------------------------------------------------------------------ v3.0
@@ -921,6 +948,51 @@ class ExecutionService:
         )
         return ExecutionBundle(request=request, result=result, traces=())
 
+    def _record_llm_usages(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        task_id: str,
+        artifact_id: str,
+        execution_run_id: str,
+        provider: str,
+        model: str,
+        usages: list[tuple[str | None, LLMUsage | None]],
+    ) -> None:
+        """Записать usage каждого LLM-вызова задачи (best-effort).
+
+        Сбой записи usage не должен ронять исполнение задачи — поэтому
+        оборачиваем в try/except и не пробрасываем ошибку наружу.
+        """
+        for stage, usage in usages:
+            if usage is None:
+                # Провайдер не дал данных — n/a, строку не пишем (без выдумок).
+                continue
+            try:
+                self._runtime.record_llm_usage(
+                    workspace,
+                    LLMUsageRecord(
+                        usage_id=str(uuid.uuid4()),
+                        project_id=project_id,
+                        task_id=task_id,
+                        artifact_id=artifact_id,
+                        execution_run_id=execution_run_id,
+                        provider=provider,
+                        model=model,
+                        stage=stage,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        total_tokens=usage.total_tokens,
+                        cache_tokens=usage.cache_tokens,
+                        source=usage.source,
+                        cost_usd=usage.cost_usd,
+                        created_at=utc_now_iso(),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — учёт не критичен для исполнения
+                pass
+
     def _execute_structural_merge(
         self,
         *,
@@ -982,20 +1054,18 @@ class ExecutionService:
     # ---- LLM execution dispatch ------------------------------------------
 
     @staticmethod
-    def _snapshot_usage(llm: LLMProvider) -> dict[str, int]:
-        """v3.5: снять usage от провайдера в плоский dict для metadata.
+    def _usage_to_token_dict(usage: LLMUsage) -> dict[str, int]:
+        """Конвертировать LLMUsage в плоский dict для метадаты артефакта (UI).
 
-        Дублирует LLMUsage.to_dict, но без provider/model (их UI и так
-        видит из артефактных полей). При отсутствии данных — пустой dict.
+        Те же usage пишутся в БД через `_record_llm_usages`; здесь — лёгкая
+        копия для карточки артефакта. Cache в LLMUsage хранится одним числом
+        (cache_tokens) — кладём его в cache_read, write оставляем 0.
         """
-        usage = getattr(llm, "last_usage", None)
-        if usage is None:
-            return {}
         return {
             "input_tokens": int(usage.input_tokens),
             "output_tokens": int(usage.output_tokens),
-            "cache_read_tokens": int(usage.cache_read_tokens),
-            "cache_write_tokens": int(usage.cache_write_tokens),
+            "cache_read_tokens": int(usage.cache_tokens or 0),
+            "cache_write_tokens": 0,
             "total_tokens": int(usage.total_tokens),
         }
 
@@ -1009,24 +1079,22 @@ class ExecutionService:
         complexity: str | None,
         primary_schema: dict,
         decisions_schema_def: dict | None = None,
-    ) -> tuple[dict, dict | None, list, dict[str, dict[str, int]]]:
+    ) -> tuple[dict, dict | None, list, list[tuple[str | None, LLMUsage | None]]]:
         """`single_call` mode (default): один LLM-вызов.
 
-        Схема ответа собирается из частей: всегда ``primary`` (артефакт),
-        опционально ``reasoning`` (если активна методология) и опционально
-        ``decisions`` (если запрошен самоотчёт о принятых решениях — идея А).
-        Если ни reasoning, ни decisions не нужны — схема = голый primary
-        (старое поведение, без обёртки).
+        Схема ответа: всегда ``primary``; опционально ``reasoning`` (если
+        активна методология) и ``decisions`` (самоотчёт о принятых решениях —
+        идея А). Если ни reasoning, ни decisions не нужны — схема = голый
+        primary.
 
-        Возвращает: (primary, reasoning|None, decisions_raw, token_usage).
+        Возвращает ``(primary, reasoning|None, decisions_raw, usages)`` где
+        usages — список ``(stage, LLMUsage|None)`` для учёта токенов.
         """
-        token_usage: dict[str, dict[str, int]] = {}
         if methodology is None and decisions_schema_def is None:
-            full_payload = llm.chat_json(
+            result = llm.chat_json(
                 system_prompt=base_system_prompt, user_prompt=base_user_prompt, schema=primary_schema,
             )
-            token_usage["primary_generation"] = self._snapshot_usage(llm)
-            return (full_payload, None, [], token_usage)
+            return (result.payload, None, [], [("primary_generation", result.usage)])
 
         properties: dict = {"primary": primary_schema}
         required = ["primary"]
@@ -1046,16 +1114,16 @@ class ExecutionService:
             "required": required,
             "properties": properties,
         }
-        full_payload = llm.chat_json(
+        result = llm.chat_json(
             system_prompt=effective_system, user_prompt=base_user_prompt, schema=combined_schema,
         )
-        token_usage["primary_generation"] = self._snapshot_usage(llm)
+        full_payload = result.payload
         decisions_raw = full_payload.get("decisions") or []
         return (
             full_payload.get("primary", {}) or {},
             full_payload.get("reasoning"),
             decisions_raw if isinstance(decisions_raw, list) else [],
-            token_usage,
+            [("primary_generation", result.usage)],
         )
 
     def _execute_per_stage_cot(
@@ -1068,7 +1136,7 @@ class ExecutionService:
         complexity: str | None,
         primary_schema: dict,
         decisions_schema_def: dict | None = None,
-    ) -> tuple[dict, dict, list, dict[str, dict[str, int]]]:
+    ) -> tuple[dict, dict, list, list[tuple[str | None, LLMUsage | None]]]:
         """`per_stage_cot` mode (W3.1, vision «После MVP» точка #1): отдельный
         LLM-вызов на каждую активную стадию методологии с накопительным
         контекстом, плюс финальный вызов на primary с собранным reasoning.
@@ -1080,7 +1148,7 @@ class ExecutionService:
         стадиями (например per-domain reasoning packs)."""
         active_stages = methodology.stages_for_complexity(complexity)
         stage_outputs: dict[str, dict] = {}
-        token_usage: dict[str, dict[str, int]] = {}
+        usages: list[tuple[str | None, LLMUsage | None]] = []
 
         for stage in active_stages:
             stage_schema = self._build_single_stage_schema(stage)
@@ -1093,8 +1161,10 @@ class ExecutionService:
             stage_result = llm.chat_json(
                 system_prompt=stage_system, user_prompt=stage_user, schema=stage_schema,
             )
-            stage_outputs[stage.identifier] = stage_result if isinstance(stage_result, dict) else {}
-            token_usage[f"methodology_stage:{stage.identifier}"] = self._snapshot_usage(llm)
+            usages.append((f"methodology_stage:{stage.identifier}", stage_result.usage))
+            stage_outputs[stage.identifier] = (
+                stage_result.payload if isinstance(stage_result.payload, dict) else {}
+            )
 
         # Финальный вызов: primary artifact с reasoning как структурированный контекст.
         primary_system = (
@@ -1118,10 +1188,11 @@ class ExecutionService:
                 "properties": {"primary": primary_schema, "decisions": decisions_schema_def},
             }
             final_system = primary_system + "\n\n" + decisions_instruction()
-        final_payload = llm.chat_json(
+        final_result = llm.chat_json(
             system_prompt=final_system, user_prompt=primary_user, schema=final_schema,
         )
-        token_usage["primary_generation"] = self._snapshot_usage(llm)
+        usages.append(("primary_generation", final_result.usage))
+        final_payload = final_result.payload
         if decisions_schema_def is not None:
             decisions_raw = final_payload.get("decisions") or []
             primary_payload = final_payload.get("primary", {}) or {}
@@ -1132,7 +1203,7 @@ class ExecutionService:
             primary_payload,
             stage_outputs,
             decisions_raw if isinstance(decisions_raw, list) else [],
-            token_usage,
+            usages,
         )
 
     def _build_single_stage_schema(self, stage) -> dict:
@@ -1772,24 +1843,22 @@ class ExecutionService:
                 "title": title,
                 "executive_summary": " ".join(summary_parts),
                 "confidence": 0.78,
-                "blocking_questions": [],
             }
             if isinstance(system_context, dict) and system_context:
-                # Очищаем blocking_questions/confidence — они метаданные
-                # upstream-артефакта, не наши.
+                # confidence — метаданные upstream-артефакта, не наши.
                 result["system_context"] = {
                     k: v for k, v in system_context.items()
-                    if k not in {"blocking_questions", "confidence"}
+                    if k != "confidence"
                 }
             if isinstance(components, dict) and components:
                 result["components"] = {
                     k: v for k, v in components.items()
-                    if k not in {"blocking_questions", "confidence"}
+                    if k != "confidence"
                 }
             if isinstance(interactions, dict) and interactions:
                 result["interactions"] = {
                     k: v for k, v in interactions.items()
-                    if k not in {"blocking_questions", "confidence"}
+                    if k != "confidence"
                 }
             if isinstance(deployment, dict) and deployment:
                 result["deployment"] = deployment

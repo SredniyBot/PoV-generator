@@ -21,6 +21,7 @@ from pov_generator.application.decision_identification_service import (
     DecisionIdentificationService as DecisionPlanningService,
 )
 from pov_generator.common.errors import ConflictError
+from pov_generator.infrastructure.llm.protocol import LLMResult
 
 
 @dataclass
@@ -41,10 +42,10 @@ class _StubLLM:
         schema: dict,
         tool_name: str = "produce_artifact",
         tool_description: str = "",
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         self.last_system_prompt = system_prompt
         self.last_user_prompt = user_prompt
-        return self.response or {"decisions": []}
+        return LLMResult(payload=self.response or {"decisions": []}, usage=None)
 
 
 class _StubRegistry:

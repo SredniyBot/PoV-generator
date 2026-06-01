@@ -5,14 +5,32 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..common.errors import ConflictError
-from .llm.protocol import LLMUsage
+from .llm.protocol import LLMResult, LLMUsage
+
+
+def _usage_from_anthropic(usage: object) -> LLMUsage | None:
+    """Нормализует ``response.usage`` Anthropic SDK в :class:`LLMUsage`."""
+    if usage is None:
+        return None
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_tokens = int(cache_creation) + int(cache_read)
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        source="actual",
+        cache_tokens=cache_tokens or None,
+    )
 
 
 @dataclass(frozen=True)
 class ClaudeSdkConfig:
     api_key: str
     model: str
-    max_tokens: int = 32768
+    max_tokens: int = 8192
     temperature: float = 0.2
 
 
@@ -33,8 +51,6 @@ class ClaudeSdkClient:
 
     def __init__(self, config: ClaudeSdkConfig) -> None:
         self._config = config
-        # v3.5: usage последнего chat_json-вызова
-        self.last_usage: LLMUsage = LLMUsage.empty()
         try:
             import anthropic  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover
@@ -55,7 +71,7 @@ class ClaudeSdkClient:
                 "Не задан POV_ANTHROPIC_API_KEY (или ANTHROPIC_API_KEY) для провайдера claude_sdk."
             )
         active_model = model or os.environ.get("POV_CLAUDE_MODEL", "claude-sonnet-4-6")
-        max_tokens_raw = os.environ.get("POV_CLAUDE_MAX_TOKENS", "32768")
+        max_tokens_raw = os.environ.get("POV_CLAUDE_MAX_TOKENS", "8192")
         try:
             max_tokens = int(max_tokens_raw)
         except ValueError as exc:
@@ -74,7 +90,7 @@ class ClaudeSdkClient:
         schema: dict[str, Any],
         tool_name: str = "produce_artifact",
         tool_description: str = "Produce the leaf-task output following the strict schema.",
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         """Запрашивает у Claude структурированный JSON через tool use."""
         try:
             response = self._client.messages.create(
@@ -95,28 +111,12 @@ class ClaudeSdkClient:
         except Exception as exc:  # pragma: no cover
             raise ConflictError(f"Ошибка запроса к Claude SDK: {exc}") from exc
 
-        # v3.5: usage перед поиском tool_use, чтобы даже на ошибке знать
-        # сколько токенов улетело.
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            input_tok = int(getattr(usage, "input_tokens", 0) or 0)
-            output_tok = int(getattr(usage, "output_tokens", 0) or 0)
-            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-            self.last_usage = LLMUsage(
-                input_tokens=input_tok,
-                output_tokens=output_tok,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-                total_tokens=input_tok + output_tok,
-                provider="claude_sdk",
-                model=self._config.model,
-            )
+        usage = _usage_from_anthropic(getattr(response, "usage", None))
         for block in response.content:
             block_type = getattr(block, "type", None)
             if block_type == "tool_use":
                 payload = getattr(block, "input", None)
                 if not isinstance(payload, dict):
                     raise ConflictError(f"Claude вернул tool_use без dict-ввода: {payload!r}")
-                return payload
+                return LLMResult(payload=payload, usage=usage)
         raise ConflictError(f"Claude не вернул tool_use блок. Ответ: {response.content!r}")

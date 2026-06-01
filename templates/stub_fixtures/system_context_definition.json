@@ -55,6 +55,5 @@
       {"from": "System", "to": "Target", "label": "передаёт результат"}
     ]
   },
-  "confidence": 0.78,
-  "blocking_questions": []
+  "confidence": 0.78
 }

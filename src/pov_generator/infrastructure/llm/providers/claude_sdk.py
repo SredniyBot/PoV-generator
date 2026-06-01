@@ -8,7 +8,7 @@ from typing import Any
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
 from ...claude_sdk_client import ClaudeSdkClient, ClaudeSdkConfig, model_for_complexity
-from ..protocol import LLMUsage
+from ..protocol import LLMResult
 
 
 class ClaudeSdkProvider:
@@ -25,7 +25,7 @@ class ClaudeSdkProvider:
         *,
         api_key: str,
         model: str,
-        max_tokens: int = 32768,
+        max_tokens: int = 8192,
     ) -> None:
         if not api_key:
             raise ConflictError("Не задан API key для провайдера claude_sdk.")
@@ -33,8 +33,6 @@ class ClaudeSdkProvider:
         self._client = ClaudeSdkClient(
             ClaudeSdkConfig(api_key=api_key, model=model, max_tokens=max_tokens)
         )
-        # v3.5: token usage последнего вызова (см. LLMProvider protocol)
-        self.last_usage: LLMUsage = LLMUsage.empty()
 
     @classmethod
     def from_env(
@@ -49,7 +47,7 @@ class ClaudeSdkProvider:
                 "Не задан POV_ANTHROPIC_API_KEY (или ANTHROPIC_API_KEY) для провайдера claude_sdk."
             )
         resolved_model = model or os.environ.get("POV_CLAUDE_MODEL") or model_for_complexity(complexity)
-        max_tokens = int(os.environ.get("POV_CLAUDE_MAX_TOKENS", "32768"))
+        max_tokens = int(os.environ.get("POV_CLAUDE_MAX_TOKENS", "8192"))
         return cls(api_key=api_key, model=resolved_model, max_tokens=max_tokens)
 
     @classmethod
@@ -70,11 +68,11 @@ class ClaudeSdkProvider:
                 f"У connection '{connection.display_name}' пустой API key — добавьте в Settings."
             )
         resolved_model = model or model_for_complexity(complexity)
-        max_tokens_raw = connection.extras.get("max_tokens", "32768")
+        max_tokens_raw = connection.extras.get("max_tokens", "8192")
         try:
             max_tokens = int(max_tokens_raw)
         except (TypeError, ValueError):
-            max_tokens = 32768
+            max_tokens = 8192
         return cls(api_key=api_key, model=resolved_model, max_tokens=max_tokens)
 
     def chat_json(
@@ -83,12 +81,9 @@ class ClaudeSdkProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
-        result = self._client.chat_json(
+    ) -> LLMResult:
+        return self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
         )
-        # v3.5: проброс usage из вложенного клиента
-        self.last_usage = self._client.last_usage
-        return result

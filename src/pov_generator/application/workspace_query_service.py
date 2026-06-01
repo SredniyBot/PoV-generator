@@ -19,6 +19,7 @@ from ..domain.workspace_views import (
     ArtifactSummaryView,
     ArtifactValidationView,
     ArtifactVersionItemView,
+    AttachmentView,
     CheckpointSessionView,
     ContextManifestSummaryView,
     DecisionAlternativeView,
@@ -73,6 +74,7 @@ class WorkspaceQueryService:
         "situation",
         "timeline",
         "artifacts",
+        "attachments",
         "review",
         "state",
         "debug",
@@ -527,10 +529,31 @@ class WorkspaceQueryService:
             for artifact in self._runtime.list_artifacts(context.workspace)
         )
 
+    def project_attachments(self, project_id: str) -> tuple[AttachmentView, ...]:
+        context = self._load_context(project_id)
+        return tuple(
+            AttachmentView(
+                attachment_id=attachment.attachment_id,
+                original_filename=attachment.original_filename,
+                mime_type=attachment.mime_type,
+                size_bytes=attachment.size_bytes,
+                extraction_status=attachment.extraction_status,
+                extraction_error=attachment.extraction_error,
+                used_in_context=attachment.used_in_context,
+                can_delete=attachment.can_delete,
+                created_at=attachment.created_at,
+            )
+            for attachment in self._runtime.list_attachments(context.workspace)
+        )
+
     def artifact_detail(self, project_id: str, artifact_id: str) -> ArtifactDetailView:
         context = self._load_context(project_id)
         artifact = self._runtime.load_artifact(context.workspace, artifact_id)
         markdown_path = context.workspace / artifact.storage_path.replace(".json", ".md")
+        # Учёт токенов задачи, создавшей артефакт (агрегат всех её вызовов).
+        usage = None
+        if artifact.created_by_task_id is not None:
+            usage = self._runtime.llm_usage_for_task(context.workspace, artifact.created_by_task_id)
         return ArtifactDetailView(
             artifact_id=artifact.artifact_id,
             artifact_role=artifact.artifact_role,
@@ -558,6 +581,11 @@ class WorkspaceQueryService:
             user_verified=artifact.user_verified,
             user_verified_at=artifact.user_verified_at,
             token_usage={k: dict(v) for k, v in artifact.metadata.token_usage.items()},
+            usage_input_tokens=usage.input_tokens if usage else None,
+            usage_output_tokens=usage.output_tokens if usage else None,
+            usage_total_tokens=usage.total_tokens if usage else None,
+            usage_source=("estimated" if usage and usage.has_estimated else "actual") if usage else None,
+            usage_call_count=usage.call_count if usage else 0,
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:
@@ -860,6 +888,12 @@ class WorkspaceQueryService:
                 for item in self._runtime.list_decisions(
                     context.workspace, project_id=context.manifest.project_id
                 )
+            ),
+            llm_usage=tuple(to_primitive(item) for item in self._runtime.list_llm_usage(context.workspace)),
+            llm_usage_total=(
+                to_primitive(project_usage)
+                if (project_usage := self._runtime.llm_usage_for_project(context.workspace)) is not None
+                else None
             ),
         )
 
@@ -1190,6 +1224,8 @@ class WorkspaceQueryService:
                 values[name] = self.project_timeline(project_id)
             elif name == "artifacts":
                 values[name] = self.project_artifacts(project_id)
+            elif name == "attachments":
+                values[name] = self.project_attachments(project_id)
             elif name == "review":
                 values[name] = self.project_review(project_id)
             elif name == "state":

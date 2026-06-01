@@ -64,6 +64,5 @@
     "Reference Data Store не содержит свежей версии — Processor использует deprecated версию и помечает результат как fallback",
     "Result Store недоступен — запрос ставится в очередь повторов с экспоненциальной задержкой"
   ],
-  "confidence": 0.72,
-  "blocking_questions": []
+  "confidence": 0.72
 }

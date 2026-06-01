@@ -214,7 +214,7 @@ def _llm_select(
             complexity="trivial",
             override_model=explicit_model,
         )
-    payload = llm.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
+    payload = llm.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, schema=schema).payload
 
     raw_complexity = str(payload.get("complexity") or declared)
     chosen = _coerce_complexity(raw_complexity) or declared

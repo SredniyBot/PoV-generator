@@ -36,7 +36,36 @@ from typing import Any
 
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
-from .llm.protocol import LLMUsage
+from .llm.protocol import LLMResult, LLMUsage
+
+
+def _usage_from_subscription(raw: dict[str, Any] | None) -> LLMUsage | None:
+    """Нормализует usage из ``ResultMessage`` claude-agent-sdk.
+
+    ``raw`` — ``{"usage": {...}, "total_cost_usd": ...}``. Возвращает None,
+    если фактических токенов нет (тогда вызывающий применит оценку).
+    """
+    if not raw:
+        return None
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    if input_tokens == 0 and output_tokens == 0:
+        return None
+    cache_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0) + int(
+        usage.get("cache_read_input_tokens", 0) or 0
+    )
+    cost = raw.get("total_cost_usd")
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        source="actual",
+        cache_tokens=cache_tokens or None,
+        cost_usd=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -117,10 +146,6 @@ class ClaudeSubscriptionClient:
                 "и убедитесь, что CLI 'claude' установлен и выполнен 'claude login'."
             ) from exc
         self._sdk = claude_agent_sdk
-        # v3.5: usage последнего вызова. Заполняется в _collect через
-        # ResultMessage SDK (см. duck-typing там). При отсутствии — empty.
-        self.last_usage: LLMUsage = LLMUsage.empty()
-        self._last_usage_raw: dict[str, int] = {}
 
     @classmethod
     def from_env(cls, *, model: str | None = None) -> "ClaudeSubscriptionClient":
@@ -149,7 +174,7 @@ class ClaudeSubscriptionClient:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         full_prompt = (
             user_prompt
             + "\n\n---\n"
@@ -170,30 +195,20 @@ class ClaudeSubscriptionClient:
         # интерфейс LLMProvider. CancellationError — НЕ ConflictError,
         # поэтому отмена не попадает в retry-ветку и всплывает сразу.
         token = current_cancellation()
-        # v3.5: сбрасываем raw-usage перед серией ретраев — финальный
-        # successful вызов перезапишет; неуспех оставит empty.
-        self._last_usage_raw = {}
         for attempt in range(1, attempts + 1):
             try:
-                text = asyncio.run(self._collect_cancellable(system_prompt, full_prompt, token))
-                # Поднимаем raw → LLMUsage только при успешной экстракции,
-                # чтобы случайно не записать прошлый usage поверх свежего.
-                if self._last_usage_raw:
-                    self.last_usage = LLMUsage(
-                        input_tokens=self._last_usage_raw.get("input_tokens", 0),
-                        output_tokens=self._last_usage_raw.get("output_tokens", 0),
-                        cache_read_tokens=self._last_usage_raw.get("cache_read_tokens", 0),
-                        cache_write_tokens=self._last_usage_raw.get("cache_write_tokens", 0),
-                        total_tokens=(
-                            self._last_usage_raw.get("input_tokens", 0)
-                            + self._last_usage_raw.get("output_tokens", 0)
-                        ),
-                        provider="claude_subscription",
-                        model=self._config.model or "claude-code-default",
-                    )
-                else:
-                    self.last_usage = LLMUsage(provider="claude_subscription", model=self._config.model or "claude-code-default")
-                return self._extract_json(text)
+                # Сбор — через нашу cancellable-обёртку (форсированный обрыв),
+                # которая прокидывает (text, raw_usage) из _collect.
+                text, raw_usage = asyncio.run(
+                    self._collect_cancellable(system_prompt, full_prompt, token)
+                )
+                payload = self._extract_json(text)
+                # Факт из ResultMessage; если SDK его не отдал (старые версии) —
+                # оценка по длине (source=estimated).
+                usage = _usage_from_subscription(raw_usage) or LLMUsage.estimated(
+                    input_text=system_prompt + full_prompt, output_text=text
+                )
+                return LLMResult(payload=payload, usage=usage)
             except ConflictError as exc:
                 if not _is_transient_cli_error(str(exc)) or attempt == attempts:
                     raise
@@ -207,7 +222,7 @@ class ClaudeSubscriptionClient:
 
     async def _collect_cancellable(
         self, system_prompt: str, user_prompt: str, token: CancellationToken | None
-    ) -> str:
+    ) -> tuple[str, dict[str, Any] | None]:
         """Запустить ``_collect`` с возможностью форсированной отмены.
 
         Без токена — обычный await. С токеном — оборачиваем сбор в asyncio-
@@ -222,7 +237,7 @@ class ClaudeSubscriptionClient:
             return await self._collect(system_prompt, user_prompt)
 
         loop = asyncio.get_running_loop()
-        collect_task: asyncio.Task[str] = asyncio.ensure_future(
+        collect_task: asyncio.Task[tuple[str, dict[str, Any] | None]] = asyncio.ensure_future(
             self._collect(system_prompt, user_prompt)
         )
         unregister = token.register(
@@ -237,7 +252,7 @@ class ClaudeSubscriptionClient:
         finally:
             unregister()
 
-    async def _collect(self, system_prompt: str, user_prompt: str) -> str:
+    async def _collect(self, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any] | None]:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
@@ -287,27 +302,18 @@ class ClaudeSubscriptionClient:
                 )
 
         chunks: list[str] = []
+        raw_usage: dict[str, Any] | None = None
         try:
             async for message in self._sdk.query(prompt=user_prompt, options=options):
-                # v3.5: ResultMessage (последнее сообщение в стриме) обычно
-                # несёт usage по подписке: u.input_tokens / u.output_tokens
-                # / u.cache_read_input_tokens. Ловим через duck-typing,
-                # чтобы не зависеть от конкретного класса SDK.
-                msg_usage = getattr(message, "usage", None)
-                if msg_usage is not None:
-                    try:
-                        self._last_usage_raw = {
-                            "input_tokens": int(getattr(msg_usage, "input_tokens", 0) or 0),
-                            "output_tokens": int(getattr(msg_usage, "output_tokens", 0) or 0),
-                            "cache_read_tokens": int(
-                                getattr(msg_usage, "cache_read_input_tokens", 0) or 0
-                            ),
-                            "cache_write_tokens": int(
-                                getattr(msg_usage, "cache_creation_input_tokens", 0) or 0
-                            ),
-                        }
-                    except (TypeError, ValueError):
-                        pass
+                # ResultMessage в конце стрима несёт фактический usage и
+                # total_cost_usd. Раньше он молча пропускался (нет content) —
+                # теперь читаем токены отсюда (оценка остаётся только fallback).
+                message_usage = getattr(message, "usage", None)
+                if message_usage is not None:
+                    raw_usage = {
+                        "usage": message_usage,
+                        "total_cost_usd": getattr(message, "total_cost_usd", None),
+                    }
                 content = getattr(message, "content", None)
                 if not content:
                     continue
@@ -355,7 +361,7 @@ class ClaudeSubscriptionClient:
                     sp_tmpfile.unlink(missing_ok=True)
                 except OSError:
                     pass
-        return "".join(chunks)
+        return "".join(chunks), raw_usage
 
     @staticmethod
     def _format_load_timeout_msg(seconds: int) -> str:  # for tests

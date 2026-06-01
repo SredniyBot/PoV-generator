@@ -328,15 +328,11 @@ def _analysis_meta_properties() -> JSONSchema:
     payload и положит в ``ArtifactMetadata.overall_confidence`` —
     единственное канонично место для уверенности.
 
-    ``blocking_questions`` — optional-список открытых вопросов модели.
-    Используется архитектурным потоком (design_document и upstream-
-    контракты grisha_new его требуют/принимают); для ТЗ-схем поле остаётся
-    необязательным и безвредным. Возвращён после слияния веток: decision-
-    ledger выпилил его как legacy, но архитектурная фича на нём держится.
+    ``blocking_questions`` удалён как legacy: открытые вопросы теперь живут в
+    реестре решений (Decision ledger), отдельного поля документа нет.
     """
     return {
         "confidence": {"type": "number"},
-        "blocking_questions": _string_array_schema(),
     }
 
 
@@ -1198,7 +1194,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                     "items": {"type": "object", "additionalProperties": True},
                 },
                 "non_functional_requirements": _string_array_schema(),
-                "open_questions": _string_array_schema(),
             },
         ),
         "component_decomposition": _analysis_object(
@@ -1221,7 +1216,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 },
                 "component_diagram": _flowchart_diagram_schema(),
                 "cross_cutting_concerns": _string_array_schema(),
-                "open_design_questions": _string_array_schema(),
             },
         ),
         "interaction_view": _analysis_object(
@@ -1261,7 +1255,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             },
         ),
         "system_context_definition": _analysis_object(
-            ["system_name", "system_purpose", "actors", "external_systems", "context_diagram", "blocking_questions"],
+            ["system_name", "system_purpose", "actors", "external_systems", "context_diagram"],
             {
                 "system_name": {"type": "string"},
                 "system_purpose": {"type": "string"},
@@ -2843,16 +2837,6 @@ def _render_design_document(payload: dict[str, Any]) -> str:
         lines.append("\n## Нефункциональные требования")
         lines.extend(f"- {item}" for item in nfrs)
 
-    open_questions = payload.get("open_questions") or []
-    if open_questions:
-        lines.append("\n## Открытые вопросы")
-        lines.extend(f"- {item}" for item in open_questions)
-
-    blocking = payload.get("blocking_questions") or []
-    if blocking:
-        lines.append("\n## Блокирующие вопросы")
-        lines.extend(f"- {item}" for item in blocking)
-
     return "\n".join(lines)
 
 
@@ -2882,14 +2866,6 @@ def _render_component_decomposition(payload: dict[str, Any]) -> str:
     if cross:
         lines.append("\n## Сквозные аспекты")
         lines.extend(f"- {item}" for item in cross)
-    questions = payload.get("open_design_questions") or []
-    if questions:
-        lines.append("\n## Открытые вопросы дизайна")
-        lines.extend(f"- {item}" for item in questions)
-    blocking = payload.get("blocking_questions") or []
-    if blocking:
-        lines.append("\n## Блокирующие вопросы")
-        lines.extend(f"- {item}" for item in blocking)
     return "\n".join(lines)
 
 
@@ -2926,10 +2902,6 @@ def _render_interaction_view(payload: dict[str, Any]) -> str:
     if failures:
         lines.append("\n## Режимы сбоев")
         lines.extend(f"- {item}" for item in failures)
-    blocking = payload.get("blocking_questions") or []
-    if blocking:
-        lines.append("\n## Блокирующие вопросы")
-        lines.extend(f"- {item}" for item in blocking)
     return "\n".join(lines)
 
 
@@ -2962,8 +2934,4 @@ def _render_system_context_definition(payload: dict[str, Any]) -> str:
     lines.append("```mermaid")
     lines.append(_build_flowchart(payload["context_diagram"]))
     lines.append("```")
-    blocking = payload.get("blocking_questions") or []
-    if blocking:
-        lines.append("\n## Блокирующие вопросы")
-        lines.extend(f"- {item}" for item in blocking)
     return "\n".join(lines)

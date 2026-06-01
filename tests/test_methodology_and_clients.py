@@ -44,7 +44,7 @@ def test_claude_sdk_client_builds_tool_use_request() -> None:
             tool_name="produce_artifact",
         )
 
-    assert result == expected_payload
+    assert result.payload == expected_payload
     fake_anthropic_module.Anthropic.assert_called_once()
     # Конструктор должен получить api_key; timeout — implementation detail.
     kwargs_anthropic = fake_anthropic_module.Anthropic.call_args.kwargs
@@ -110,4 +110,4 @@ def test_claude_subscription_client_extracts_json_from_text_response(
             schema={"type": "object"},
         )
 
-    assert result == expected
+    assert result.payload == expected

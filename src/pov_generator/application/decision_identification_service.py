@@ -375,7 +375,7 @@ class DecisionIdentificationService:
         schema = _build_identification_schema()
 
         try:
-            response = llm.chat_json(
+            result = llm.chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
@@ -384,14 +384,25 @@ class DecisionIdentificationService:
             raise ConflictError(
                 f"Ошибка выявления решений через {llm.name}: {exc}"
             ) from exc
+        response = result.payload
 
         decisions = self._build_decisions(
             response=response,
             project_id=project_id,
             task_id=task_id,
         )
-        usage = getattr(llm, "last_usage", None)
-        usage_dict = usage.to_dict() if usage is not None else {}
+        usage = result.usage
+        usage_dict = (
+            {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_tokens or 0,
+                "cache_write_tokens": 0,
+                "total_tokens": usage.total_tokens,
+            }
+            if usage is not None
+            else {}
+        )
         return IdentificationResult(
             decisions=decisions,
             provider=llm.name,

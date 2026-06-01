@@ -121,8 +121,6 @@ def _full_design_payload() -> dict:
             },
         ],
         "non_functional_requirements": ["RPS до 100", "p95 < 500ms"],
-        "open_questions": ["Sync vs async для CRM?"],
-        "blocking_questions": [],
     }
 
 
@@ -153,7 +151,6 @@ def test_synthesis_renders_all_top_level_sections() -> None:
     assert "## Развёртывание" in md
     assert "## Риски" in md
     assert "## Нефункциональные требования" in md
-    assert "## Открытые вопросы" in md
 
 
 def test_synthesis_renders_risks_table() -> None:
@@ -173,7 +170,6 @@ def test_synthesis_omits_section_when_upstream_payload_missing() -> None:
         "title": "Только контекст",
         "executive_summary": "Минимальный документ.",
         "system_context": _full_design_payload()["system_context"],
-        "blocking_questions": [],
     }
     md = render_markdown("design_document", payload)
     assert "## Системный контекст" in md
@@ -190,22 +186,10 @@ def test_synthesis_omits_executive_summary_section_when_field_empty() -> None:
     payload = {
         "title": "Без summary",
         "executive_summary": "",
-        "blocking_questions": [],
     }
     md = render_markdown("design_document", payload)
     assert "# Без summary" in md
     assert "## Краткое резюме" not in md
-
-
-def test_synthesis_emits_blocking_questions_section_when_provided() -> None:
-    payload = {
-        "title": "С блокером",
-        "executive_summary": "...",
-        "blocking_questions": ["Не определён владелец CRM"],
-    }
-    md = render_markdown("design_document", payload)
-    assert "## Блокирующие вопросы" in md
-    assert "Не определён владелец CRM" in md
 
 
 # --- schema ---------------------------------------------------------------
@@ -221,7 +205,6 @@ def test_schema_accepts_minimal_payload() -> None:
     payload = {
         "title": "X",
         "executive_summary": "Y",
-        "blocking_questions": [],
     }
     validate_json_schema(payload, schema)
 
