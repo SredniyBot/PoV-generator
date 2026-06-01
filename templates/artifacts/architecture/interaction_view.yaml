@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: architecture.interaction_view
+version: 1.0.0
+title: Потоки взаимодействия
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

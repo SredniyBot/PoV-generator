@@ -27,20 +27,90 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from ...common.errors import ConflictError
+from ...common.logging import get_logger
 from ...domain.llm_settings import (
     PURPOSE_EXECUTION_COMPLEX,
     PURPOSE_EXECUTION_STANDARD,
     PURPOSE_EXECUTION_TRIVIAL,
     ProviderConnection,
 )
-from .protocol import LLMProvider
+from .protocol import LLMProvider, LLMResult
 from .providers.claude_sdk import ClaudeSdkProvider
 from .providers.claude_subscription import ClaudeSubscriptionProvider
 from .providers.openrouter import OpenRouterProvider
+
+_llm_logger = get_logger("llm")
+
+
+class LoggingLLMProvider:
+    """Декоратор :class:`LLMProvider`: единая точка наблюдения за LLM-трафиком.
+
+    Через registry проходят ВСЕ провайдеры, а значит — все реальные вызовы
+    chat_json (execution, decision_identification/extraction, complexity,
+    domain_pack_selection). Логируем каждый: provider/model/purpose/токены/
+    длительность (INFO) или ошибку (ERROR). Проксирует контракт Protocol
+    (name/model) на обёрнутый провайдер; usage берёт из LLMResult вызова.
+    """
+
+    def __init__(self, inner: LLMProvider, *, purpose: str | None = None) -> None:
+        self._inner = inner
+        self._purpose = purpose
+
+    @property
+    def inner(self) -> LLMProvider:
+        """Обёрнутый провайдер — для интроспекции (тесты, отладка)."""
+        return self._inner
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    @property
+    def model(self) -> str | None:
+        return self._inner.model
+
+    def chat_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+    ) -> LLMResult:
+        start = time.perf_counter()
+        try:
+            result = self._inner.chat_json(
+                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema
+            )
+        except BaseException as exc:  # noqa: BLE001 — логируем и пробрасываем
+            dur = round((time.perf_counter() - start) * 1000)
+            _llm_logger.error(
+                "LLM-вызов: ошибка",
+                purpose=self._purpose,
+                provider=self._inner.name,
+                model=self._inner.model,
+                error=str(exc).strip() or type(exc).__name__,
+                duration_ms=dur,
+                exc_info=False,
+            )
+            raise
+        dur = round((time.perf_counter() - start) * 1000)
+        usage = getattr(result, "usage", None)
+        _llm_logger.info(
+            "LLM-вызов",
+            purpose=self._purpose,
+            provider=self._inner.name,
+            model=self._inner.model,
+            in_tokens=getattr(usage, "input_tokens", None) or None,
+            out_tokens=getattr(usage, "output_tokens", None) or None,
+            total_tokens=getattr(usage, "total_tokens", None) or None,
+            duration_ms=dur,
+        )
+        return result
 
 
 @dataclass(frozen=True)
@@ -125,6 +195,7 @@ class LLMProviderRegistry:
         provider: str,
         model: str | None = None,
         complexity: str | None = None,
+        purpose: str | None = None,
     ) -> LLMProvider:
         """Собрать провайдер по точному имени.
 
@@ -137,7 +208,7 @@ class LLMProviderRegistry:
                 f"Неподдерживаемый LLM-провайдер: '{provider}'. "
                 f"Поддерживаются: {', '.join(self.supported_providers)}."
             )
-        return builder(model, complexity)
+        return LoggingLLMProvider(builder(model, complexity), purpose=purpose)
 
     def from_env(
         self,
@@ -147,6 +218,7 @@ class LLMProviderRegistry:
         env_provider_var: str = "POV_EXECUTION_PROVIDER",
         env_model_var: str | None = None,
         complexity: str | None = None,
+        purpose: str | None = None,
     ) -> LLMProvider:
         """Авто-резолв провайдера из env с возможностью override."""
         provider_name = (
@@ -163,7 +235,9 @@ class LLMProviderRegistry:
         model_name = override_model
         if model_name is None and env_model_var is not None:
             model_name = os.environ.get(env_model_var)
-        return self.get(provider=provider_name, model=model_name, complexity=complexity)
+        return self.get(
+            provider=provider_name, model=model_name, complexity=complexity, purpose=purpose
+        )
 
     def _fallback_provider(self) -> str | None:
         if os.environ.get("POV_OPENROUTER_API_KEY"):
@@ -200,7 +274,9 @@ class LLMProviderRegistry:
         if self._store is None:
             # Backward-compat: пытаемся жить через env. Используется в тестах
             # complexity_selector_service до полного перехода на DI store.
-            return self.from_env(override_model=override_model, complexity=complexity)
+            return self.from_env(
+                override_model=override_model, complexity=complexity, purpose=purpose
+            )
 
         # 1. Определяем имя модели.
         model_name = override_model
@@ -232,7 +308,9 @@ class LLMProviderRegistry:
                 )
                 continue
             try:
-                return self._build_from_connection(connection, model=model_name, complexity=complexity)
+                return self._build_from_connection(
+                    connection, model=model_name, complexity=complexity, purpose=purpose
+                )
             except ConflictError as exc:
                 last_error = exc
                 continue
@@ -247,18 +325,23 @@ class LLMProviderRegistry:
         *,
         model: str | None,
         complexity: str | None,
+        purpose: str | None = None,
     ) -> LLMProvider:
         """Построить адаптер по connection. Switch по provider_type."""
         if connection.provider_type == "openrouter":
-            return OpenRouterProvider.from_connection(connection, model=model)
-        if connection.provider_type == "anthropic":
-            return ClaudeSdkProvider.from_connection(connection, model=model, complexity=complexity)
-        if connection.provider_type == "claude_cli":
-            return ClaudeSubscriptionProvider.from_connection(connection, model=model, complexity=complexity)
-        raise ConflictError(
-            f"Неизвестный provider_type '{connection.provider_type}' "
-            f"у connection '{connection.display_name}'."
-        )
+            inner: LLMProvider = OpenRouterProvider.from_connection(connection, model=model)
+        elif connection.provider_type == "anthropic":
+            inner = ClaudeSdkProvider.from_connection(connection, model=model, complexity=complexity)
+        elif connection.provider_type == "claude_cli":
+            inner = ClaudeSubscriptionProvider.from_connection(
+                connection, model=model, complexity=complexity
+            )
+        else:
+            raise ConflictError(
+                f"Неизвестный provider_type '{connection.provider_type}' "
+                f"у connection '{connection.display_name}'."
+            )
+        return LoggingLLMProvider(inner, purpose=purpose)
 
 
 def _resolve_purpose_key(purpose: str, complexity: str | None) -> str:

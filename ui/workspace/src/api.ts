@@ -1,7 +1,7 @@
 import type {
   ArtifactDetailView,
   ArtifactSummaryView,
-  ClarificationItemView,
+  AttachmentView,
   CommandResultView,
   DomainPackCatalogItemView,
   HealthView,
@@ -10,7 +10,6 @@ import type {
   WorkflowRunView,
   ObjectiveCatalogItemView,
   ProjectCreatedView,
-  ProjectClarificationsView,
   ProjectDebugView,
   ProjectListItemView,
   ProjectReviewView,
@@ -52,6 +51,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  deleteProject: (projectId: string) =>
+    request<{ status: string; project_id: string }>(`/api/projects/${projectId}`, {
+      method: "DELETE",
+    }),
   listObjectives: () => request<ObjectiveCatalogItemView[]>("/api/registry/objectives"),
   listDomainPacks: () => request<DomainPackCatalogItemView[]>("/api/registry/domain-packs"),
   listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
@@ -59,14 +62,48 @@ export const api = {
   getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
-  getClarifications: (projectId: string) => request<ProjectClarificationsView>(`/api/projects/${projectId}/clarifications`),
-  getClarificationDetail: (projectId: string, clarificationId: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/clarifications/${clarificationId}`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
   artifactPdfUrl: (projectId: string, artifactId: string) =>
     `/api/projects/${projectId}/artifacts/${artifactId}/download.pdf`,
+  artifactMdUrl: (projectId: string, artifactId: string) =>
+    `/api/projects/${projectId}/artifacts/${artifactId}/download.md`,
+  projectExportZipUrl: (projectId: string) => `/api/projects/${projectId}/export.zip`,
+  // --- attachments (входные файлы) --------------------------------------
+  getAttachments: (projectId: string) =>
+    request<AttachmentView[]>(`/api/projects/${projectId}/attachments`),
+  uploadAttachment: async (
+    projectId: string,
+    file: File,
+  ): Promise<{ attachment_id: string; original_filename: string; extraction_status: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    // FormData задаёт multipart boundary сам — Content-Type не выставляем.
+    const response = await fetch(`${API_BASE}/api/projects/${projectId}/attachments`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error((await response.text()) || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deleteAttachment: (projectId: string, attachmentId: string) =>
+    request<{ status: string; attachment_id: string }>(
+      `/api/projects/${projectId}/attachments/${attachmentId}`,
+      { method: "DELETE" },
+    ),
+  attachmentDownloadUrl: (projectId: string, attachmentId: string) =>
+    `/api/projects/${projectId}/attachments/${attachmentId}/download`,
+  // Онлайн-просмотр оригинала (inline-disposition: PDF рендерится в iframe).
+  attachmentViewUrl: (projectId: string, attachmentId: string) =>
+    `/api/projects/${projectId}/attachments/${attachmentId}/download?inline=1`,
+  // Извлечённый текст вложения (для форматов без браузерного рендера, напр. .docx).
+  getAttachmentText: (projectId: string, attachmentId: string) =>
+    request<{ attachment_id: string; extraction_status: string; text: string }>(
+      `/api/projects/${projectId}/attachments/${attachmentId}/text`,
+    ),
   getReview: (projectId: string) => request<ProjectReviewView>(`/api/projects/${projectId}/review`),
   getState: (projectId: string) => request<ProjectStateView>(`/api/projects/${projectId}/state`),
   getDebug: (projectId: string) => request<ProjectDebugView>(`/api/projects/${projectId}/debug`),
@@ -136,54 +173,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
-  answerClarification: (
-    projectId: string,
-    payload: { clarification_id: string; selected_option_ids: string[]; free_text?: string },
-  ) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/answer-clarification`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  acceptAssumption: (projectId: string, clarificationId: string) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/accept-assumption`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId }),
-    }),
   setClarificationMode: (projectId: string, mode: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-clarification-mode`, {
       method: "POST",
       body: JSON.stringify({ mode }),
     }),
-  // W5.1: clarification flow operations + audit events
-  deferClarification: (projectId: string, clarificationId: string, reason?: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/commands/defer-clarification`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId, reason }),
-    }),
-  reopenClarification: (projectId: string, clarificationId: string) =>
-    request<ClarificationItemView>(`/api/projects/${projectId}/commands/reopen-clarification`, {
-      method: "POST",
-      body: JSON.stringify({ clarification_id: clarificationId }),
-    }),
-  getClarificationEvents: (projectId: string, clarificationId: string) =>
-    request<Array<{
-      event_id: string;
-      request_id: string;
-      project_id: string;
-      event_type: string;
-      payload: Record<string, unknown>;
-      actor: string;
-      created_at: string;
-    }>>(`/api/projects/${projectId}/clarifications/${clarificationId}/events`),
-  getNextOpenClarification: (projectId: string, afterId?: string) =>
-    request<ClarificationItemView | null>(
-      `/api/projects/${projectId}/clarifications/next${afterId ? `?after_id=${encodeURIComponent(afterId)}` : ""}`,
-    ),
   setMethodology: (projectId: string, packRef: string) =>
     request<CommandResultView>(`/api/projects/${projectId}/commands/set-methodology`, {
       method: "POST",
       body: JSON.stringify({ pack_ref: packRef }),
     }),
+  activateNextObjective: (projectId: string, objectiveRef: string) =>
+    request<CommandResultView>(
+      `/api/projects/${projectId}/commands/activate-next-objective`,
+      {
+        method: "POST",
+        body: JSON.stringify({ objective_ref: objectiveRef }),
+      },
+    ),
   getOverview: (projectId: string) =>
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
   getMethodologyTrace: (projectId: string, taskId: string) =>
@@ -193,8 +200,6 @@ export const api = {
     request<import("./types").ArtifactSkeletonView>(
       `/api/projects/${projectId}/artifacts/${artifactId}/skeleton`,
     ),
-  getDecisionLog: (projectId: string) =>
-    request<import("./types").ProjectDecisionLogView>(`/api/projects/${projectId}/decisions`),
   getArtifactVersions: (projectId: string) =>
     request<import("./types").ProjectArtifactVersionsView>(
       `/api/projects/${projectId}/artifact-versions`,
@@ -205,6 +210,82 @@ export const api = {
       `/api/projects/${projectId}/failure-pins${qs}`,
     );
   },
+
+  // --- v3.0 — Decision ledger + checkpoint sessions ----------------------
+  getDecisionsRegistry: (
+    projectId: string,
+    filters?: { level?: string; status?: string; includeDetails?: boolean },
+  ) => {
+    const qs = new URLSearchParams();
+    if (filters?.level) qs.set("level", filters.level);
+    if (filters?.status) qs.set("status", filters.status);
+    if (filters?.includeDetails === false) qs.set("include_details", "false");
+    const qstr = qs.toString() ? `?${qs.toString()}` : "";
+    return request<import("./types").ProjectDecisionsView>(
+      `/api/projects/${projectId}/decisions${qstr}`,
+    );
+  },
+  getDecisionDetail: (projectId: string, decisionId: string) =>
+    request<import("./types").DecisionItemView>(
+      `/api/projects/${projectId}/decisions/${decisionId}`,
+    ),
+  verifyDecision: (
+    projectId: string,
+    decisionId: string,
+    verified: boolean = true,
+  ) =>
+    request<import("./types").DecisionItemView>(
+      `/api/projects/${projectId}/decisions/${decisionId}/verify`,
+      {
+        method: "POST",
+        body: JSON.stringify({ verified }),
+      },
+    ),
+  verifyArtifact: (projectId: string, artifactId: string, verified: boolean = true) =>
+    request<ArtifactDetailView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/verify`,
+      {
+        method: "POST",
+        body: JSON.stringify({ verified }),
+      },
+    ),
+  getDecisionsForArtifact: (projectId: string, artifactId: string) =>
+    request<import("./types").DecisionItemView[]>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/decisions`,
+    ),
+  getCheckpoints: (projectId: string) =>
+    request<import("./types").ProjectCheckpointsView>(
+      `/api/projects/${projectId}/checkpoints`,
+    ),
+  getCheckpointDetail: (projectId: string, sessionId: string) =>
+    request<import("./types").CheckpointSessionView>(
+      `/api/projects/${projectId}/checkpoints/${sessionId}`,
+    ),
+  submitCheckpointAnswers: (
+    projectId: string,
+    sessionId: string,
+    answers: import("./types").CheckpointAnswerPayload[],
+  ) =>
+    request<import("./types").CheckpointSessionView>(
+      `/api/projects/${projectId}/checkpoints/${sessionId}/answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers }),
+      },
+    ),
+  // Единый bulk-ответ на ВСЕ открытые решения проекта (поверх сессий).
+  // Используется единым экраном открытых решений в параллельном режиме.
+  answerDecisions: (
+    projectId: string,
+    answers: import("./types").CheckpointAnswerPayload[],
+  ) =>
+    request<import("./types").ProjectDecisionsView>(
+      `/api/projects/${projectId}/decisions/answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers }),
+      },
+    ),
 
   // --- Settings: LLM providers / models / assignments --------------------
   listPurposes: () => request<{ id: string; label: string }[]>("/api/settings/purposes"),

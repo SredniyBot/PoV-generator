@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import threading
 import time
-import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from pov_generator.application.clarification_service import ClarificationDraft, ClarificationService
+from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.planning_service import PlanningService
@@ -15,8 +14,7 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
-from pov_generator.common.serialization import utc_now_iso
-from pov_generator.domain.clarifications import ClarificationCandidate, ClarificationOption
+from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -24,44 +22,7 @@ from pov_generator.interfaces.api import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
-
-
-class FakeClarificationDraftProvider:
-    def build_draft(
-        self,
-        *,
-        candidate: ClarificationCandidate,
-        context: dict[str, object],
-        fallback: ClarificationDraft,
-    ) -> ClarificationDraft:
-        assert "business_request" in context
-        return ClarificationDraft(
-            description=(
-                "Система анализирует проектный запрос и обнаружила решение, которое нельзя надежно вывести из текущего текста. "
-                "В запросе есть признаки нескольких допустимых трактовок, и каждая из них по-разному влияет на состав будущего ТЗ. "
-                "Ответ пользователя нужен, чтобы не подменить бизнес-потребность техническим предположением. "
-                "После ответа система сможет зафиксировать решение и продолжить декомпозицию требований."
-            ),
-            answer_mode="multiple",
-            options=(
-                ClarificationOption(
-                    option_id="strict_poc",
-                    label="Сфокусироваться только на PoC",
-                    description="Описать минимальный объем работ для проверки гипотезы.",
-                    effect_preview="ТЗ будет ограничивать текущий этап проверкой ценности и реализуемости.",
-                    confidence=0.68,
-                ),
-                ClarificationOption(
-                    option_id="future_scale",
-                    label="Сразу учитывать будущее масштабирование",
-                    description="Добавить требования, которые важны после успешного PoC.",
-                    effect_preview="ТЗ будет содержать отдельные требования к развитию решения.",
-                    confidence=0.42,
-                ),
-            ),
-            recommended_option_id="strict_poc",
-            visibility="architectural",
-        )
+SIGNOFF_GATE_TITLE = "Согласование ТЗ с заказчиком"
 
 
 def build_services():
@@ -71,9 +32,45 @@ def build_services():
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    validation_service = ValidationService(runtime, ClarificationService(runtime, provider="stub"))
+    validation_service = ValidationService(runtime, CheckpointService(runtime))
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     return registry_service, runtime, project_service, planning_service, workflow_service
+
+
+def _approve_signoff_via_checkpoint(
+    runtime: SqliteRuntime, workspace: Path, project_id: str, *, choice: str = "approved"
+) -> None:
+    """v3.1: signoff hits Decision/CheckpointSession pipeline.
+
+    Находит pending checkpoint-сессию, в которой есть decision со signoff-title
+    ("Согласовать результат gate 'Согласование ТЗ с заказчиком'?"), и
+    финализирует её через CheckpointService.submit_answers с выбором
+    ``approved`` (или указанной альтернативой).
+    """
+    sessions = runtime.list_checkpoint_sessions(workspace, project_id=project_id, status="pending")
+    checkpoint_service = CheckpointService(runtime)
+    for session in sessions:
+        signoff_decisions = []
+        for decision_id in session.decision_ids:
+            decision = runtime.get_decision(workspace, decision_id)
+            if SIGNOFF_GATE_TITLE in decision.title:
+                signoff_decisions.append(decision)
+        if not signoff_decisions:
+            continue
+        answers = tuple(
+            CheckpointAnswer(
+                decision_id=decision.decision_id,
+                kind="select_alternative",
+                selected_option_id=choice,
+            )
+            for decision in signoff_decisions
+        )
+        checkpoint_service.submit_answers(workspace, session_id=session.session_id, answers=answers)
+        return
+    raise AssertionError(
+        f"Не найдена pending CheckpointSession с signoff-decision (title contains "
+        f"{SIGNOFF_GATE_TITLE!r}) для проекта {project_id!r}"
+    )
 
 
 def init_project(workspace: Path, request_text: str, domain_packs: tuple[str, ...] = ()) -> str:
@@ -101,17 +98,8 @@ def run_stub_workflow(workspace: Path) -> None:
     # objective until the operator confirms approval.
     assert result.stopped_reason == "planner_blocked"
 
-    clarification_service = ClarificationService(runtime, provider="stub")
-    signoff = next(
-        req
-        for req in runtime.list_clarification_requests(workspace)
-        if req.source_type == "quality_gate"
-        and req.source_id == "client.requirements_signoff@1.0.0"
-        and req.status == "open"
-    )
-    clarification_service.answer_clarification(
-        workspace, request_id=signoff.request_id, selected_option_ids=("approved",)
-    )
+    manifest = runtime.load_manifest(workspace)
+    _approve_signoff_via_checkpoint(runtime, workspace, manifest.project_id)
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
     assert result.stopped_reason == "objective_completed"
@@ -161,7 +149,9 @@ def test_api_exposes_operator_projections_for_task_graph(tmp_path: Path) -> None
     assert artifact_detail["markdown_content"] is not None
 
     review = client.get(f"/api/projects/{project_id}/review").json()
-    assert review["status"] == "passed"
+    # LLM-ревью удалён (вариант B): /review больше не производит review_report,
+    # проекция возвращает "missing". Валидатор ТЗ теперь — человеческий sign-off.
+    assert review["status"] == "missing"
 
     state = client.get(f"/api/projects/{project_id}/state").json()
     assert state["root_task_id"] is not None
@@ -171,6 +161,63 @@ def test_api_exposes_operator_projections_for_task_graph(tmp_path: Path) -> None
     assert len(debug["tasks"]) >= 16
     assert len(debug["execution_runs"]) >= 11
     assert len(debug["context_manifests"]) >= 11
+
+
+def test_list_projects_isolates_broken_project(tmp_path: Path, monkeypatch) -> None:
+    """Один проект, который не удаётся построить целиком, не должен ронять
+    весь список (регрессия 409 на GET /api/projects).
+
+    Сценарий из практики: проект создан старой версией флоу, его граф задач
+    ссылается на шаблон, удалённый из реестра. Раньше исключение из одного
+    проекта поднималось наружу и весь список отвечал 409 → пустой экран.
+    Теперь битый проект показывается в деградированном виде, остальные —
+    нормально.
+    """
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.common.errors import ConflictError
+
+    runtime_root = tmp_path / "runtime"
+    good_id = init_project(
+        runtime_root / "good",
+        "Подготовить ТЗ для сервиса нормализации входящих заявок.",
+    )
+    bad_id = init_project(
+        runtime_root / "bad",
+        "Подготовить ТЗ для сервиса маршрутизации обращений.",
+    )
+
+    # Падение моделируем на _build_task_graph — это тот же seam, где в
+    # реальном кейсе всплывает "Task template not found" (резолв шаблонов
+    # при построении графа). list_projects строит проекции через приватные
+    # билдеры, а не через публичные project_* методы.
+    original_build_task_graph = WorkspaceQueryService._build_task_graph
+
+    def flaky_build_task_graph(self, context, *args, **kwargs):
+        if context.manifest.project_id == bad_id:
+            raise ConflictError(
+                "Task template not found: common.review_requirements_spec@1.0.0"
+            )
+        return original_build_task_graph(self, context, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceQueryService, "_build_task_graph", flaky_build_task_graph)
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.05)
+    client = TestClient(app)
+
+    resp = client.get("/api/projects")
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    by_id = {item["project_id"]: item for item in payload}
+    assert set(by_id) == {good_id, bad_id}
+
+    bad = by_id[bad_id]
+    assert bad["status_label"] == "Ошибка загрузки"
+    assert bad["has_blockers"] is True
+    assert bad["current_step_title"] is None
+
+    good = by_id[good_id]
+    assert good["status_label"] != "Ошибка загрузки"
 
 
 def test_api_websocket_reports_projection_changes_after_command(tmp_path: Path) -> None:
@@ -249,6 +296,37 @@ def test_api_can_list_registry_entries_and_create_project(tmp_path: Path) -> Non
     shell_payload = shell.json()
     assert shell_payload["name"] == "UI Created Demo"
     assert shell_payload["active_domain_packs"] == ["frontend.web_workspace@1.0.0"]
+
+
+def test_api_delete_project_removes_workspace(tmp_path: Path) -> None:
+    """DELETE /api/projects/{id} удаляет workspace целиком: проект исчезает
+    из списка, а его папка с диска удаляется."""
+    runtime_root = tmp_path / "runtime"
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/projects",
+        json={
+            "name": "To Be Deleted",
+            "objective_ref": OBJECTIVE_REF,
+            "request_text": "Тестовый проект для удаления.",
+            "domain_pack_refs": ["frontend.web_workspace@1.0.0"],
+        },
+    ).json()
+    project_id = created["project_id"]
+    assert any(p["project_id"] == project_id for p in client.get("/api/projects").json())
+
+    deleted = client.delete(f"/api/projects/{project_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    # Исчез из списка и его shell больше недоступен.
+    assert all(p["project_id"] != project_id for p in client.get("/api/projects").json())
+    assert client.get(f"/api/projects/{project_id}/shell").status_code in (404, 409, 500)
+
+    # Повторное удаление — 404 (резолв до side-effect'ов).
+    assert client.delete(f"/api/projects/{project_id}").status_code == 404
 
 
 def test_api_retry_task_reexecutes_failed_task(tmp_path: Path) -> None:
@@ -348,196 +426,3 @@ def test_api_create_project_can_auto_select_domain_packs(tmp_path: Path) -> None
         and "подбора доменных пакетов" in str(item.get("statement", "")).lower()
         for item in state_payload["known_facts"]
     )
-
-
-def test_api_exposes_and_answers_clarification_requests(tmp_path: Path) -> None:
-    runtime_root = tmp_path / "runtime"
-    workspace = runtime_root / "case-clarification"
-    project_id = init_project(
-        workspace,
-        "Нужно подготовить техническое задание для сервиса, который помогает HR оценивать риски.",
-    )
-    runtime = SqliteRuntime()
-    state = runtime.load_process_state(workspace)
-    assert state.root_task_id is not None
-    candidate = ClarificationCandidate(
-        candidate_id=str(uuid.uuid4()),
-        project_id=project_id,
-        source_type="validation",
-        source_id="test:business-priority",
-        need="Уточнить бизнес-приоритет, который влияет на дальнейшую детализацию ТЗ.",
-        question="Что важнее зафиксировать в PoC: точность прогноза или скорость проверки гипотезы?",
-        description=(
-            "Система готовит ТЗ для сервиса, который помогает HR оценивать риски. "
-            "На текущем этапе нужно определить, какой акцент важнее для PoC: быстро проверить гипотезу или строже описать качество прогноза. "
-            "Это решение влияет на критерии приемки, состав требований к данным и глубину аналитической части."
-        ),
-        rationale="Без этого выбора система не может надежно расставить акценты в требованиях и критериях приемки.",
-        impact="Ответ попадет в решения проекта и будет учитываться следующими задачами.",
-        severity="high",
-        confidence_without_user=0.2,
-        visibility="architectural",
-        default_assumption=None,
-        recommended_answer="speed",
-        answer_mode="single",
-        options=(
-            ClarificationOption(
-                option_id="speed",
-                label="Скорость проверки",
-                description="Сфокусироваться на быстром PoC и минимальном достаточном составе требований.",
-                confidence=0.64,
-            ),
-            ClarificationOption(
-                option_id="accuracy",
-                label="Точность прогноза",
-                description="Сфокусироваться на качестве модели, данных и строгих метриках.",
-                confidence=0.36,
-            ),
-        ),
-        affected_task_ids=(state.root_task_id,),
-        blocking_scope="objective",
-        created_at=utc_now_iso(),
-    )
-    decisions = ClarificationService(runtime).register_candidates(workspace, (candidate,))
-    assert decisions[0].action == "ask"
-    assert decisions[0].request_id is not None
-
-    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.02)
-    client = TestClient(app)
-
-    clarifications = client.get(f"/api/projects/{project_id}/clarifications")
-    assert clarifications.status_code == 200
-    clarifications_payload = clarifications.json()
-    assert clarifications_payload["open_count"] == 1
-    assert clarifications_payload["blocking_count"] == 1
-    request_id = clarifications_payload["items"][0]["clarification_id"]
-    assert clarifications_payload["items"][0]["recommended_option_id"] == "speed"
-    assert clarifications_payload["items"][0]["description"].startswith("Система готовит ТЗ")
-    assert clarifications_payload["items"][0]["visibility"] == "architectural"
-    assert clarifications_payload["items"][0]["options"][0]["confidence"] == 0.64
-
-    task_graph = client.get(f"/api/projects/{project_id}/task-graph")
-    assert task_graph.status_code == 200
-    assert task_graph.json()["nodes"][0]["blocking_clarification_count"] == 1
-
-    answer = client.post(
-        f"/api/projects/{project_id}/commands/answer-clarification",
-        json={"clarification_id": request_id, "selected_option_ids": ["speed"]},
-    )
-    assert answer.status_code == 200
-    assert answer.json()["status"] == "accepted"
-
-    updated = client.get(f"/api/projects/{project_id}/clarifications").json()
-    assert updated["open_count"] == 0
-    assert updated["answered_count"] == 1
-    assert updated["items"][0]["status"] == "answered"
-    assert updated["items"][0]["resolution_summary"] == "Скорость проверки"
-
-    refreshed_task_graph = client.get(f"/api/projects/{project_id}/task-graph").json()
-    assert refreshed_task_graph["nodes"][0]["blocking_clarification_count"] == 0
-
-    state_payload = client.get(f"/api/projects/{project_id}/state").json()
-    assert any("Скорость проверки" in item["statement"] for item in state_payload["decisions"])
-
-
-def test_clarification_candidates_created_from_questions_have_answer_options(tmp_path: Path) -> None:
-    runtime_root = tmp_path / "runtime"
-    workspace = runtime_root / "case-clarification-options"
-    project_id = init_project(
-        workspace,
-        "Нужно подготовить ТЗ для аналитического сервиса, но часть бизнес-вводных пока не раскрыта.",
-    )
-    runtime = SqliteRuntime()
-    service = ClarificationService(runtime, provider="stub")
-    state = runtime.load_process_state(workspace)
-    assert state.root_task_id is not None
-
-    candidate = service.candidate_from_question(
-        project_id=project_id,
-        source_type="validation",
-        source_id="test:missing-context",
-        question="Какой бизнес-контекст нужно учесть перед продолжением?",
-        affected_task_ids=(state.root_task_id,),
-        related_artifact_ids=(),
-    )
-    decisions = service.register_candidates(workspace, (candidate,))
-    assert decisions[0].request_id is not None
-
-    request = runtime.get_clarification_request(workspace, decisions[0].request_id)
-    assert request.answer_mode == "single"
-    assert len(request.description.split(". ")) >= 3
-    # candidate_from_question default role = business → visibility = principal.
-    assert request.visibility == "principal"
-    assert len(request.options) >= 2
-    assert {option.option_id for option in request.options} >= {
-        "include_in_current_project",
-        "use_working_assumption",
-    }
-    assert all(option.confidence is not None for option in request.options)
-
-    raw_candidate = ClarificationCandidate(
-        candidate_id=str(uuid.uuid4()),
-        project_id=project_id,
-        source_type="validation",
-        source_id="test:raw-free-text-context",
-        need="Уточнить недостающий контекст проекта.",
-        question="Какой контекст проекта сейчас критично не потерять?",
-        description=(
-            "Источник вопроса обнаружил недостающий контекст в проекте. "
-            "Без ответа система не сможет надежно понять, какие вводные критичны для дальнейшего ТЗ. "
-            "Пользователь должен выбрать, как учитывать этот контекст, либо пояснить ответ своими словами."
-        ),
-        rationale="Источник вопроса не предоставил варианты ответа, но пользовательский вопрос не должен быть пустым полем.",
-        impact="Ответ будет учтен при дальнейшей детализации требований.",
-        severity="high",
-        confidence_without_user=0.1,
-        visibility="architectural",
-        default_assumption=None,
-        recommended_answer=None,
-        answer_mode="free_text",
-        options=(),
-        affected_task_ids=(state.root_task_id,),
-        related_artifact_ids=(),
-        blocking_scope="task",
-        created_at=utc_now_iso(),
-    )
-    raw_decision = service.register_candidates(workspace, (raw_candidate,))[0]
-    assert raw_decision.request_id is not None
-
-    raw_request = runtime.get_clarification_request(workspace, raw_decision.request_id)
-    assert raw_request.answer_mode == "single"
-    assert len(raw_request.options) >= 2
-    assert all(option.option_id != "synthetic:other" and "друг" not in option.label.lower() for option in raw_request.options)
-
-
-def test_clarification_request_details_are_generated_by_provider(tmp_path: Path) -> None:
-    runtime_root = tmp_path / "runtime"
-    workspace = runtime_root / "case-clarification-provider"
-    project_id = init_project(
-        workspace,
-        "Нужно подготовить ТЗ для пилота, но пока не ясно, должен ли он учитывать будущий промышленный контур.",
-    )
-    runtime = SqliteRuntime()
-    service = ClarificationService(runtime, draft_provider=FakeClarificationDraftProvider())
-    state = runtime.load_process_state(workspace)
-    assert state.root_task_id is not None
-
-    candidate = service.candidate_from_question(
-        project_id=project_id,
-        source_type="validation",
-        source_id="test:provider-draft",
-        question="Какую рамку этапа нужно считать целевой для текущего ТЗ?",
-        affected_task_ids=(state.root_task_id,),
-        related_artifact_ids=(),
-    )
-    decision = service.register_candidates(workspace, (candidate,))[0]
-    assert decision.request_id is not None
-
-    request = runtime.get_clarification_request(workspace, decision.request_id)
-    assert request.description.startswith("Система анализирует проектный запрос")
-    assert request.answer_mode == "multiple"
-    assert request.recommended_option_id == "strict_poc"
-    # FakeClarificationDraftProvider returns visibility=architectural now.
-    assert request.visibility == "architectural"
-    assert [option.option_id for option in request.options] == ["strict_poc", "future_scale"]
-    assert request.options[0].confidence == 0.68

@@ -143,3 +143,56 @@
   border-radius: var(--radius-md);
   background: var(--surface-elevated-strong);
 }
+
+/* Приложенные файлы в форме создания проекта (фича: загрузка входных файлов). */
+.create-form__files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.create-form__files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.create-form__files-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  font-size: var(--font-size-meta);
+}
+
+.create-form__files-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.create-form__files-size {
+  color: var(--text-tertiary);
+}
+
+.create-form__files-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 var(--space-1);
+}
+
+.create-form__files-remove:hover {
+  color: var(--danger);
+}

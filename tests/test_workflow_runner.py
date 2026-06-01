@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from pov_generator.application.clarification_service import ClarificationService
+from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.execution_service import ExecutionService
 from pov_generator.application.planning_service import PlanningService
@@ -42,8 +42,7 @@ def _bootstrap(tmp_path: Path):
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    clarification_service = ClarificationService(runtime, provider="stub")
-    validation_service = ValidationService(runtime, clarification_service)
+    validation_service = ValidationService(runtime, CheckpointService(runtime))
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     runner = WorkflowRunnerService(runtime, registry_service, workflow_service, planning_service)
 
@@ -84,8 +83,11 @@ def test_start_run_until_blocked_returns_immediately_with_pending_status(tmp_pat
     elapsed = time.time() - start
 
     # start не должен висеть на шагах — он только создаёт запись и стартует
-    # daemon thread. Должен вернуться < 1 секунды.
-    assert elapsed < 1.0, f"start_run занял {elapsed:.2f}s (ожидаем мгновенный возврат)"
+    # daemon thread. Шаги выполняются МИНУТЫ, поэтому любой суб-секундный/
+    # пара-секундный возврат доказывает асинхронность. Порог 2с (а не 1с):
+    # в тайминг попадает холодный парс реестра (~0.9с) у свежего
+    # registry_service ранера — это не «выполнение шагов».
+    assert elapsed < 2.0, f"start_run занял {elapsed:.2f}s (ожидаем мгновенный возврат)"
     assert record.status in {"pending", "running"}
     assert record.max_steps == 2
     assert record.cancel_requested is False
@@ -132,13 +134,15 @@ def test_cancel_run_marks_request_and_returns_true(tmp_path: Path, monkeypatch) 
 
     workspace, project_id, runner, runtime = _bootstrap(tmp_path)
 
-    original_run_next = WorkflowService.run_next
+    # Параллельный шедулер запускает шаги через execute_step (не run_next).
+    # Замедляем его, чтобы run оставался активным к моменту cancel_run.
+    original_execute_step = WorkflowService.execute_step
 
-    def slow_run_next(self, workspace, snapshot, *, provider=None, model=None):
+    def slow_execute_step(self, workspace, snapshot, **kwargs):
         time.sleep(0.5)
-        return original_run_next(self, workspace, snapshot, provider=provider, model=model)
+        return original_execute_step(self, workspace, snapshot, **kwargs)
 
-    monkeypatch.setattr(WorkflowService, "run_next", slow_run_next)
+    monkeypatch.setattr(WorkflowService, "execute_step", slow_execute_step)
 
     record = runner.start_run_until_blocked(
         workspace, project_id, provider="stub", model=None, max_steps=50,

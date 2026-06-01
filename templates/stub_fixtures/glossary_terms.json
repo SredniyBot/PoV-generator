@@ -17,6 +17,5 @@
     }
   ],
   "domain_scope": "Базовый набор терминов для PoV-проекта; уточняется по специфике бизнес-запроса.",
-  "confidence": 0.8,
-  "blocking_questions": []
+  "confidence": 0.8
 }

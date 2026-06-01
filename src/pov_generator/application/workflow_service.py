@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..common.cancellation import CancellationError, CancellationToken
 from ..common.serialization import utc_now_iso
 from ..domain.positions import Position
 from ..domain.process_state import CloseGapPatch, UpsertReadinessPatch
@@ -22,6 +23,11 @@ class WorkflowStepResult:
     validation_status: str | None
     applied_patches: tuple[str, ...] = field(default_factory=tuple)
     reasons: tuple[str, ...] = field(default_factory=tuple)
+    # v3.0: если задача приостановлена checkpoint'ом выявления решений — id
+    # сессии, которую пользователь должен закрыть. validation_status
+    # тогда = "paused_for_checkpoint" (псевдо-статус; настоящих
+    # validation_runs не создаётся).
+    checkpoint_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ class WorkflowService:
         *,
         provider: str | None = None,
         model: str | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> WorkflowStepResult:
         decision = self._planning_service.plan(workspace, snapshot, mode="apply")
         if decision.outcome != "selected" or not decision.selected_task_id:
@@ -72,6 +79,40 @@ class WorkflowService:
             provider=provider,
             model=model,
             reasons=decision.reasons,
+            cancellation=cancellation,
+        )
+
+    def execute_step(
+        self,
+        workspace: Path,
+        snapshot,
+        *,
+        task_id: str,
+        selected_step_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> WorkflowStepResult:
+        """Выполнить КОНКРЕТНУЮ (уже выбранную) задачу — точка входа для
+        параллельного шедулера.
+
+        В отличие от :meth:`run_next` (который сам планирует и выбирает одну
+        задачу), здесь задача уже выбрана шедулером из набора admissible.
+        Жизненный цикл тот же: start → execute → validate → apply → complete
+        (или cancel→ready / fail). ``cancellation`` пробрасывается, чтобы
+        воркер можно было форсированно прервать.
+        """
+        task = self._runtime.get_task(workspace, task_id)
+        return self._execute_existing_task(
+            workspace,
+            snapshot,
+            task_id=task_id,
+            planning_outcome="selected",
+            selected_step_id=selected_step_id or task.task_key,
+            provider=provider,
+            model=model,
+            reasons=("Запущена параллельным шедулером.",),
+            cancellation=cancellation,
         )
 
     def retry_task(
@@ -107,6 +148,7 @@ class WorkflowService:
         provider: str | None,
         model: str | None,
         reasons: tuple[str, ...],
+        cancellation: CancellationToken | None = None,
     ) -> WorkflowStepResult:
         self._planning_service.transition_task(workspace, task_id, "start")
         try:
@@ -116,13 +158,53 @@ class WorkflowService:
                 task_id,
                 provider=provider,
                 model=model,
+                cancellation=cancellation,
             )
+            # v3.0: checkpoint выявления решений может остановить задачу до
+            # основной генерации. В этом случае:
+            #   - не запускаем валидацию (артефакта нет);
+            #   - task возвращаем в статус "blocked" (через `fail`-transition
+            #     это даст возможность retry после submit_answers);
+            #   - возвращаем step с маркером paused_for_checkpoint.
+            if execution_bundle.result.status == "paused_for_checkpoint":
+                # Сообщение — user-facing: НЕ упоминаем «сессию» и её id
+                # (пользователь не должен знать о сущности сессии вопросов).
+                # Привязываемся к понятному названию задачи/артефакта.
+                paused_task = self._runtime.get_task(workspace, task_id)
+                pause_message = (
+                    f"Ожидает ваших решений перед сборкой «{paused_task.title}»"
+                )
+                self._planning_service.transition_task(
+                    workspace,
+                    task_id,
+                    "fail",
+                    payload={
+                        "error_message": pause_message,
+                        "error_type": "paused_for_checkpoint",
+                    },
+                )
+                return WorkflowStepResult(
+                    planning_outcome=planning_outcome,
+                    task_id=task_id,
+                    selected_step_id=selected_step_id,
+                    execution_run_id=None,
+                    validation_status="paused_for_checkpoint",
+                    reasons=(pause_message,),
+                    checkpoint_session_id=execution_bundle.result.checkpoint_session_id,
+                )
             validation_run = self._validation_service.validate_execution(
                 workspace,
                 snapshot,
                 task_id=task_id,
                 execution_bundle=execution_bundle,
             )
+        except CancellationError:
+            # Принудительная остановка: возвращаем шаг в `ready` (не `failed`),
+            # чтобы следующий запуск продолжил ровно с него. Артефакты не
+            # записаны (отмена случилась до коммита), откатывать нечего.
+            # Пробрасываем дальше — runner финализирует run как `cancelled`.
+            self._planning_service.transition_task(workspace, task_id, "cancel")
+            raise
         except Exception as exc:
             message = str(exc).strip() or "Во время исполнения шага произошла ошибка."
             self._planning_service.transition_task(

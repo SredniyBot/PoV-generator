@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,3 +43,15 @@ class WorkspaceCatalog:
             if item.project_id == project_id:
                 return item
         raise NotFoundError(f"Проект '{project_id}' не найден в каталоге runtime.")
+
+    def delete_workspace(self, project_id: str) -> Path:
+        """Удалить workspace проекта целиком (runtime.db + артефакты + manifest).
+
+        Возвращает путь удалённой папки. Вызывающая сторона ОБЯЗАНА сначала
+        остановить активный run проекта — иначе daemon-поток через `_connect`
+        пере-создаст папку при следующей записи, и проект «воскреснет»
+        частично. См. `interfaces/api.py::delete_project`.
+        """
+        ref = self.resolve_workspace(project_id)
+        shutil.rmtree(ref.workspace, ignore_errors=False)
+        return ref.workspace

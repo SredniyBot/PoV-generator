@@ -3,10 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .clarifications import ClarificationCandidate
+from .decisions import DecisionInput
 
 ExecutionProvider = Literal["stub", "openrouter", "claude_sdk", "claude_subscription"]
-ExecutionStatus = Literal["succeeded", "failed", "cancelled"]
+# v3.0: добавлен статус `paused_for_checkpoint` — задача дошла до этапа
+# выявления решений, есть решения на уровне пользователя; workflow ждёт submit
+# сессии в /api/projects/.../checkpoints/.../answer, после чего задача
+# будет ретрайнута и подхватит финализированные решения.
+ExecutionStatus = Literal["succeeded", "failed", "cancelled", "paused_for_checkpoint"]
 
 
 @dataclass(frozen=True)
@@ -47,8 +51,13 @@ class ExecutionResult:
     proposed_goal: str | None = None
     failure_code: str | None = None
     failure_message: str | None = None
-    # Кандидаты уточнений, полученные от правил активной methodology_pack во время
-    # исполнения. Не персистятся в execution_runs — это in-memory канал между
-    # execution_service и validation_service: validation регистрирует их через
-    # ClarificationService, не пересчитывая правила.
-    methodology_candidates: tuple[ClarificationCandidate, ...] = field(default_factory=tuple)
+    # v3.1: DecisionInput от правил активной methodology_pack. In-memory
+    # канал между execution_service и validation_service: validation
+    # регистрирует их через CheckpointService.register_decision_inputs,
+    # не пересчитывая правила. До v3.1 поле было `methodology_candidates`
+    # типа ClarificationCandidate — переименовано в `methodology_decisions`.
+    methodology_decisions: tuple[DecisionInput, ...] = field(default_factory=tuple)
+    # v3.0: ID checkpoint-сессии, если задача приостановлена для участия
+    # пользователя в решениях. Заполняется одновременно со
+    # status="paused_for_checkpoint"; в остальных случаях — None.
+    checkpoint_session_id: str | None = None

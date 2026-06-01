@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
+from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar
 
 from ..common.errors import NotFoundError
 from ..common.serialization import json_dumps, json_loads, to_primitive, utc_now_iso
@@ -15,8 +19,17 @@ from ..domain.artifacts import (
     ContextItem,
     ContextManifest,
 )
-from ..domain.clarifications import ClarificationCandidate, ClarificationOption, ClarificationRequest
+from ..domain.attachments import AttachmentRecord
+from ..domain.checkpoints import CheckpointSession, CheckpointStatus
+from ..domain.decisions import (
+    Decision,
+    DecisionAlternative,
+    DecisionLevel,
+    DecisionSource,
+    DecisionStatus,
+)
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
+from ..domain.llm_usage import LLMUsageAggregate, LLMUsageRecord
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.positions import Position, PositionAlternative
 from ..domain.process_state import (
@@ -39,8 +52,153 @@ from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
 
-
 # --- сериализация Layer A (знания) -------------------------------------------
+
+
+# --- сериализация CheckpointSession (v3.0) ------------------------------------
+
+
+def _checkpoint_from_row(row: sqlite3.Row) -> CheckpointSession:
+    decision_ids = tuple(
+        json_loads(row["decision_ids_json"]) if row["decision_ids_json"] else []
+    )
+    return CheckpointSession(
+        session_id=row["session_id"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        task_title=row["task_title"],
+        artifact_role=row["artifact_role"],
+        status=row["status"],
+        decision_ids=decision_ids,
+        created_at=row["created_at"],
+        finalized_at=row["finalized_at"],
+        finalized_by=row["finalized_by"],
+    )
+
+
+# --- сериализация Decision (v3.0 — реестр решений) ---------------------------
+
+
+def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) -> dict[str, object]:
+    """Превратить Decision в dict для bind в SQL.
+
+    Tuple-коллекции (alternatives, affected_artifact_ids, depends_on_decision_ids)
+    сериализуются в JSON-строки. Это упрощение оправдано на v3.0 — см.
+    комментарий к схеме в ``_ensure_schema``.
+    """
+    return {
+        "decision_id": decision.decision_id,
+        "project_id": decision.project_id,
+        "title": decision.title,
+        "description": decision.description_without_category,
+        "chosen_option_id": decision.chosen_option_id,
+        "alternatives_json": json_dumps([to_primitive(alt) for alt in decision.alternatives]),
+        "rationale": decision.rationale,
+        "level": decision.level,
+        "level_rationale": decision.level_rationale,
+        "confidence": float(decision.confidence),
+        "status": decision.status,
+        "source": decision.source,
+        "source_task_id": decision.source_task_id,
+        "affected_artifact_ids_json": json_dumps(list(decision.affected_artifact_ids)),
+        "depends_on_decision_ids_json": json_dumps(list(decision.depends_on_decision_ids)),
+        "user_action": decision.user_action,
+        "original_chosen_option_id": decision.original_chosen_option_id,
+        "user_free_text_answer": decision.user_free_text_answer,
+        "free_form_level_override": decision.free_form_level_override,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "category": decision.normalized_category,
+        "answer_mode": decision.answer_mode,
+        "chosen_option_ids_json": json_dumps(list(decision.chosen_option_ids)),
+        "user_verified": 1 if decision.user_verified else 0,
+        "user_verified_at": decision.user_verified_at,
+    }
+
+
+def _decision_from_row(row: sqlite3.Row) -> Decision:
+    """Десериализовать строку из таблицы decisions.
+
+    Защитное чтение коллекций: пустая JSON-строка или null → пустой tuple.
+    Это спасает от мусора в существующих базах при миграции.
+    """
+    raw_alts = json_loads(row["alternatives_json"]) if row["alternatives_json"] else []
+    alternatives = tuple(
+        DecisionAlternative(
+            option_id=str(item["option_id"]),
+            label=str(item.get("label", "")),
+            description=str(item.get("description", "")),
+            pros=tuple(item.get("pros", ()) or ()),
+            cons=tuple(item.get("cons", ()) or ()),
+            confidence=(
+                float(item["confidence"])
+                if item.get("confidence") is not None
+                else None
+            ),
+        )
+        for item in raw_alts
+    )
+    affected = tuple(
+        json_loads(row["affected_artifact_ids_json"])
+        if row["affected_artifact_ids_json"]
+        else []
+    )
+    depends_on = tuple(
+        json_loads(row["depends_on_decision_ids_json"])
+        if row["depends_on_decision_ids_json"]
+        else []
+    )
+    # v3.1 поля. Защитный access — БД могла быть создана до миграции.
+    try:
+        answer_mode = row["answer_mode"] or "single"
+    except (KeyError, IndexError):
+        answer_mode = "single"
+    try:
+        chosen_ids_raw = row["chosen_option_ids_json"]
+        chosen_option_ids = tuple(json_loads(chosen_ids_raw)) if chosen_ids_raw else ()
+    except (KeyError, IndexError):
+        chosen_option_ids = ()
+    # v3.4 — user_verified метка. Защитный read для legacy баз.
+    try:
+        user_verified = bool(row["user_verified"])
+    except (KeyError, IndexError):
+        user_verified = False
+    try:
+        user_verified_at = row["user_verified_at"]
+    except (KeyError, IndexError):
+        user_verified_at = None
+    try:
+        category = str(row["category"] or "")
+    except (KeyError, IndexError):
+        category = ""
+    return Decision(
+        decision_id=row["decision_id"],
+        project_id=row["project_id"],
+        title=row["title"],
+        description=row["description"],
+        chosen_option_id=row["chosen_option_id"],
+        alternatives=alternatives,
+        rationale=row["rationale"],
+        level=row["level"],
+        level_rationale=row["level_rationale"],
+        confidence=float(row["confidence"]),
+        status=row["status"],
+        source=row["source"],
+        source_task_id=row["source_task_id"],
+        affected_artifact_ids=affected,
+        depends_on_decision_ids=depends_on,
+        user_action=row["user_action"],
+        original_chosen_option_id=row["original_chosen_option_id"],
+        user_free_text_answer=row["user_free_text_answer"],
+        free_form_level_override=row["free_form_level_override"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        category=category,
+        answer_mode=answer_mode,
+        chosen_option_ids=chosen_option_ids,
+        user_verified=user_verified,
+        user_verified_at=user_verified_at,
+    )
 
 
 def _position_to_dict(position: Position) -> dict[str, object]:
@@ -173,12 +331,22 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         "overall_confidence",
         "field_confidence",
         "used_position_ids",
+        "token_usage",
         "extras",
     }
     extras = {key: value for key, value in payload.items() if key not in known}
     declared_extras = payload.get("extras") or {}
     if isinstance(declared_extras, dict):
         extras = {**declared_extras, **extras}
+    # v3.5: token_usage — словарь словарей; защитное чтение для legacy.
+    raw_usage = payload.get("token_usage") or {}
+    token_usage: dict[str, dict[str, int]] = {}
+    if isinstance(raw_usage, dict):
+        for stage, vals in raw_usage.items():
+            if isinstance(vals, dict):
+                token_usage[str(stage)] = {
+                    k: int(v) for k, v in vals.items() if isinstance(v, (int, float))
+                }
     return ArtifactMetadata(
         template_ref=payload.get("template_ref"),
         provider=payload.get("provider"),
@@ -192,6 +360,7 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         overall_confidence=payload.get("overall_confidence"),
         field_confidence=dict(payload.get("field_confidence") or {}),
         used_position_ids=tuple(payload.get("used_position_ids") or ()),
+        token_usage=token_usage,
         extras=extras,
     )
 
@@ -223,6 +392,10 @@ def _artifact_metadata_to_payload(metadata: ArtifactMetadata) -> dict[str, objec
         payload["field_confidence"] = dict(metadata.field_confidence)
     if metadata.used_position_ids:
         payload["used_position_ids"] = list(metadata.used_position_ids)
+    if metadata.token_usage:
+        payload["token_usage"] = {
+            stage: dict(vals) for stage, vals in metadata.token_usage.items()
+        }
     if metadata.extras:
         payload["extras"] = dict(metadata.extras)
     return payload
@@ -253,6 +426,15 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         is_superseded_value = row["is_superseded"]
     except (KeyError, IndexError):
         is_superseded_value = 0
+    # Защитное чтение для legacy-баз без колонок подтверждения.
+    try:
+        user_verified_value = bool(row["user_verified"])
+    except (KeyError, IndexError):
+        user_verified_value = False
+    try:
+        user_verified_at_value = row["user_verified_at"]
+    except (KeyError, IndexError):
+        user_verified_at_value = None
     metadata = _artifact_metadata_from_payload(json_loads(row["metadata_json"]))
     relations = _artifact_relations_from_row(row)
     return ArtifactRecord(
@@ -269,6 +451,58 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         relations=relations,
         metadata=metadata,
         is_superseded=bool(is_superseded_value),
+        user_verified=user_verified_value,
+        user_verified_at=user_verified_at_value,
+    )
+
+
+def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
+    return AttachmentRecord(
+        attachment_id=row["attachment_id"],
+        project_id=row["project_id"],
+        original_filename=row["original_filename"],
+        mime_type=row["mime_type"],
+        size_bytes=row["size_bytes"],
+        sha256=row["sha256"],
+        storage_path=row["storage_path"],
+        extraction_status=row["extraction_status"],
+        created_at=row["created_at"],
+        extracted_text_ref=row["extracted_text_ref"],
+        extraction_error=row["extraction_error"],
+        linked_position_id=row["linked_position_id"],
+        used_in_context=bool(row["used_in_context"]),
+        is_deleted=bool(row["is_deleted"]),
+    )
+
+
+def _llm_usage_from_row(row: sqlite3.Row) -> LLMUsageRecord:
+    return LLMUsageRecord(
+        usage_id=row["usage_id"],
+        project_id=row["project_id"],
+        provider=row["provider"],
+        model=row["model"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        total_tokens=row["total_tokens"],
+        source=row["source"],
+        created_at=row["created_at"],
+        task_id=row["task_id"],
+        artifact_id=row["artifact_id"],
+        execution_run_id=row["execution_run_id"],
+        stage=row["stage"],
+        cache_tokens=row["cache_tokens"],
+        cost_usd=row["cost_usd"],
+    )
+
+
+def _aggregate_from_row(row: sqlite3.Row) -> LLMUsageAggregate:
+    return LLMUsageAggregate(
+        input_tokens=int(row["input_tokens"] or 0),
+        output_tokens=int(row["output_tokens"] or 0),
+        total_tokens=int(row["total_tokens"] or 0),
+        call_count=int(row["call_count"] or 0),
+        has_estimated=bool(row["has_estimated"]),
+        cost_usd=float(row["cost_sum"]) if row["cost_count"] else None,
     )
 
 
@@ -285,120 +519,54 @@ def _context_item_from_row(row: sqlite3.Row) -> ContextItem:
     )
 
 
-def _option_from_dict(payload: dict[str, object]) -> ClarificationOption:
-    raw_confidence = payload.get("confidence")
-    confidence = float(raw_confidence) if isinstance(raw_confidence, (int, float)) and not isinstance(raw_confidence, bool) else None
-    return ClarificationOption(
-        option_id=str(payload.get("option_id", "")),
-        label=str(payload.get("label", "")),
-        description=str(payload.get("description", "")),
-        effect_preview=str(payload.get("effect_preview", "")),
-        confidence=confidence,
-    )
+# --- per-workspace write-coordinator -----------------------------------------
+#
+# Параллельное выполнение шагов workflow означает несколько потоков-воркеров,
+# одновременно мутирующих один и тот же workspace (артефакты, состояние,
+# решения, статусы задач). SQLite сам по себе допускает только одного писателя,
+# а наши read-modify-write мутации (apply_*_patch: load → compute → commit)
+# без блокировки дали бы потерянные обновления.
+#
+# Поэтому ВСЕ мутации сериализуются per-workspace реентрантным локом. LLM-
+# вызовы (медленная часть) идут вне лока и реально параллелятся; критическая
+# секция записи — микросекунды. Лок процесс-глобальный (ключ — resolved-путь
+# workspace), потому что SqliteRuntime инстанцируется в нескольких местах, но
+# файл БД у workspace один.
+_WORKSPACE_WRITE_LOCKS: dict[str, threading.RLock] = {}
+_WORKSPACE_WRITE_LOCKS_GUARD = threading.Lock()
 
 
-def _normalize_clarification_question(question: str | None) -> str:
-    """Канонизирует question text для дедупликации в find_clarification_by_source.
+def _workspace_write_lock(workspace: Path) -> threading.RLock:
+    key = str(Path(workspace).resolve())
+    lock = _WORKSPACE_WRITE_LOCKS.get(key)
+    if lock is None:
+        with _WORKSPACE_WRITE_LOCKS_GUARD:
+            lock = _WORKSPACE_WRITE_LOCKS.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                _WORKSPACE_WRITE_LOCKS[key] = lock
+    return lock
 
-    - case-fold (не просто .lower(), но и для unicode);
-    - collapse whitespace (любая последовательность пробелов/таб'ов/новых
-      строк → один пробел);
-    - strip trailing punctuation (.,!?;:…).
+
+_RuntimeMethod = TypeVar("_RuntimeMethod", bound=Callable[..., object])
+
+
+def _serialized_write(method: _RuntimeMethod) -> _RuntimeMethod:
+    """Сериализовать мутирующий метод runtime per-workspace.
+
+    Применяется к методам с сигнатурой ``(self, workspace, ...)``. Держит
+    per-workspace лок на ВЕСЬ метод — это критично для read-modify-write
+    (load внутри тоже под локом → второй писатель видит коммит первого, нет
+    потерянных обновлений). Лок реентрантный, поэтому вложенные мутации того
+    же потока не дедлочат.
     """
-    if not question:
-        return ""
-    import re as _re
-    normalized = " ".join(question.casefold().split())
-    return _re.sub(r"[.,!?;:…]+$", "", normalized).strip()
 
+    @functools.wraps(method)
+    def wrapper(self, workspace, *args, **kwargs):  # type: ignore[no-untyped-def]
+        with _workspace_write_lock(workspace):
+            return method(self, workspace, *args, **kwargs)
 
-def _fallback_clarification_description(payload: dict[str, object]) -> str:
-    question = str(payload.get("question", "")).strip()
-    rationale = str(payload.get("rationale", "")).strip()
-    impact = str(payload.get("impact", "")).strip()
-    parts = [
-        rationale or "Система обнаружила неопределенность, которую нельзя надежно закрыть из текущего контекста.",
-        f"Необходимо ответить на вопрос: {question}" if question else "",
-        impact or "Ответ будет использован при дальнейшей детализации требований и планировании следующих задач.",
-    ]
-    return " ".join(part for part in parts if part)
-
-
-def _candidate_from_row(row: sqlite3.Row) -> ClarificationCandidate:
-    payload = json_loads(row["payload_json"])
-    return ClarificationCandidate(
-        candidate_id=row["candidate_id"],
-        project_id=row["project_id"],
-        source_type=payload["source_type"],
-        source_id=payload["source_id"],
-        need=payload["need"],
-        question=payload["question"],
-        description=payload.get("description") or _fallback_clarification_description(payload),
-        rationale=payload["rationale"],
-        impact=payload["impact"],
-        severity=payload["severity"],
-        confidence_without_user=float(payload["confidence_without_user"]),
-        visibility=payload.get("visibility", "architectural"),
-        default_assumption=payload.get("default_assumption"),
-        recommended_answer=payload.get("recommended_answer"),
-        answer_mode=payload["answer_mode"],
-        options=tuple(_option_from_dict(item) for item in payload.get("options", [])),
-        affected_task_ids=tuple(payload.get("affected_task_ids", [])),
-        related_artifact_ids=tuple(payload.get("related_artifact_ids", [])),
-        blocking_scope=payload.get("blocking_scope", "task"),
-        decision_owner_role=payload.get("decision_owner_role", "business"),
-        created_at=row["created_at"],
-    )
-
-
-def _request_from_row(row: sqlite3.Row) -> ClarificationRequest:
-    # decision_owner_role — поле, добавленное в W1.2 миграцией; sqlite3.Row
-    # не поддерживает .get(), поэтому идём через keys() с дефолтом "business"
-    # для существующих записей.
-    decision_owner_role = (
-        row["decision_owner_role"]
-        if "decision_owner_role" in row.keys()
-        else "business"
-    )
-    auto_resolved_flag = (
-        bool(row["auto_resolved"])
-        if "auto_resolved" in row.keys()
-        else False
-    )
-    visibility = (
-        row["visibility"] if "visibility" in row.keys() else "architectural"
-    )
-    return ClarificationRequest(
-        request_id=row["request_id"],
-        project_id=row["project_id"],
-        status=row["status"],
-        priority=row["priority"],
-        title=row["title"],
-        question=row["question"],
-        description=row["description"] or _fallback_clarification_description(
-            {"question": row["question"], "rationale": row["reason"], "impact": row["impact"]}
-        ),
-        reason=row["reason"],
-        impact=row["impact"],
-        answer_mode=row["answer_mode"],
-        options=tuple(_option_from_dict(item) for item in json_loads(row["options_json"])),
-        recommended_option_id=row["recommended_option_id"],
-        visibility=visibility or "architectural",
-        default_assumption=row["default_assumption"],
-        affected_task_ids=tuple(json_loads(row["affected_task_ids_json"])),
-        related_artifact_ids=tuple(json_loads(row["related_artifact_ids_json"])),
-        blocking_scope=row["blocking_scope"],
-        decision_owner_role=decision_owner_role or "business",
-        auto_resolved=auto_resolved_flag,
-        source_type=row["source_type"],
-        source_id=row["source_id"],
-        created_from_candidate_ids=tuple(json_loads(row["created_from_candidate_ids_json"])),
-        selected_option_ids=tuple(json_loads(row["selected_option_ids_json"])),
-        free_text=row["free_text"],
-        resolution_summary=row["resolution_summary"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
+    return wrapper  # type: ignore[return-value]
 
 
 class SqliteRuntime:
@@ -410,6 +578,7 @@ class SqliteRuntime:
         # на каждом ``_connect`` не нужно. Один раз на workspace.
         self._schema_ensured: set[Path] = set()
 
+    @_serialized_write
     def create_workspace(
         self,
         workspace: Path,
@@ -478,7 +647,34 @@ class SqliteRuntime:
         manifest_path = workspace / self.MANIFEST_FILENAME
         if not manifest_path.exists():
             raise NotFoundError(f"Workspace manifest not found: {manifest_path}")
-        return ProjectManifest(**json_loads(manifest_path.read_text(encoding="utf-8")))
+        raw = json_loads(manifest_path.read_text(encoding="utf-8"))
+        history = raw.get("objective_history", [])
+        if not isinstance(history, list):
+            raise ValueError(
+                f"manifest 'objective_history' must be a list, got {type(history).__name__}"
+            )
+        return ProjectManifest(
+            project_id=raw["project_id"],
+            name=raw["name"],
+            objective_ref=raw["objective_ref"],
+            business_request=raw["business_request"],
+            created_at=raw["created_at"],
+            objective_history=tuple(str(item) for item in history),
+        )
+
+    @_serialized_write
+    def update_manifest(self, workspace: Path, manifest: ProjectManifest) -> None:
+        """Перезаписать ``project.json`` новым manifest'ом.
+
+        Используется ``project_service.activate_next_objective`` при смене
+        активного objective'а. Остальные поля manifest'а (project_id, name,
+        business_request, created_at) должны оставаться неизменными — это
+        контрактные сигналы для UI и API.
+        """
+        manifest_path = workspace / self.MANIFEST_FILENAME
+        if not manifest_path.exists():
+            raise NotFoundError(f"Workspace manifest not found: {manifest_path}")
+        manifest_path.write_text(json_dumps(manifest), encoding="utf-8")
 
     def load_knowledge(self, workspace: Path) -> ProjectKnowledge:
         with self._connect(workspace) as connection:
@@ -537,6 +733,7 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    @_serialized_write
     def apply_knowledge_patch(
         self,
         workspace: Path,
@@ -583,6 +780,7 @@ class SqliteRuntime:
             connection.commit()
         return next_knowledge
 
+    @_serialized_write
     def apply_process_patch(
         self,
         workspace: Path,
@@ -629,6 +827,7 @@ class SqliteRuntime:
             connection.commit()
         return next_state
 
+    @_serialized_write
     def create_task(self, workspace: Path, task: TaskRecord) -> TaskRecord:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -680,6 +879,7 @@ class SqliteRuntime:
             row = connection.execute("select * from tasks where stable_key = ?", (stable_key,)).fetchone()
         return None if row is None else _task_from_row(row)
 
+    @_serialized_write
     def transition_task(
         self,
         workspace: Path,
@@ -732,6 +932,7 @@ class SqliteRuntime:
             for row in rows
         ]
 
+    @_serialized_write
     def record_planning_decision(self, workspace: Path, decision: PlanningDecision) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -784,6 +985,7 @@ class SqliteRuntime:
             )
         return decisions
 
+    @_serialized_write
     def store_artifact(self, workspace: Path, *, artifact: ArtifactRecord, content: str) -> ArtifactRecord:
         artifact_path = workspace / artifact.storage_path
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -794,9 +996,9 @@ class SqliteRuntime:
                 insert into artifacts(
                   artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
                   created_by_task_id, parent_artifact_id, input_artifact_ids_json, child_artifact_ids_json,
-                  metadata_json, storage_path, created_at, is_superseded
+                  metadata_json, storage_path, created_at, is_superseded, user_verified, user_verified_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
@@ -814,11 +1016,232 @@ class SqliteRuntime:
                     artifact.storage_path,
                     artifact.created_at,
                     1 if artifact.is_superseded else 0,
+                    1 if artifact.user_verified else 0,
+                    artifact.user_verified_at,
                 ),
             )
             connection.commit()
         return artifact
 
+    # --- attachments (входные файлы) ----------------------------------------
+
+    @_serialized_write
+    def store_attachment(
+        self, workspace: Path, *, attachment: AttachmentRecord, content: bytes
+    ) -> AttachmentRecord:
+        """Сохранить бинарь вложения на диск и метаданные в БД."""
+        attachment_path = workspace / attachment.storage_path
+        attachment_path.parent.mkdir(parents=True, exist_ok=True)
+        attachment_path.write_bytes(content)
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into attachments(
+                  attachment_id, project_id, original_filename, mime_type, size_bytes,
+                  sha256, storage_path, extraction_status, extracted_text_ref,
+                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment.attachment_id,
+                    attachment.project_id,
+                    attachment.original_filename,
+                    attachment.mime_type,
+                    attachment.size_bytes,
+                    attachment.sha256,
+                    attachment.storage_path,
+                    attachment.extraction_status,
+                    attachment.extracted_text_ref,
+                    attachment.extraction_error,
+                    attachment.linked_position_id,
+                    1 if attachment.used_in_context else 0,
+                    1 if attachment.is_deleted else 0,
+                    attachment.created_at,
+                ),
+            )
+            connection.commit()
+        return attachment
+
+    @_serialized_write
+    def update_attachment(self, workspace: Path, attachment: AttachmentRecord) -> AttachmentRecord:
+        """Перезаписать изменяемые поля вложения (статус извлечения, флаги)."""
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                update attachments set
+                  extraction_status = ?, extracted_text_ref = ?, extraction_error = ?,
+                  linked_position_id = ?, used_in_context = ?, is_deleted = ?
+                where attachment_id = ?
+                """,
+                (
+                    attachment.extraction_status,
+                    attachment.extracted_text_ref,
+                    attachment.extraction_error,
+                    attachment.linked_position_id,
+                    1 if attachment.used_in_context else 0,
+                    1 if attachment.is_deleted else 0,
+                    attachment.attachment_id,
+                ),
+            )
+            connection.commit()
+        return attachment
+
+    def load_attachment(self, workspace: Path, attachment_id: str) -> AttachmentRecord:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from attachments where attachment_id = ?", (attachment_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Attachment not found: {attachment_id}")
+        return _attachment_from_row(row)
+
+    def load_attachment_content(self, workspace: Path, attachment_id: str) -> bytes:
+        attachment = self.load_attachment(workspace, attachment_id)
+        attachment_path = workspace / attachment.storage_path
+        if not attachment_path.exists():
+            raise NotFoundError(f"Attachment content not found: {attachment.storage_path}")
+        return attachment_path.read_bytes()
+
+    def list_attachments(
+        self, workspace: Path, *, include_deleted: bool = False
+    ) -> list[AttachmentRecord]:
+        query = "select * from attachments"
+        if not include_deleted:
+            query += " where is_deleted = 0"
+        query += " order by created_at, attachment_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query).fetchall()
+        return [_attachment_from_row(row) for row in rows]
+
+    @_serialized_write
+    def mark_attachment_used(self, workspace: Path, attachment_id: str) -> None:
+        """Пометить, что текст вложения вошёл в контекст задачи (best-effort).
+
+        Запрещает последующее удаление ради воспроизводимости. Не падает, если
+        вложения нет (id мог прийти из положения, не связанного с вложением).
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update attachments set used_in_context = 1 where attachment_id = ? and is_deleted = 0",
+                (attachment_id,),
+            )
+            connection.commit()
+
+    # --- llm_usage (учёт токенов) -------------------------------------------
+
+    @_serialized_write
+    def record_llm_usage(self, workspace: Path, record: LLMUsageRecord) -> None:
+        """Записать расход токенов на один LLM-вызов (best-effort).
+
+        Сбой записи usage не должен ронять исполнение задачи — вызывающий
+        оборачивает в try/except. Здесь только сериализация и insert.
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into llm_usage(
+                  usage_id, project_id, task_id, artifact_id, execution_run_id,
+                  provider, model, stage, input_tokens, output_tokens, total_tokens,
+                  cache_tokens, source, cost_usd, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.usage_id,
+                    record.project_id,
+                    record.task_id,
+                    record.artifact_id,
+                    record.execution_run_id,
+                    record.provider,
+                    record.model,
+                    record.stage,
+                    record.input_tokens,
+                    record.output_tokens,
+                    record.total_tokens,
+                    record.cache_tokens,
+                    record.source,
+                    record.cost_usd,
+                    record.created_at,
+                ),
+            )
+            connection.commit()
+
+    def list_llm_usage(self, workspace: Path, *, task_id: str | None = None) -> list[LLMUsageRecord]:
+        query = "select * from llm_usage"
+        params: tuple[object, ...] = ()
+        if task_id is not None:
+            query += " where task_id = ?"
+            params = (task_id,)
+        query += " order by created_at, usage_id"
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_llm_usage_from_row(row) for row in rows]
+
+    def llm_usage_by_task(self, workspace: Path) -> dict[str, LLMUsageAggregate]:
+        """Агрегат расхода токенов по каждой задаче (только задачи с вызовами)."""
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                """
+                select task_id,
+                       sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                where task_id is not null
+                group by task_id
+                """
+            ).fetchall()
+        return {row["task_id"]: _aggregate_from_row(row) for row in rows}
+
+    def llm_usage_for_task(self, workspace: Path, task_id: str) -> LLMUsageAggregate | None:
+        """Агрегат расхода токенов одной задачи (без построения словаря по всем).
+
+        Точечная замена ``llm_usage_by_task(...).get(task_id)`` для карточки
+        артефакта: один индексируемый запрос вместо группировки всей таблицы.
+        """
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                where task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None or not row["call_count"]:
+            return None
+        return _aggregate_from_row(row)
+
+    def llm_usage_for_project(self, workspace: Path) -> LLMUsageAggregate | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select sum(input_tokens) as input_tokens,
+                       sum(output_tokens) as output_tokens,
+                       sum(total_tokens) as total_tokens,
+                       count(*) as call_count,
+                       max(case when source = 'estimated' then 1 else 0 end) as has_estimated,
+                       sum(coalesce(cost_usd, 0)) as cost_sum,
+                       count(cost_usd) as cost_count
+                from llm_usage
+                """
+            ).fetchone()
+        if row is None or not row["call_count"]:
+            return None
+        return _aggregate_from_row(row)
+
+    @_serialized_write
     def mark_artifact_superseded(self, workspace: Path, artifact_id: str) -> None:
         """B4: помечает артефакт устаревшим (заменён новой версией).
         Используется при retry-task создании новой версии того же role.
@@ -827,6 +1250,21 @@ class SqliteRuntime:
             connection.execute(
                 "update artifacts set is_superseded = 1 where artifact_id = ?",
                 (artifact_id,),
+            )
+            connection.commit()
+
+    @_serialized_write
+    def mark_artifact_verified(
+        self, workspace: Path, artifact_id: str, *, verified: bool, verified_at: str | None
+    ) -> None:
+        """Пометить низкоуверенный артефакт как подтверждённый пользователем
+        (или снять метку). Аудит-метка — содержимое артефакта не меняется.
+        Снимает индикатор is_low_confidence (зеркально decisions.user_verified).
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update artifacts set user_verified = ?, user_verified_at = ? where artifact_id = ?",
+                (1 if verified else 0, verified_at if verified else None, artifact_id),
             )
             connection.commit()
 
@@ -971,6 +1409,7 @@ class SqliteRuntime:
             and not artifact.is_superseded
         ]
 
+    @_serialized_write
     def record_context_manifest(self, workspace: Path, manifest: ContextManifest) -> ContextManifest:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1083,6 +1522,7 @@ class SqliteRuntime:
             )
         return result
 
+    @_serialized_write
     def record_execution_run(
         self,
         workspace: Path,
@@ -1143,6 +1583,7 @@ class SqliteRuntime:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    @_serialized_write
     def record_validation_run(self, workspace: Path, run: ValidationRun) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1186,6 +1627,7 @@ class SqliteRuntime:
             )
         return runs
 
+    @_serialized_write
     def record_escalation_ticket(self, workspace: Path, ticket: EscalationTicket) -> None:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1212,6 +1654,7 @@ class SqliteRuntime:
 
     # ---- workflow runs (W4.1 R1: async run-until-blocked) ----------------
 
+    @_serialized_write
     def create_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
         with self._connect(workspace) as connection:
             connection.execute(
@@ -1245,7 +1688,15 @@ class SqliteRuntime:
             connection.commit()
         return run
 
+    @_serialized_write
     def update_workflow_run(self, workspace: Path, run: WorkflowRunRecord) -> WorkflowRunRecord:
+        # ВАЖНО (параллельный режим): cancel_requested НЕ пишется здесь.
+        # Этим флагом владеет только request_workflow_cancel (его дёргает
+        # HTTP-поток отмены). Прогресс-обновления ранера делают read-modify-
+        # write через get_workflow_run (без лока) + update, и записывать сюда
+        # cancel_requested из устаревшего снимка ранера означало бы затереть
+        # флаг, поставленный отменой между get и update (lost update). Поэтому
+        # колонку cancel_requested оставляем как есть в БД.
         with self._connect(workspace) as connection:
             connection.execute(
                 """
@@ -1257,7 +1708,6 @@ class SqliteRuntime:
                   last_step_summary = ?,
                   stop_reason = ?,
                   error_message = ?,
-                  cancel_requested = ?,
                   steps_json = ?
                 where run_id = ?
                 """,
@@ -1269,7 +1719,6 @@ class SqliteRuntime:
                     run.last_step_summary,
                     run.stop_reason,
                     run.error_message,
-                    int(run.cancel_requested),
                     json_dumps([self._step_to_dict(s) for s in run.steps]),
                     run.run_id,
                 ),
@@ -1277,6 +1726,7 @@ class SqliteRuntime:
             connection.commit()
         return run
 
+    @_serialized_write
     def request_workflow_cancel(self, workspace: Path, run_id: str) -> bool:
         """Идемпотентно ставит cancel_requested=1. Возвращает True, если
         строка с таким run_id существует."""
@@ -1402,358 +1852,257 @@ class SqliteRuntime:
             for row in rows
         ]
 
-    def record_clarification_candidate(self, workspace: Path, candidate: ClarificationCandidate) -> ClarificationCandidate:
-        created_at = candidate.created_at or utc_now_iso()
-        payload = to_primitive(candidate)
-        payload["created_at"] = created_at
+    # ---- CheckpointSession (v3.0) -----------------------------------------
+    #
+    # Сессии чекпоинта — крошечная сущность, в основном связь
+    # task ↔ decision_ids ↔ status. Хранится отдельной таблицей, потому что
+    # жизненный цикл независим от Decision (статус сессии меняется
+    # атомарно, не привязан к статусу отдельных решений).
+
+    @_serialized_write
+    def upsert_checkpoint_session(
+        self, workspace: Path, session: CheckpointSession
+    ) -> CheckpointSession:
+        """Создать или обновить сессию. Идемпотентно по session_id."""
+        now = utc_now_iso()
+        created_at = session.created_at or now
         with self._connect(workspace) as connection:
             connection.execute(
                 """
-                insert or ignore into clarification_candidates(
-                  candidate_id, project_id, source_type, source_id, payload_json, created_at
+                insert into checkpoint_sessions (
+                    session_id, project_id, task_id, task_title, artifact_role,
+                    status, decision_ids_json, created_at, finalized_at, finalized_by
                 )
-                values (?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(session_id) do update set
+                    status = excluded.status,
+                    decision_ids_json = excluded.decision_ids_json,
+                    finalized_at = excluded.finalized_at,
+                    finalized_by = excluded.finalized_by
                 """,
                 (
-                    candidate.candidate_id,
-                    candidate.project_id,
-                    candidate.source_type,
-                    candidate.source_id,
-                    json_dumps(payload),
+                    session.session_id,
+                    session.project_id,
+                    session.task_id,
+                    session.task_title,
+                    session.artifact_role,
+                    session.status,
+                    json_dumps(list(session.decision_ids)),
                     created_at,
+                    session.finalized_at,
+                    session.finalized_by,
                 ),
             )
             connection.commit()
-        return candidate if candidate.created_at else replace(candidate, created_at=created_at)
+        return replace(session, created_at=created_at)
 
-    def list_clarification_candidates(self, workspace: Path) -> list[ClarificationCandidate]:
-        with self._connect(workspace) as connection:
-            rows = connection.execute(
-                "select * from clarification_candidates order by created_at, candidate_id"
-            ).fetchall()
-        return [_candidate_from_row(row) for row in rows]
-
-    def find_clarification_in_project_by_question(
-        self,
-        workspace: Path,
-        *,
-        project_id: str,
-        question: str,
-        statuses: tuple[str, ...] = ("open", "answered", "assumed"),
-    ) -> ClarificationRequest | None:
-        """B3 layer 1: cross-task dedup — ищет ЛЮБОЙ request в проекте,
-        чей нормализованный текст вопроса совпадает с заданным.
-
-        Используется как fallback в register_candidates, когда точное
-        совпадение по (source_type, source_id, question) не нашлось —
-        например, когда другая задача независимо сгенерировала тот же
-        бизнес-вопрос (классический случай: goal_hypothesis + ambiguity_gap
-        задают один и тот же вопрос про недостающий факт).
-
-        Возвращает наиболее свежий matching request. Открытые answered
-        приоритетнее (по умолчанию ищет именно их), чтобы reuse cached
-        пользовательский ответ.
-        """
-        target_normalized = _normalize_clarification_question(question)
-        if not target_normalized:
-            return None
-        # Сортируем по приоритету статусов: answered/assumed выше open,
-        # чтобы выдать "уже отвечен" а не "тоже открыт".
-        status_priority = {"answered": 0, "assumed": 1, "open": 2, "deferred": 3}
-        with self._connect(workspace) as connection:
-            rows = connection.execute(
-                f"""
-                select * from clarification_requests
-                where project_id = ?
-                  and status in ({",".join("?" * len(statuses))})
-                order by created_at desc
-                """,
-                (project_id, *statuses),
-            ).fetchall()
-        matched: list = []
-        for row in rows:
-            if _normalize_clarification_question(row["question"]) == target_normalized:
-                matched.append(row)
-        if not matched:
-            return None
-        matched.sort(key=lambda r: status_priority.get(r["status"], 9))
-        return _request_from_row(matched[0])
-
-    def find_clarification_by_source(
-        self,
-        workspace: Path,
-        *,
-        source_type: str,
-        source_id: str,
-        question: str,
-    ) -> ClarificationRequest | None:
-        """W5.1: возвращает существующий request с тем же `(source_type,
-        source_id)`, **нормализуя** question text перед сравнением
-        (lower-case, схлопывание whitespace, обрезанная пунктуация).
-
-        Раньше малейшая правка question (например прибавили точку, заменили
-        пробел на neбольшой Unicode) делала record уникальным — это и было
-        источником повторных вопросов в UI."""
-        target_normalized = _normalize_clarification_question(question)
-        with self._connect(workspace) as connection:
-            rows = connection.execute(
-                """
-                select * from clarification_requests
-                where source_type = ? and source_id = ?
-                  and status in ('open', 'answered', 'assumed', 'deferred')
-                order by created_at desc
-                """,
-                (source_type, source_id),
-            ).fetchall()
-        for row in rows:
-            if _normalize_clarification_question(row["question"]) == target_normalized:
-                return _request_from_row(row)
-        return None
-
-    def create_clarification_request(self, workspace: Path, request: ClarificationRequest) -> ClarificationRequest:
-        now = request.created_at or utc_now_iso()
-        updated_at = request.updated_at or now
-        with self._connect(workspace) as connection:
-            connection.execute(
-                """
-                insert into clarification_requests(
-                  request_id, project_id, status, priority, title, question, description, reason, impact,
-                  answer_mode, options_json, recommended_option_id, visibility, default_assumption,
-                  affected_task_ids_json, related_artifact_ids_json, blocking_scope, decision_owner_role,
-                  auto_resolved, source_type, source_id, created_from_candidate_ids_json,
-                  selected_option_ids_json, free_text, resolution_summary, created_at, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    request.request_id,
-                    request.project_id,
-                    request.status,
-                    request.priority,
-                    request.title,
-                    request.question,
-                    request.description,
-                    request.reason,
-                    request.impact,
-                    request.answer_mode,
-                    json_dumps(request.options),
-                    request.recommended_option_id,
-                    request.visibility,
-                    request.default_assumption,
-                    json_dumps(request.affected_task_ids),
-                    json_dumps(request.related_artifact_ids),
-                    request.blocking_scope,
-                    request.decision_owner_role,
-                    int(request.auto_resolved),
-                    request.source_type,
-                    request.source_id,
-                    json_dumps(request.created_from_candidate_ids),
-                    json_dumps(request.selected_option_ids),
-                    request.free_text,
-                    request.resolution_summary,
-                    now,
-                    updated_at,
-                ),
-            )
-            connection.commit()
-        return self.get_clarification_request(workspace, request.request_id)
-
-    def list_clarification_requests(
-        self,
-        workspace: Path,
-        *,
-        statuses: tuple[str, ...] | None = None,
-    ) -> list[ClarificationRequest]:
-        query = "select * from clarification_requests"
-        params: tuple[object, ...] = ()
-        if statuses:
-            placeholders = ",".join("?" for _ in statuses)
-            query += f" where status in ({placeholders})"
-            params = statuses
-        query += " order by created_at, request_id"
-        with self._connect(workspace) as connection:
-            rows = connection.execute(query, params).fetchall()
-        return [_request_from_row(row) for row in rows]
-
-    def get_clarification_request(self, workspace: Path, request_id: str) -> ClarificationRequest:
+    def get_checkpoint_session(
+        self, workspace: Path, session_id: str
+    ) -> CheckpointSession:
         with self._connect(workspace) as connection:
             row = connection.execute(
-                "select * from clarification_requests where request_id = ?",
-                (request_id,),
+                "select * from checkpoint_sessions where session_id = ?",
+                (session_id,),
             ).fetchone()
         if row is None:
-            raise NotFoundError(f"Clarification request not found: {request_id}")
-        return _request_from_row(row)
+            raise NotFoundError(f"checkpoint session {session_id!r} не найдена")
+        return _checkpoint_from_row(row)
 
-    def answer_clarification_request(
-        self,
-        workspace: Path,
-        request_id: str,
-        *,
-        selected_option_ids: tuple[str, ...],
-        free_text: str | None,
-        resolution_summary: str,
-    ) -> ClarificationRequest:
-        now = utc_now_iso()
-        with self._connect(workspace) as connection:
-            connection.execute(
-                """
-                update clarification_requests
-                set status = 'answered',
-                    selected_option_ids_json = ?,
-                    free_text = ?,
-                    resolution_summary = ?,
-                    updated_at = ?
-                where request_id = ?
-                """,
-                (json_dumps(selected_option_ids), free_text, resolution_summary, now, request_id),
-            )
-            connection.commit()
-        return self.get_clarification_request(workspace, request_id)
-
-    def accept_clarification_assumption(self, workspace: Path, request_id: str, *, resolution_summary: str) -> ClarificationRequest:
-        now = utc_now_iso()
-        with self._connect(workspace) as connection:
-            connection.execute(
-                """
-                update clarification_requests
-                set status = 'assumed',
-                    resolution_summary = ?,
-                    updated_at = ?
-                where request_id = ?
-                """,
-                (resolution_summary, now, request_id),
-            )
-            connection.commit()
-        return self.get_clarification_request(workspace, request_id)
-
-    def mark_clarification_auto_resolved(self, workspace: Path, request_id: str) -> None:
-        """V1 (W6): помечает уже-существующий request как «решено
-        автоматически». Используется в `set_mode` re-eval, когда мы
-        вызываем accept_assumption / defer_clarification из системного
-        кода, а не из ручного действия пользователя."""
-        with self._connect(workspace) as connection:
-            connection.execute(
-                "update clarification_requests set auto_resolved = 1 where request_id = ?",
-                (request_id,),
-            )
-            connection.commit()
-
-    def defer_clarification_request(
-        self, workspace: Path, request_id: str, *, reason: str | None = None
-    ) -> ClarificationRequest:
-        """W5.1: пользователь явно отложил вопрос. Это не игнор — это
-        деклaрация "сейчас не время; вернусь позже". В UI карточка остаётся
-        в инбоксе, но переезжает на вкладку "отложенные"."""
-        now = utc_now_iso()
-        with self._connect(workspace) as connection:
-            connection.execute(
-                """
-                update clarification_requests
-                set status = 'deferred',
-                    resolution_summary = ?,
-                    updated_at = ?
-                where request_id = ?
-                """,
-                (reason or "Отложено пользователем.", now, request_id),
-            )
-            connection.commit()
-        return self.get_clarification_request(workspace, request_id)
-
-    def reopen_clarification_request(self, workspace: Path, request_id: str) -> ClarificationRequest:
-        """W5.1: разлочивает ответ — переводит запись обратно в `open` и
-        очищает поля ответа, чтобы пользователь мог переответить.
-        Audit-история сохраняется через clarification_events; в самом
-        request'е остаётся только последний state."""
-        now = utc_now_iso()
-        with self._connect(workspace) as connection:
-            connection.execute(
-                """
-                update clarification_requests
-                set status = 'open',
-                    selected_option_ids_json = '[]',
-                    free_text = NULL,
-                    resolution_summary = NULL,
-                    updated_at = ?
-                where request_id = ?
-                """,
-                (now, request_id),
-            )
-            connection.commit()
-        return self.get_clarification_request(workspace, request_id)
-
-    def record_clarification_event(
+    def list_checkpoint_sessions(
         self,
         workspace: Path,
         *,
-        event_id: str,
-        request_id: str,
         project_id: str,
-        event_type: str,
-        payload: dict[str, object] | None = None,
-        actor: str = "operator",
-    ) -> dict[str, object]:
-        """W5.1: добавляет audit-запись о смене состояния уточнения.
-        event_type ∈ {created, answered, assumed, deferred, reopened,
-        cancelled, mode_changed}."""
+        status: CheckpointStatus | None = None,
+    ) -> list[CheckpointSession]:
+        """Сессии проекта; по умолчанию все, опционально фильтр по статусу."""
+        where = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if status is not None:
+            where.append("status = ?")
+            params.append(status)
+        query = (
+            "select * from checkpoint_sessions where "
+            + " and ".join(where)
+            + " order by created_at desc, rowid desc"
+        )
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_checkpoint_from_row(row) for row in rows]
+
+    def find_pending_checkpoint_for_task(
+        self, workspace: Path, task_id: str
+    ) -> CheckpointSession | None:
+        """Активная сессия по задаче, если есть.
+
+        Per-task one-pending инвариант: задача не должна одновременно
+        иметь две pending-сессии. Если возникнет — сигнал к расследованию,
+        здесь возвращаем самую свежую.
+        """
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                """
+                select * from checkpoint_sessions
+                where task_id = ? and status = 'pending'
+                order by created_at desc, rowid desc
+                limit 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return _checkpoint_from_row(row) if row is not None else None
+
+    # ---- Decision ledger (v3.0) ------------------------------------------
+    #
+    # CRUD-методы для реестра решений: list/get/upsert + helpers для
+    # фильтрации. Хранилище — единственный source of truth, никакого
+    # in-memory кэша.
+
+    @_serialized_write
+    def upsert_decision(self, workspace: Path, decision: Decision) -> Decision:
+        """Создать или обновить запись о решении.
+
+        Идемпотентно по ``decision_id``. Поле ``updated_at`` перезаписывается
+        текущим временем; ``created_at`` сохраняется при апдейте (insert
+        выставляет, если пусто).
+        """
         now = utc_now_iso()
+        created_at = decision.created_at or now
+        payload = _decision_to_row(decision, created_at=created_at, updated_at=now)
         with self._connect(workspace) as connection:
             connection.execute(
                 """
-                insert into clarification_events(
-                  event_id, request_id, project_id, event_type, payload_json, actor, created_at
+                insert into decisions (
+                    decision_id, project_id, title, description, chosen_option_id,
+                    alternatives_json, rationale, level, level_rationale, confidence,
+                    status, source, source_task_id,
+                    affected_artifact_ids_json, depends_on_decision_ids_json,
+                    user_action, original_chosen_option_id, user_free_text_answer,
+                    free_form_level_override, created_at, updated_at,
+                    category, answer_mode, chosen_option_ids_json,
+                    user_verified, user_verified_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?)
+                values (
+                    :decision_id, :project_id, :title, :description, :chosen_option_id,
+                    :alternatives_json, :rationale, :level, :level_rationale, :confidence,
+                    :status, :source, :source_task_id,
+                    :affected_artifact_ids_json, :depends_on_decision_ids_json,
+                    :user_action, :original_chosen_option_id, :user_free_text_answer,
+                    :free_form_level_override, :created_at, :updated_at,
+                    :category, :answer_mode, :chosen_option_ids_json,
+                    :user_verified, :user_verified_at
+                )
+                on conflict(decision_id) do update set
+                    title = excluded.title,
+                    description = excluded.description,
+                    chosen_option_id = excluded.chosen_option_id,
+                    alternatives_json = excluded.alternatives_json,
+                    rationale = excluded.rationale,
+                    level = excluded.level,
+                    level_rationale = excluded.level_rationale,
+                    confidence = excluded.confidence,
+                    status = excluded.status,
+                    source = excluded.source,
+                    source_task_id = excluded.source_task_id,
+                    affected_artifact_ids_json = excluded.affected_artifact_ids_json,
+                    depends_on_decision_ids_json = excluded.depends_on_decision_ids_json,
+                    user_action = excluded.user_action,
+                    original_chosen_option_id = excluded.original_chosen_option_id,
+                    user_free_text_answer = excluded.user_free_text_answer,
+                    free_form_level_override = excluded.free_form_level_override,
+                    updated_at = excluded.updated_at,
+                    category = excluded.category,
+                    answer_mode = excluded.answer_mode,
+                    chosen_option_ids_json = excluded.chosen_option_ids_json,
+                    user_verified = excluded.user_verified,
+                    user_verified_at = excluded.user_verified_at
                 """,
-                (
-                    event_id,
-                    request_id,
-                    project_id,
-                    event_type,
-                    json_dumps(payload or {}),
-                    actor,
-                    now,
-                ),
+                payload,
             )
             connection.commit()
-        return {
-            "event_id": event_id,
-            "request_id": request_id,
-            "project_id": project_id,
-            "event_type": event_type,
-            "payload": payload or {},
-            "actor": actor,
-            "created_at": now,
-        }
+        return replace(
+            decision,
+            description=str(payload["description"]),
+            category=str(payload["category"]),
+            created_at=created_at,
+            updated_at=now,
+        )
 
-    def list_clarification_events(
-        self, workspace: Path, request_id: str
-    ) -> list[dict[str, object]]:
+    def get_decision(self, workspace: Path, decision_id: str) -> Decision:
+        """Достать одно решение по id. Бросает NotFoundError при отсутствии."""
         with self._connect(workspace) as connection:
-            rows = connection.execute(
-                # `order by rowid` гарантирует insertion order даже когда
-                # created_at совпадает по точности (utc_now_iso() имеет
-                # резолюцию секунды).
-                """
-                select * from clarification_events
-                where request_id = ?
-                order by rowid
-                """,
-                (request_id,),
-            ).fetchall()
-        from ..common.serialization import json_loads as _json_loads
-        return [
-            {
-                "event_id": row["event_id"],
-                "request_id": row["request_id"],
-                "project_id": row["project_id"],
-                "event_type": row["event_type"],
-                "payload": _json_loads(row["payload_json"]) if row["payload_json"] else {},
-                "actor": row["actor"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
+            row = connection.execute(
+                "select * from decisions where decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"decision {decision_id!r} не найдено")
+        return _decision_from_row(row)
+
+    def list_decisions(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        level: DecisionLevel | None = None,
+        status: DecisionStatus | None = None,
+        source: DecisionSource | None = None,
+        source_task_id: str | None = None,
+    ) -> list[Decision]:
+        """Получить отфильтрованный список решений проекта.
+
+        Все фильтры опциональны и AND-комбинируются. Результат отсортирован
+        по ``created_at asc`` (стабильный порядок появления), что позволяет
+        UI показывать решения в хронологии работы LLM.
+        """
+        where_clauses = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if level is not None:
+            where_clauses.append("level = ?")
+            params.append(level)
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status)
+        if source is not None:
+            where_clauses.append("source = ?")
+            params.append(source)
+        if source_task_id is not None:
+            where_clauses.append("source_task_id = ?")
+            params.append(source_task_id)
+        query = (
+            "select * from decisions where "
+            + " and ".join(where_clauses)
+            + " order by created_at asc, rowid asc"
+        )
+        with self._connect(workspace) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_decision_from_row(row) for row in rows]
+
+    def count_decisions(
+        self,
+        workspace: Path,
+        *,
+        project_id: str,
+        level: DecisionLevel | None = None,
+        status: DecisionStatus | None = None,
+    ) -> int:
+        """Подсчёт решений с теми же фильтрами что у list_decisions.
+
+        Нужно для UI-badge'ей («N решений на твоём уровне ждут»).
+        Реализован отдельным методом, чтобы не тянуть весь датасет в
+        память ради счёта.
+        """
+        where_clauses = ["project_id = ?"]
+        params: list[object] = [project_id]
+        if level is not None:
+            where_clauses.append("level = ?")
+            params.append(level)
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status)
+        query = "select count(*) as cnt from decisions where " + " and ".join(where_clauses)
+        with self._connect(workspace) as connection:
+            row = connection.execute(query, params).fetchone()
+        return int(row["cnt"]) if row is not None else 0
 
     def _insert_task_event(
         self,
@@ -1775,15 +2124,23 @@ class SqliteRuntime:
     @contextmanager
     def _connect(self, workspace: Path):
         workspace.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(workspace / self.DB_FILENAME)
+        connection = sqlite3.connect(workspace / self.DB_FILENAME, timeout=5.0)
         connection.row_factory = sqlite3.Row
-        # Pragma'ы: writes без fsync и журнал в памяти. Это single-process
-        # SQLite (один процесс на workspace), потеря данных при крахе
-        # допустима в dev-сценарии — а ускорение для test-suite и live
-        # workflow'а ~5–10×.
+        # Pragma'ы под КОНКУРЕНТНЫЙ доступ (параллельные шаги workflow):
+        #   - journal_mode=MEMORY + synchronous=OFF: быстрый single-writer
+        #     режим (как и было). Корректность при параллельных шагах даёт НЕ
+        #     журнал, а write-coordinator: per-workspace лок (@_serialized_write)
+        #     гарантирует ровно одного писателя на workspace в любой момент,
+        #     а read-modify-write выполняется под этим же локом целиком.
+        #     (WAL давал ~3× замедление тест-сьюта на множестве мелких БД и
+        #     при наличии лока не нужен.)
+        #   - busy_timeout=5000: пока writer держит файловую блокировку,
+        #     конкурентные ЧИТАТЕЛИ (WS-поллер, query-service) ждут до 5с
+        #     вместо мгновенного "database is locked".
         connection.execute("PRAGMA journal_mode = MEMORY")
         connection.execute("PRAGMA synchronous = OFF")
         connection.execute("PRAGMA temp_store = MEMORY")
+        connection.execute("PRAGMA busy_timeout = 5000")
         try:
             # Schema идемпотентна; проверяем один раз на workspace.
             if workspace not in self._schema_ensured:
@@ -1875,8 +2232,48 @@ class SqliteRuntime:
               metadata_json text not null,
               storage_path text not null,
               created_at text not null,
-              is_superseded integer not null default 0
+              is_superseded integer not null default 0,
+              user_verified integer not null default 0,
+              user_verified_at text
             );
+
+            create table if not exists attachments (
+              attachment_id text primary key,
+              project_id text not null,
+              original_filename text not null,
+              mime_type text not null,
+              size_bytes integer not null,
+              sha256 text not null,
+              storage_path text not null,
+              extraction_status text not null,
+              extracted_text_ref text,
+              extraction_error text,
+              linked_position_id text,
+              used_in_context integer not null default 0,
+              is_deleted integer not null default 0,
+              created_at text not null
+            );
+
+            create table if not exists llm_usage (
+              usage_id text primary key,
+              project_id text not null,
+              task_id text,
+              artifact_id text,
+              execution_run_id text,
+              provider text not null,
+              model text not null,
+              stage text,
+              input_tokens integer not null,
+              output_tokens integer not null,
+              total_tokens integer not null,
+              cache_tokens integer,
+              source text not null,
+              cost_usd real,
+              created_at text not null
+            );
+            -- Выборки usage всегда per-task (карточка артефакта, агрегат задачи);
+            -- таблица растёт на каждый LLM-вызов, поэтому индекс по task_id окупается.
+            create index if not exists llm_usage_task_idx on llm_usage(task_id);
 
             create table if not exists context_manifests (
               manifest_id text primary key,
@@ -1952,42 +2349,6 @@ class SqliteRuntime:
               created_at text not null
             );
 
-            create table if not exists clarification_candidates (
-              candidate_id text primary key,
-              project_id text not null,
-              source_type text not null,
-              source_id text not null,
-              payload_json text not null,
-              created_at text not null
-            );
-
-            create table if not exists clarification_requests (
-              request_id text primary key,
-              project_id text not null,
-              status text not null,
-              priority text not null,
-              title text not null,
-              question text not null,
-              description text not null default '',
-              reason text not null,
-              impact text not null,
-              answer_mode text not null,
-              options_json text not null,
-              recommended_option_id text,
-              visibility text not null default 'architectural',
-              default_assumption text,
-              affected_task_ids_json text not null,
-              related_artifact_ids_json text not null,
-              blocking_scope text not null,
-              source_type text not null,
-              source_id text not null,
-              created_from_candidate_ids_json text not null,
-              selected_option_ids_json text not null,
-              free_text text,
-              resolution_summary text,
-              created_at text not null,
-              updated_at text not null
-            );
             """
         )
         self._ensure_column(
@@ -1995,35 +2356,6 @@ class SqliteRuntime:
             "validation_runs",
             "clarification_candidate_ids_json",
             "text not null default '[]'",
-        )
-        self._ensure_column(
-            connection,
-            "clarification_requests",
-            "description",
-            "text not null default ''",
-        )
-        # Этап 3.1: visibility — единая ось «когда задавать пользователю».
-        # Заменяет старую колонку min_participation_mode (Этап 0/W1.2).
-        self._ensure_column(
-            connection,
-            "clarification_requests",
-            "visibility",
-            "text not null default 'architectural'",
-        )
-        self._ensure_column(
-            connection,
-            "clarification_requests",
-            "decision_owner_role",
-            "text not null default 'business'",
-        )
-        # W6 / V1: маркер «решено автоматически» (assume/defer в обход
-        # явного ответа пользователя). UI использует для визуальной
-        # дифференциации (🤖 badge + отдельный счётчик).
-        self._ensure_column(
-            connection,
-            "clarification_requests",
-            "auto_resolved",
-            "integer not null default 0",
         )
         # B4: маркер «артефакт заменён более новой версией».
         # При auto-retry задачи новый артефакт записывается, а старый
@@ -2035,6 +2367,20 @@ class SqliteRuntime:
             "artifacts",
             "is_superseded",
             "integer not null default 0",
+        )
+        # Подтверждение низкоуверенного артефакта пользователем (зеркально
+        # decisions.user_verified). Снимает мягкий индикатор is_low_confidence.
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "user_verified",
+            "integer not null default 0",
+        )
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "user_verified_at",
+            "text",
         )
         # Этап 1.3: связи артефактов в графе вынесены в отдельные колонки —
         # input_artifact_ids (lineage по контексту), child_artifact_ids
@@ -2060,22 +2406,113 @@ class SqliteRuntime:
             "used_position_ids_json",
             "text not null default '[]'",
         )
-        # W5.1: audit log событий уточнений.
+        # v3.0 — CheckpointSession: пауза workflow для участия пользователя.
+        #
+        # Decision_ids хранится JSON-массивом — связь one-to-many от сессии
+        # к решениям. Решения сами уже привязаны к session через source_task_id,
+        # обратная связь нужна для быстрого UI-чтения «какие решения в этой
+        # конкретной сессии». При появлении нагрузки можно вынести в join-таблицу.
         connection.executescript(
             """
-            create table if not exists clarification_events (
-              event_id text primary key,
-              request_id text not null,
+            create table if not exists checkpoint_sessions (
+              session_id text primary key,
               project_id text not null,
-              event_type text not null,
-              payload_json text not null default '{}',
-              actor text not null default 'operator',
-              created_at text not null
+              task_id text not null,
+              task_title text not null default '',
+              artifact_role text not null default '',
+              status text not null,
+              decision_ids_json text not null default '[]',
+              created_at text not null,
+              finalized_at text,
+              finalized_by text
             );
-            create index if not exists clarification_events_request_idx
-                on clarification_events(request_id, created_at);
+            create index if not exists checkpoint_sessions_project_status_idx
+                on checkpoint_sessions(project_id, status);
+            create index if not exists checkpoint_sessions_task_idx
+                on checkpoint_sessions(task_id);
             """
         )
+
+        # v3.0 — Реестр решений (decision ledger).
+        #
+        # См. specs/12_clarification_escalation.md раздел «v3.0 — реестр
+        # решений + checkpoint» и docs/decision_level_criteria.md.
+        #
+        # Структурный выбор: alternatives, dependencies, affected_artifact_ids
+        # храним как JSON-поля в самой строке, не вынося в отдельные таблицы.
+        # На v3.0 это упрощение оправдано: реестр читается всегда целиком
+        # для проекта (через filter, не через join), таблица растёт в десятки—
+        # сотни записей на проект, оптимизация запросов через индексы на
+        # выделенные FK не окупает усложнение схемы. При появлении нагрузки
+        # на per-alternative выборки — мигрировать в отдельную таблицу.
+        connection.executescript(
+            """
+            create table if not exists decisions (
+              decision_id text primary key,
+              project_id text not null,
+              title text not null,
+              description text not null default '',
+              chosen_option_id text not null default '',
+              alternatives_json text not null default '[]',
+              rationale text not null default '',
+              level text not null,
+              level_rationale text not null default '',
+              confidence real not null default 0.0,
+              status text not null,
+              source text not null,
+              source_task_id text,
+              affected_artifact_ids_json text not null default '[]',
+              depends_on_decision_ids_json text not null default '[]',
+              user_action text not null default 'not_shown',
+              original_chosen_option_id text,
+              user_free_text_answer text,
+              free_form_level_override text,
+              created_at text not null,
+              updated_at text not null,
+              category text not null default '',
+              answer_mode text not null default 'single',
+              chosen_option_ids_json text not null default '[]',
+              user_verified integer not null default 0,
+              user_verified_at text
+            );
+            create index if not exists decisions_project_idx
+                on decisions(project_id, created_at);
+            create index if not exists decisions_project_level_idx
+                on decisions(project_id, level);
+            create index if not exists decisions_project_status_idx
+                on decisions(project_id, status);
+            """
+        )
+
+        # v3.1: миграция existing БД — добавление answer_mode/chosen_option_ids
+        # для legacy decisions, созданных до v3.1 (single-mode по умолчанию).
+        self._ensure_column(
+            connection, "decisions", "answer_mode", "text not null default 'single'"
+        )
+        # v3.8: category became explicit; legacy rows may still encode it as
+        # "[category]" in description and are normalized lazily on read/upsert.
+        self._ensure_column(
+            connection, "decisions", "category", "text not null default ''"
+        )
+        self._ensure_column(
+            connection,
+            "decisions",
+            "chosen_option_ids_json",
+            "text not null default '[]'",
+        )
+        # v3.4: миграция — user_verified для legacy decisions (false).
+        self._ensure_column(
+            connection, "decisions", "user_verified", "integer not null default 0"
+        )
+        self._ensure_column(
+            connection, "decisions", "user_verified_at", "text"
+        )
+        # v3.10: source "pre_flight" переименован в "identification" (этап
+        # выявления решений до сборки). Мигрируем legacy-строки идемпотентно.
+        connection.execute(
+            "update decisions set source = 'identification' where source = 'pre_flight'"
+        )
+
         # W4.1 (R1): async workflow runs.
         connection.executescript(
             """

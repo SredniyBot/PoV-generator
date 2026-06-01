@@ -8,6 +8,7 @@ from typing import Any
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
 from ...claude_sdk_client import ClaudeSdkClient, ClaudeSdkConfig, model_for_complexity
+from ..protocol import LLMResult
 
 
 class ClaudeSdkProvider:
@@ -80,7 +81,7 @@ class ClaudeSdkProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         return self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,

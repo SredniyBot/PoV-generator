@@ -14,9 +14,13 @@ from ..application.validation_service import ValidationService
 from ..application.workflow_service import WorkflowService
 from ..common.env import load_repo_env
 from ..common.errors import PovGeneratorError
+from ..common.logging import configure_logging
 from ..common.serialization import json_dumps, to_primitive
 from ..domain.registry import ObjectRef
-from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.filesystem_registry import (
+    CachingRegistryLoader,
+    FilesystemRegistryLoader,
+)
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
 
@@ -26,7 +30,10 @@ def main(argv: list[str] | None = None) -> None:
 
     repo_root = Path(__file__).resolve().parents[3]
     load_repo_env(repo_root)
-    registry_service = RegistryService(FilesystemRegistryLoader(repo_root / "templates"))
+    configure_logging()
+    registry_service = RegistryService(
+        CachingRegistryLoader(FilesystemRegistryLoader(repo_root / "templates"))
+    )
     runtime = SqliteRuntime()
     # Один реестр LLM-провайдеров на процесс — все сервисы DI'ятся одной точкой.
     from ..infrastructure.llm import LLMProviderRegistry
@@ -127,12 +134,19 @@ def _dispatch(
                     "confidence": selection.confidence,
                 }
             domain_packs = tuple(snapshot.resolve_domain_pack(pack_ref) for pack_ref in enabled_pack_refs)
+            objective_spec = snapshot.resolve_objective(objective_ref)
+            methodology_ref = (
+                objective_spec.default_methodology_pack_ref.as_string()
+                if objective_spec.default_methodology_pack_ref is not None
+                else None
+            )
             bootstrap = project_service.init_project(
                 workspace=Path(args.workspace),
                 name=args.name,
                 objective_ref=objective_ref,
                 request_text=request_text,
                 domain_packs=domain_packs,
+                default_methodology_pack_ref=methodology_ref,
             )
             planning_service.expand_graph(Path(args.workspace), snapshot)
             project_service.add_fact(
@@ -164,6 +178,27 @@ def _dispatch(
             return
         if args.action == "show":
             print(json_dumps(project_service.load_manifest(Path(args.workspace))))
+            return
+        if args.action == "activate-next-objective":
+            snapshot, report = registry_service.validate()
+            if not report.is_valid:
+                raise PovGeneratorError(
+                    "Registry невалиден. Сначала выполните 'povgen registry validate'."
+                )
+            new_ref = ObjectRef.parse(args.objective)
+            new_spec = snapshot.resolve_objective(new_ref)
+            methodology_ref = (
+                new_spec.default_methodology_pack_ref.as_string()
+                if new_spec.default_methodology_pack_ref is not None
+                else None
+            )
+            updated_manifest = project_service.activate_next_objective(
+                Path(args.workspace),
+                new_ref,
+                default_methodology_pack_ref=methodology_ref,
+            )
+            planning_service.expand_graph(Path(args.workspace), snapshot)
+            print(json_dumps(updated_manifest))
             return
 
     if args.entity == "problem":
@@ -370,6 +405,9 @@ def _build_parser() -> argparse.ArgumentParser:
     request_group.add_argument("--request-file")
     project_show = project_subparsers.add_parser("show")
     project_show.add_argument("--workspace", required=True)
+    project_next = project_subparsers.add_parser("activate-next-objective")
+    project_next.add_argument("--workspace", required=True)
+    project_next.add_argument("--objective", required=True)
 
     problem = subparsers.add_parser("problem")
     problem_subparsers = problem.add_subparsers(dest="action", required=True)

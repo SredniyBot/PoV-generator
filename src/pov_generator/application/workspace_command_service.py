@@ -5,9 +5,12 @@ import uuid
 from pathlib import Path
 
 from ..common.errors import ConflictError
+from ..common.logging import get_logger
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
-from .clarification_service import ClarificationService
+
+logger = get_logger("project")
+from .checkpoint_service import CheckpointService
 from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
 from .project_service import ProjectService
@@ -27,7 +30,7 @@ class WorkspaceCommandService:
         planning_service: PlanningService,
         workflow_service: WorkflowService,
         domain_pack_selection_service: DomainPackSelectionService,
-        clarification_service: ClarificationService,
+        checkpoint_service: CheckpointService,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
@@ -35,7 +38,7 @@ class WorkspaceCommandService:
         self._planning_service = planning_service
         self._workflow_service = workflow_service
         self._domain_pack_selection_service = domain_pack_selection_service
-        self._clarification_service = clarification_service
+        self._checkpoint_service = checkpoint_service
 
     def run_next(self, project_id: str, *, provider: str | None = None, model: str | None = None) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
@@ -182,65 +185,40 @@ class WorkspaceCommandService:
             resource_id=pack_ref,
         )
 
-    def answer_clarification(
-        self,
-        project_id: str,
-        *,
-        clarification_id: str,
-        selected_option_ids: tuple[str, ...] = (),
-        free_text: str | None = None,
-    ) -> CommandResultView:
-        workspace_ref = self._catalog.resolve_workspace(project_id)
-        snapshot = self._validated_snapshot()
-        request = self._clarification_service.answer_clarification(
-            workspace_ref.workspace,
-            request_id=clarification_id,
-            selected_option_ids=selected_option_ids,
-            free_text=free_text,
-        )
-        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
-        return CommandResultView(
-            status="accepted",
-            command_name="answer-clarification",
-            summary="Ответ на уточнение сохранен. Система пересчитает доступные следующие действия.",
-            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
-            resource_id=request.request_id,
-        )
-
-    def accept_assumption(self, project_id: str, *, clarification_id: str) -> CommandResultView:
-        workspace_ref = self._catalog.resolve_workspace(project_id)
-        snapshot = self._validated_snapshot()
-        request = self._clarification_service.accept_assumption(
-            workspace_ref.workspace,
-            request_id=clarification_id,
-        )
-        self._planning_service.plan(workspace_ref.workspace, snapshot, mode="dry-run", record=False)
-        return CommandResultView(
-            status="accepted",
-            command_name="accept-assumption",
-            summary="Предложенное допущение принято и зафиксировано в состоянии проекта.",
-            changed_projections=("clarifications", "situation", "timeline", "state", "task_graph", "debug"),
-            resource_id=request.request_id,
-        )
-
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
+        """Сменить режим участия пользователя (v3.2).
+
+        Делегирует в `CheckpointService.set_participation_mode`, который:
+        - применяет SetClarificationModePatch к ProcessState;
+        - реэвалюирует существующие proposed-decisions: те, что больше
+          не должны показываться в новом режиме — auto-accept default;
+        - финализирует pending checkpoint-сессии, у которых все
+          decisions стали закрытыми;
+        - переводит соответствующие failed-задачи обратно в ready.
+
+        Этот endpoint возвращает понятный пользователю summary
+        («приняты автоматически X, разблокированы Y задач»).
+        """
         workspace_ref = self._catalog.resolve_workspace(project_id)
-        # W6/B1: set_mode теперь пере-оценивает все open candidates под новый
-        # mode. Возвращает ReevaluationSummary с counts; экранируем их в UI
-        # через summary string, чтобы пользователь увидел toast «авто-закрыто N».
-        reeval = self._clarification_service.set_mode(workspace_ref.workspace, mode)  # type: ignore[arg-type]
-        summary_lines = [f"Режим уточнений изменён на «{mode}»."]
-        if reeval.auto_assumed:
-            summary_lines.append(f"Автоматически принято допущений: {reeval.auto_assumed}.")
-        if reeval.auto_deferred:
-            summary_lines.append(f"Авто-отложено: {reeval.auto_deferred}.")
-        if reeval.kept_open:
-            summary_lines.append(f"Остались открытыми (требуют решения): {reeval.kept_open}.")
+        result = self._checkpoint_service.set_participation_mode(workspace_ref.workspace, mode)
+        if result.resumed_task_count > 0:
+            summary = (
+                f"Режим участия изменён на «{mode}». "
+                f"Автоматически приняты {result.auto_accepted_count} решений, "
+                f"разблокированы {result.resumed_task_count} задач."
+            )
+        elif result.auto_accepted_count > 0:
+            summary = (
+                f"Режим участия изменён на «{mode}». "
+                f"Автоматически приняты {result.auto_accepted_count} решений."
+            )
+        else:
+            summary = f"Режим участия изменён на «{mode}»."
         return CommandResultView(
             status="accepted",
             command_name="set-clarification-mode",
-            summary=" ".join(summary_lines),
-            changed_projections=("shell", "clarifications", "situation", "timeline", "state"),
+            summary=summary,
+            changed_projections=("shell", "situation", "timeline", "state", "task_graph", "overview"),
             resource_id=mode,
         )
 
@@ -255,6 +233,42 @@ class WorkspaceCommandService:
             summary=f"Активная методология обновлена: '{pack_ref}'.",
             changed_projections=("shell", "situation", "timeline", "state", "debug"),
             resource_id=pack_ref,
+        )
+
+    def activate_next_objective(
+        self,
+        project_id: str,
+        *,
+        new_objective_ref: str,
+    ) -> CommandResultView:
+        """Переключить workspace на следующий objective (ТЗ → архитектура).
+
+        Состояние (knowledge + process) сохраняется; новый objective получает
+        собственное дерево задач рядом со старым. Существующие артефакты
+        автоматически становятся доступны новым задачам через
+        ``requires.artifacts.optional``.
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        snapshot = self._validated_snapshot()
+        new_ref_obj = ObjectRef.parse(new_objective_ref)
+        new_spec = snapshot.resolve_objective(new_ref_obj)
+        methodology_ref = (
+            new_spec.default_methodology_pack_ref.as_string()
+            if new_spec.default_methodology_pack_ref is not None
+            else None
+        )
+        self._project_service.activate_next_objective(
+            workspace_ref.workspace,
+            new_ref_obj,
+            default_methodology_pack_ref=methodology_ref,
+        )
+        self._planning_service.expand_graph(workspace_ref.workspace, snapshot)
+        return CommandResultView(
+            status="accepted",
+            command_name="activate-next-objective",
+            summary=f"Активирован следующий objective: '{new_objective_ref}'.",
+            changed_projections=("shell", "situation", "task_graph", "timeline", "state"),
+            resource_id=new_objective_ref,
         )
 
     def create_project(
@@ -289,12 +303,19 @@ class WorkspaceCommandService:
                 f"Обоснование: {selection.rationale}"
             )
         workspace = self._allocate_workspace(name)
+        objective_spec = snapshot.resolve_objective(objective_object_ref)
+        methodology_ref = (
+            objective_spec.default_methodology_pack_ref.as_string()
+            if objective_spec.default_methodology_pack_ref is not None
+            else None
+        )
         bootstrap = self._project_service.init_project(
             workspace=workspace,
             name=name.strip(),
             objective_ref=objective_object_ref,
             request_text=request_text.strip(),
             domain_packs=packs,
+            default_methodology_pack_ref=methodology_ref,
         )
         self._project_service.add_fact(
             workspace,
@@ -304,6 +325,10 @@ class WorkspaceCommandService:
             taken_by_label="domain_pack_selector",
         )
         self._planning_service.expand_graph(workspace, snapshot)
+        logger.info(
+            f"проект создан «{bootstrap.manifest.name}»",
+            objective=bootstrap.manifest.objective_ref.split("@")[0],
+        )
         return ProjectCreatedView(
             project_id=bootstrap.manifest.project_id,
             name=bootstrap.manifest.name,

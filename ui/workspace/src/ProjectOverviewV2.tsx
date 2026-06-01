@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
+import { activeRunRefetchInterval } from "./realtime";
 import type {
   ArtifactSectionStatus,
   ArtifactSkeletonView,
@@ -23,8 +24,12 @@ import type {
 
 interface ProjectOverviewV2Props {
   projectId: string;
-  onOpenClarifications?: () => void;
-  onOpenDecisionLog?: () => void;
+  /**
+   * v3.1: единая точка перехода в Decision-реестр.
+   * Раньше было два колбэка (onOpenClarifications + onOpenDecisionLog),
+   * сейчас оба сценария закрывает один экран /decisions.
+   */
+  onOpenDecisions?: () => void;
   onOpenArtifactFull?: (artifactId: string) => void;
   /**
    * Команда "продолжить движение проекта до естественной остановки"
@@ -42,8 +47,7 @@ interface ProjectOverviewV2Props {
 
 export function ProjectOverviewV2({
   projectId,
-  onOpenClarifications,
-  onOpenDecisionLog,
+  onOpenDecisions,
   onOpenArtifactFull,
   onContinue,
   onRetryTask,
@@ -70,7 +74,9 @@ export function ProjectOverviewV2({
   const activeRunQuery = useQuery<WorkflowRunView | null>({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
-    refetchInterval: 1500,
+    // Прогресс едет по WS (projection_changed: workflow_runs); полл —
+    // страховка только пока run идёт, на простое off.
+    refetchInterval: activeRunRefetchInterval,
   });
   const activeRun = activeRunQuery.data ?? null;
   const isRunning =
@@ -108,14 +114,24 @@ export function ProjectOverviewV2({
     queryFn: () => api.getOverview(projectId),
   });
 
-  const clarifications = useQuery({
-    queryKey: ["clarifications-v2", projectId],
-    queryFn: () => api.getClarifications(projectId),
+  // v3.1: pending-checkpoint сессии — теперь основной источник «нужно
+  // ваше решение». Заменяют ProjectClarificationsView.blocking_count.
+  const checkpoints = useQuery({
+    queryKey: ["checkpoints-list", projectId],
+    queryFn: () => api.getCheckpoints(projectId),
+    // Чекпоинты создаются ТОЛЬКО во время run'а, а WS (projection_changed:
+    // workflow_runs) уже инвалидирует этот ключ. Поэтому поллим лишь как
+    // страховку, пока run активен; на простое — off (ноль холостого трафика).
+    // ВАЖНО: react-query берёт МИНИМАЛЬНЫЙ интервал среди всех наблюдателей
+    // одного ключа — поэтому условие должно стоять во ВСЕХ местах (см.
+    // также headerCheckpointsQuery в App.tsx).
+    refetchInterval: isRunning ? 5000 : false,
   });
 
-  const decisionLog = useQuery({
-    queryKey: ["decisions-v2", projectId],
-    queryFn: () => api.getDecisionLog(projectId),
+  // v3.1: полный реестр решений — заменяет legacy DecisionLog.
+  const decisions = useQuery({
+    queryKey: ["decisions", projectId],
+    queryFn: () => api.getDecisionsRegistry(projectId),
   });
 
   const primaryArtifactId = overview.data?.key_artifacts?.[0]?.artifact_id;
@@ -140,10 +156,15 @@ export function ProjectOverviewV2({
     return null;
   }, [versionsQuery.data, primaryArtifactId]);
 
-  const blockingCount = clarifications.data?.blocking_count ?? 0;
-  const openCount = clarifications.data?.open_count ?? 0;
-  const assumedCount = decisionLog.data?.assumed_count ?? 0;
-  const decisionsTotal = decisionLog.data?.total_count ?? 0;
+  // Решения, по которым система ждёт реакции пользователя (pending
+  // checkpoint'ы). Используются как primary CTA «ответить на N».
+  const pendingDecisionsCount = (checkpoints.data?.items ?? [])
+    .filter((s) => s.status === "pending")
+    .reduce((sum, s) => sum + s.decisions.length, 0);
+  const surfacedPendingCount = decisions.data?.surfaced_pending ?? 0;
+  const blockingCount = pendingDecisionsCount > 0 ? pendingDecisionsCount : surfacedPendingCount;
+  const decisionsTotal = decisions.data?.items.length ?? 0;
+  const acceptedCount = decisions.data?.accepted_count ?? 0;
 
   const lastStepLabel = lastStep?.task_key ?? lastStep?.selected_step_id ?? null;
   const primaryCta = useMemo(
@@ -158,7 +179,7 @@ export function ProjectOverviewV2({
         runError: activeRun?.error_message,
         lastTaskId: lastStep?.task_id ?? null,
         lastTaskLabel: lastStepLabel,
-        onOpenClarifications,
+        onOpenDecisions,
         onPause: activeRun ? () => pauseMutation.mutate(activeRun.run_id) : undefined,
         onContinue,
         onRetryTask,
@@ -174,7 +195,7 @@ export function ProjectOverviewV2({
       activeRun,
       lastStep?.task_id,
       lastStepLabel,
-      onOpenClarifications,
+      onOpenDecisions,
       onContinue,
       onRetryTask,
       pauseMutation,
@@ -301,33 +322,20 @@ export function ProjectOverviewV2({
             </div>
           )}
 
-          {openCount > 0 && (
-            <button
-              type="button"
-              className="overview-mc__shortcut"
-              onClick={onOpenClarifications}
-            >
-              <span className="overview-mc__shortcut-title">Открытые вопросы</span>
-              <span className="overview-mc__shortcut-counter">
-                <strong>{openCount}</strong>
-                {assumedCount > 0 && (
-                  <span className="overview-mc__auto-badge" title="Авто-решений">
-                    🤖 {assumedCount}
-                  </span>
-                )}
-              </span>
-            </button>
-          )}
-
           {decisionsTotal > 0 && (
             <button
               type="button"
               className="overview-mc__shortcut"
-              onClick={onOpenDecisionLog}
+              onClick={onOpenDecisions}
             >
-              <span className="overview-mc__shortcut-title">Журнал решений</span>
+              <span className="overview-mc__shortcut-title">Реестр решений</span>
               <span className="overview-mc__shortcut-counter">
                 <strong>{decisionsTotal}</strong>
+                {acceptedCount > 0 && (
+                  <span className="overview-mc__auto-badge" title="Принято">
+                    {acceptedCount}
+                  </span>
+                )}
               </span>
             </button>
           )}
@@ -608,7 +616,7 @@ function computePrimaryCta(input: {
   runError: string | null | undefined;
   lastTaskId: string | null;
   lastTaskLabel: string | null;
-  onOpenClarifications?: () => void;
+  onOpenDecisions?: () => void;
   onPause?: () => void;
   onContinue?: () => void;
   onRetryTask?: (taskId: string) => void;
@@ -628,14 +636,14 @@ function computePrimaryCta(input: {
       : null;
 
   // 1. Блокирующие вопросы — самое срочное (M-J3). Никаких secondary —
-  // фокус: ответить.
+  // фокус: ответить. В v3.1 это pending-checkpoint решения / proposed-decision'ы.
   if (input.blockingCount > 0) {
     return {
       headline: `Ждут вашего решения: ${input.blockingCount} ${pluralizeQuestion(input.blockingCount)}`,
       detail: "Без ответа система не может двигаться дальше.",
       action: {
         label: `Ответить на ${input.blockingCount}`,
-        onClick: input.onOpenClarifications,
+        onClick: input.onOpenDecisions,
         tone: "primary",
       },
     };

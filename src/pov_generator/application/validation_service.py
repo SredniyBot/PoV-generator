@@ -1,50 +1,48 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..common.errors import ValidationError
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
-from ..domain.clarifications import ClarificationCandidate, ClarificationOption
+from ..domain.artifacts import LOW_CONFIDENCE_THRESHOLD
+from ..domain.decisions import SOURCE_IDENTIFICATION, DecisionAlternative, DecisionInput
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, validate_json_schema
-from .clarification_service import ClarificationService
+from .checkpoint_service import CheckpointService
 from .methodology_rules import evaluate_methodology_rules
 
 if TYPE_CHECKING:
     from .execution_service import ExecutionBundle
 
 
-_KNOWN_DECISION_OWNER_ROLES: frozenset[str] = frozenset(
-    {"business", "client", "methodologist", "architect", "data_owner", "security"}
-)
+# v3.1: visibility ClarificationCandidate → DecisionLevel.
+# Legacy ось `visibility` (principal/architectural/technical) маппится 1:1
+# на новые уровни вовлечения. См. docs/decision_level_criteria.md.
+_VISIBILITY_TO_LEVEL: dict[str, str] = {
+    "principal": "business",
+    "architectural": "architecture",
+    "technical": "detail",
+}
 
-
-def _normalize_decision_owner_role(approver_role: str | None) -> str:
-    """Маппинг `quality_gate.approver_role` (свободный формат, расширяемый
-    словарь spec/02) на канонический `DecisionOwnerRole`. Имена осознанно
-    совпадают, но gate может объявить, например, `dpo` — нормализуем
-    к ближайшей роли (`security`). Неизвестные роли уходят в `client` для
-    human_approval gate'ов (внешнее согласование) и `business` иначе."""
-    if not approver_role:
-        return "client"
-    role = approver_role.strip().lower()
-    if role in _KNOWN_DECISION_OWNER_ROLES:
-        return role
-    aliases = {
-        "dpo": "security",
-        "ciso": "security",
-        "owner": "client",
-        "stakeholder": "business",
-        "bo": "business",
-        "po": "business",
-    }
-    return aliases.get(role, "client")
+# v3.1: source_type ClarificationCandidate → DecisionSource. Legacy типы
+# `validation` и `quality_gate` оба означают реактивную регистрацию после
+# того как валидация артефакта (или его gate) выявила пробел.
+# `methodology_pack` приходит от правил методологии, которые срабатывают
+# по ходу исполнения, — для реестра это `emergent`.
+_SOURCE_TYPE_TO_DECISION_SOURCE: dict[str, str] = {
+    "validation": "reactive_validation",
+    "quality_gate": "reactive_validation",
+    "methodology_pack": "emergent",
+    "planning": SOURCE_IDENTIFICATION,
+    "task": "reactive_validation",
+    "domain_pack": "emergent",
+}
 
 
 def _resolve_confidence(
@@ -72,10 +70,84 @@ def _resolve_confidence(
     return None
 
 
+def _build_decision_input(
+    *,
+    title: str,
+    description: str,
+    rationale: str,
+    impact: str = "",
+    visibility: str = "architectural",
+    answer_mode: str = "single",
+    confidence: float = 0.2,
+    source_type: str = "validation",
+    affected_task_ids: tuple[str, ...] = (),
+    related_artifact_ids: tuple[str, ...] = (),
+    options: tuple[tuple[str, str, str, float | None], ...] = (),
+    recommended_option_id: str | None = None,
+) -> DecisionInput:
+    """Сконструировать DecisionInput из «сырого» вопроса (v3.1).
+
+    Принимает упрощённый набор параметров, аналогичный
+    ``ClarificationService.candidate_from_question`` в legacy-коде,
+    и собирает payload для ``CheckpointService.register_decision_inputs``.
+
+    options: tuple of (option_id, label, description, confidence) для каждой
+    альтернативы. Если пусто — alternatives тоже пустой tuple (case free_text).
+    recommended_option_id: если None и alternatives непуст, берётся option_id
+    первой альтернативы.
+    """
+    # v3.5: per-alt confidence обязательная. Если эмиттер передал None —
+    # подставляем 0.5 (нейтрально-неопределённо). is_low_confidence
+    # учитывает это и засветит индикатор «система не уверена».
+    alternatives = tuple(
+        DecisionAlternative(
+            option_id=opt[0],
+            label=opt[1],
+            description=opt[2],
+            confidence=0.5 if opt[3] is None else opt[3],
+        )
+        for opt in options
+    )
+    # v3.3: если у эмиттера нет реальных альтернатив — НЕ изобретаем
+    # фейковый «Принять рекомендацию системы». Это выглядело как заглушка.
+    # Переключаемся на free_text — пользователь пишет ответ сам или
+    # нажимает «Принять как есть» (accept_default) в UI.
+    if not alternatives:
+        answer_mode = "free_text"
+        recommended = ""
+    elif recommended_option_id is None:
+        recommended = alternatives[0].option_id
+    else:
+        recommended = recommended_option_id
+    # rationale + impact склейка: impact дополняет почему этот ответ важен.
+    if impact:
+        full_rationale = f"{rationale} {impact}".strip()
+    else:
+        full_rationale = rationale
+    level = _VISIBILITY_TO_LEVEL.get(visibility, "architecture")
+    source = _SOURCE_TYPE_TO_DECISION_SOURCE.get(source_type, "reactive_validation")
+    source_task_id = affected_task_ids[0] if affected_task_ids else None
+    return DecisionInput(
+        title=title.strip(),
+        description=description or title.strip(),
+        alternatives=alternatives,
+        recommended_option_id=recommended,
+        rationale=full_rationale,
+        level=level,  # type: ignore[arg-type]
+        answer_mode=answer_mode,  # type: ignore[arg-type]
+        confidence=float(confidence),
+        source=source,  # type: ignore[arg-type]
+        source_task_id=source_task_id,
+        affected_artifact_ids=related_artifact_ids,
+    )
+
+logger = get_logger("validation")
+
+
 class ValidationService:
-    def __init__(self, runtime: SqliteRuntime, clarification_service: ClarificationService | None = None) -> None:
+    def __init__(self, runtime: SqliteRuntime, checkpoint_service: CheckpointService | None = None) -> None:
         self._runtime = runtime
-        self._clarification_service = clarification_service or ClarificationService(runtime)
+        self._checkpoint_service = checkpoint_service or CheckpointService(runtime)
 
     def validate_execution(
         self,
@@ -90,6 +162,9 @@ class ValidationService:
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
         findings: list[ValidationFinding] = []
+        # v3.1: field остался `clarification_candidate_ids` для backward-compat
+        # схемы ValidationRun, но реально хранит decision_id свежесозданных
+        # Decision-записей (см. CheckpointService.register_decision_inputs).
         clarification_candidate_ids: list[str] = []
         active_domain_refs = tuple(sorted(process.active_domain_pack_records.keys()))
 
@@ -126,7 +201,7 @@ class ValidationService:
                     )
                     continue
 
-                semantic_findings, candidates = self._semantic_analysis(
+                semantic_findings, decision_inputs = self._semantic_analysis(
                         artifact_role=output.artifact_role,
                         payload=payload,
                         template_ref=template.ref.as_string(),
@@ -139,49 +214,48 @@ class ValidationService:
                         # уже её туда положил при создании артефакта).
                         overall_confidence=artifact.metadata.overall_confidence,
                     )
-                decisions = self._clarification_service.register_candidates(workspace, tuple(candidates))
-                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
-                # Семантический gate `needs_user_input` создаётся в
-                # `_semantic_analysis` сырым — на основе непустого
-                # `blocking_questions` из LLM. Но если после регистрации
-                # кандидатов оказалось, что ВСЕ они дедуплицировались на
-                # answered/assumed/deferred (никаких реально открытых
-                # вопросов не появилось) — задача не блокирует pipeline.
-                # Это решает кейс security_constraints_assessment, где LLM
-                # эмитил 7 вопросов, все 7 нашли матчинг в системе, ни
-                # одного нового open-request, но задача всё равно падала.
-                if not self._has_open_blocking_outcome(workspace, decisions):
+                # v3.1: register_decision_inputs создаёт Decision-записи и
+                # отдельную CheckpointSession (mode="expert" — forcibly surface)
+                # для каждой группы по task_id. Возвращает tuple[Decision, ...].
+                created_decisions = self._checkpoint_service.register_decision_inputs(
+                    workspace,
+                    project_id=manifest.project_id,
+                    decision_inputs=tuple(decision_inputs),
+                )
+                clarification_candidate_ids.extend(d.decision_id for d in created_decisions)
+                # `needs_user_input`-finding для review_report со статусом
+                # "needs_user_input" остаётся: он сообщает gating-уровень.
+                # Если post-validation не породил ни одного решения для
+                # пользователя — снимаем raw needs_user_input как избыточный.
+                if not bool(created_decisions):
                     semantic_findings = tuple(
                         f for f in semantic_findings if f.finding_type != "needs_user_input"
                     )
                 findings.extend(semantic_findings)
 
-                if output.artifact_role == "review_report":
-                    if payload.get("overall_status") != "passed":
-                        findings.append(
-                            ValidationFinding(
-                                finding_id=str(uuid.uuid4()),
-                                finding_type="quality_risk",
-                                severity="error",
-                                blocking=True,
-                                message="Ревью не прошло: документ требует доработки.",
-                                related_artifact_ids=(artifact.artifact_id,),
-                            )
-                        )
-                    else:
-                        gate_candidates = self._maybe_emit_gate_candidates(
-                            workspace=workspace,
-                            snapshot=snapshot,
-                            project_id=manifest.project_id,
-                            task_id=task_id,
-                            artifact_role=output.artifact_role,
-                            artifact_id=artifact.artifact_id,
-                        )
-                        if gate_candidates:
-                            decisions = self._clarification_service.register_candidates(
-                                workspace, tuple(gate_candidates)
-                            )
-                            clarification_candidate_ids.extend(d.candidate_id for d in decisions)
+                # Human-approval gate'ы (client.requirements_signoff) блокируют
+                # завершение цели до решения человека. После удаления LLM-ревью
+                # (вариант B grisha_new) эмитим gate-кандидата при создании
+                # ЛЮБОГО primary-артефакта — _maybe_emit_gate_candidates сам
+                # фильтрует gate'ы по required-роли (для ТЗ-цели это
+                # requirements_spec). Регистрируем через CheckpointService —
+                # единый путь decision-ledger (clarification-механизм удалён в
+                # v3.1, поэтому register_candidates больше не используется).
+                gate_inputs = self._maybe_emit_gate_candidates(
+                    workspace=workspace,
+                    snapshot=snapshot,
+                    project_id=manifest.project_id,
+                    task_id=task_id,
+                    artifact_role=output.artifact_role,
+                    artifact_id=artifact.artifact_id,
+                )
+                if gate_inputs:
+                    gate_decisions = self._checkpoint_service.register_decision_inputs(
+                        workspace,
+                        project_id=manifest.project_id,
+                        decision_inputs=tuple(gate_inputs),
+                    )
+                    clarification_candidate_ids.extend(d.decision_id for d in gate_decisions)
 
                 if (
                     output.artifact_role == "requirements_spec"
@@ -201,19 +275,24 @@ class ValidationService:
                     )
 
         status = "passed" if not any(item.blocking for item in findings) else "failed"
-        # Кандидаты от правил методологии теперь поступают из execution_service:
-        # rules eval делается там же, где формируется reasoning, и попадает
-        # в methodology_trace с реальными `fired`/`candidates_emitted`.
-        # Здесь только регистрируем их через ClarificationService.
-        if execution_bundle.result.status == "succeeded" and execution_bundle.result.methodology_candidates:
+        # v3.1: methodology emits DecisionInput directly через
+        # ExecutionResult.methodology_decisions. Регистрация через
+        # CheckpointService — единый путь для всех источников.
+        if (
+            execution_bundle.result.status == "succeeded"
+            and execution_bundle.result.methodology_decisions
+            and self._checkpoint_service is not None
+        ):
             try:
-                decisions = self._clarification_service.register_candidates(
-                    workspace, execution_bundle.result.methodology_candidates
+                meth_decisions = self._checkpoint_service.register_decision_inputs(
+                    workspace,
+                    project_id=manifest.project_id,
+                    decision_inputs=execution_bundle.result.methodology_decisions,
                 )
-                clarification_candidate_ids.extend(decision.candidate_id for decision in decisions)
+                clarification_candidate_ids.extend(d.decision_id for d in meth_decisions)
             except Exception:
                 # Fail-safe: ошибка регистрации кандидата не должна валить
-                # валидацию основного артефакта. Аналогично прежнему поведению.
+                # валидацию основного артефакта.
                 pass
 
         validation_run = ValidationRun(
@@ -227,6 +306,17 @@ class ValidationService:
             created_at=utc_now_iso(),
         )
         self._runtime.record_validation_run(workspace, validation_run)
+
+        _blocking = [f for f in findings if f.blocking]
+        if status == "passed":
+            logger.info("валидация пройдена", task=task.title or task.task_key, findings=len(findings))
+        else:
+            logger.warning(
+                "валидация не пройдена",
+                task=task.title or task.task_key,
+                findings=len(findings),
+                reason=(_blocking[0].message if _blocking else None),
+            )
 
         if status != "passed" and any(finding.finding_type != "needs_user_input" for finding in findings):
             ticket = EscalationTicket(
@@ -244,40 +334,6 @@ class ValidationService:
 
         return validation_run
 
-    def _has_open_blocking_outcome(self, workspace: Path, decisions) -> bool:
-        """True если регистрация кандидатов реально породила хотя бы один
-        open-request, блокирующий задачу.
-
-        ВАЖНО: всегда перечитываем актуальный статус request'а из БД, потому
-        что пока шла регистрация (включая LLM-enrichment description+options
-        для каждого кандидата — это секунды каждый), пользователь мог уже
-        ответить на параллельно созданные вопросы. Если на момент финала
-        валидации все blocking-вопросы УЖЕ закрыты — finding `needs_user_input`
-        не нужен.
-
-        Логика для каждого decision:
-        - action == "assume"/"defer" → закрытое автоматически, не блокирует.
-        - action в {"ask", "reuse_existing"} с request_id → читаем актуальный
-          статус из БД:
-            * status == "open" + blocking_scope != "none" → блокирует
-            * любой другой статус (answered/assumed/deferred) → не блокирует
-        - Без request_id (нестандартный сценарий) → не блокирует.
-        """
-        for decision in decisions:
-            if decision.action in {"assume", "defer"}:
-                continue
-            if not decision.request_id:
-                continue
-            try:
-                existing = self._runtime.get_clarification_request(workspace, decision.request_id)
-            except Exception:
-                # Запросить не удалось — считаем блокирующим (безопасный
-                # дефолт, чтобы не пропустить реальную блокировку).
-                return True
-            if existing.status == "open" and existing.blocking_scope != "none":
-                return True
-        return False
-
     def _semantic_analysis(
         self,
         *,
@@ -291,123 +347,41 @@ class ValidationService:
         overall_confidence: float | None = None,
     ):
         findings: list[ValidationFinding] = []
-        candidates = []
+        decision_inputs: list[DecisionInput] = []
         # Уверенность приоритетно берём из metadata (overall_confidence).
         # Fallback на payload['confidence'] — для backward-compat с
         # уже сохранёнными ранее артефактами и legacy-фикстурами.
         confidence = _resolve_confidence(overall_confidence, payload)
-        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.45:
+        if (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and confidence < LOW_CONFIDENCE_THRESHOLD
+        ):
+            # НЕ блокирующая находка: низкая уверенность больше не роняет
+            # задачу. Артефакт создаётся и помечается is_low_confidence —
+            # пользователь подтверждает его одним кликом (как и низкоуверенные
+            # решения). Сама находка остаётся информационной (warning).
             findings.append(
                 ValidationFinding(
                     finding_id=str(uuid.uuid4()),
                     finding_type="low_confidence",
-                    severity="error",
-                    blocking=True,
-                    message=f"Артефакт '{artifact_role}' имеет слишком низкую уверенность ({confidence:.2f}).",
+                    severity="warning",
+                    blocking=False,
+                    message=(
+                        f"Низкая уверенность артефакта '{artifact_role}' ({confidence:.2f}) — "
+                        "требуется подтверждение пользователя."
+                    ),
                     related_artifact_ids=(artifact_id,),
                 )
             )
-            if not payload.get("blocking_questions"):
-                candidates.append(
-                    self._clarification_service.candidate_from_question(
-                        project_id=project_id,
-                        source_type="validation",
-                        # W6/B2: source_id ДОЛЖЕН быть стабильным между re-run
-                        # одной задачи. Раньше включали artifact_id, который
-                        # меняется при каждом исполнении → find_clarification_by_source
-                        # не находил answered request → дубли вопросов после
-                        # ответа. Теперь привязываемся к (task_id, artifact_role).
-                        source_id=f"{task_id}:{artifact_role}:low_confidence",
-                        question="Какой ключевой бизнес-контекст нужно учесть, чтобы повысить уверенность результата?",
-                        affected_task_ids=(task_id,),
-                        related_artifact_ids=(artifact_id,),
-                        severity="high",
-                        confidence_without_user=float(confidence),
-                        rationale="Результат задачи имеет низкую уверенность, а в контексте недостаточно данных для надежного вывода.",
-                        impact="Ответ поможет перезапустить задачу с более точным пониманием требований.",
-                    )
-                )
-
-        blocking_questions = payload.get("blocking_questions")
-        if isinstance(blocking_questions, list) and blocking_questions:
-            # АРХИТЕКТУРНОЕ РЕШЕНИЕ: blocking_questions от LLM трактуются как
-            # **advisory follow-ups**, а не как стоп-сигнал.
-            #
-            # Причина: LLM с высокой уверенностью (confidence >= 0.45) сам
-            # производит качественный артефакт со всеми разделами + ДОПОЛНИТЕЛЬНО
-            # заполняет blocking_questions деталями, которые «было бы хорошо
-            # уточнить». В реальной консалтинговой работе это нормально:
-            # ТЗ всегда содержит секцию «открытые вопросы» / «допущения»,
-            # это не блокер для поставки документа.
-            #
-            # Старая логика валила задачу на любой непустой blocking_questions,
-            # что приводило к бесконечному циклу:
-            #   task → LLM выдаёт хороший артефакт + 5 вопросов → task failed
-            #   → user отвечает 5 вопросов → retry → LLM выдаёт хороший артефакт
-            #   + 5 новых вопросов → ...
-            #
-            # Новая логика:
-            # • Если confidence < 0.45 (низкая уверенность зафиксирована выше)
-            #   — задача УЖЕ помечена `low_confidence` finding'ом (blocking=True).
-            #   В этом случае blocking_questions ДЕЙСТВИТЕЛЬНО блокируют:
-            #   candidates создаются с blocking_scope="task", а finding
-            #   needs_user_input явно добавляется для прозрачности.
-            # • Если confidence >= 0.45 — артефакт валиден.
-            #   blocking_questions становятся advisory-кандидатами
-            #   (blocking_scope="none"). Они появляются в инбоксе как
-            #   «follow-up для уточнения», но НЕ блокируют admission задачи
-            #   и НЕ создают `needs_user_input` finding.
-            is_low_confidence = (
-                isinstance(confidence, (int, float))
-                and not isinstance(confidence, bool)
-                and confidence < 0.45
-            )
-            advisory_scope = "task" if is_low_confidence else "none"
-            if is_low_confidence:
-                findings.append(
-                    ValidationFinding(
-                        finding_id=str(uuid.uuid4()),
-                        finding_type="needs_user_input",
-                        severity="error",
-                        blocking=True,
-                        message="Для продолжения нужны уточнения пользователя: " + "; ".join(str(item) for item in blocking_questions),
-                        related_artifact_ids=(artifact_id,),
-                    )
-                )
-            for question in blocking_questions:
-                normalized_question = str(question).strip()
-                if not normalized_question:
-                    continue
-                # W6/B2: hash вопроса в source_id даёт стабильный идентификатор
-                # между re-run (порядок blocking_questions может меняться —
-                # `index` был ненадёжным якорем). artifact_id тоже выкинут
-                # как нестабильный между запусками задачи.
-                question_hash = hashlib.sha1(
-                    normalized_question.lower().encode("utf-8")
-                ).hexdigest()[:10]
-                candidates.append(
-                    self._clarification_service.candidate_from_question(
-                        project_id=project_id,
-                        source_type="validation",
-                        source_id=f"{task_id}:{artifact_role}:question:{question_hash}",
-                        question=normalized_question,
-                        affected_task_ids=(task_id,),
-                        related_artifact_ids=(artifact_id,),
-                        severity="high" if is_low_confidence else "medium",
-                        confidence_without_user=0.2,
-                        blocking_scope=advisory_scope,
-                    )
-                )
 
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))
 
-        if artifact_role == "review_report" and template_ref == "common.requirements_spec_review@2.0.0":
-            findings.extend(
-                self._validate_review_report(payload, artifact_id, overall_confidence=overall_confidence)
-            )
-
-        return findings, candidates
+        # LLM-ревью ТЗ удалён (вариант B grisha_new) — блок валидации
+        # review_report не переносим. Возвращаем decision_inputs (механизм
+        # decision-ledger).
+        return findings, decision_inputs
 
     def _validate_enterprise_spec(
         self,
@@ -506,40 +480,6 @@ class ValidationService:
             for pack_ref in active_domain_pack_refs
         )
 
-    def _validate_review_report(
-        self,
-        payload: dict[str, Any],
-        artifact_id: str,
-        *,
-        overall_confidence: float | None = None,
-    ) -> list[ValidationFinding]:
-        findings: list[ValidationFinding] = []
-        confidence = _resolve_confidence(overall_confidence, payload)
-        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and confidence < 0.55:
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="review_confidence",
-                    severity="error",
-                    blocking=True,
-                    message=f"Ревью имеет недостаточную уверенность ({confidence:.2f}) и требует участия пользователя.",
-                    related_artifact_ids=(artifact_id,),
-                )
-            )
-
-        if payload.get("overall_status") == "needs_user_input":
-            findings.append(
-                ValidationFinding(
-                    finding_id=str(uuid.uuid4()),
-                    finding_type="needs_user_input",
-                    severity="critical",
-                    blocking=True,
-                    message="Ревью показывает, что без дополнительного ввода пользователя продолжать нельзя.",
-                    related_artifact_ids=(artifact_id,),
-                )
-            )
-        return findings
-
     def _evaluate_methodology_rules(
         self,
         *,
@@ -548,10 +488,9 @@ class ValidationService:
         reasoning: dict,
         project_id: str,
         task_id: str,
-    ) -> list[ClarificationCandidate]:
+    ) -> list[DecisionInput]:
         # Тонкий делегат к pure-функции в `methodology_rules`. Сохранён для
-        # обратной совместимости с тестами, которые исторически вызывают этот
-        # метод напрямую. В рантайме теперь правила прогоняет execution_service.
+        # обратной совместимости с тестами.
         evaluation = evaluate_methodology_rules(
             methodology=methodology,
             complexity=complexity,
@@ -559,7 +498,7 @@ class ValidationService:
             project_id=project_id,
             task_id=task_id,
         )
-        return list(evaluation.candidates)
+        return list(evaluation.decision_inputs)
 
     def _maybe_emit_gate_candidates(
         self,
@@ -570,11 +509,20 @@ class ValidationService:
         task_id: str,
         artifact_role: str,
         artifact_id: str,
-    ) -> list[ClarificationCandidate]:
+    ) -> list[DecisionInput]:
         manifest = self._runtime.load_manifest(workspace)
         objective = snapshot.resolve_objective(manifest.objective_ref)
-        candidates: list[ClarificationCandidate] = []
-        existing_requests = self._runtime.list_clarification_requests(workspace)
+        inputs: list[DecisionInput] = []
+        # v3.1: дедуп сигналов sign-off — раньше по (source_type="quality_gate",
+        # source_id=gate_ref); теперь у Decision нет source_id, ищем по
+        # подстроке gate.title внутри Decision.title (формат title задан
+        # ниже как «Согласовать результат gate '<title>'?»). Менее точно,
+        # но достаточно, чтобы не дублировать sign-off-запросы.
+        existing_decisions = self._runtime.list_decisions(
+            workspace,
+            project_id=manifest.project_id,
+            source="reactive_validation",
+        )
         for gate_ref in objective.done_gate_refs:
             gate = snapshot.resolve_quality_gate(gate_ref)
             if gate.check_type != "human_approval":
@@ -583,41 +531,30 @@ class ValidationService:
             if required_roles and artifact_role not in required_roles:
                 continue
             already = any(
-                req.source_type == "quality_gate" and req.source_id == gate.ref.as_string()
-                for req in existing_requests
+                gate.title in decision.title
+                for decision in existing_decisions
             )
             if already:
                 continue
             decision_modes = gate.decision_modes or ("approved", "approved_with_comments", "rejected")
-            options_typed = tuple(
-                ClarificationOption(option_id=mode, label=mode, description="")
-                for mode in decision_modes
+            options_payload = tuple(
+                (mode, mode, "", None) for mode in decision_modes
             )
-            candidates.append(
-                ClarificationCandidate(
-                    candidate_id=str(uuid.uuid4()),
-                    project_id=project_id,
-                    source_type="quality_gate",
-                    source_id=gate.ref.as_string(),
-                    need=f"Требуется внешнее согласование: {gate.title}.",
-                    question=f"Согласовать результат gate '{gate.title}'?",
+            inputs.append(
+                _build_decision_input(
+                    title=f"Согласовать результат gate '{gate.title}'?",
                     description=f"Gate {gate.ref.as_string()} требует решения роли '{gate.approver_role or 'approver'}'.",
                     rationale="Gate настроен на human_approval — пока не получено решение, цель не считается завершённой.",
                     impact="Без согласования цель проекта не закрывается.",
-                    severity="high",
-                    confidence_without_user=0.0,
                     # Этап 3.1: внешнее согласование (sign-off) — это
                     # principal-уровень: всплывает в любом engagement-режиме.
                     visibility="principal",
-                    default_assumption=None,
-                    recommended_answer=None,
                     answer_mode="single",
-                    options=options_typed,
+                    confidence=0.0,
+                    source_type="quality_gate",
                     affected_task_ids=(task_id,),
                     related_artifact_ids=(artifact_id,),
-                    blocking_scope="objective",
-                    decision_owner_role=_normalize_decision_owner_role(gate.approver_role),
-                    created_at="",
+                    options=options_payload,
                 )
             )
-        return candidates
+        return inputs

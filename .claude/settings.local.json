@@ -4,7 +4,29 @@
       "Bash(.\\\\.venv\\\\Scripts\\\\python -m pytest -q)",
       "Bash(.\\\\.venv\\\\Scripts\\\\povgen registry *)",
       "PowerShell(.\\\\.venv\\\\Scripts\\\\python -m pytest -q 2>&1)",
-      "Bash(.\\\\.venv\\\\Scripts\\\\python -c \"import anthropic; print\\(anthropic.__version__\\)\")"
+      "Bash(.\\\\.venv\\\\Scripts\\\\python -c \"import anthropic; print\\(anthropic.__version__\\)\")",
+      "mcp__playwright",
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(find:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(file:*)",
+      "Bash(stat:*)",
+      "Bash(git status)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(PYTHONPATH=src /opt/anaconda3/bin/python -m pytest tests/test_foundation.py -q)"
     ]
   }
 }

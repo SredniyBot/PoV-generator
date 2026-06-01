@@ -15,12 +15,12 @@ import re
 import markdown as md_lib
 
 from pov_generator.application.pdf_export import (
+    _LANDSCAPE_CONTENT_WIDTH_PT,
+    _PORTRAIT_CONTENT_WIDTH_PT,
     _ColumnMetrics,
     _compute_column_metrics,
     _enhance_tables_in_html,
     _estimate_table_width_pt,
-    _LANDSCAPE_CONTENT_WIDTH_PT,
-    _PORTRAIT_CONTENT_WIDTH_PT,
 )
 
 
@@ -130,11 +130,18 @@ def test_narrow_column_has_minimum_floor() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_tables_returns_html_unchanged() -> None:
+def test_no_tables_no_extra_sections_adds_nothing() -> None:
+    # Документ без таблиц и с одним разделом: оглавление не добавляется
+    # (нужно >=2 раздела), таблиц нет — структурно ничего не прибавляется.
+    # Точная байт-идентичность не проверяется: функция всегда re-сериализует
+    # дерево (это нормально, xhtml2pdf принимает эквивалентный HTML).
     html = _md_to_html("# Просто текст\n\nБез таблиц.\n")
     out, landscape = _enhance_tables_in_html(html)
-    assert out == html
     assert landscape is False
+    assert "Просто текст" in out
+    assert "Без таблиц." in out
+    assert 'class="doc-toc"' not in out
+    assert "<colgroup>" not in out
 
 
 def test_invalid_html_falls_back_to_original() -> None:
@@ -161,8 +168,10 @@ def test_empty_table_skipped() -> None:
 
 
 def test_multiple_tables_processed_independently() -> None:
-    """Узкая таблица остаётся portrait, широкая в том же документе уходит
-    в landscape — оба факта независимы."""
+    """Inline-режим (extract_wide_tables=False): узкая таблица остаётся
+    portrait, широкая в том же документе разворачивается в landscape на
+    месте — оба факта независимы. (Вынос широких таблиц в приложение —
+    дефолтный режим — покрыт в test_pdf_export.py.)"""
     narrow_md = "| A | B |\n|---|---|\n| 1 | 2 |\n"
     wide_md = (
         "| Длинная колонка X | Длинная колонка Y | Длинная колонка Z | "
@@ -173,7 +182,7 @@ def test_multiple_tables_processed_independently() -> None:
         "Аналогично шесть | Аналогично семь |\n"
     )
     html = _md_to_html(narrow_md + "\n\n" + wide_md)
-    out, landscape = _enhance_tables_in_html(html)
+    out, landscape = _enhance_tables_in_html(html, extract_wide_tables=False)
 
     assert landscape is True
     # Должно быть ровно ОДНО открытие landscape-страницы — узкую таблицу
@@ -186,8 +195,9 @@ def test_multiple_tables_processed_independently() -> None:
 
 
 def test_landscape_wrap_inserts_return_to_body_when_content_follows() -> None:
-    """После широкой таблицы, если ниже есть ещё контент, в HTML
-    появляется ``<pdf:nextpage name="body_page">`` для возврата к portrait."""
+    """Inline-режим: после широкой таблицы, если ниже есть ещё контент, в
+    HTML появляется ``<pdf:nextpage name="body_page">`` для возврата к
+    portrait."""
     md = (
         "| A | B | C | D | E | F | G |\n"
         "|---|---|---|---|---|---|---|\n"
@@ -197,15 +207,15 @@ def test_landscape_wrap_inserts_return_to_body_when_content_follows() -> None:
         "Параграф, который должен оказаться на портретной странице.\n"
     )
     html = _md_to_html(md)
-    out, landscape = _enhance_tables_in_html(html)
+    out, landscape = _enhance_tables_in_html(html, extract_wide_tables=False)
     assert landscape is True
     assert '<pdf:nextpage name="landscape_page"' in out
     assert '<pdf:nextpage name="body_page"' in out
 
 
 def test_landscape_wrap_skips_return_when_table_is_last() -> None:
-    """Если за таблицей больше ничего нет — лишний пустой portrait
-    page не нужен, возврат на body_page не вставляется."""
+    """Inline-режим: если за таблицей больше ничего нет — лишний пустой
+    portrait page не нужен, возврат на body_page не вставляется."""
     md = (
         "| A | B | C | D | E | F | G |\n"
         "|---|---|---|---|---|---|---|\n"
@@ -213,7 +223,7 @@ def test_landscape_wrap_skips_return_when_table_is_last() -> None:
         "Аналогично | Аналогично | Аналогично | Аналогично |\n"
     )
     html = _md_to_html(md)
-    out, landscape = _enhance_tables_in_html(html)
+    out, landscape = _enhance_tables_in_html(html, extract_wide_tables=False)
     assert landscape is True
     assert '<pdf:nextpage name="landscape_page"' in out
     assert '<pdf:nextpage name="body_page"' not in out
@@ -255,7 +265,12 @@ def test_estimate_table_width_pt_grows_with_columns() -> None:
 
 def test_landscape_content_width_constants_match_a4() -> None:
     """Регрессия на случай, если кто-то переставит margin'ы и забудет
-    обновить пороги. A4 — 21×29.7 cm, при отступах 1.8 cm доступно ≈
-    493 pt portrait и ≈ 738 pt landscape (×28.35 pt/cm)."""
+    обновить пороги.
+
+    A4 — 21×29.7 cm; 1 cm ≈ 28.35 pt.
+      portrait: при margin 1.8 cm доступно ≈ 493 pt.
+      landscape: при margin 1.0 cm (v3.8.3 — сжаты с боков под таблицы)
+      доступно ≈ 785 pt."""
     assert 470 < _PORTRAIT_CONTENT_WIDTH_PT < 520
-    assert 700 < _LANDSCAPE_CONTENT_WIDTH_PT < 770
+    # Landscape поля v3.8.3 узкие (1.0 cm), даём диапазон 700–810.
+    assert 700 < _LANDSCAPE_CONTENT_WIDTH_PT < 810

@@ -16,9 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 ArtifactFormat = Literal["json", "markdown", "text"]
 """Формат хранимого содержимого артефакта."""
+
+LOW_CONFIDENCE_THRESHOLD = 0.45
+"""Порог уверенности артефакта. Ниже него артефакт помечается «система не
+уверена» и просит подтверждения пользователя — НЕ роняя задачу (зеркально
+механизму низкоуверенных решений). Единый источник правды: используется и
+доменной моделью (`ArtifactRecord.is_low_confidence`), и валидацией."""
 
 ArtifactKind = Literal["primary", "synthesized", "derived"]
 """Класс артефакта.
@@ -94,6 +99,25 @@ class ArtifactMetadata:
     (см. ``downstream_closure``).
     """
 
+    # --- v3.5: token usage по стадиям сборки ------------------------------
+    #
+    # Сколько токенов реально ушло на этот артефакт, с разбивкой по этапам.
+    # Ключи стадий — стабильные строковые id; значения — словари с
+    # input/output/cache/total. Сумма по стадиям = «полная стоимость» одного
+    # артефакта.
+    #
+    # Используется в UI ArtifactDetail (раздел «Токены»), агрегатах
+    # производительности и при отладке («куда уходят токены»). Значения
+    # фиксируются на этапе сборки артефакта и не пересчитываются.
+    #
+    # Ожидаемые стадии:
+    #   - `decision_identification` — выявление решений до сборки (1 вызов).
+    #   - `primary_generation`  — основная сборка артефакта (1 вызов
+    #                              single_call ИЛИ N+1 для per_stage_cot).
+    #   - `methodology_stage:<id>` — отдельные стадии per_stage_cot (если есть).
+    # При отсутствии данных от провайдера — поле пустое (default {}).
+    token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
+
     # --- free-form расширение ----------------------------------------------
 
     extras: dict[str, object] = field(default_factory=dict)
@@ -159,6 +183,25 @@ class ArtifactRecord:
     relations: ArtifactRelations = field(default_factory=ArtifactRelations)
     metadata: ArtifactMetadata = field(default_factory=ArtifactMetadata)
     is_superseded: bool = False
+    # Подтверждение низкой уверенности пользователем (аудит-метка, как
+    # is_superseded — мутируется на месте, содержимое артефакта не меняет).
+    # Симметрично Decision.user_verified: «я просмотрел и согласен» снимает
+    # индикатор is_low_confidence.
+    user_verified: bool = False
+    user_verified_at: str | None = None
+
+    @property
+    def is_low_confidence(self) -> bool:
+        """Артефакт «подозрительный»: уверенность ниже порога и пользователь
+        ещё не подтвердил. Заменяет прежнюю блокирующую ошибку валидации —
+        теперь это мягкий сигнал «подтвердите» (зеркально Decision).
+
+        Устаревшие (superseded) версии не подсвечиваем — их заменили.
+        """
+        confidence = self.metadata.overall_confidence
+        if confidence is None or self.user_verified or self.is_superseded:
+            return False
+        return confidence < LOW_CONFIDENCE_THRESHOLD
 
 
 # --- context manifest (без изменений в Этапе 1) ------------------------------

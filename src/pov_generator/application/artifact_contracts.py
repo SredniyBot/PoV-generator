@@ -1,10 +1,177 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..common.errors import ValidationError
 
 JSONSchema = dict[str, Any]
+
+
+_FLOWCHART_DIRECTIONS = {"LR", "RL", "TD", "TB", "BT"}
+_FLOWCHART_SHAPE_BRACKETS: dict[str, tuple[str, str]] = {
+    "rect": ("[", "]"),
+    "round": ("(", ")"),
+    "stadium": ("([", "])"),
+    "subroutine": ("[[", "]]"),
+    "cylinder": ("[(", ")]"),
+    "circle": ("((", "))"),
+    "hexagon": ("{{", "}}"),
+    "rhombus": ("{", "}"),
+}
+_FLOWCHART_EDGE_ARROWS: dict[str, str] = {
+    "solid": "-->",
+    "dotted": "-.->",
+    "thick": "==>",
+}
+_SEQUENCE_MESSAGE_ARROWS: dict[str, str] = {
+    "request": "->>",
+    "reply": "-->>",
+    "async_request": "-)",
+    "async_reply": "--)",
+}
+_VALID_MERMAID_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sanitize_mermaid_id(raw: Any, fallback: str = "node") -> str:
+    """Return a Mermaid-safe identifier.
+
+    LLMs sometimes emit ids with spaces, Cyrillic, or punctuation. We keep only
+    ASCII alnum / underscore; non-matching chars become underscores; we prepend
+    ``N`` if the id starts with a digit; empty strings fall back to ``fallback``.
+    """
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw).strip("_")
+    if not cleaned:
+        return fallback
+    if cleaned[0].isdigit():
+        cleaned = "N" + cleaned
+    return cleaned
+
+
+def _escape_mermaid_label(raw: Any) -> str:
+    """Escape characters that break Mermaid label parsing.
+
+    We always wrap labels in double quotes inside shape brackets, so ``&<>``
+    are safe; the one thing we must escape is the double-quote itself.
+    Newlines collapse to spaces — Mermaid does support ``<br/>`` but the
+    rendered look is worse than a single line.
+    """
+    if raw is None:
+        return ""
+    text = str(raw)
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = text.replace('"', "#quot;")
+    return text.strip()
+
+
+def _build_flowchart(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    direction = diagram.get("direction")
+    if not isinstance(direction, str) or direction.upper() not in _FLOWCHART_DIRECTIONS:
+        direction = "LR"
+    else:
+        direction = direction.upper()
+    lines = [f"flowchart {direction}"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        # Avoid id collisions between distinct raw labels.
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, node in enumerate(diagram.get("nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        nid = _resolve_id(node.get("id"), fallback=f"N{index + 1}")
+        label = _escape_mermaid_label(node.get("label") or node.get("id") or nid)
+        shape = node.get("shape") if isinstance(node.get("shape"), str) else "rect"
+        open_b, close_b = _FLOWCHART_SHAPE_BRACKETS.get(shape, ("[", "]"))
+        lines.append(f'    {nid}{open_b}"{label}"{close_b}')
+
+    for edge in diagram.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        src = _resolve_id(edge.get("from"), fallback="A")
+        dst = _resolve_id(edge.get("to"), fallback="B")
+        kind = edge.get("kind") if isinstance(edge.get("kind"), str) else "solid"
+        arrow = _FLOWCHART_EDGE_ARROWS.get(kind, "-->")
+        label = edge.get("label")
+        if isinstance(label, str) and label.strip():
+            escaped = _escape_mermaid_label(label)
+            # Кавычки вокруг подписи ребра ОБЯЗАТЕЛЬНЫ: без них спецсимволы в
+            # тексте (в первую очередь «(», а также «|») ломают парсер mermaid —
+            # он токенизирует «(» как начало узла (ошибка «got 'PS'»). Узлы уже
+            # закавычены; теперь и рёбра — единообразно и безопасно.
+            lines.append(f'    {src} {arrow}|"{escaped}"| {dst}')
+        else:
+            lines.append(f"    {src} {arrow} {dst}")
+
+    return "\n".join(lines)
+
+
+def _build_sequence_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    lines = ["sequenceDiagram"]
+
+    seen_ids: dict[str, str] = {}
+
+    def _resolve_id(raw: Any, fallback: str) -> str:
+        key = raw if isinstance(raw, str) else str(raw or "")
+        if key in seen_ids:
+            return seen_ids[key]
+        nid = _sanitize_mermaid_id(raw, fallback=fallback)
+        candidate = nid
+        suffix = 2
+        while candidate in seen_ids.values() and seen_ids.get(key) != candidate:
+            candidate = f"{nid}_{suffix}"
+            suffix += 1
+        seen_ids[key] = candidate
+        return candidate
+
+    for index, participant in enumerate(diagram.get("participants") or []):
+        if not isinstance(participant, dict):
+            continue
+        pid = _resolve_id(participant.get("id"), fallback=f"P{index + 1}")
+        label = participant.get("label")
+        if isinstance(label, str) and label.strip():
+            lines.append(f'    participant {pid} as "{_escape_mermaid_label(label)}"')
+        else:
+            lines.append(f"    participant {pid}")
+
+    for message in diagram.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        src = _resolve_id(message.get("from"), fallback="A")
+        dst = _resolve_id(message.get("to"), fallback="B")
+        kind = message.get("kind") if isinstance(message.get("kind"), str) else "request"
+        arrow = _SEQUENCE_MESSAGE_ARROWS.get(kind, "->>")
+        label = _escape_mermaid_label(message.get("label"))
+        lines.append(f"    {src}{arrow}{dst}: {label}")
+
+    return "\n".join(lines)
+
+
+def _build_interaction_diagram(diagram: dict[str, Any] | None) -> str:
+    if not isinstance(diagram, dict):
+        return ""
+    kind = diagram.get("kind")
+    if kind == "flowchart":
+        return _build_flowchart(diagram)
+    return _build_sequence_diagram(diagram)
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
@@ -13,6 +180,141 @@ def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
 
 def _string_array_schema() -> JSONSchema:
     return {"type": "array", "items": {"type": "string"}}
+
+
+def _flowchart_diagram_schema() -> JSONSchema:
+    """Структурированное представление flowchart-диаграммы.
+
+    Никаких сырых Mermaid-строк: модель отдаёт списки узлов/рёбер, Python
+    детерминированно собирает Mermaid через ``_build_flowchart``.
+    """
+    return {
+        "type": "object",
+        "required": ["direction", "nodes", "edges"],
+        "additionalProperties": False,
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _interaction_diagram_schema() -> JSONSchema:
+    """Объединённая схема для interaction_view: sequence- или flowchart-диаграмма.
+
+    Один tag-discriminator ``kind`` ∈ {sequence, flowchart}. Списки участников
+    / сообщений нужны для sequence; nodes/edges/direction — для flowchart.
+    Все остальные поля optional, чтобы LLM не путалась.
+    """
+    return {
+        "type": "object",
+        "required": ["kind"],
+        "additionalProperties": False,
+        "properties": {
+            "kind": {"type": "string", "enum": ["sequence", "flowchart"]},
+            "direction": {
+                "type": "string",
+                "enum": sorted(_FLOWCHART_DIRECTIONS),
+            },
+            "participants": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                    },
+                },
+            },
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_SEQUENCE_MESSAGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "label"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "shape": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_SHAPE_BRACKETS.keys()),
+                        },
+                    },
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "label": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted(_FLOWCHART_EDGE_ARROWS.keys()),
+                        },
+                    },
+                },
+            },
+        },
+    }
 
 
 def _analysis_meta_properties() -> JSONSchema:
@@ -26,12 +328,11 @@ def _analysis_meta_properties() -> JSONSchema:
     payload и положит в ``ArtifactMetadata.overall_confidence`` —
     единственное канонично место для уверенности.
 
-    ``blocking_questions`` — содержательная часть артефакта (вопросы,
-    которые модель пометила как блокирующие), остаётся обязательным.
+    ``blocking_questions`` удалён как legacy: открытые вопросы теперь живут в
+    реестре решений (Decision ledger), отдельного поля документа нет.
     """
     return {
         "confidence": {"type": "number"},
-        "blocking_questions": _string_array_schema(),
     }
 
 
@@ -45,7 +346,7 @@ def _analysis_object(required: list[str], properties: JSONSchema) -> JSONSchema:
     merged.update(_analysis_meta_properties())
     return {
         "type": "object",
-        "required": required + ["blocking_questions"],
+        "required": list(required),
         "additionalProperties": False,
         "properties": merged,
     }
@@ -62,7 +363,34 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "business_goal": {"type": "string"},
         "success_criteria": _string_array_schema(),
         "actors": _string_array_schema(),
-        "user_stories": _string_array_schema(),
+        # Сценарий — структурный объект (роль + цель + упорядоченные шаги),
+        # а НЕ плоская строка. Это позволяет рендерить честный нумерованный
+        # список (каждый шаг с новой строки) вместо «слипшегося» абзаца с
+        # инлайновыми «1) 2) 3)». Единое правило с потоками interaction_view:
+        # упорядоченная процедура — это массив шагов, не нумерация в прозе.
+        "user_stories": {
+            "type": "array",
+            "description": (
+                "Пользовательские сценарии. Для каждой ключевой роли — её цель "
+                "и упорядоченные шаги взаимодействия с решением. Шаги задаются "
+                "массивом steps (по одному действию на шаг), а НЕ нумерацией "
+                "внутри одной строки."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["actor", "goal"],
+                "additionalProperties": False,
+                "properties": {
+                    "actor": {"type": "string", "description": "Роль или действующее лицо сценария."},
+                    "goal": {"type": "string", "description": "Что роль хочет получить в этом сценарии."},
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Упорядоченные шаги сценария, по одному действию на шаг.",
+                    },
+                },
+            },
+        },
         "functional_requirements": _string_array_schema(),
         "non_functional_requirements": _string_array_schema(),
         "assumptions": _string_array_schema(),
@@ -847,6 +1175,121 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "dependency_risks": _string_array_schema(),
             },
         ),
+        "design_document": _analysis_object(
+            ["title", "executive_summary"],
+            {
+                "title": {"type": "string"},
+                "executive_summary": {"type": "string"},
+                # Секции — passthrough из upstream-артефактов. Структура
+                # этих объектов уже валидирована собственными контрактами
+                # (system_context_definition / component_decomposition /
+                # interaction_view / deployment_topology). Здесь принимаем
+                # как opaque-payload и оставляем рендеру разобрать.
+                "system_context": {"type": "object", "additionalProperties": True},
+                "components": {"type": "object", "additionalProperties": True},
+                "interactions": {"type": "object", "additionalProperties": True},
+                "deployment": {"type": "object", "additionalProperties": True},
+                "risks": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "non_functional_requirements": _string_array_schema(),
+            },
+        ),
+        "component_decomposition": _analysis_object(
+            ["components", "component_diagram"],
+            {
+                "summary": {"type": "string"},
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "responsibilities"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "responsibilities": {"type": "string"},
+                            "owns_data": _string_array_schema(),
+                            "dependencies": _string_array_schema(),
+                        },
+                    },
+                },
+                "component_diagram": _flowchart_diagram_schema(),
+                "cross_cutting_concerns": _string_array_schema(),
+            },
+        ),
+        "interaction_view": _analysis_object(
+            ["flows", "interaction_diagram"],
+            {
+                "summary": {"type": "string"},
+                "flows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "trigger", "participants", "steps"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "trigger": {"type": "string"},
+                            "participants": _string_array_schema(),
+                            "steps": _string_array_schema(),
+                        },
+                    },
+                },
+                "interaction_diagram": _interaction_diagram_schema(),
+                "data_contracts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["from", "to", "payload"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                            "payload": {"type": "string"},
+                            "format": {"type": "string"},
+                        },
+                    },
+                },
+                "failure_modes": _string_array_schema(),
+            },
+        ),
+        "system_context_definition": _analysis_object(
+            ["system_name", "system_purpose", "actors", "external_systems", "context_diagram"],
+            {
+                "system_name": {"type": "string"},
+                "system_purpose": {"type": "string"},
+                "actors": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "kind"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+                "external_systems": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "role"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "role": {"type": "string"},
+                            "interactions": _string_array_schema(),
+                        },
+                    },
+                },
+                "context_diagram": _flowchart_diagram_schema(),
+                "system_boundaries": _string_array_schema(),
+                "assumptions": _string_array_schema(),
+            },
+        ),
         "ui_requirements_outline": _analysis_object(
             ["user_roles", "user_flows", "screens", "ux_constraints"],
             {
@@ -885,45 +1328,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "required": requirements_spec_required,
             "additionalProperties": False,
             "properties": requirements_spec_properties,
-        },
-        "review_report": {
-            "type": "object",
-            "required": ["overall_status", "summary", "strengths", "issues", "recommendations"],
-            "additionalProperties": False,
-            "properties": {
-                "overall_status": {
-                    "type": "string",
-                    # Расширено: prompt задачи `requirements_spec_review` использует
-                    # более выразительные значения. Старые `needs_changes` и
-                    # `needs_user_input` остаются для обратной совместимости.
-                    "enum": [
-                        "passed",
-                        "passed_with_remarks",
-                        "needs_changes",
-                        "needs_user_input",
-                        "failed_needs_rework",
-                    ],
-                },
-                "confidence": {"type": "number"},
-                "summary": {"type": "string"},
-                "strengths": _string_array_schema(),
-                "issues": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["severity", "message"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "area": {"type": "string"},
-                            "severity": {"type": "string", "enum": ["info", "warning", "error", "critical"]},
-                            "message": {"type": "string"},
-                            "requires_user_input": {"type": "boolean"},
-                        },
-                    },
-                },
-                "recommendations": _string_array_schema(),
-                "blocking_questions": _string_array_schema(),
-            },
         },
     }
     if artifact_role not in schemas:
@@ -979,10 +1383,12 @@ def schema_instruction(role: str, domain_pack_refs: tuple[str, ...]) -> str:
     schema = artifact_schema(role, domain_pack_refs)
     return (
         "Верни строго JSON, соответствующий этой схеме.\n"
-        "Если данных недостаточно для уверенного вывода, не выдумывай: фиксируй "
-        "пробелы в `blocking_questions` и при желании укажи `confidence` (0..1) "
-        "— это поле необязательное и будет вынесено в метаданные артефакта, "
-        "поэтому в самом содержании цифру повторять не нужно.\n"
+        "Если данных недостаточно для уверенного вывода, не выдумывай: оставь "
+        "поле незаполненным или отметь его как assumption. При желании укажи "
+        "`confidence` (0..1) — это поле необязательное и будет вынесено в "
+        "метаданные артефакта, поэтому в самом содержании цифру повторять "
+        "не нужно. Вопросы к пользователю формируются отдельно через "
+        "выявление решений и реестр решений — не записывай их в артефакт.\n"
         f"Роль артефакта: {role}\n"
         f"Схема: {schema}"
     )
@@ -999,6 +1405,46 @@ def _render_bulleted(lines: list[str], items: list[Any]) -> None:
         # внутри одного пункта рендерились нормально.
         text = text.replace("\n", "  \n  ")
         lines.append(f"- {text}")
+
+
+def _render_user_scenarios(lines: list[str], scenarios: list[Any]) -> None:
+    """Render user scenarios as readable blocks with a real numbered list.
+
+    A scenario is an inherently structured object — an actor, a goal and an
+    ordered list of steps. Modelling it as ``{actor, goal, steps[]}`` (instead
+    of a flat string) lets us emit each step on its own line under a clear
+    sub-heading, the same way ``interaction_view`` renders its flows. One
+    consistent rule across the codebase: an ordered procedure is a list of
+    steps, never inline-numbered prose.
+
+    Resilience: a plain-string item (legacy artifact or an occasional flat
+    answer from the model) still renders — as a single bullet — so older
+    documents never break.
+    """
+    index = 0
+    for raw in scenarios:
+        if isinstance(raw, dict):
+            index += 1
+            actor = str(raw.get("actor") or "").strip()
+            goal = str(raw.get("goal") or "").strip()
+            steps = [str(step).strip() for step in (raw.get("steps") or []) if str(step).strip()]
+            heading = f"### Сценарий {index}"
+            if actor:
+                heading += f". {actor}"
+            lines.append(heading)
+            lines.append("")
+            if goal:
+                lines.append(f"**Цель.** {goal}")
+                lines.append("")
+            for step_no, step in enumerate(steps, start=1):
+                lines.append(f"{step_no}. {step}")
+            if steps:
+                lines.append("")
+        else:
+            text = str(raw).strip()
+            if text:
+                lines.append(f"- {text}")
+                lines.append("")
 
 
 def _intro_for(label: str, count: int) -> str:
@@ -1025,7 +1471,8 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     • Риски — таблицей, а не списком: даёт сразу видимую структуру.
     • Доменные расширения (frontend / ml / security / integration) идут в
       собственных подразделах с горизонтальной чертой-разделителем.
-    • Маркеры разделов (🎯, 🛡, 🔌, 💡) — лёгкая визуальная навигация.
+    • Заголовки — без декоративных пиктограмм: навигацию даёт структура и
+      оглавление, а не эмодзи (это согласуется с запретом эмодзи для модели).
     """
     lines: list[str] = []
 
@@ -1040,28 +1487,29 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("> " + summary.replace("\n", "\n> "))
         lines.append("")
 
+    # Контекст и цель — единый верхний раздел: постановка проблемы, цель и
+    # целевые результаты вместе, без дробления на три почти одинаковых блока.
     business_context = (payload.get("business_context") or "").strip()
-    if business_context:
-        lines.append("## Контекст и постановка задачи")
-        lines.append("")
-        lines.append(business_context)
-        lines.append("")
-
     business_goal = (payload.get("business_goal") or "").strip()
-    if business_goal:
-        lines.append("## 🎯 Бизнес-цель")
-        lines.append("")
-        lines.append(business_goal)
-        lines.append("")
-
     target_outcomes = payload.get("target_outcomes") or []
-    if target_outcomes:
-        lines.append("### Целевые результаты")
+    if business_context or business_goal or target_outcomes:
+        lines.append("## Контекст и цель")
         lines.append("")
-        lines.append(_intro_for("целевые результаты", len(target_outcomes)))
-        lines.append("")
-        _render_bulleted(lines, target_outcomes)
-        lines.append("")
+        if business_context:
+            lines.append(business_context)
+            lines.append("")
+        if business_goal:
+            lines.append("### Бизнес-цель")
+            lines.append("")
+            lines.append(business_goal)
+            lines.append("")
+        if target_outcomes:
+            lines.append("### Целевые результаты")
+            lines.append("")
+            lines.append(_intro_for("целевые результаты", len(target_outcomes)))
+            lines.append("")
+            _render_bulleted(lines, target_outcomes)
+            lines.append("")
 
     # ----- Границы проекта ----------------------------------------------------
     scope_in = payload.get("scope_in") or []
@@ -1078,12 +1526,12 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         )
         lines.append("")
         if scope_in:
-            lines.append("**✅ Входит в этап**")
+            lines.append("**Входит в этап**")
             lines.append("")
             _render_bulleted(lines, scope_in)
             lines.append("")
         if scope_out:
-            lines.append("**⛔️ Не входит в этап (отнесено к следующим этапам)**")
+            lines.append("**Не входит в этап (отнесено к следующим этапам)**")
             lines.append("")
             _render_bulleted(lines, scope_out)
             lines.append("")
@@ -1091,7 +1539,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     # ----- Стейкхолдеры -------------------------------------------------------
     stakeholders = payload.get("stakeholders") or payload.get("actors") or []
     if stakeholders:
-        lines.append("## 👥 Стейкхолдеры и роли")
+        lines.append("## Стейкхолдеры и роли")
         lines.append("")
         lines.append(
             "Здесь перечислены ключевые роли, влияющие на проект: владелец, "
@@ -1114,7 +1562,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if user_stories:
         lines.append("---")
         lines.append("")
-        lines.append("## 📋 Пользовательские сценарии")
+        lines.append("## Пользовательские сценарии")
         lines.append("")
         lines.append(
             "Сценарии описывают типовые пути использования решения "
@@ -1122,7 +1570,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             "интерфейса и приёмки."
         )
         lines.append("")
-        _render_bulleted(lines, user_stories)
+        _render_user_scenarios(lines, user_stories)
         lines.append("")
 
     # ----- Требования ---------------------------------------------------------
@@ -1164,13 +1612,13 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             lines.append("")
 
         if integration_reqs:
-            lines.append("### 🔌 Интеграционные требования")
+            lines.append("### Интеграционные требования")
             lines.append("")
             _render_bulleted(lines, integration_reqs)
             lines.append("")
 
         if security_reqs:
-            lines.append("### 🛡 Требования ИБ и комплаенса")
+            lines.append("### Требования ИБ и комплаенса")
             lines.append("")
             _render_bulleted(lines, security_reqs)
             lines.append("")
@@ -1186,7 +1634,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if frontend:
         lines.append("---")
         lines.append("")
-        lines.append("## 🖥 Требования к интерфейсу")
+        lines.append("## Требования к интерфейсу")
         lines.append("")
         lines.append(
             "Этот блок описывает пользовательскую часть решения: кто будет "
@@ -1229,7 +1677,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if ml_requirements:
         lines.append("---")
         lines.append("")
-        lines.append("## 🤖 ML-задача и данные")
+        lines.append("## ML-задача и данные")
         lines.append("")
         prediction_target = (ml_requirements.get("prediction_target") or "").strip()
         prediction_horizon = (ml_requirements.get("prediction_horizon") or "").strip()
@@ -1268,7 +1716,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if security_detail:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔒 Детальные ограничения ИБ и комплаенса")
+        lines.append("## Детальные ограничения ИБ и комплаенса")
         lines.append("")
         lines.append(
             "Раздел раскрывает требования к контуру решения: где живут данные, "
@@ -1305,7 +1753,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if integration_model:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔌 Интеграционная модель")
+        lines.append("## Интеграционная модель")
         lines.append("")
         lines.append(
             "Описание того, откуда поступают данные, в каком виде, как часто, "
@@ -1342,7 +1790,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if deployment_topology:
         lines.append("---")
         lines.append("")
-        lines.append("## 🏗 Топология развёртывания")
+        lines.append("## Топология развёртывания")
         lines.append("")
         lines.append(
             "Раздел описывает, как и где физически разворачивается решение: "
@@ -1397,7 +1845,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if privacy_impact:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔐 Оценка воздействия на персональные данные (DPIA)")
+        lines.append("## Оценка воздействия на персональные данные (DPIA)")
         lines.append("")
         lines.append(
             "Формальный раздел для DPO/ИБ заказчика: какие категории ПДн "
@@ -1465,7 +1913,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if delivery_artifacts or acceptance or success:
         lines.append("---")
         lines.append("")
-        lines.append("## ✅ Результаты и приёмка")
+        lines.append("## Результаты и приёмка")
         lines.append("")
         lines.append(
             "Конкретные результаты этапа и измеримые критерии, по которым "
@@ -1493,7 +1941,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if phased:
         lines.append("---")
         lines.append("")
-        lines.append("## 🗓 Этапы реализации")
+        lines.append("## Этапы реализации")
         lines.append("")
         lines.append(
             "Крупная декомпозиция работы по фазам. Конкретные сроки и "
@@ -1510,7 +1958,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     open_questions = payload.get("open_questions") or []
 
     if alternatives:
-        lines.append("## 🧭 Рассмотренные альтернативы")
+        lines.append("## Рассмотренные альтернативы")
         lines.append("")
         lines.append(
             "Альтернативные варианты архитектуры, между которыми сделан "
@@ -1522,7 +1970,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("")
 
     if assumptions:
-        lines.append("## 💡 Допущения")
+        lines.append("## Допущения")
         lines.append("")
         lines.append(
             "Рабочие предположения, на которых строится решение. При "
@@ -1534,7 +1982,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
 
     risks_detail = payload.get("project_risks_detail") or []
     if risks_detail:
-        lines.append("## ⚠️ Реестр рисков")
+        lines.append("## Реестр рисков")
         lines.append("")
         lines.append(
             "Структурированный реестр известных рисков PoV с оценкой "
@@ -1575,7 +2023,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
                 lines.append(f"- **{title_risk}.** {desc}")
             lines.append("")
     elif risks:
-        lines.append("## ⚠️ Риски")
+        lines.append("## Риски")
         lines.append("")
         lines.append(
             "Известные риски проекта с указанием митигации. Список не "
@@ -1586,7 +2034,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("")
 
     if open_questions:
-        lines.append("## ❓ Открытые вопросы")
+        lines.append("## Открытые вопросы")
         lines.append("")
         lines.append(
             "Вопросы, которые остаются на согласование с заказчиком. Их "
@@ -1602,7 +2050,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
     if glossary:
         lines.append("---")
         lines.append("")
-        lines.append("## 📖 Глоссарий")
+        lines.append("## Глоссарий")
         lines.append("")
         lines.append(
             "Словарь ключевых терминов, ролей, систем и метрик, упомянутых "
@@ -1685,8 +2133,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["implicit_risks"]],
                 "\n## Неоднозначности",
                 *[f"- {item}" for item in payload["ambiguous_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1704,8 +2150,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mentioned_systems_and_sources"]],
                 "\n## Упомянутые метрики и целевые значения",
                 *[f"- {item}" for item in payload["mentioned_metrics_and_targets"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1721,8 +2165,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["success_signals"]],
                 "\n## Непрояснённые части цели",
                 *[f"- {item}" for item in payload["unresolved_goal_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1740,8 +2182,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["environment_constraints"]],
                 "\n## Зависимости и внешние условия",
                 *[f"- {item}" for item in payload["dependency_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1759,8 +2199,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["safe_assumptions"]],
                 "\n## Кандидаты на эскалацию",
                 *[f"- {item}" for item in payload["escalation_candidates"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1781,8 +2219,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["value_hypotheses"]],
                 "\n## Допущения",
                 *[f"- {item}" for item in payload["assumptions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1802,8 +2238,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mandatory_deliverables"]],
                 "\n## Исключённые результаты этапа",
                 *[f"- {item}" for item in payload["excluded_deliverables"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1823,8 +2257,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["data_owners"]],
                 "\n## Поддерживающие команды",
                 *[f"- {item}" for item in payload["support_teams"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1843,8 +2275,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["unowned_decisions"]],
                 "\n## Точки согласования",
                 *[f"- {item}" for item in payload["approval_points"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1863,8 +2293,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["support_roles"]],
                 "\n## Риски передачи ответственности",
                 *[f"- {item}" for item in payload["handoff_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1887,8 +2315,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["operating_model"]],
                 "\n## Ограничения внедрения",
                 *[f"- {item}" for item in payload["adoption_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1905,8 +2331,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             [
                 "\n## Оси сравнения",
                 *[f"- {item}" for item in payload["comparison_axes"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1930,8 +2354,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 payload["recommendation_rationale"],
                 "\n## Отложенные решения",
                 *[f"- {item}" for item in payload["deferred_decisions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -1948,8 +2370,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["demo_expectations"]],
                 "\n## Артефакты-доказательства",
                 *[f"- {item}" for item in payload["evidence_artifacts"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1967,8 +2387,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["formal_approvals"]],
                 "\n## Основания для отклонения результата",
                 *[f"- {item}" for item in payload["rejection_conditions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -1988,8 +2406,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["formal_approvals"]],
                 "\n## Открытые зависимости",
                 *[f"- {item}" for item in payload["open_dependencies"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2007,8 +2423,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["access_dependencies"]],
                 "\n## Условия остановки этапа",
                 *[f"- {item}" for item in payload["stop_conditions"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2030,8 +2444,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["project_risks"]],
                 "\n## Предлагаемый график",
                 *[f"- {item}" for item in payload["proposed_timeline"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
@@ -2054,8 +2466,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["baseline_expectations"]],
                 "\n## Требования к интерпретируемости",
                 *[f"- {item}" for item in payload["explainability_requirements"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2076,8 +2486,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 f"\n## Оценка реализуемости\n{payload['feasibility_assessment']}",
                 "\n## Замечания по приватности данных",
                 *[f"- {item}" for item in payload["privacy_notes"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2099,8 +2507,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["mandatory_controls"]],
                 "\n## Комплаенс-риски",
                 *[f"- {item}" for item in payload["compliance_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2121,8 +2527,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["support_model"]],
                 "\n## Риски зависимостей",
                 *[f"- {item}" for item in payload["dependency_risks"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
 
@@ -2146,34 +2550,12 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             [
                 "\n## UX-ограничения",
                 *[f"- {item}" for item in payload["ux_constraints"]],
-                "\n## Блокирующие вопросы",
-                *[f"- {item}" for item in payload["blocking_questions"]],
             ]
         )
         return "\n".join(lines)
 
     if artifact_role == "requirements_spec":
         return _render_requirements_spec(payload)
-
-    if artifact_role == "review_report":
-        lines = [
-            "# Отчёт ревью",
-            f"## Статус\n{payload['overall_status']}",
-            f"## Резюме\n{payload['summary']}",
-        ]
-        # Уверенность вынесена в метаданные артефакта (overall_confidence)
-        # и отображается отдельно в UI — в markdown-теле её не дублируем.
-        lines.extend(["\n## Сильные стороны", *[f"- {item}" for item in payload["strengths"]], "\n## Замечания"])
-        for issue in payload["issues"]:
-            area = issue.get("area")
-            prefix = f"[{area}] " if area else ""
-            user_flag = " (нужен ввод пользователя)" if issue.get("requires_user_input") else ""
-            lines.append(f"- [{issue['severity']}] {prefix}{issue['message']}{user_flag}")
-        if payload.get("blocking_questions"):
-            lines.extend(["\n## Блокирующие вопросы", *[f"- {item}" for item in payload["blocking_questions"]]])
-        lines.append("\n## Рекомендации")
-        lines.extend(f"- {item}" for item in payload["recommendations"])
-        return "\n".join(lines)
 
     if artifact_role == "glossary_terms":
         entries = payload.get("entries") or []
@@ -2296,4 +2678,260 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines.append(payload["retention_policy"])
         return "\n".join(lines)
 
+    if artifact_role == "system_context_definition":
+        return _render_system_context_definition(payload)
+
+    if artifact_role == "component_decomposition":
+        return _render_component_decomposition(payload)
+
+    if artifact_role == "interaction_view":
+        return _render_interaction_view(payload)
+
+    if artifact_role == "design_document":
+        return _render_design_document(payload)
+
     raise ValidationError(f"Неизвестный рендерер артефакта: {artifact_role}")
+
+
+def _render_design_document(payload: dict[str, Any]) -> str:
+    title = payload.get("title", "Архитектурный документ")
+    lines = [f"# {title}"]
+    summary = payload.get("executive_summary")
+    if summary:
+        lines.append("\n## Краткое резюме")
+        lines.append(summary)
+
+    sc = payload.get("system_context") or {}
+    if sc:
+        lines.append("\n## Системный контекст")
+        if sc.get("system_purpose"):
+            lines.append(sc["system_purpose"])
+        actors = sc.get("actors") or []
+        if actors:
+            lines.append("\n**Акторы:**")
+            for actor in actors:
+                if not isinstance(actor, dict):
+                    continue
+                kind = actor.get("kind", "—")
+                description = actor.get("description")
+                line = f"- **{actor.get('name', '—')}** _({kind})_"
+                if description:
+                    line += f" — {description}"
+                lines.append(line)
+        ext = sc.get("external_systems") or []
+        if ext:
+            lines.append("\n**Внешние системы:**")
+            for system in ext:
+                if not isinstance(system, dict):
+                    continue
+                lines.append(f"- **{system.get('name', '—')}** — {system.get('role', '—')}")
+                for interaction in system.get("interactions") or []:
+                    lines.append(f"  - {interaction}")
+        context_diagram_mmd = _build_flowchart(sc.get("context_diagram"))
+        if context_diagram_mmd:
+            lines.append("\n**Контекстная диаграмма:**")
+            lines.append("```mermaid")
+            lines.append(context_diagram_mmd)
+            lines.append("```")
+
+    comp = payload.get("components") or {}
+    if comp:
+        lines.append("\n## Компоненты")
+        if comp.get("summary"):
+            lines.append(comp["summary"])
+        items = comp.get("components") or comp.get("items") or []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"\n### {item.get('name', '—')}")
+            if item.get("responsibilities"):
+                lines.append(item["responsibilities"])
+            owns = item.get("owns_data") or []
+            if owns:
+                lines.append("**Владеет данными:**")
+                lines.extend(f"- {entry}" for entry in owns)
+            deps = item.get("dependencies") or []
+            if deps:
+                lines.append("**Зависимости:**")
+                lines.extend(f"- {entry}" for entry in deps)
+        component_diagram_mmd = _build_flowchart(comp.get("component_diagram"))
+        if component_diagram_mmd:
+            lines.append("\n**Диаграмма компонентов:**")
+            lines.append("```mermaid")
+            lines.append(component_diagram_mmd)
+            lines.append("```")
+
+    interactions = payload.get("interactions") or {}
+    if interactions:
+        lines.append("\n## Потоки взаимодействия")
+        if interactions.get("summary"):
+            lines.append(interactions["summary"])
+        flows = interactions.get("flows") or []
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            lines.append(f"\n### {flow.get('name', '—')}")
+            if flow.get("trigger"):
+                lines.append(f"**Триггер:** {flow['trigger']}")
+            participants = flow.get("participants") or []
+            if participants:
+                lines.append(f"**Участники:** {', '.join(participants)}")
+            steps = flow.get("steps") or []
+            if steps:
+                lines.append("**Шаги:**")
+                for i, step in enumerate(steps, 1):
+                    lines.append(f"{i}. {step}")
+        interaction_diagram = interactions.get("interaction_diagram") or {}
+        interaction_diagram_mmd = _build_interaction_diagram(interaction_diagram)
+        if interaction_diagram_mmd:
+            kind = interaction_diagram.get("kind", "sequence")
+            heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
+            lines.append(f"\n**{heading}:**")
+            lines.append("```mermaid")
+            lines.append(interaction_diagram_mmd)
+            lines.append("```")
+
+    deployment = payload.get("deployment") or {}
+    if deployment:
+        lines.append("\n## Развёртывание")
+        envs = deployment.get("environments") or []
+        if envs:
+            lines.append("\n**Среды:**")
+            for env in envs:
+                if not isinstance(env, dict):
+                    continue
+                name = env.get("name", "—")
+                purpose = env.get("purpose", "")
+                lines.append(f"- **{name}** — {purpose}")
+        components_dep = deployment.get("components") or []
+        if components_dep:
+            lines.append("\n| Компонент | Размещение | Технология | Зона ответственности |")
+            lines.append("|-----------|------------|------------|----------------------|")
+            for c in components_dep:
+                if not isinstance(c, dict):
+                    continue
+                lines.append(
+                    f"| {c.get('name', '—')} | {c.get('placement', '—')} "
+                    f"| {c.get('technology', '—')} | {c.get('responsibilities', '—')} |"
+                )
+        if deployment.get("deployment_flow"):
+            lines.append("\n**Процесс развёртывания:**")
+            lines.append(deployment["deployment_flow"])
+
+    risks = payload.get("risks") or []
+    if risks:
+        lines.append("\n## Риски")
+        lines.append("\n| # | Риск | Категория | Вероятность | Влияние | Митигация |")
+        lines.append("|---|------|-----------|-------------|---------|-----------|")
+        for i, r in enumerate(risks, 1):
+            if not isinstance(r, dict):
+                continue
+            lines.append(
+                f"| {i} | {r.get('title', '—')} | {r.get('category', '—')} "
+                f"| {r.get('probability', '—')} | {r.get('impact', '—')} "
+                f"| {str(r.get('mitigation', '—')).replace(chr(10), ' ')} |"
+            )
+
+    nfrs = payload.get("non_functional_requirements") or []
+    if nfrs:
+        lines.append("\n## Нефункциональные требования")
+        lines.extend(f"- {item}" for item in nfrs)
+
+    return "\n".join(lines)
+
+
+def _render_component_decomposition(payload: dict[str, Any]) -> str:
+    lines = ["# Декомпозиция на компоненты"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    lines.append("\n## Компоненты")
+    for component in payload["components"]:
+        lines.append(f"### {component['name']}")
+        lines.append(component["responsibilities"])
+        owns = component.get("owns_data") or []
+        if owns:
+            lines.append("**Владеет данными:**")
+            lines.extend(f"- {item}" for item in owns)
+        deps = component.get("dependencies") or []
+        if deps:
+            lines.append("**Зависимости:**")
+            lines.extend(f"- {item}" for item in deps)
+        lines.append("")
+    lines.append("## Диаграмма компонентов")
+    lines.append("```mermaid")
+    lines.append(_build_flowchart(payload["component_diagram"]))
+    lines.append("```")
+    cross = payload.get("cross_cutting_concerns") or []
+    if cross:
+        lines.append("\n## Сквозные аспекты")
+        lines.extend(f"- {item}" for item in cross)
+    return "\n".join(lines)
+
+
+def _render_interaction_view(payload: dict[str, Any]) -> str:
+    lines = ["# Потоки взаимодействия"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    lines.append("\n## Сценарии")
+    for flow in payload["flows"]:
+        lines.append(f"### {flow['name']}")
+        lines.append(f"**Триггер:** {flow['trigger']}")
+        lines.append(f"**Участники:** {', '.join(flow['participants'])}")
+        lines.append("**Шаги:**")
+        for i, step in enumerate(flow["steps"], 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+    diagram = payload["interaction_diagram"]
+    kind = diagram.get("kind", "sequence")
+    heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
+    lines.append(f"## {heading}")
+    lines.append("```mermaid")
+    lines.append(_build_interaction_diagram(diagram))
+    lines.append("```")
+    contracts = payload.get("data_contracts") or []
+    if contracts:
+        lines.append("\n## Контракты данных")
+        lines.append("\n| От | К | Полезная нагрузка | Формат |")
+        lines.append("|----|---|--------------------|--------|")
+        for contract in contracts:
+            fmt = contract.get("format", "—")
+            lines.append(f"| {contract['from']} | {contract['to']} | {contract['payload']} | {fmt} |")
+    failures = payload.get("failure_modes") or []
+    if failures:
+        lines.append("\n## Режимы сбоев")
+        lines.extend(f"- {item}" for item in failures)
+    return "\n".join(lines)
+
+
+def _render_system_context_definition(payload: dict[str, Any]) -> str:
+    lines = ["# Системный контекст"]
+    lines.append(f"\n**Система:** {payload['system_name']}")
+    lines.append(f"\n**Назначение:** {payload['system_purpose']}")
+    lines.append("\n## Акторы")
+    for actor in payload["actors"]:
+        kind = actor.get("kind", "—")
+        description = actor.get("description")
+        line = f"- **{actor['name']}** _({kind})_"
+        if description:
+            line += f" — {description}"
+        lines.append(line)
+    lines.append("\n## Внешние системы")
+    for system in payload["external_systems"]:
+        lines.append(f"- **{system['name']}** — {system['role']}")
+        for interaction in system.get("interactions") or []:
+            lines.append(f"  - {interaction}")
+    boundaries = payload.get("system_boundaries") or []
+    if boundaries:
+        lines.append("\n## Границы системы")
+        lines.extend(f"- {item}" for item in boundaries)
+    assumptions = payload.get("assumptions") or []
+    if assumptions:
+        lines.append("\n## Допущения")
+        lines.extend(f"- {item}" for item in assumptions)
+    lines.append("\n## Контекстная диаграмма")
+    lines.append("```mermaid")
+    lines.append(_build_flowchart(payload["context_diagram"]))
+    lines.append("```")
+    return "\n".join(lines)

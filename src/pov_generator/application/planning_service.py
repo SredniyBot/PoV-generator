@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.process_state import SetRootTaskPatch
@@ -29,6 +30,9 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
     if field_name == "goal":
         return state.knowledge.goal_statement()
     return None
+
+
+logger = get_logger("planner")
 
 
 class PlanningService:
@@ -62,6 +66,30 @@ class PlanningService:
             )
         self._expand_composites(workspace, snapshot)
         return tuple(self._runtime.list_tasks(workspace))
+
+    def admissible_candidates(
+        self, workspace: Path, snapshot: RegistrySnapshot
+    ) -> tuple[CandidateEvaluation, ...]:
+        """Полный набор допустимых leaf-задач для параллельного диспатча.
+
+        Делает ту же подготовку, что и :meth:`plan` (расширение графа,
+        пересчёт завершённости композитов, ре-адмиссия), но НЕ выбирает одну
+        задачу и НЕ пишет PlanningDecision — возвращает все admissible, чтобы
+        шедулер мог запустить независимые из них одновременно. Выбор «какие
+        именно запускать» (с учётом непересечения write-set и cap) — забота
+        шедулера, а не планировщика (SRP).
+
+        Сериализация записей внутри (transition mark_ready/blocked,
+        expand_graph) обеспечивается per-workspace локом runtime.
+        """
+        self.expand_graph(workspace, snapshot)
+        self._refresh_composite_completion(workspace)
+        tasks = list(self._runtime.list_tasks(workspace))
+        candidates = self._recompute_admission(workspace, snapshot, tasks)
+        admitted = tuple(c for c in candidates if c.admissible)
+        # Стабильный порядок: по приоритету (score) убыв., затем по task_key —
+        # детерминированный диспатч даже при равных приоритетах.
+        return tuple(sorted(admitted, key=lambda c: (-c.score, c.task_key)))
 
     def plan(
         self,
@@ -116,6 +144,13 @@ class PlanningService:
             )
             if record:
                 self._runtime.record_planning_decision(workspace, decision)
+                if outcome == "objective_completed":
+                    logger.info("цель проекта достигнута")
+                else:
+                    logger.warning(
+                        "план заблокирован: нет допустимых задач",
+                        blocked=len(blocked),
+                    )
             return decision
 
         decision = PlanningDecision(
@@ -145,6 +180,11 @@ class PlanningService:
         )
         if record:
             self._runtime.record_planning_decision(workspace, decision)
+            logger.info(
+                "план: выбрана задача",
+                task=selected.title or selected.task_key,
+                admitted=len(admitted),
+            )
         return decision
 
     def planning_history(self, workspace: Path) -> list[PlanningDecision]:
@@ -272,7 +312,14 @@ class PlanningService:
         completed_artifact_roles = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         task_by_id = {task.task_id: task for task in tasks}
-        open_clarifications = self._runtime.list_clarification_requests(workspace, statuses=("open",))
+        # v3.1: «открытые уточнения» теперь — Decision со status="proposed".
+        # Используется в _clarification_blockers для admission-check
+        # blocking_clarifications.
+        open_decisions = self._runtime.list_decisions(
+            workspace,
+            project_id=state.manifest.project_id,
+            status="proposed",
+        )
         for task in leaf_tasks:
             if task.status in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
                 continue
@@ -364,7 +411,7 @@ class PlanningService:
                 )
             )
 
-            clarification_blockers = self._clarification_blockers(task, task_by_id, open_clarifications)
+            clarification_blockers = self._clarification_blockers(task, task_by_id, open_decisions)
             checks.append(
                 AdmissionCheck(
                     "blocking_clarifications",
@@ -401,23 +448,24 @@ class PlanningService:
             )
         return tuple(candidates)
 
-    def _clarification_blockers(self, task: TaskRecord, task_by_id: dict[str, TaskRecord], clarifications) -> list[str]:
+    def _clarification_blockers(
+        self,
+        task: TaskRecord,
+        task_by_id: dict[str, TaskRecord],
+        decisions,
+    ) -> list[str]:
+        """v3.1: блокирующие «уточнения» = open Decision-записи, привязанные
+        к этой задаче (через ``source_task_id``).
+
+        Decision-модель не имеет понятия ``blocking_scope``/``affected_task_ids``
+        как у legacy ClarificationRequest — задача либо является источником
+        решения, либо нет. Этого достаточно для admission-check: «не пускаем
+        задачу, у которой есть нерешённый proposed Decision».
+        """
         blockers: list[str] = []
-        ancestor_ids = set()
-        parent_id = task.parent_task_id
-        while parent_id:
-            ancestor_ids.add(parent_id)
-            parent_id = task_by_id[parent_id].parent_task_id if parent_id in task_by_id else None
-        for clarification in clarifications:
-            if clarification.blocking_scope == "none":
-                continue
-            affected = set(clarification.affected_task_ids)
-            if clarification.blocking_scope == "objective":
-                blockers.append(clarification.title)
-            elif clarification.blocking_scope == "task" and task.task_id in affected:
-                blockers.append(clarification.title)
-            elif clarification.blocking_scope == "subtree" and (task.task_id in affected or ancestor_ids.intersection(affected)):
-                blockers.append(clarification.title)
+        for decision in decisions:
+            if decision.source_task_id and decision.source_task_id == task.task_id:
+                blockers.append(decision.title)
         return blockers
 
     def _finalization_blockers(
@@ -469,13 +517,23 @@ class PlanningService:
         for gate_ref in objective.done_gate_refs:
             gate = snapshot.resolve_quality_gate(gate_ref)
             if gate.check_type == "human_approval":
-                requests = self._runtime.list_clarification_requests(workspace)
+                # v3.1: human-approval gate sign-off хранится как Decision
+                # со source="reactive_validation". Считаем gate пройденным,
+                # если есть финализированное (не proposed) решение с
+                # выбранной опцией "approved" или "approved_with_comments".
+                decisions = self._runtime.list_decisions(
+                    workspace,
+                    project_id=manifest.project_id,
+                    source="reactive_validation",
+                )
                 approved = any(
-                    request.source_type == "quality_gate"
-                    and request.source_id == gate.ref.as_string()
-                    and request.status == "answered"
-                    and "approved" in request.selected_option_ids
-                    for request in requests
+                    decision.status in {"accepted_default", "user_overridden", "locked_in"}
+                    and any(
+                        chosen in {"approved", "approved_with_comments"}
+                        for chosen in decision.effective_chosen_ids
+                    )
+                    and gate.title in decision.title
+                    for decision in decisions
                 )
                 if not approved:
                     return False

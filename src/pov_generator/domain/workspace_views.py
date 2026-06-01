@@ -63,6 +63,16 @@ class ProjectShellView:
     goal: str | None
     status_label: str
     updated_at: str
+    # История прошлых активных objective'ов (без текущего). Появляется,
+    # когда workspace прошёл хотя бы одну смену цели через
+    # ``activate_next_objective`` — например, ТЗ → архитектура.
+    objective_history: tuple[str, ...] = ()
+    # Сслыки на objective'ы, которые можно активировать как следующие
+    # после текущего. Берутся из ``ObjectiveSpec.compatible_next_objectives``.
+    compatible_next_objectives: tuple[str, ...] = ()
+    # Все ``done_when.artifacts`` текущего objective'а созданы — UI
+    # может показать кнопку перехода на следующий objective.
+    objective_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,51 +162,126 @@ class ProjectTimelineView:
     total_entries: int
 
 
+# --- v3.0 — Decision ledger views --------------------------------------------
+#
+# Эти view зеркалируют доменную модель Decision из
+# `domain/decisions.py`, но «уплощают» вложенные альтернативы и
+# добавляют производные поля для UI (на каком уровне находится, что
+# выбрано, нужно ли подсветить рискованным). Сериализуются как dict
+# через `to_primitive` в REST endpoint.
+
+
 @dataclass(frozen=True)
-class ClarificationOptionView:
+class DecisionAlternativeView:
     option_id: str
     label: str
     description: str
-    effect_preview: str
-    confidence: float | None = None
+    pros: tuple[str, ...]
+    cons: tuple[str, ...]
+    confidence: float | None
+    is_chosen: bool
 
 
 @dataclass(frozen=True)
-class ClarificationItemView:
-    clarification_id: str
-    status: str
-    priority: str
+class DecisionItemView:
+    decision_id: str
+    project_id: str
     title: str
-    question: str
     description: str
-    reason: str
-    impact: str
-    answer_mode: str
-    options: tuple[ClarificationOptionView, ...]
-    recommended_option_id: str | None
-    visibility: str
-    default_assumption: str | None
-    blocking_scope: str
-    decision_owner_role: str
-    auto_resolved: bool
-    affected_task_ids: tuple[str, ...]
-    related_artifact_ids: tuple[str, ...]
-    selected_option_ids: tuple[str, ...]
-    free_text: str | None
-    resolution_summary: str | None
+    category: str
+    level: str  # effective_level (с учётом возможной user-переклассификации)
+    raw_level: str  # исходный уровень от LLM, если был переопределён
+    level_rationale: str
+    rationale: str
+    chosen_option_id: str
+    chosen_option_label: str  # для UI: «PostgreSQL», не option_id
+    alternatives: tuple[DecisionAlternativeView, ...]
+    confidence: float
+    is_low_confidence: bool  # маркер для подсветки рискованного
+    status: str
+    source: str
+    source_task_id: str | None
+    affected_artifact_ids: tuple[str, ...]
+    depends_on_decision_ids: tuple[str, ...]
+    user_action: str
+    was_user_modified: bool
+    user_free_text_answer: str | None
     created_at: str
     updated_at: str
+    # v3.1: миграция clarifications → decisions
+    answer_mode: str = "single"
+    chosen_option_ids: tuple[str, ...] = ()
+    # v3.4: пользовательская верификация рискового решения.
+    # Снимает маркер is_low_confidence в UI без изменения самого решения.
+    user_verified: bool = False
+    user_verified_at: str | None = None
+    # v3.9: list endpoints can return compact items and let callers lazy-load
+    # heavy alternatives/rationale through the detail endpoint.
+    details_included: bool = True
 
 
 @dataclass(frozen=True)
-class ProjectClarificationsView:
+class ProjectDecisionsView:
+    """Реестр решений проекта с агрегатами для UI.
+
+    Counts по уровням нужны для бэйджей в навигации; counts по статусу —
+    для разделения «требует моего внимания» vs «решено само». Items в
+    том же порядке, что в БД (хронология появления решений).
+    """
+
     project_id: str
     mode: str
-    open_count: int
-    answered_count: int
-    assumed_count: int
-    blocking_count: int
-    items: tuple[ClarificationItemView, ...]
+    # Счётчики «сколько решений на твоём уровне» для текущего mode.
+    surfaced_total: int
+    surfaced_pending: int
+    # По уровням (всегда все три, даже если 0).
+    business_count: int
+    architecture_count: int
+    detail_count: int
+    # По статусам.
+    proposed_count: int
+    accepted_count: int
+    overridden_count: int
+    low_confidence_count: int  # для индикатора «X рискованных решений»
+    items: tuple[DecisionItemView, ...]
+
+
+# --- v3.0 — Checkpoint session views -----------------------------------------
+
+
+@dataclass(frozen=True)
+class CheckpointSessionView:
+    """View checkpoint-сессии для UI.
+
+    В отличие от доменной CheckpointSession включает развёрнутые
+    Decision-карточки, а не только их id — UI рисует сессию одним
+    запросом, без дополнительных round-trip'ов.
+    """
+
+    session_id: str
+    project_id: str
+    task_id: str
+    task_title: str
+    artifact_role: str
+    status: str
+    created_at: str
+    finalized_at: str | None
+    finalized_by: str | None
+    decisions: tuple[DecisionItemView, ...]
+
+
+@dataclass(frozen=True)
+class ProjectCheckpointsView:
+    """Список checkpoint-сессий проекта.
+
+    pending_count — для бэйджа в навигации проекта («3 решения ждут
+    вашего внимания»). items в обратном хронологическом порядке —
+    свежие сверху.
+    """
+
+    project_id: str
+    pending_count: int
+    items: tuple[CheckpointSessionView, ...]
 
 
 @dataclass(frozen=True)
@@ -207,6 +292,25 @@ class ArtifactSummaryView:
     created_at: str
     created_by_task_id: str | None
     has_markdown: bool
+    # Низкая уверенность → мягкий маркер «подтвердите» (зеркально решениям).
+    overall_confidence: float | None = None
+    is_low_confidence: bool = False
+    user_verified: bool = False
+
+
+@dataclass(frozen=True)
+class AttachmentView:
+    """Проекция входного файла-вложения для UI (вкладка «Входные файлы»)."""
+
+    attachment_id: str
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    extraction_status: str
+    extraction_error: str | None
+    used_in_context: bool
+    can_delete: bool
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -242,6 +346,21 @@ class ArtifactDetailView:
     parent_artifact_id: str | None = None
     is_superseded: bool = False
     overall_confidence: float | None = None
+    # Низкая уверенность → мягкий маркер «подтвердите» + метка подтверждения.
+    is_low_confidence: bool = False
+    user_verified: bool = False
+    user_verified_at: str | None = None
+    # Разбивка токенов по стадиям сборки этого артефакта (метадата для карточки).
+    # Ключи: primary_generation, methodology_stage:<id>, decision_identification.
+    token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Агрегат расхода токенов задачи (все её LLM-вызовы) из llm_usage-БД.
+    # None в полях usage_* = «n/a» (провайдер не дал данных).
+    usage_input_tokens: int | None = None
+    usage_output_tokens: int | None = None
+    usage_total_tokens: int | None = None
+    # "actual" | "estimated" | None. estimated → UI помечает «оценка».
+    usage_source: str | None = None
+    usage_call_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -301,8 +420,11 @@ class ProjectDebugView:
     context_manifests: tuple[ContextManifestSummaryView, ...]
     validation_runs: tuple[dict[str, object], ...]
     escalations: tuple[dict[str, object], ...]
-    clarification_candidates: tuple[dict[str, object], ...] = ()
-    clarification_requests: tuple[dict[str, object], ...] = ()
+    # v3.1: единый реестр решений вместо двух legacy-полей clarification_*.
+    decisions: tuple[dict[str, object], ...] = ()
+    # Учёт токенов: детализация по вызовам + агрегат по проекту.
+    llm_usage: tuple[dict[str, object], ...] = ()
+    llm_usage_total: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -393,45 +515,6 @@ class ArtifactSkeletonView:
     sections_total: int
     has_markdown: bool
     created_at: str
-
-
-@dataclass(frozen=True)
-class DecisionLogEntryView:
-    """Запись в журнале решений проекта (P7).
-
-    Агрегируется из ClarificationRequest со статусом answered/assumed.
-    Один request = одно решение. Альтернативы — options, которые НЕ
-    выбраны. Источник — source_type + source_id.
-    """
-
-    decision_id: str  # = request_id
-    kind: str  # "answered" | "assumed"
-    title: str
-    question: str
-    resolution_summary: str | None
-    selected_option_ids: tuple[str, ...]
-    free_text: str | None
-    rationale: str  # reason
-    impact: str
-    blocking_scope: str
-    decision_owner_role: str
-    source_type: str
-    source_id: str | None
-    affected_task_ids: tuple[str, ...]
-    related_artifact_ids: tuple[str, ...]
-    alternatives: tuple[ClarificationOptionView, ...]  # все options кроме выбранных
-    auto_resolved: bool
-    decided_at: str  # updated_at request'а
-    created_at: str
-
-
-@dataclass(frozen=True)
-class ProjectDecisionLogView:
-    project_id: str
-    entries: tuple[DecisionLogEntryView, ...]
-    total_count: int
-    answered_count: int
-    assumed_count: int
 
 
 @dataclass(frozen=True)

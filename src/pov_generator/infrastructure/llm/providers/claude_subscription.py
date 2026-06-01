@@ -11,6 +11,7 @@ from ...claude_subscription_client import (
     ClaudeSubscriptionConfig,
     model_for_complexity,
 )
+from ..protocol import LLMResult
 
 
 class ClaudeSubscriptionProvider:
@@ -82,7 +83,7 @@ class ClaudeSubscriptionProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         return self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,

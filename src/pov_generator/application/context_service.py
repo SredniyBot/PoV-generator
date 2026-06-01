@@ -31,21 +31,6 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
     return None
 
 
-def _clarification_request_id_from_position(position: Position) -> str | None:
-    """Извлечь request_id из identifier'а положения, привязанного к уточнению.
-
-    Положения, рождённые координатором уточнений, имеют стабильный префикс
-    ``clarification.`` в identifier'е. Это позволяет связать положение
-    обратно с источником без хранения дополнительного поля.
-    """
-    if position.source != "clarification":
-        return None
-    prefix = "clarification."
-    if not position.identifier.startswith(prefix):
-        return None
-    return position.identifier[len(prefix):]
-
-
 def estimate_tokens(content: str) -> int:
     return max(1, len(content) // 4)
 
@@ -205,7 +190,40 @@ class ContextService:
             used_position_ids=self.collect_used_position_ids(state),
         )
         self._runtime.record_context_manifest(workspace, context_manifest)
+        prompt_text = "\n".join(item.content for item in items)
+        self._mark_used_attachments(
+            workspace, state, context_manifest.used_position_ids, prompt_text
+        )
         return ContextBuildResult(manifest=context_manifest)
+
+    def _mark_used_attachments(
+        self,
+        workspace: Path,
+        state: ProjectState,
+        used_position_ids: tuple[str, ...],
+        prompt_text: str,
+    ) -> None:
+        """Пометить вложения, чей текст РЕАЛЬНО вошёл в промпт задачи.
+
+        После пометки вложение нельзя удалить (ради воспроизводимости артефакта),
+        поэтому маркируем строго: только если полный текст положения
+        ``attachment.<id>`` присутствует в собранном контексте. Если бюджет усёк
+        текст вложения (или секция состояния не попала в промпт) — НЕ маркируем:
+        артефакт этого текста не видел, и запрет удаления был бы ложным.
+        """
+        from .attachment_service import attachment_id_from_position_id
+
+        statements_by_id = {
+            position.identifier: (position.statement or "")
+            for position in state.knowledge.active()
+        }
+        for position_id in used_position_ids:
+            attachment_id = attachment_id_from_position_id(position_id)
+            if attachment_id is None:
+                continue
+            statement = statements_by_id.get(position_id, "").strip()
+            if statement and statement in prompt_text:
+                self._runtime.mark_attachment_used(workspace, attachment_id)
 
     def _effective_max_tokens(self, template_max_tokens: int) -> int | None:
         raw_disable = os.environ.get("POV_DISABLE_TEMPLATE_CONTEXT_BUDGET", "").strip().lower()
@@ -300,7 +318,7 @@ class ContextService:
         """
         ids: list[str] = []
         for position in state.knowledge.active():
-            if position.type in {"decision", "assumption", "fact"}:
+            if position.type in {"assumption", "fact"}:
                 ids.append(position.identifier)
         return tuple(ids)
 
@@ -339,27 +357,9 @@ class ContextService:
                 + business_request
             )
 
-        # 🟢 USER DECISIONS — обязательные ограничения.
-        #
-        # always_full=True: решения пользователя ВСЕГДА показываются полным
-        # текстом, даже в global-секции. Раньше global-список обрезал
-        # statement до 120 символов; для решений вида
-        # «<длинный вопрос>? Ответ: <короткий ответ>» это резало именно
-        # часть «Ответ: …», и LLM видел только вопрос без ответа. Из-за
-        # этого модель эмитила blocking_questions с пометкой «Решение
-        # пользователя не найдено в контексте», что плодило дубликаты
-        # уточнений и блокировало pipeline.
-        decisions_section = self._format_positions_section(
-            workspace=workspace,
-            task=task,
-            template=template,
-            positions=state.knowledge.by_type("decision"),
-            relevant_title="🟢 Решения пользователя — ОБЯЗАТЕЛЬНО учитывай в выводе",
-            global_title="🟢 Другие принятые решения проекта (тоже учитывай)",
-            always_full=True,
-        )
-        if decisions_section:
-            sections.append(decisions_section)
+        # Decisions are no longer read from Layer A here. The canonical source
+        # is the decisions ledger; ExecutionService appends compact ledger
+        # constraints after the generic ContextManifest is built.
 
         # 🟡 ASSUMPTIONS — рабочие, можно override decision'ом
         assumptions_section = self._format_positions_section(
@@ -383,7 +383,8 @@ class ContextService:
             sections.append(
                 "## ⚫ Открытые пробелы — НЕ утверждай ничего в этих областях\n"
                 "_Если задача требует ответа в этих областях — снижай confidence "
-                "или добавь конкретный вопрос в blocking_questions._\n\n"
+                "или явно отметь пробел как assumption / open_question в "
+                "соответствующем разделе артефакта._\n\n"
                 + "\n".join(gaps_lines[: self._GLOBAL_LIST_LIMIT])
             )
 
@@ -528,25 +529,14 @@ class ContextService:
         task,
         template_roles: set[str],
     ) -> bool:
-        """Положение считается relevant к task если:
-        - источник — clarification, чей affected_task_ids содержит task.task_id, ИЛИ
-        - related_artifact_ids этого clarification пересекаются с ролями задачи.
-
-        Для прочих источников — relevant по умолчанию, чтобы случайно не
-        отфильтровать важное.
+        """v3.1: после миграции на Decision-модель положения с префиксом
+        ``clarification.`` больше не создаются. Все положения попадают в
+        relevant-категорию по умолчанию — фильтрация по affinity больше не
+        применяется на уровне контекста (Layer A знаниями уже отвечает
+        реестр Decisions, у каждого ответа есть source_task_id).
         """
-        request_id = _clarification_request_id_from_position(position)
-        if request_id is None:
-            return True
-        try:
-            request = self._runtime.get_clarification_request(workspace, request_id)
-        except Exception:
-            return True
-        if task.task_id in (request.affected_task_ids or ()):
-            return True
-        if template_roles and set(request.related_artifact_ids or ()) & template_roles:
-            return True
-        return False
+        del workspace, position, task, template_roles
+        return True
 
     # ------------------------------------------------------------------
     # B4: Previous attempt context (для retry задач)

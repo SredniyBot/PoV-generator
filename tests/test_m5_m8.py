@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from pov_generator.application.artifact_contracts import artifact_schema
-from pov_generator.application.clarification_service import ClarificationService
+from pov_generator.application.checkpoint_service import CheckpointService
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.domain_pack_selection_service import DomainPackSelectionService
 from pov_generator.application.execution_service import ExecutionBundle, ExecutionService
@@ -18,10 +18,13 @@ from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.domain.artifacts import ArtifactMetadata, ArtifactRecord
+from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
+
+SIGNOFF_GATE_TITLE = "Согласование ТЗ с заказчиком"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
@@ -34,7 +37,7 @@ def build_services(registry_root: Path | None = None):
     planning_service = PlanningService(runtime)
     context_service = ContextService(runtime)
     execution_service = ExecutionService(runtime, context_service)
-    validation_service = ValidationService(runtime, ClarificationService(runtime, provider="stub"))
+    validation_service = ValidationService(runtime, CheckpointService(runtime))
     workflow_service = WorkflowService(runtime, planning_service, execution_service, validation_service)
     return (
         registry_service,
@@ -119,28 +122,48 @@ def test_context_builder_collects_previous_artifacts_for_spec_generation(tmp_pat
     manifest = context_result.manifest
 
     assert manifest.template_ref == "common.requirements_spec_generation@1.0.0"
+    # v3.10: артефакты называются по имени ДОКУМЕНТА (title контракта),
+    # а не задачи-производителя.
     artifact_titles = {item.title for item in manifest.items if item.item_type == "artifact"}
-    assert any("Нормализовать запрос" in title for title in artifact_titles)
-    assert any("Определить бизнес-результат" in title for title in artifact_titles)
-    assert any("Сформировать варианты решения" in title for title in artifact_titles)
+    assert any("Нормализованный бизнес-запрос" in title for title in artifact_titles)
+    assert any("Модель бизнес-результата" in title for title in artifact_titles)
+    assert any("Набор вариантов решения" in title for title in artifact_titles)
     assert manifest.budget.used_tokens > 0
 
 
 def _approve_requirements_signoff(runtime: SqliteRuntime, workspace: Path) -> None:
-    """Хелпер: после первого `run_until_blocked` находит открытое
-    уточнение `client.requirements_signoff@1.0.0` и отвечает на него
-    `approved`. Нужен, потому что objective не закроется, пока заказчик
-    не согласовал ТЗ через human_approval gate."""
-    clarification_service = ClarificationService(runtime, provider="stub")
-    target = next(
-        req
-        for req in runtime.list_clarification_requests(workspace)
-        if req.source_type == "quality_gate"
-        and req.source_id == "client.requirements_signoff@1.0.0"
-        and req.status == "open"
+    """v3.1 helper: после первого `run_until_blocked` находит pending
+    CheckpointSession с decision sign-off ('Согласование ТЗ с заказчиком')
+    и финализирует её ответом `approved`. Без этого objective не закроется,
+    потому что human_approval gate на ТЗ блокирует завершение цели."""
+    manifest = runtime.load_manifest(workspace)
+    checkpoint_service = CheckpointService(runtime)
+    sessions = runtime.list_checkpoint_sessions(
+        workspace, project_id=manifest.project_id, status="pending"
     )
-    clarification_service.answer_clarification(
-        workspace, request_id=target.request_id, selected_option_ids=("approved",)
+    for session in sessions:
+        signoff_decisions = []
+        for decision_id in session.decision_ids:
+            decision = runtime.get_decision(workspace, decision_id)
+            if SIGNOFF_GATE_TITLE in decision.title:
+                signoff_decisions.append(decision)
+        if not signoff_decisions:
+            continue
+        answers = tuple(
+            CheckpointAnswer(
+                decision_id=decision.decision_id,
+                kind="select_alternative",
+                selected_option_id="approved",
+            )
+            for decision in signoff_decisions
+        )
+        checkpoint_service.submit_answers(
+            workspace, session_id=session.session_id, answers=answers
+        )
+        return
+    raise AssertionError(
+        f"Не найдена pending CheckpointSession с signoff-decision (title contains "
+        f"{SIGNOFF_GATE_TITLE!r}) для проекта {manifest.project_id!r}"
     )
 
 
@@ -158,7 +181,7 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     ) = init_workspace(tmp_path)
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
-    # Stub-flow доходит до момента, когда review_report готов и
+    # Stub-flow доходит до момента, когда requirements_spec готов и
     # human_approval gate `client.requirements_signoff@1.0.0` блокирует
     # завершение objective: ждём согласования заказчика.
     assert result.stopped_reason == "planner_blocked"
@@ -179,11 +202,8 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
         "stakeholder_map",
         "solution_option_inventory",
         "requirements_spec",
-        "review_report",
     }.issubset(artifact_roles)
     assert all(run.status == "passed" for run in runtime.list_validation_runs(workspace))
-    state = project_service.load_project_state(workspace)
-    assert "specification_reviewed" in state.process.readiness
 
 
 def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) -> None:
@@ -221,7 +241,6 @@ def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) ->
         "integration_operating_model",
         "ui_requirements_outline",
         "requirements_spec",
-        "review_report",
     }.issubset(artifact_roles)
 
     spec_artifact = runtime.latest_artifact_by_role(workspace, "requirements_spec")
@@ -231,84 +250,6 @@ def test_domain_packs_change_task_graph_and_produce_rich_spec(tmp_path: Path) ->
     assert payload["security_constraints_detail"]["mandatory_controls"]
     assert payload["integration_model"]["delivery_pattern"]
     assert payload["frontend_requirements"]["screens"]
-
-
-def test_validation_creates_escalation_for_failed_review_report(tmp_path: Path) -> None:
-    (
-        workspace,
-        snapshot,
-        runtime,
-        _project_service,
-        _planning_service,
-        _context_service,
-        _execution_service,
-        validation_service,
-        _workflow_service,
-    ) = init_workspace(tmp_path)
-    task = next(task for task in runtime.list_tasks(workspace) if task.template_ref == "common.requirements_spec_review@1.0.0")
-
-    artifact = ArtifactRecord(
-        artifact_id=str(uuid.uuid4()),
-        project_id=task.project_id,
-        artifact_role="review_report",
-        title="Провести ревью ТЗ (review_report)",
-        description="Искусственно созданный артефакт для теста",
-        artifact_format="json",
-        artifact_kind="primary",
-        created_by_task_id=task.task_id,
-        storage_path=f"artifacts/{uuid.uuid4()}.json",
-        created_at="2026-04-20T00:00:00+00:00",
-        metadata=ArtifactMetadata(template_ref=task.template_ref),
-    )
-    runtime.store_artifact(
-        workspace,
-        artifact=artifact,
-        content=json.dumps(
-            {
-                "overall_status": "needs_changes",
-                "summary": "Документ требует доработки.",
-                "confidence": 0.62,
-                "strengths": ["Структура документа понятна."],
-                "issues": [{"severity": "error", "message": "Нет функциональных требований."}],
-                "recommendations": ["Исправить замечания."],
-                "blocking_questions": [],
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    bundle = ExecutionBundle(
-        request=ExecutionRequest(
-            execution_run_id=str(uuid.uuid4()),
-            project_id=task.project_id,
-            task_id=task.task_id,
-            template_ref=task.template_ref,
-            context_manifest_id="manual-test",
-            provider="stub",
-            model="stub",
-            actor="test",
-        ),
-        result=ExecutionResult(
-            execution_run_id=str(uuid.uuid4()),
-            status="succeeded",
-            outputs=(ExecutionOutput(artifact_id=artifact.artifact_id, artifact_role="review_report"),),
-            trace_ids=(),
-        ),
-        traces=(),
-    )
-
-    validation_run = validation_service.validate_execution(
-        workspace,
-        snapshot,
-        task_id=task.task_id,
-        execution_bundle=bundle,
-    )
-
-    assert validation_run.status == "failed"
-    assert any("Ревью не прошло" in finding.message for finding in validation_run.findings)
-    escalations = runtime.list_escalations(workspace)
-    assert len(escalations) == 1
-    assert escalations[0].reason_code == "validation_failed"
 
 
 def test_requirements_spec_schema_depends_on_active_domain_packs() -> None:
@@ -330,7 +271,7 @@ def test_requirements_spec_schema_depends_on_active_domain_packs() -> None:
     assert "integration_model" in rich_schema["required"]
 
 
-def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) -> None:
+def test_low_confidence_artifact_marks_for_confirmation_not_fails(tmp_path: Path) -> None:
     (
         workspace,
         snapshot,
@@ -355,7 +296,9 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
         created_by_task_id=task.task_id,
         storage_path=f"artifacts/{uuid.uuid4()}.json",
         created_at="2026-04-20T00:00:00+00:00",
-        metadata=ArtifactMetadata(template_ref=task.template_ref),
+        # Уверенность живёт в метаданных артефакта (так её кладёт реальный
+        # execution_service через _extract_overall_confidence). 0.2 < порога.
+        metadata=ArtifactMetadata(template_ref=task.template_ref, overall_confidence=0.2),
     )
     runtime.store_artifact(
         workspace,
@@ -369,7 +312,6 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
                 "implicit_risks": ["Очень высокая неопределенность"],
                 "ambiguous_points": ["Почти все"],
                 "confidence": 0.2,
-                "blocking_questions": ["Нужна ясная формулировка бизнес-результата."],
             },
             ensure_ascii=False,
         ),
@@ -402,9 +344,29 @@ def test_low_confidence_artifact_triggers_blocking_validation(tmp_path: Path) ->
         execution_bundle=bundle,
     )
 
-    assert validation_run.status == "failed"
-    assert any(finding.finding_type == "low_confidence" for finding in validation_run.findings)
-    assert any(finding.finding_type == "needs_user_input" for finding in validation_run.findings)
+    # Низкая уверенность больше НЕ роняет задачу: валидация проходит, а
+    # находка остаётся информационной (не блокирующей).
+    assert validation_run.status == "passed"
+    low_conf = [f for f in validation_run.findings if f.finding_type == "low_confidence"]
+    assert low_conf, "ожидали информационную находку low_confidence"
+    assert all(not f.blocking for f in low_conf)
+
+    # Артефакт помечается как «низкая уверенность» (confidence 0.2 < порога,
+    # ещё не подтверждён) — мягкий сигнал «подтвердите» (зеркально решениям).
+    stored = runtime.load_artifact(workspace, artifact.artifact_id)
+    assert stored.is_low_confidence is True
+    assert stored.user_verified is False
+
+    # Подтверждение пользователем снимает индикатор.
+    runtime.mark_artifact_verified(
+        workspace,
+        artifact.artifact_id,
+        verified=True,
+        verified_at="2026-04-20T00:00:00+00:00",
+    )
+    confirmed = runtime.load_artifact(workspace, artifact.artifact_id)
+    assert confirmed.user_verified is True
+    assert confirmed.is_low_confidence is False
 
 
 def test_domain_pack_selector_stub_picks_relevant_packs() -> None:

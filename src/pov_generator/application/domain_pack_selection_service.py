@@ -17,8 +17,11 @@ import re
 from dataclasses import dataclass
 
 from ..common.errors import ConflictError
+from ..common.logging import get_logger
 from ..domain.registry import DomainPackSpec, ObjectRef, RegistrySnapshot
 from ..infrastructure.llm import LLMProviderRegistry
+
+logger = get_logger("domain-pack")
 
 # Селектор domain pack'ов — это «standard»-сложность: понять запрос,
 # выбрать минимум-достаточный набор пакетов. Для Claude-провайдеров этот
@@ -68,23 +71,31 @@ class DomainPackSelectionService:
             )
 
         if resolved_provider_name == "stub":
-            return self._select_stub(candidate_packs, request_text, model=model or "stub")
-
-        # LLM-провайдер. Если задан явный provider override (тесты, CLI) —
-        # legacy env-based путь. Иначе всегда через settings-store.
-        if provider is not None:
-            llm = self._llm.get(
-                provider=provider,
-                model=model,
-                complexity=_LLM_COMPLEXITY,
-            )
+            result = self._select_stub(candidate_packs, request_text, model=model or "stub")
         else:
-            llm = self._llm.resolve_for_purpose(
-                "domain_pack_selector",
-                complexity=_LLM_COMPLEXITY,
-                override_model=model,
-            )
-        return self._select_llm(candidate_packs, request_text, llm=llm)
+            # LLM-провайдер. Если задан явный provider override (тесты, CLI) —
+            # legacy env-based путь. Иначе всегда через settings-store.
+            if provider is not None:
+                llm = self._llm.get(
+                    provider=provider,
+                    model=model,
+                    complexity=_LLM_COMPLEXITY,
+                    purpose="domain_pack_selector",
+                )
+            else:
+                llm = self._llm.resolve_for_purpose(
+                    "domain_pack_selector",
+                    complexity=_LLM_COMPLEXITY,
+                    override_model=model,
+                )
+            result = self._select_llm(candidate_packs, request_text, llm=llm)
+        logger.info(
+            "подобраны доменные пакеты",
+            selected=len(result.selected_pack_refs),
+            candidates=len(candidate_packs),
+            confidence=round(result.confidence, 2),
+        )
+        return result
 
     def _candidate_packs(
         self,
@@ -207,7 +218,7 @@ class DomainPackSelectionService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
-        )
+        ).payload
         raw_selected = payload.get("selected_pack_refs", [])
         if not isinstance(raw_selected, list):
             raise ConflictError("LLM-модуль подбора вернул невалидное поле selected_pack_refs.")

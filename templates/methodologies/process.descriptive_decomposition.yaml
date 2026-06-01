@@ -1,0 +1,114 @@
+kind: methodology_pack
+id: process.descriptive_decomposition
+version: 1.0.0
+title: Descriptive decomposition
+status: active
+description: >
+  Методология для описательных (не decision-ориентированных) задач —
+  декомпозиция предметной области на сущности и связи между ними.
+  Применяется к leaf-задачам архитектурного потока: системный контекст,
+  компоненты, потоки взаимодействия. В отличие от lean_jtbd, не требует
+  генерации альтернатив и выбора — задача в том чтобы корректно описать,
+  а не выбрать из вариантов.
+
+stage_execution_mode: single_call
+
+stages:
+  - id: scope_framing
+    title: Зафиксировать рамку задачи
+    description: >
+      Одно-два предложения о том, что именно описывает задача —
+      какую часть системы / какой уровень детализации / какой view.
+    produces:
+      - field: scope_statement
+        type: string
+        required: true
+        description: Рамка описания в одном-двух предложениях.
+    rules:
+      - id: empty_scope
+        if: scope_statement == null
+        emit_candidate:
+          severity: high
+          need: Рамка задачи не сформулирована.
+          blocking_scope: task
+
+  - id: entity_identification
+    title: Выделить сущности предметной области
+    description: >
+      Перечислить ключевые сущности, которые попадают в рамку задачи —
+      компоненты, акторы, источники данных, потоки. Каждая сущность —
+      с идентификатором, человекочитаемым label и kind'ом.
+    produces:
+      - field: entities
+        type: array
+        item_schema:
+          id: string
+          label: string
+          kind: string
+          description: string
+    rules:
+      - id: missing_entities
+        if: count(entities) == 0
+        emit_candidate:
+          severity: high
+          need: Не выделено ни одной сущности в рамке задачи.
+          blocking_scope: task
+
+  - id: relationship_mapping
+    title: Описать связи между сущностями
+    description: >
+      Для каждой пары связанных сущностей зафиксировать направление
+      и характер связи (вызов, поток данных, владение, наследование).
+    produces:
+      - field: relationships
+        type: array
+        item_schema:
+          from: string
+          to: string
+          kind: string
+          label: string
+    rules:
+      - id: unconnected_entities
+        if: len(relationships) == 0
+        emit_candidate:
+          severity: medium
+          need: Сущности выделены, но связи между ними не описаны.
+          blocking_scope: task
+
+  - id: completeness_check
+    title: Проверить полноту описания
+    description: >
+      Какие вопросы остались без ответа в рамках текущего описания и
+      насколько модель уверена в общем покрытии (0..1).
+    produces:
+      - field: unresolved_questions
+        type: array
+        item_schema: string
+      - field: coverage_confidence
+        type: number
+        description: Оценка полноты описания от 0 до 1.
+    rules:
+      - id: low_coverage
+        if: coverage_confidence < 0.5
+        emit_candidate:
+          severity: medium
+          need: Уверенность в полноте описания ниже порога.
+          blocking_scope: task
+
+reasoning_artifact:
+  required_stages: [scope_framing, entity_identification]
+  optional_stages: [relationship_mapping, completeness_check]
+
+complexity_overrides:
+  trivial:
+    skip_stages: [completeness_check]
+    relax_rules: [low_coverage]
+
+clarification_policy:
+  default_blocking_scope: task
+  ask_when:
+    - owner_decision_required
+    - low_confidence_high_impact
+
+provenance:
+  emit_source_refs: true

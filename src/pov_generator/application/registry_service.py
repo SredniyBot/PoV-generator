@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..common.logging import get_logger
 from ..domain.registry import RegistryIssue, RegistrySnapshot, ValidationReport
-from ..infrastructure.filesystem_registry import FilesystemRegistryLoader
+from ..infrastructure.filesystem_registry import RegistryLoader
+
+logger = get_logger("registry")
 
 
 @dataclass(frozen=True)
@@ -18,14 +21,38 @@ class RegistrySummary:
 
 
 class RegistryService:
-    def __init__(self, loader: FilesystemRegistryLoader) -> None:
+    def __init__(self, loader: RegistryLoader) -> None:
         self._loader = loader
+        # Мемоизация результата валидации по identity снапшота. Кеширующий
+        # лоадер возвращает тот же объект снапшота, пока исходники не
+        # изменились, поэтому дорогие cross-ref проверки достаточно
+        # выполнить один раз на версию реестра.
+        self._cached_snapshot: RegistrySnapshot | None = None
+        self._cached_report: ValidationReport | None = None
 
     def load(self) -> RegistrySnapshot:
         return self._loader.load()
 
     def validate(self) -> tuple[RegistrySnapshot, ValidationReport]:
         snapshot = self.load()
+        if snapshot is self._cached_snapshot and self._cached_report is not None:
+            return snapshot, self._cached_report
+        report = self._validate_snapshot(snapshot)
+        # Логируем только на первой валидации версии реестра (мемоизация выше
+        # отсекает повторы) — не спамим на каждый вызов.
+        if not report.is_valid:
+            logger.warning(
+                "реестр невалиден",
+                errors=len(report.errors),
+                warnings=len(report.warnings),
+            )
+            for issue in report.errors:
+                logger.warning(f"  ошибка реестра: {issue.message}", location=issue.location or None)
+        self._cached_snapshot = snapshot
+        self._cached_report = report
+        return snapshot, report
+
+    def _validate_snapshot(self, snapshot: RegistrySnapshot) -> ValidationReport:
         errors: list[RegistryIssue] = []
         warnings: list[RegistryIssue] = []
 
@@ -53,6 +80,25 @@ class RegistryService:
                         RegistryIssue(
                             "error",
                             f"Цель ссылается на неизвестную проверку качества '{gate_ref.as_string()}'.",
+                            str(objective.source_path),
+                        )
+                    )
+            for next_ref in objective.compatible_next_objectives:
+                if next_ref.as_string() not in snapshot.objectives:
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель ссылается на неизвестный следующий objective "
+                            f"'{next_ref.as_string()}' в compatible_next_objectives.",
+                            str(objective.source_path),
+                        )
+                    )
+                elif next_ref.as_string() == objective.ref.as_string():
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Цель не может ссылаться на саму себя в "
+                            f"compatible_next_objectives ('{next_ref.as_string()}').",
                             str(objective.source_path),
                         )
                     )
@@ -228,7 +274,7 @@ class RegistryService:
                             )
                         )
 
-        return snapshot, ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
+        return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 
     def summary(self, snapshot: RegistrySnapshot) -> RegistrySummary:
         return RegistrySummary(

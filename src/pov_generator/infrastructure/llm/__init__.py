@@ -12,7 +12,14 @@
 
 from __future__ import annotations
 
-from .protocol import LLMProvider
+from .protocol import LLMProvider, LLMResult, LLMUsage, estimate_token_count
 from .registry import LLMProviderRegistry, LLMResolution
 
-__all__ = ["LLMProvider", "LLMProviderRegistry", "LLMResolution"]
+__all__ = [
+    "LLMProvider",
+    "LLMProviderRegistry",
+    "LLMResolution",
+    "LLMResult",
+    "LLMUsage",
+    "estimate_token_count",
+]

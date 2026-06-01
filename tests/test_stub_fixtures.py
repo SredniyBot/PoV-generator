@@ -7,8 +7,8 @@ Acceptance из BACKLOG W3.3:
 Эти тесты проверяют:
 1. Все ранее захардкоженные artifact_role'ы покрыты фикстурами.
 2. Loader корректно подставляет placeholder'ы.
-3. Compose-кейсы (requirements_spec / review_report /
-   solution_tradeoff_matrix) намеренно НЕ в фикстурах — остались в
+3. Compose-кейсы (requirements_spec / solution_tradeoff_matrix /
+   design_document) намеренно НЕ в фикстурах — остались в
    Python, потому что зависят от parsed_inputs / domain flags.
 """
 
@@ -53,14 +53,17 @@ EXPECTED_STATIC_ROLES = {
     "security_compliance_constraints",
     "integration_operating_model",
     "ui_requirements_outline",
+    "system_context_definition",
+    "component_decomposition",
+    "interaction_view",
 }
 
 # Эти роли намеренно остались в Python — они compose'аются из входных
 # артефактов / domain flags, простой JSON-фикстурой не покрывается.
 COMPOSE_ROLES_STILL_IN_PYTHON = {
     "requirements_spec",
-    "review_report",
     "solution_tradeoff_matrix",
+    "design_document",
 }
 
 

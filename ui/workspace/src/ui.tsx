@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 
 import { api as apiClient } from "./api";
+import { activeRunRefetchInterval } from "./realtime";
 import {
   AlertTriangle,
   ArrowRight,
@@ -11,6 +12,7 @@ import {
   CircleDot,
   FileCog,
   FileText,
+  GitBranch,
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
@@ -19,9 +21,12 @@ import {
   RefreshCcw,
   Settings,
   Sparkles,
+  Trash2,
   Waypoints,
   X,
 } from "lucide-react";
+// MessageSquareWarning остаётся в импорте — используется в actionIcon()
+// и SituationPanel'е, не только в legacy «Вопросы: N»-кнопке.
 
 import type {
   ActionDescriptor,
@@ -169,7 +174,10 @@ export function SectionCard({
   className,
   children,
 }: PropsWithChildren<{
-  title: string;
+  // ReactNode (а не только string) — чтобы в title можно было передать
+  // композицию с кнопкой возврата / иконкой (v3.0 CheckpointSessionPage).
+  // h2 принимает любой children, обратной несовместимости не возникает.
+  title: ReactNode;
   subtitle?: string;
   actions?: ReactNode;
   tone?: "default" | "warning" | "danger" | "accent";
@@ -286,10 +294,14 @@ export function ProjectRail({
   projects,
   selectedProjectId,
   onCreate,
+  onDeleteProject,
+  deletingProjectId,
 }: {
   projects: ProjectListItemView[];
   selectedProjectId: string | null;
   onCreate: () => void;
+  onDeleteProject: (project: { project_id: string; name: string }) => void;
+  deletingProjectId: string | null;
 }) {
   return (
     <aside className="project-rail">
@@ -318,25 +330,49 @@ export function ProjectRail({
           />
         ) : (
           projects.map((project) => (
-            <Link
-              key={project.project_id}
-              className={cx(
-                "project-item",
-                selectedProjectId === project.project_id && "project-item--active",
-                project.has_blockers && "project-item--blocked",
-              )}
-              to={`/projects/${project.project_id}/overview`}
-            >
-              <div className="project-item__topline">
-                <strong>{project.name}</strong>
-                {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
-              </div>
-              <div className="project-item__meta">
-                <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
-                <span>{formatDateTime(project.updated_at)}</span>
-              </div>
-              <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
-            </Link>
+            // Кнопка удаления — сиблинг <Link>, а не потомок (button внутри
+            // <a> невалиден по HTML5). Обёртка задаёт positioning-контекст.
+            <div key={project.project_id} className="project-item-wrap">
+              <Link
+                className={cx(
+                  "project-item",
+                  selectedProjectId === project.project_id && "project-item--active",
+                  project.has_blockers && "project-item--blocked",
+                )}
+                to={`/projects/${project.project_id}/overview`}
+              >
+                <div className="project-item__topline">
+                  <strong>{project.name}</strong>
+                  {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
+                </div>
+                <div className="project-item__meta">
+                  <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
+                  <span>{formatDateTime(project.updated_at)}</span>
+                </div>
+                <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
+              </Link>
+              <button
+                type="button"
+                className="project-item__delete"
+                title="Удалить проект"
+                aria-label={`Удалить проект «${project.name}»`}
+                disabled={deletingProjectId === project.project_id}
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    `Удалить проект «${project.name}»?\n\nБудут безвозвратно удалены все артефакты, решения и история. Действие необратимо.`,
+                  );
+                  if (confirmed) {
+                    onDeleteProject({ project_id: project.project_id, name: project.name });
+                  }
+                }}
+              >
+                {deletingProjectId === project.project_id ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
+              </button>
+            </div>
           ))
         )}
       </nav>
@@ -352,17 +388,18 @@ export function ProjectRail({
 }
 
 export function WorkspaceTabs({ projectId }: { projectId: string }) {
-  // 6 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
+  // 5 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
   // root-level страницей `/settings` (LLM-провайдеры). Содержимое
   // прошлого таба (Состояние / Замечания / Технические детали) — это
   // диагностические страницы; доступ к ним остаётся через прямые
   // URL `/state`, `/review`, `/debug` для bookmarks / power-users.
+  // v3.1: legacy «Вопросы» и «Журнал решений» удалены — Decision (v3.0
+  // реестр) полностью покрывает оба сценария.
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Обзор" },
-    { to: `/projects/${projectId}/clarifications`, label: "Вопросы" },
-    { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Журнал решений" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения" },
+    { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
   return (
@@ -422,9 +459,11 @@ export function WorkspaceHeader({
   onClarificationModeChange,
   modePending,
   actions,
-  openClarificationCount,
-  blockingClarificationCount,
-  onOpenClarifications,
+  pendingCheckpointCount,
+  pendingCheckpointSessionId,
+  onOpenCheckpoints,
+  onActivateNextObjective,
+  activatingNextObjective,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
@@ -432,10 +471,16 @@ export function WorkspaceHeader({
   onClarificationModeChange?: (mode: string) => void;
   modePending?: boolean;
   actions?: ReactNode;
-  // W5.2: счётчики из ProjectClarificationsView. Клик ведёт на /clarifications.
-  openClarificationCount?: number;
-  blockingClarificationCount?: number;
-  onOpenClarifications?: () => void;
+  // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
+  // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
+  // (список) или сразу на /checkpoints/{id} если одна.
+  pendingCheckpointCount?: number;
+  pendingCheckpointSessionId?: string | null;
+  onOpenCheckpoints?: () => void;
+  // Цепочка objective'ов: когда текущий objective завершён и у него есть
+  // compatible_next_objectives, UI показывает кнопку перехода.
+  onActivateNextObjective?: (objectiveRef: string) => void;
+  activatingNextObjective?: boolean;
 }) {
   const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
   const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
@@ -449,6 +494,17 @@ export function WorkspaceHeader({
         <h1>{shell.name}</h1>
         <p className="workspace-header__request">{shell.business_request}</p>
         <div className="workspace-header__meta">
+          {shell.objective_history && shell.objective_history.length > 0 ? (
+            <>
+              {shell.objective_history.map((ref) => (
+                <span key={ref} className="meta-chip meta-chip--muted" title="Завершённый objective">
+                  <CheckCircle2 size={14} />
+                  {ref}
+                </span>
+              ))}
+              <ChevronRight size={14} className="meta-chip__sep" />
+            </>
+          ) : null}
           <span className="meta-chip">
             <Waypoints size={14} />
             {shell.objective_ref}
@@ -457,25 +513,33 @@ export function WorkspaceHeader({
             <Layers3 size={14} />
             Доменов: {shell.active_domain_packs.length}
           </span>
-          {openClarificationCount && openClarificationCount > 0 ? (
+          {shell.objective_complete &&
+          shell.compatible_next_objectives &&
+          shell.compatible_next_objectives.length > 0 &&
+          onActivateNextObjective
+            ? shell.compatible_next_objectives.map((nextRef) => (
+                <button
+                  key={nextRef}
+                  type="button"
+                  className="meta-chip meta-chip--button meta-chip--cta"
+                  onClick={() => onActivateNextObjective(nextRef)}
+                  disabled={activatingNextObjective}
+                  title={`Активировать следующий objective: ${nextRef}`}
+                >
+                  <ArrowRight size={14} />
+                  Перейти к {nextRef}
+                </button>
+              ))
+            : null}
+          {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
             <button
               type="button"
-              className={cx(
-                "meta-chip meta-chip--button",
-                (blockingClarificationCount ?? 0) > 0 && "meta-chip--warning",
-              )}
-              onClick={onOpenClarifications}
-              title={
-                blockingClarificationCount && blockingClarificationCount > 0
-                  ? `${blockingClarificationCount} вопросов блокируют работу`
-                  : "Открытые вопросы"
-              }
+              className="meta-chip meta-chip--button meta-chip--danger"
+              onClick={onOpenCheckpoints}
+              title="Workflow приостановлен — нужны ваши решения перед сборкой артефакта"
             >
-              <MessageSquareWarning size={14} />
-              Вопросов: {openClarificationCount}
-              {blockingClarificationCount && blockingClarificationCount > 0
-                ? ` (${blockingClarificationCount} блок.)`
-                : null}
+              <GitBranch size={14} />
+              Решения ждут: {pendingCheckpointCount}
             </button>
           ) : null}
         </div>
@@ -529,7 +593,9 @@ export function CommandBar({
   const activeRunQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => apiClient.getActiveWorkflowRun(projectId),
-    refetchInterval: 1500,
+    // Прогресс инвалидируется WS-пушем (workflow_runs); полл — страховка
+    // только пока run идёт, на простое off.
+    refetchInterval: activeRunRefetchInterval,
   });
   const pauseMutation = useMutation({
     mutationFn: (runId: string) => apiClient.cancelWorkflow(projectId, runId),

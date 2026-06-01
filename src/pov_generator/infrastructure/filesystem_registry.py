@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import yaml
 
 from ..common.errors import ValidationError
+from ..common.logging import get_logger
 from ..domain.registry import (
     RegistrySnapshot,
     parse_artifact_contract,
@@ -16,12 +19,32 @@ from ..domain.registry import (
     parse_vocabulary,
 )
 
+_logger = get_logger("registry")
+
+
+@runtime_checkable
+class RegistryLoader(Protocol):
+    """Порт загрузки реестра шаблонов.
+
+    Абстрагирует источник реестра от потребителей (``RegistryService`` и
+    кеширующего декоратора). ``fingerprint`` — дешёвый токен изменения
+    исходников: по нему кеширующий слой решает, нужно ли перепарсивать
+    реестр, не читая содержимое файлов.
+    """
+
+    def load(self) -> RegistrySnapshot: ...
+
+    def fingerprint(self) -> object: ...
+
 
 class FilesystemRegistryLoader:
+    """Загрузчик реестра из дерева YAML под ``root`` (templates/)."""
+
     def __init__(self, root: Path) -> None:
         self._root = root
 
     def load(self) -> RegistrySnapshot:
+        _started = time.perf_counter()
         vocabularies = {}
         objectives = {}
         templates = {}
@@ -67,6 +90,16 @@ class FilesystemRegistryLoader:
             gate = parse_quality_gate(raw, path)
             quality_gates[gate.ref.as_string()] = gate
 
+        _logger.info(
+            "реестр загружен",
+            objectives=len(objectives),
+            tasks=len(templates),
+            artifacts=len(artifact_contracts),
+            domain_packs=len(domain_packs),
+            methodologies=len(methodology_packs),
+            gates=len(quality_gates),
+            duration_ms=round((time.perf_counter() - _started) * 1000),
+        )
         return RegistrySnapshot(
             vocabularies=vocabularies,
             objectives=objectives,
@@ -86,3 +119,58 @@ class FilesystemRegistryLoader:
         if kind is None:
             raise ValidationError(f"Missing 'kind' field in {path}")
         return data
+
+    def fingerprint(self) -> tuple[tuple[str, int, int], ...]:
+        """Дешёвый токен изменения исходников реестра.
+
+        Кортеж ``(path, mtime_ns, size)`` по всем YAML под корнем. Сравнение
+        этого токена позволяет кешу понять, изменился ли реестр, не читая и
+        не парся содержимое. Чувствителен к правке, добавлению и удалению
+        любого файла (путь входит в токен, а полный набор путей — в кортеж).
+
+        Стоимость — один ``stat`` на файл (~доли мс на дерево), на порядки
+        дешевле полного парсинга YAML.
+        """
+        entries: list[tuple[str, int, int]] = []
+        for path in sorted(self._root.rglob("*.yaml")):
+            try:
+                stat = path.stat()
+            except OSError:
+                # Файл исчез между rglob и stat — пропускаем; следующий
+                # fingerprint это отразит и вызовет переинициализацию кеша.
+                continue
+            entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+        return tuple(entries)
+
+
+class CachingRegistryLoader:
+    """Кеширующий декоратор над :class:`RegistryLoader`.
+
+    Хранит распарсенный снапшот и переиспользует его, пока ``fingerprint``
+    исходников не изменится. Инвалидация — по контенту (mtime + size), а не
+    по TTL: нет окна устаревания, правка YAML подхватывается при следующем
+    ``load()``. Дорогой парсинг выполняется только при реальном изменении.
+
+    Дизайн: SRP — декоратор отвечает только за политику кеширования, парсинг
+    остаётся заботой обёрнутого лоадера; OCP — поведение добавлено без правки
+    парсера; DIP — работает с любым ``RegistryLoader``.
+
+    Важно для мемоизации в ``RegistryService``: пока исходники не менялись,
+    ``load()`` возвращает РОВНО ТОТ ЖЕ объект снапшота, поэтому потребители
+    могут кешировать производные данные по identity снапшота.
+    """
+
+    def __init__(self, inner: RegistryLoader) -> None:
+        self._inner = inner
+        self._snapshot: RegistrySnapshot | None = None
+        self._fingerprint: object = None
+
+    def load(self) -> RegistrySnapshot:
+        current = self._inner.fingerprint()
+        if self._snapshot is None or current != self._fingerprint:
+            self._snapshot = self._inner.load()
+            self._fingerprint = current
+        return self._snapshot
+
+    def fingerprint(self) -> object:
+        return self._inner.fingerprint()

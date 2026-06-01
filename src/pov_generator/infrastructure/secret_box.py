@@ -24,7 +24,9 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from ..common.errors import ConflictError
+from ..common.logging import get_logger
 
+logger = get_logger("settings")
 
 _KEY_ENV_VAR = "POV_SECRET_KEY"
 _KEY_FILENAME = ".secret_key"
@@ -65,6 +67,11 @@ class SecretBox:
         try:
             return self._fernet_instance().decrypt(ciphertext.encode("ascii")).decode("utf-8")
         except InvalidToken as exc:
+            logger.error(
+                "не удалось расшифровать секрет: ключ шифрования (POV_SECRET_KEY) "
+                "изменился или данные повреждены",
+                exc_info=False,
+            )
             raise ConflictError(
                 "Не удалось расшифровать секрет: ключ шифрования изменился или "
                 "данные повреждены. Если ротировали POV_SECRET_KEY — переключите "

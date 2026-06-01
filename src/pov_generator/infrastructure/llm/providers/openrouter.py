@@ -8,6 +8,7 @@ from typing import Any
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
 from ...openrouter_client import OpenRouterClient, OpenRouterConfig
+from ..protocol import LLMResult
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _DEFAULT_MODEL = "openai/gpt-4.1-mini"
@@ -79,7 +80,7 @@ class OpenRouterProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         return self._client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,

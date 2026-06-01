@@ -25,6 +25,5 @@
   "compliance_risks": [
     "Нарушение требований ИБ может заблокировать масштабирование решения"
   ],
-  "confidence": 0.74,
-  "blocking_questions": []
+  "confidence": 0.74
 }

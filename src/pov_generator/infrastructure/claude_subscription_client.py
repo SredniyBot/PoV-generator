@@ -34,7 +34,38 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
+from .llm.protocol import LLMResult, LLMUsage
+
+
+def _usage_from_subscription(raw: dict[str, Any] | None) -> LLMUsage | None:
+    """Нормализует usage из ``ResultMessage`` claude-agent-sdk.
+
+    ``raw`` — ``{"usage": {...}, "total_cost_usd": ...}``. Возвращает None,
+    если фактических токенов нет (тогда вызывающий применит оценку).
+    """
+    if not raw:
+        return None
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    if input_tokens == 0 and output_tokens == 0:
+        return None
+    cache_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0) + int(
+        usage.get("cache_read_input_tokens", 0) or 0
+    )
+    cost = raw.get("total_cost_usd")
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        source="actual",
+        cache_tokens=cache_tokens or None,
+        cost_usd=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -63,6 +94,35 @@ def model_for_complexity(complexity: str | None) -> str | None:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _iter_parseable_objects(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Найти все валидные JSON-объекты в тексте.
+
+    Использует ``json.JSONDecoder.raw_decode`` от каждой позиции ``{``:
+    если модель в subscription-CLI прервалась и стартовала JSON заново,
+    одна из попыток обычно валидна. Возвращает список ``(parsed, raw_str)``,
+    caller выберет самый длинный.
+
+    Учитывает обе наши пост-обработки (``\\'`` → ``'``, ``strict=False``).
+    """
+    normalized = text.replace("\\'", "'")
+    decoder = json.JSONDecoder(strict=False)
+    results: list[tuple[dict[str, Any], str]] = []
+    pos = 0
+    while True:
+        idx = normalized.find("{", pos)
+        if idx < 0:
+            break
+        try:
+            parsed, end = decoder.raw_decode(normalized, idx)
+        except json.JSONDecodeError:
+            pos = idx + 1
+            continue
+        if isinstance(parsed, dict):
+            results.append((parsed, normalized[idx:end]))
+        pos = end
+    return results
 
 
 class ClaudeSubscriptionClient:
@@ -114,7 +174,7 @@ class ClaudeSubscriptionClient:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> LLMResult:
         full_prompt = (
             user_prompt
             + "\n\n---\n"
@@ -130,10 +190,25 @@ class ClaudeSubscriptionClient:
         # обычно проходит. Без retry падает вся pipeline.
         attempts = max(int(os.environ.get("POV_CLAUDE_MAX_RETRIES", "3")), 1)
         last_exc: ConflictError | None = None
+        # Токен отмены текущего шага (если исполнение идёт под runner'ом).
+        # Берём из ambient-скоупа, чтобы не менять сигнатуру chat_json /
+        # интерфейс LLMProvider. CancellationError — НЕ ConflictError,
+        # поэтому отмена не попадает в retry-ветку и всплывает сразу.
+        token = current_cancellation()
         for attempt in range(1, attempts + 1):
             try:
-                text = asyncio.run(self._collect(system_prompt, full_prompt))
-                return self._extract_json(text)
+                # Сбор — через нашу cancellable-обёртку (форсированный обрыв),
+                # которая прокидывает (text, raw_usage) из _collect.
+                text, raw_usage = asyncio.run(
+                    self._collect_cancellable(system_prompt, full_prompt, token)
+                )
+                payload = self._extract_json(text)
+                # Факт из ResultMessage; если SDK его не отдал (старые версии) —
+                # оценка по длине (source=estimated).
+                usage = _usage_from_subscription(raw_usage) or LLMUsage.estimated(
+                    input_text=system_prompt + full_prompt, output_text=text
+                )
+                return LLMResult(payload=payload, usage=usage)
             except ConflictError as exc:
                 if not _is_transient_cli_error(str(exc)) or attempt == attempts:
                     raise
@@ -145,7 +220,39 @@ class ClaudeSubscriptionClient:
         assert last_exc is not None
         raise last_exc
 
-    async def _collect(self, system_prompt: str, user_prompt: str) -> str:
+    async def _collect_cancellable(
+        self, system_prompt: str, user_prompt: str, token: CancellationToken | None
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Запустить ``_collect`` с возможностью форсированной отмены.
+
+        Без токена — обычный await. С токеном — оборачиваем сбор в asyncio-
+        таску и подписываемся на отмену: при ``token.cancel()`` из другого
+        потока (HTTP-обработчик) безопасно отменяем таску через
+        ``loop.call_soon_threadsafe`` — это корректный кросс-тред способ
+        прервать asyncio. Отмена таски рвёт ``async for`` по ``query`` →
+        SDK закрывает CLI-subprocess. Получение ответа LLM прекращается, не
+        дожидаясь завершения.
+        """
+        if token is None:
+            return await self._collect(system_prompt, user_prompt)
+
+        loop = asyncio.get_running_loop()
+        collect_task: asyncio.Task[tuple[str, dict[str, Any] | None]] = asyncio.ensure_future(
+            self._collect(system_prompt, user_prompt)
+        )
+        unregister = token.register(
+            lambda: loop.call_soon_threadsafe(collect_task.cancel)
+        )
+        try:
+            return await collect_task
+        except asyncio.CancelledError as exc:
+            if token.is_cancelled:
+                raise CancellationError("LLM-вызов прерван пользователем.") from exc
+            raise
+        finally:
+            unregister()
+
+    async def _collect(self, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any] | None]:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
@@ -195,8 +302,18 @@ class ClaudeSubscriptionClient:
                 )
 
         chunks: list[str] = []
+        raw_usage: dict[str, Any] | None = None
         try:
             async for message in self._sdk.query(prompt=user_prompt, options=options):
+                # ResultMessage в конце стрима несёт фактический usage и
+                # total_cost_usd. Раньше он молча пропускался (нет content) —
+                # теперь читаем токены отсюда (оценка остаётся только fallback).
+                message_usage = getattr(message, "usage", None)
+                if message_usage is not None:
+                    raw_usage = {
+                        "usage": message_usage,
+                        "total_cost_usd": getattr(message, "total_cost_usd", None),
+                    }
                 content = getattr(message, "content", None)
                 if not content:
                     continue
@@ -244,7 +361,7 @@ class ClaudeSubscriptionClient:
                     sp_tmpfile.unlink(missing_ok=True)
                 except OSError:
                     pass
-        return "".join(chunks)
+        return "".join(chunks), raw_usage
 
     @staticmethod
     def _format_load_timeout_msg(seconds: int) -> str:  # for tests
@@ -254,24 +371,40 @@ class ClaudeSubscriptionClient:
         text = text.strip()
         if not text:
             raise ConflictError("Claude вернул пустой ответ.")
+        # 1. Сначала пытаемся вытащить из markdown-блока ```json```.
         match = _JSON_FENCE_RE.search(text)
-        candidate: str | None = None
         if match:
-            candidate = match.group(1)
-        else:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                candidate = text[start : end + 1]
-        if candidate is None:
-            raise ConflictError(f"Не удалось извлечь JSON из ответа: {text!r}")
+            fenced = match.group(1).replace("\\'", "'")
+            try:
+                parsed = json.loads(fenced, strict=False)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        # 2. Иначе ищем все валидные JSON-объекты в тексте и берём самый
+        #    длинный. Subscription-CLI на длинных ответах иногда стримит
+        #    несколько JSON-объектов подряд (модель обрывается посередине
+        #    и перезапускается с нуля — оба склеиваются в один поток).
+        candidates = _iter_parseable_objects(text)
+        if candidates:
+            parsed, raw = max(candidates, key=lambda pair: len(pair[1]))
+            return parsed
+        # 3. Никаких валидных JSON не нашли — диагностика по «жадному»
+        #    срезу `{...}` от первой `{` до последней `}` (исторически
+        #    самый информативный candidate для логов).
+        start = text.find("{")
+        end = text.rfind("}")
+        fallback = (
+            text[start : end + 1].replace("\\'", "'") if start >= 0 and end > start else text
+        )
         try:
-            payload = json.loads(candidate)
+            json.loads(fallback, strict=False)
         except json.JSONDecodeError as exc:
-            raise ConflictError(f"Невалидный JSON в ответе Claude: {candidate!r}") from exc
-        if not isinstance(payload, dict):
-            raise ConflictError(f"Ожидался JSON-объект, получено: {payload!r}")
-        return payload
+            raise ConflictError(
+                f"Невалидный JSON в ответе Claude (line {exc.lineno} "
+                f"col {exc.colno}): {exc.msg}. Candidate: {fallback!r}"
+            ) from exc
+        raise ConflictError(f"Не удалось извлечь JSON из ответа: {text!r}")
 
 
 def _resolve_cli_path() -> str | None:
