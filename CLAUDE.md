@@ -65,7 +65,9 @@ Decision order: high-confidence + `default_assumption` → assume; else if mode 
 
 ## Mermaid in PDF (optional)
 
-UI renders Mermaid diagrams via `mermaid.js` in the browser. The PDF pipeline (`application/pdf_export.py`) uses `xhtml2pdf` which has no JS — so for graphical diagrams in PDF we preprocess `mermaid_render.render_mermaid_to_png(source)`, which shells out to `mmdc` (`@mermaid-js/mermaid-cli`, Node + headless Chromium) and inlines the PNG via data-URI. If `mmdc` is missing or the call fails, the original ```mermaid``` code-block is left intact — degraded but never broken. Tests set `POV_MERMAID_DISABLED=1` to short-circuit. Install once with `npm i -g @mermaid-js/mermaid-cli`. Env knobs: `POV_MERMAID_CLI` (binary path), `POV_MERMAID_TIMEOUT` (seconds, default 30).
+UI renders Mermaid diagrams via `mermaid.js` in the browser. The PDF pipeline (`application/pdf_export.py`) uses `xhtml2pdf` which has no JS — so for graphical diagrams in PDF we preprocess `mermaid_render.render_mermaid_to_png(source)`, which shells out to `mmdc` (`@mermaid-js/mermaid-cli`, Node + headless Chromium) and inlines the PNG via data-URI. If `mmdc` is missing or the call fails, the original ```mermaid``` code-block is left intact — degraded but never broken. Tests set `POV_MERMAID_DISABLED=1` to short-circuit.
+
+**Setup is reproducible — no manual global install.** `@mermaid-js/mermaid-cli` + its peer `puppeteer` are declared as `optionalDependencies` of `ui/workspace`, so the standard `npm ci` installs `mmdc` into `ui/workspace/node_modules/.bin`. `mermaid_render._resolve_binary` resolves in this order: `POV_MERMAID_CLI` env override → project-local `node_modules/.bin/mmdc` (only when `puppeteer` is present, so a partial install never shadows a working one) → global `mmdc` on PATH (`shutil.which` resolves `mmdc.cmd` on Windows; `_build_command` wraps `.cmd`/`.bat` in `cmd /c`). Optional by design: if Chromium can't download, `npm ci` still succeeds and the PDF degrades to the code-block. Env knobs: `POV_MERMAID_CLI` (explicit binary path), `POV_MERMAID_TIMEOUT` (seconds, default 30), `POV_MERMAID_DISABLED`.
 
 ## LLM provider settings
 
