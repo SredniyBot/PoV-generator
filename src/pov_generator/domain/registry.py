@@ -7,7 +7,7 @@ from typing import Any, Literal
 from ..common.errors import NotFoundError, ValidationError
 
 TemplateType = Literal["composite", "leaf"]
-ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system"]
+ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system", "agent"]
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 StageExecutionMode = Literal["single_call", "per_stage_cot"]
 QualityGateCheckType = Literal["human_approval", "external_signoff", "automated_review"]
@@ -208,6 +208,10 @@ class TemplateSpec:
     # Этап 5: если задано, leaf-задача — merge-операция. Execution-слой
     # объединяет входные артефакты по стратегии вместо обычного исполнения.
     merge: MergeConfig | None = None
+    # Слой 2: для executor=="agent" — ссылка на контракт способностей агента
+    # (kind agent_capability). Execution-слой подмешивает <agent_pledge>
+    # (роль + cannot_do) в system-prompt, специализируя генерацию под агента.
+    agent_ref: ObjectRef | None = None
     # Methodology mode (Track 5) — определяет, какие стадии reasoning
     # methodology применяются к этой задаче:
     #   full       — все стадии методологии (полный CoT с option_generation
@@ -813,6 +817,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         instruction=optional_str(raw, "instruction"),
         summary=optional_str(raw, "summary") or "",
         merge=merge_config,
+        agent_ref=(ObjectRef.parse(_agent_raw) if (_agent_raw := optional_str(raw, "agent")) else None),
         methodology_mode=_parse_methodology_mode(raw.get("methodology"), owner),
         # v3.6: identification per-template flag. По умолчанию True.
         # Транспорт через YAML: `decision_identification: false` в task-шаблоне.

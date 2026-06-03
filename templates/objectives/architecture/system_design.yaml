@@ -9,6 +9,10 @@ root: architecture.prepare_architecture_doc@1.0.0
 # (process.descriptive_decomposition) остаётся в реестре для чисто
 # описательных задач.
 default_methodology_pack: process.lean_jtbd@1.0.0
+# Слой 2: после архитектуры workspace продолжается планом реализации —
+# агентные задачи берут component_decomposition + feasibility как upstream.
+compatible_next_objectives:
+  - implementation.build_plan@1.0.0
 done_when:
   artifacts:
     - architecture.design_document@1.0.0

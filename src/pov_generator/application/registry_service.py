@@ -143,6 +143,23 @@ class RegistryService:
                             str(template.source_path),
                         )
                     )
+                if template.executor == "agent":
+                    if template.agent_ref is None:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"Задача '{template.ref.as_string()}' с executor=agent должна указывать поле agent.",
+                                str(template.source_path),
+                            )
+                        )
+                    elif template.agent_ref.as_string() not in snapshot.agent_capabilities:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"Задача '{template.ref.as_string()}' ссылается на неизвестного агента '{template.agent_ref.as_string()}'.",
+                                str(template.source_path),
+                            )
+                        )
             for child in template.children:
                 if child.task_ref.as_string() not in snapshot.templates:
                     errors.append(

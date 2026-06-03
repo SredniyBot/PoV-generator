@@ -352,6 +352,36 @@ def _analysis_object(required: list[str], properties: JSONSchema) -> JSONSchema:
     }
 
 
+def _build_spec_schema() -> JSONSchema:
+    """Схема спеки сборки агента (Слой 2) — общая для всех *_build_spec ролей."""
+    return _analysis_object(
+        ["components", "summary"],
+        {
+            "assigned_parts": _string_array_schema(),
+            "components": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "purpose": {"type": "string"},
+                        "tech": _string_array_schema(),
+                        "interfaces": _string_array_schema(),
+                        "data": _string_array_schema(),
+                        "dependencies": _string_array_schema(),
+                        "test_approach": {"type": "string"},
+                    },
+                },
+            },
+            "out_of_scope": _string_array_schema(),
+            "open_questions": _string_array_schema(),
+            "summary": {"type": "string"},
+        },
+    )
+
+
 def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) -> JSONSchema:
     frontend_enabled = _pack_enabled(domain_pack_refs, "frontend.web_workspace") or _pack_enabled(domain_pack_refs, "frontend.web_app_requirements")
     ml_enabled = _pack_enabled(domain_pack_refs, "ml.predictive_analytics") or _pack_enabled(domain_pack_refs, "ml.predictive_analytics_pov_requirements")
@@ -1072,6 +1102,56 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                     "type": "string",
                     "enum": ["feasible", "mixed", "blocked"],
                 },
+                "summary": {"type": "string"},
+            },
+        ),
+        "backend_build_spec": _build_spec_schema(),
+        "ui_build_spec": _build_spec_schema(),
+        "ml_build_spec": _build_spec_schema(),
+        "data_build_spec": _build_spec_schema(),
+        "integration_build_spec": _build_spec_schema(),
+        "build_plan": _analysis_object(
+            ["title", "executive_summary", "summary"],
+            {
+                "title": {"type": "string"},
+                "executive_summary": {"type": "string"},
+                "routing": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "part": {"type": "string"},
+                            "agent": {"type": "string"},
+                            "capability": {"type": "string"},
+                            "status": {"type": "string"},
+                        },
+                    },
+                },
+                "sequencing": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "phase": {"type": "string"},
+                            "items": _string_array_schema(),
+                        },
+                    },
+                },
+                "per_agent": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "agent": {"type": "string"},
+                            "components_count": {"type": "number"},
+                            "highlights": _string_array_schema(),
+                        },
+                    },
+                },
+                "risks_and_gaps": _string_array_schema(),
                 "summary": {"type": "string"},
             },
         ),
@@ -2742,6 +2822,73 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                     block.append("**Нужно для реализации:** " + "; ".join(c["prerequisites"]))
                 blocks.append("\n".join(block))
             lines.append("\n\n".join(blocks))
+        return "\n".join(lines)
+
+    if artifact_role.endswith("_build_spec"):
+        comps = payload.get("components") or []
+        lines = [f"# Спека сборки ({artifact_role.removesuffix('_build_spec')})"]
+        if payload.get("summary"):
+            lines.append(payload["summary"])
+        assigned = payload.get("assigned_parts") or []
+        if assigned:
+            lines.append("\n**Назначенные части:** " + "; ".join(assigned))
+        for comp in comps:
+            if not isinstance(comp, dict):
+                continue
+            lines.append(f"\n## {comp.get('name', '—')}")
+            if comp.get("purpose"):
+                lines.append(comp["purpose"])
+            for label, key in (
+                ("Технологии", "tech"),
+                ("Интерфейсы", "interfaces"),
+                ("Данные", "data"),
+                ("Зависимости", "dependencies"),
+            ):
+                vals = comp.get(key) or []
+                if vals:
+                    lines.append(f"- **{label}:** " + "; ".join(vals))
+            if comp.get("test_approach"):
+                lines.append(f"- **Тесты:** {comp['test_approach']}")
+        oos = payload.get("out_of_scope") or []
+        if oos:
+            lines.append("\n## Вне зоны ответственности\n")
+            lines.extend(f"- {item}" for item in oos)
+        oq = payload.get("open_questions") or []
+        if oq:
+            lines.append("\n## Открытые вопросы\n")
+            lines.extend(f"- {item}" for item in oq)
+        return "\n".join(lines)
+
+    if artifact_role == "build_plan":
+        lines = [f"# {payload.get('title') or 'План реализации'}"]
+        if payload.get("executive_summary"):
+            lines.append(payload["executive_summary"])
+        routing = payload.get("routing") or []
+        if routing:
+            lines.append("\n## Маршрутизация: часть → агент")
+            lines.append("\n| Часть | Агент | Способность | Статус |")
+            lines.append("|-------|-------|-------------|--------|")
+            for route in routing:
+                if not isinstance(route, dict):
+                    continue
+                lines.append(
+                    f"| {route.get('part', '—')} | {route.get('agent', '—')} | "
+                    f"{route.get('capability', '—')} | {route.get('status', '—')} |"
+                )
+        seq = payload.get("sequencing") or []
+        if seq:
+            lines.append("\n## Очерёдность работ")
+            for phase in seq:
+                if not isinstance(phase, dict):
+                    continue
+                lines.append(f"\n### {phase.get('phase', '—')}")
+                lines.extend(f"- {item}" for item in (phase.get("items") or []))
+        risks = payload.get("risks_and_gaps") or []
+        if risks:
+            lines.append("\n## Риски и пробелы\n")
+            lines.extend(f"- {item}" for item in risks)
+        if payload.get("summary"):
+            lines.append("\n" + payload["summary"])
         return "\n".join(lines)
 
     if artifact_role == "privacy_impact_assessment":

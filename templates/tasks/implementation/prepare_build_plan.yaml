@@ -1,0 +1,25 @@
+kind: task_template
+id: implementation.prepare_build_plan
+version: 1.0.0
+title: Собрать план реализации
+type: composite
+status: active
+domain: implementation
+children:
+  - id: backend_build_spec
+    task: implementation.backend_build_spec@1.0.0
+    required: false
+  - id: ui_build_spec
+    task: implementation.ui_build_spec@1.0.0
+    required: false
+  - id: ml_build_spec
+    task: implementation.ml_build_spec@1.0.0
+    required: false
+  - id: data_build_spec
+    task: implementation.data_build_spec@1.0.0
+    required: false
+  - id: integration_build_spec
+    task: implementation.integration_build_spec@1.0.0
+    required: false
+  - id: build_plan_synthesis
+    task: implementation.build_plan_synthesis@1.0.0

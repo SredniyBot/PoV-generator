@@ -271,8 +271,10 @@ def test_objective_compatible_next_objectives_defaults_to_empty() -> None:
     snapshot, report = registry_service.validate()
     assert report.is_valid
 
-    arch_spec = snapshot.resolve_objective(ObjectRef.parse("architecture.system_design@1.0.0"))
-    assert arch_spec.compatible_next_objectives == ()
+    # implementation — конечный objective цепочки: compatible_next_objectives
+    # объявлен пустым списком, что даёт пустой tuple.
+    impl_spec = snapshot.resolve_objective(ObjectRef.parse("implementation.build_plan@1.0.0"))
+    assert impl_spec.compatible_next_objectives == ()
 
 
 def test_parse_objective_rejects_unknown_compatible_next_objective(

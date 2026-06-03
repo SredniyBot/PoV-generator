@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: implementation.integration_build_spec
+version: 1.0.0
+title: Спека сборки — integration
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

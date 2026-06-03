@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: implementation.build_plan
+version: 1.0.0
+title: План реализации
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

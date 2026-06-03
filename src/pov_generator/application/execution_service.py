@@ -18,7 +18,7 @@ from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelatio
 from ..domain.decisions import SOURCE_IDENTIFICATION, Decision
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.llm_usage import LLMUsageRecord
-from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
+from ..domain.registry import AgentCapabilitySpec, MethodologyPackSpec, RegistrySnapshot
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
@@ -47,6 +47,36 @@ def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fal
         if contract.artifact_role == artifact_role:
             return contract.title
     return fallback
+
+
+def _render_agent_pledge(spec: AgentCapabilitySpec) -> str:
+    """System-prologue для задачи с executor=agent.
+
+    Фиксирует роль агента, его надёжные способности и пределы (cannot_do).
+    Делает executor:agent реальным — генерация специализируется под контракт
+    агента, а не «LLM умеет всё». Подмешивается в начало system-prompt.
+    """
+    caps = (
+        "; ".join(
+            cap.capability + (f" ({', '.join(cap.tech)})" if cap.tech else "")
+            for cap in spec.capabilities
+        )
+        or "—"
+    )
+    lines = [
+        "<agent_pledge>",
+        f"Ты выступаешь как агент сборки {spec.identifier} (роль: {spec.role}).",
+        f"Твои надёжные способности: {caps}.",
+    ]
+    if spec.cannot_do:
+        lines.append("Ты НЕ делаешь: " + "; ".join(spec.cannot_do) + ".")
+    lines.append(
+        "Не обещай того, что вне твоего контракта. Части, выходящие за пределы "
+        "твоих способностей, явно помечай как вне зоны ответственности "
+        "(out_of_scope), а не выдавай за выполнимые."
+    )
+    lines.append("</agent_pledge>")
+    return "\n".join(lines)
 
 
 def _render_agent_capability_brief(snapshot: RegistrySnapshot) -> str:
@@ -305,6 +335,14 @@ class ExecutionService:
             current_step_title=task.title,
             context_manifest=context_manifest,
         )
+
+        # Слой 2: специализация генерации под агента (executor=agent) —
+        # префиксим system-prompt контрактом агента (<agent_pledge>: роль +
+        # cannot_do). Реестр гарантирует резолв agent_ref, .get() — на всякий.
+        if template.executor == "agent" and template.agent_ref is not None:
+            agent_spec = snapshot.agent_capabilities.get(template.agent_ref.as_string())
+            if agent_spec is not None:
+                system_prompt = f"{_render_agent_pledge(agent_spec)}\n\n{system_prompt}"
 
         # Этап ВЫЯВЛЕНИЯ решений до сборки (checkpoint).
         # Skip-условия:
