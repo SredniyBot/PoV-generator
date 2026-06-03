@@ -1938,6 +1938,94 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
   );
 }
 
+interface FeasibilityCapability {
+  name?: string;
+  origin?: string;
+  feasibility?: string;
+  rationale?: string;
+  blockers?: string[];
+  prerequisites?: string[];
+  confidence?: number;
+  covered_by?: string;
+  matched_capability?: string;
+}
+
+interface FeasibilityPayload {
+  capabilities?: FeasibilityCapability[];
+  overall_feasibility?: string;
+  summary?: string;
+}
+
+const FEAS_VERDICT_LABEL: Record<string, string> = {
+  feasible: "реализуемо",
+  conditional: "при условии",
+  uncertain: "под вопросом",
+  infeasible: "не реализуемо",
+};
+
+const FEAS_OVERALL_LABEL: Record<string, string> = {
+  feasible: "всё реализуемо",
+  mixed: "частично реализуемо",
+  blocked: "есть нереализуемые части",
+};
+
+// Структурный вид оценки реализуемости: цветной бейдж вердикта + чип
+// покрывающего агента по каждой части. Сканируемо с одного взгляда (в отличие
+// от плоской markdown-таблицы). Данные — из json_content артефакта.
+function FeasibilityView({ data }: { data: FeasibilityPayload }) {
+  const caps = Array.isArray(data.capabilities) ? data.capabilities : [];
+  return (
+    <article className="document-surface feasibility-view">
+      {data.summary || data.overall_feasibility ? (
+        <div className="feasibility-view__head">
+          {data.overall_feasibility ? (
+            <span className={cx("feas-overall", `feas-overall--${data.overall_feasibility}`)}>
+              {FEAS_OVERALL_LABEL[data.overall_feasibility] ?? data.overall_feasibility}
+            </span>
+          ) : null}
+          {data.summary ? <p className="feasibility-view__summary">{data.summary}</p> : null}
+        </div>
+      ) : null}
+      <ul className="feasibility-view__list">
+        {caps.map((cap, index) => {
+          const verdict = cap.feasibility ?? "";
+          return (
+            <li key={index} className="feas-row">
+              <div className="feas-row__top">
+                <span className={cx("feas-badge", `feas-badge--${verdict}`)}>
+                  {FEAS_VERDICT_LABEL[verdict] ?? (verdict || "—")}
+                </span>
+                <span className="feas-row__name">{cap.name ?? "—"}</span>
+                {cap.covered_by ? (
+                  <span className="feas-chip" title="Покрывающий агент · способность">
+                    {cap.covered_by}
+                    {cap.matched_capability ? ` · ${cap.matched_capability}` : ""}
+                  </span>
+                ) : (
+                  <span className="feas-chip feas-chip--none" title="Ни один агент не покрывает эту часть">
+                    нет агента
+                  </span>
+                )}
+              </div>
+              {cap.rationale ? <p className="feas-row__rationale">{cap.rationale}</p> : null}
+              {Array.isArray(cap.blockers) && cap.blockers.length > 0 ? (
+                <p className="feas-row__meta">
+                  <span>Блокеры:</span> {cap.blockers.join("; ")}
+                </p>
+              ) : null}
+              {Array.isArray(cap.prerequisites) && cap.prerequisites.length > 0 ? (
+                <p className="feas-row__meta">
+                  <span>Нужно для реализации:</span> {cap.prerequisites.join("; ")}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </article>
+  );
+}
+
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -1963,6 +2051,17 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       .filter((entry) => entry.text.length > 0);
     return { html: parsed.body.innerHTML, toc: tocEntries };
   }, [detail.markdown_content]);
+  // Структурный вид для оценки реализуемости: парсим payload из json_content.
+  // null → откатываемся на markdown-рендер (другая роль или битый JSON).
+  const feasibilityData = useMemo<FeasibilityPayload | null>(() => {
+    if (detail.artifact_role !== "feasibility_assessment" || !detail.json_content) return null;
+    try {
+      const parsed = JSON.parse(detail.json_content) as FeasibilityPayload;
+      return Array.isArray(parsed?.capabilities) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [detail.artifact_role, detail.json_content]);
   const articleRef = useRef<HTMLElement | null>(null);
   const scrollToSection = (id: string) => {
     // Скроллим к разделу внутри текущего документа, без смены URL-хеша
@@ -2226,36 +2325,40 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         )}
       </Modal>
       {mode === "doc" ? (
-        <div className="document-layout">
-          {toc.length >= 2 ? (
-            <nav className="document-toc" aria-label="Содержание документа">
-              <p className="document-toc__title">Содержание</p>
-              <ul className="document-toc__list">
-                {toc.map((item) => (
-                  <li
-                    key={item.id}
-                    className={cx("document-toc__item", item.level === 3 && "document-toc__item--sub")}
-                  >
-                    <a
-                      href={`#${item.id}`}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        scrollToSection(item.id);
-                      }}
+        feasibilityData ? (
+          <FeasibilityView data={feasibilityData} />
+        ) : (
+          <div className="document-layout">
+            {toc.length >= 2 ? (
+              <nav className="document-toc" aria-label="Содержание документа">
+                <p className="document-toc__title">Содержание</p>
+                <ul className="document-toc__list">
+                  {toc.map((item) => (
+                    <li
+                      key={item.id}
+                      className={cx("document-toc__item", item.level === 3 && "document-toc__item--sub")}
                     >
-                      {item.text}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
-          ) : null}
-          <article
-            ref={articleRef}
-            className="document-surface"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        </div>
+                      <a
+                        href={`#${item.id}`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          scrollToSection(item.id);
+                        }}
+                      >
+                        {item.text}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
+            ) : null}
+            <article
+              ref={articleRef}
+              className="document-surface"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          </div>
+        )
       ) : null}
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />

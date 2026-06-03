@@ -781,6 +781,136 @@ code {
   border-color: rgba(215, 131, 131, 0.2);
 }
 
+/* Оценка реализуемости — структурный вид (FeasibilityView): цветной бейдж
+   вердикта + чип покрывающего агента по каждой части проекта. */
+.feasibility-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.feasibility-view__head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.feasibility-view__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.feas-overall {
+  align-self: flex-start;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.feas-overall--feasible {
+  background: var(--success-soft);
+  color: #dff6e8;
+  border-color: rgba(114, 193, 144, 0.25);
+}
+.feas-overall--mixed {
+  background: var(--warning-soft);
+  color: #f9e5b7;
+  border-color: rgba(214, 173, 89, 0.25);
+}
+.feas-overall--blocked {
+  background: var(--danger-soft);
+  color: #ffd9d9;
+  border-color: rgba(215, 131, 131, 0.25);
+}
+.feasibility-view__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feas-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--surface-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.feas-row__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.feas-row__name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.feas-badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.feas-badge--feasible {
+  background: rgba(114, 193, 144, 0.14);
+  color: #dff6e8;
+  border-color: rgba(114, 193, 144, 0.22);
+}
+.feas-badge--conditional {
+  background: rgba(214, 173, 89, 0.14);
+  color: #f9e5b7;
+  border-color: rgba(214, 173, 89, 0.22);
+}
+.feas-badge--uncertain {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.feas-badge--infeasible {
+  background: rgba(215, 131, 131, 0.14);
+  color: #ffd9d9;
+  border-color: rgba(215, 131, 131, 0.22);
+}
+.feas-chip {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  background: rgba(120, 184, 201, 0.12);
+  color: #d8eef4;
+  border: 1px solid rgba(120, 184, 201, 0.2);
+  white-space: nowrap;
+}
+.feas-chip--none {
+  margin-left: auto;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+  font-family: inherit;
+}
+.feas-row__rationale {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  font-size: 13px;
+}
+.feas-row__meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.feas-row__meta span {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .section-card {
   position: relative;
   overflow: hidden;
