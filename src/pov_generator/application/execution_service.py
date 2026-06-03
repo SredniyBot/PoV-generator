@@ -49,6 +49,39 @@ def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fal
     return fallback
 
 
+def _render_agent_capability_brief(snapshot: RegistrySnapshot) -> str:
+    """Текстовый блок с контрактами способностей агентов для промпта.
+
+    Контракты — объекты реестра (не артефакты), поэтому не проходят через
+    обычный artifact-контекст. Эта функция сериализует их в компактный
+    ``<agent_capabilities>``-блок, который подмешивается в user_prompt
+    задачи оценки реализуемости (см. role-gate в ``_build_artifact``).
+    Пустой результат, если контрактов нет — блок не добавляется.
+    """
+    specs = sorted(snapshot.agent_capabilities.values(), key=lambda s: s.role)
+    if not specs:
+        return ""
+    lines = [
+        "<agent_capabilities>",
+        "Команда сборки — агенты с зафиксированными надёжными способностями. "
+        "Сопоставь каждую часть проекта со способностью одного из агентов "
+        "и заполни covered_by / matched_capability:",
+    ]
+    for spec in specs:
+        lines.append(f"\nАгент {spec.identifier} (role={spec.role}):")
+        for capability in spec.capabilities:
+            req = "; ".join(capability.requires) or "—"
+            tech = ", ".join(capability.tech) or "—"
+            lines.append(
+                f"  • {capability.capability} [{capability.maturity}] "
+                f"tech={tech}; предусловия: {req}"
+            )
+        if spec.cannot_do:
+            lines.append("  не делает: " + "; ".join(spec.cannot_do))
+    lines.append("</agent_capabilities>")
+    return "\n".join(lines)
+
+
 def _json_safe(value: str) -> str:
     """Эскейпит строку для безопасной подстановки внутрь JSON-литерала."""
     # json.dumps оборачивает в кавычки — нужно их срезать, остаётся
@@ -338,6 +371,16 @@ class ExecutionService:
         if decision_context.text:
             user_prompt = f"{user_prompt}\n\n{decision_context.text}"
             applied_decisions = decision_context.decisions
+
+        # Заземление оценки реализуемости в контрактах способностей агентов.
+        # Только для feasibility-задачи: контракты — объекты реестра, не
+        # артефакты, поэтому подмешиваем их текстом в промпт (как
+        # decision_context выше). Безвредно на stub-пути (stub не читает
+        # user_prompt).
+        if artifact_role == "feasibility_assessment":
+            agent_brief = _render_agent_capability_brief(snapshot)
+            if agent_brief:
+                user_prompt = f"{user_prompt}\n\n{agent_brief}"
 
         # Этап 5: если шаблон помечен как merge-задача со strategy=structural,
         # обходим LLM/stub и собираем результат детерминированно из входных

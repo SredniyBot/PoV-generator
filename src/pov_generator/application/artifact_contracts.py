@@ -1043,6 +1043,38 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "summary": {"type": "string"},
             },
         ),
+        "feasibility_assessment": _analysis_object(
+            ["capabilities", "summary"],
+            {
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "feasibility", "rationale"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "origin": {"type": "string"},
+                            "feasibility": {
+                                "type": "string",
+                                "enum": ["feasible", "conditional", "uncertain", "infeasible"],
+                            },
+                            "rationale": {"type": "string"},
+                            "blockers": _string_array_schema(),
+                            "prerequisites": _string_array_schema(),
+                            "confidence": {"type": "number"},
+                            "covered_by": {"type": "string"},
+                            "matched_capability": {"type": "string"},
+                        },
+                    },
+                },
+                "overall_feasibility": {
+                    "type": "string",
+                    "enum": ["feasible", "mixed", "blocked"],
+                },
+                "summary": {"type": "string"},
+            },
+        ),
         "deployment_topology": _analysis_object(
             ["environments", "network_zones", "components"],
             {
@@ -2652,6 +2684,64 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
         if payload.get("deployment_flow"):
             lines.append("\n## Процесс развёртывания")
             lines.append(payload["deployment_flow"])
+        return "\n".join(lines)
+
+    if artifact_role == "feasibility_assessment":
+        caps = payload.get("capabilities") or []
+        verdict_label = {
+            "feasible": "реализуемо",
+            "conditional": "при условии",
+            "uncertain": "под вопросом",
+            "infeasible": "не реализуемо",
+        }
+        lines = ["# Оценка реализуемости"]
+        overall_label = {
+            "feasible": "всё реализуемо",
+            "mixed": "частично — есть условные / неопределённые части",
+            "blocked": "есть нереализуемые части",
+        }
+        if payload.get("overall_feasibility"):
+            ov = str(payload["overall_feasibility"])
+            lines.append(f"**Сводный вердикт:** {overall_label.get(ov, ov)}")
+        if payload.get("summary"):
+            lines.append(payload["summary"])
+        if caps:
+            lines.append("\n| # | Часть проекта | Вердикт | Покрытие | Блокеры | Предпосылки |")
+            lines.append("|---|---------------|---------|----------|---------|-------------|")
+            for i, c in enumerate(caps, 1):
+                if not isinstance(c, dict):
+                    continue
+                name = str(c.get("name") or "—")
+                fv = str(c.get("feasibility") or "")
+                verdict = verdict_label.get(fv, fv or "—")
+                cov = c.get("covered_by")
+                coverage = f"{cov} / {c.get('matched_capability') or '—'}" if cov else "—"
+                blockers = "; ".join(c.get("blockers") or []).replace("\n", " ") or "—"
+                prereq = "; ".join(c.get("prerequisites") or []).replace("\n", " ") or "—"
+                lines.append(f"| {i} | {name} | {verdict} | {coverage} | {blockers} | {prereq} |")
+        problem = [
+            c
+            for c in caps
+            if isinstance(c, dict)
+            and str(c.get("feasibility")) in {"conditional", "uncertain", "infeasible"}
+        ]
+        if problem:
+            lines.append("\n## Не реализуемо / под вопросом\n")
+            blocks = []
+            for c in problem:
+                fv = str(c.get("feasibility") or "")
+                head = f"### {verdict_label.get(fv, fv)}: {c.get('name', '—')}"
+                block = [head]
+                if c.get("rationale"):
+                    block.append(str(c["rationale"]))
+                if c.get("covered_by"):
+                    block.append(f"**Покрытие:** {c['covered_by']} ({c.get('matched_capability') or '—'})")
+                if c.get("blockers"):
+                    block.append("**Блокеры:** " + "; ".join(c["blockers"]))
+                if c.get("prerequisites"):
+                    block.append("**Нужно для реализации:** " + "; ".join(c["prerequisites"]))
+                blocks.append("\n".join(block))
+            lines.append("\n\n".join(blocks))
         return "\n".join(lines)
 
     if artifact_role == "privacy_impact_assessment":

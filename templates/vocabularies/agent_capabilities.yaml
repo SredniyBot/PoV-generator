@@ -1,0 +1,43 @@
+kind: vocabulary
+id: agent_capabilities
+version: 1.0.0
+entries:
+  - id: backend.rest_api
+    label: REST API
+    description: Серверные HTTP/REST сервисы с хранением и бизнес-логикой.
+  - id: backend.async_jobs
+    label: Асинхронные задания
+    description: Фоновые очереди, планировщики, обработка по событиям.
+  - id: backend.data_ingestion
+    label: Приём данных
+    description: Приём и валидация входных потоков/файлов в хранилище.
+  - id: ui.web_spa
+    label: Веб-SPA
+    description: Одностраничные веб-приложения и пользовательские потоки.
+  - id: ui.dashboards
+    label: Дашборды
+    description: Интерактивная визуализация метрик и отчётов.
+  - id: ml.supervised_model
+    label: Обучение с учителем
+    description: Классификация/регрессия на размеченных данных.
+  - id: ml.forecasting
+    label: Прогнозирование
+    description: Прогноз временных рядов по историческим данным.
+  - id: data.pipeline
+    label: Конвейер данных
+    description: ETL/ELT-конвейеры, трансформация и доставка данных.
+  - id: data.warehouse
+    label: Хранилище данных
+    description: Аналитические витрины и моделирование данных.
+  - id: integration.rest_connector
+    label: REST-коннектор
+    description: Интеграция с внешними API по REST/HTTP.
+  - id: integration.message_bus
+    label: Шина сообщений
+    description: Обмен через брокеры (Kafka/RabbitMQ) и события.
+  - id: integration.file_exchange
+    label: Файловый обмен
+    description: Регулярный обмен файлами (SFTP, выгрузки, batch).
+  - id: integration.erp_sync
+    label: Синхронизация с ERP
+    description: Двусторонний обмен с учётными системами (1С/SAP).

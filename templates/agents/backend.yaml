@@ -1,0 +1,27 @@
+kind: agent_capability
+id: agent.backend
+version: 1.0.0
+title: Backend build-agent
+role: backend
+capabilities:
+  - capability: backend.rest_api
+    tech: [FastAPI, PostgreSQL]
+    requires:
+      - Описание контракта API (эндпоинты, форматы)
+      - Доступ к схеме данных
+    maturity: reliable
+    produces: component_decomposition
+  - capability: backend.async_jobs
+    tech: [Celery, Redis]
+    requires:
+      - Согласованный брокер сообщений
+    maturity: reliable
+  - capability: backend.data_ingestion
+    tech: [Python, S3]
+    requires:
+      - Описание формата входных данных
+    maturity: reliable
+cannot_do:
+  - Юридически значимый биллинг без аттестованной системы
+  - Гарантия SLA без подтверждённой инфраструктуры заказчика
+escalation: Вопросы инфраструктуры — платформенной команде

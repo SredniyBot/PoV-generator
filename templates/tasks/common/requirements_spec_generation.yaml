@@ -44,6 +44,7 @@ requires:
       - common.glossary_terms@1.0.0
       - common.project_risk_register@1.0.0
       - common.deployment_topology@1.0.0
+      - common.feasibility_assessment@1.0.0
       - security.privacy_impact_assessment@1.0.0
     # Этап 7.3: вместо hand-coded списка optional всех доменных артефактов
     # — декларативный auto-collect. Любая задача активного доменного

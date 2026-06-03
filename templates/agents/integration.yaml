@@ -1,0 +1,32 @@
+kind: agent_capability
+id: agent.integration
+version: 1.0.0
+title: Integration build-agent
+role: integration
+capabilities:
+  - capability: integration.rest_connector
+    tech: [Python, OpenAPI]
+    requires:
+      - Спецификация внешнего API
+      - Доступ к тестовому контуру
+    maturity: reliable
+  - capability: integration.message_bus
+    tech: [Kafka, RabbitMQ]
+    requires:
+      - Согласованная схема событий
+    maturity: reliable
+  - capability: integration.file_exchange
+    tech: [SFTP, Python]
+    requires:
+      - Формат и расписание обмена
+    maturity: reliable
+  - capability: integration.erp_sync
+    tech: [1С OData, REST]
+    requires:
+      - Доступ к интеграционному контуру ERP
+      - Согласование формата обмена
+    maturity: experimental
+cannot_do:
+  - Интеграция без предоставленного заказчиком доступа к контуру
+  - Гарантия совместимости с непубличными версиями API
+escalation: Доступы к контурам интеграции — у ИТ-службы заказчика

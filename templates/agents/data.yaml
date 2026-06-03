@@ -1,0 +1,20 @@
+kind: agent_capability
+id: agent.data
+version: 1.0.0
+title: Data build-agent
+role: data
+capabilities:
+  - capability: data.pipeline
+    tech: [Airflow, dbt]
+    requires:
+      - Описание источников и приёмников данных
+    maturity: reliable
+  - capability: data.warehouse
+    tech: [ClickHouse, dbt]
+    requires:
+      - Модель аналитических витрин
+    maturity: reliable
+cannot_do:
+  - Гарантия качества данных при недоступности источников
+  - Реал-тайм CDC без поддержки источника
+escalation: Доступы к источникам данных — у владельца данных

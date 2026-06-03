@@ -51,7 +51,8 @@ def test_registry_validation_passes_for_task_graph_corpus() -> None:
     assert len(snapshot.domain_packs) == 4
     assert len(snapshot.methodology_packs) >= 1
     assert len(snapshot.quality_gates) >= 1
-    assert len(snapshot.vocabularies) == 5
+    assert len(snapshot.vocabularies) == 6
+    assert len(snapshot.agent_capabilities) >= 5
 
 
 def test_registry_validation_detects_unknown_domain_slot(tmp_path: Path) -> None:
@@ -95,9 +96,11 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     assert state.process.root_task_id is not None
     # Обновлено: после Phase 3 число задач было 23; после удаления LLM-ревью
     # (вариант B — убраны композит review_requirements_spec + leaf
-    # requirements_spec_review) стало 21. Privacy_impact_assessment живёт
-    # в security-домене и появляется только когда активен security pack.
-    assert len(tasks) == 21
+    # requirements_spec_review) стало 21. Затем +1 leaf
+    # common.feasibility_assessment (оценка реализуемости частей проекта) →
+    # 22. Privacy_impact_assessment живёт в security-домене и появляется
+    # только когда активен security pack.
+    assert len(tasks) == 22
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
 
