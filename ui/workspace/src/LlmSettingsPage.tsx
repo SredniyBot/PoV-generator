@@ -24,6 +24,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -657,6 +658,10 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
 
 function ModelsTab() {
   const qc = useQueryClient();
+  const toast = useToast();
+  const [search, setSearch] = useState("");
+  const [showModal, setShowModal] = useState(false);
+
   const modelsQuery = useQuery({
     queryKey: ["llm-settings", "models"],
     queryFn: () => api.listModels(),
@@ -668,16 +673,27 @@ function ModelsTab() {
 
   const testMutation = useMutation({
     mutationFn: (modelName: string) => api.testModel(modelName),
+    onSuccess: (result, modelName) => {
+      if (result.status === "ok") {
+        toast({ type: "success", message: `${modelName} работает · ${result.latency_ms} ms` });
+      } else {
+        toast({ type: "error", message: `Ошибка теста: ${result.message}` });
+      }
+    },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка теста" }),
   });
 
   const deleteRoutingMutation = useMutation({
     mutationFn: (routingId: string) => api.deleteRouting(routingId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      toast({ type: "success", message: "Маршрут удалён" });
+    },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка удаления" }),
   });
 
-  // Перемещение routing вверх/вниз по списку — обмениваем priority с
-  // соседом. Это устраняет «магический» числовой ввод (баг #4): пользователь
-  // видит порядок и двигает стрелками, как в обычных списках.
   const reorderRoutingMutation = useMutation({
     mutationFn: async ({
       routingA,
@@ -690,22 +706,42 @@ function ModelsTab() {
       await api.updateRouting(routingB.id, { priority: routingB.newPriority });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка сортировки" }),
   });
 
-  const [addModelFor, setAddModelFor] = useState<string | null>(null);
+  if (modelsQuery.isLoading) return <SkeletonList />;
+  if (modelsQuery.isError)
+    return (
+      <ErrorState
+        message="Не удалось загрузить каталог моделей"
+        onRetry={() => modelsQuery.refetch()}
+      />
+    );
 
-  if (modelsQuery.isLoading) return <p>Загрузка…</p>;
   const models = modelsQuery.data ?? [];
   const providers = providersQuery.data ?? [];
+  const filtered = models.filter(
+    (m) => !search || m.model_name.toLowerCase().includes(search.toLowerCase()),
+  );
 
   return (
     <div>
       <div className="llm-settings__row-head">
-        <span />
+        <div className="llm-search-wrap">
+          <Search size={14} className="llm-search__icon" />
+          <input
+            type="search"
+            className="llm-search"
+            placeholder="Поиск по имени модели…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         <button
           type="button"
           className="btn btn--ghost"
-          onClick={() => setAddModelFor(providers[0]?.connection_id ?? null)}
+          onClick={() => setShowModal(true)}
           disabled={providers.length === 0}
         >
           <Plus size={14} /> Добавить свою модель
@@ -714,11 +750,23 @@ function ModelsTab() {
 
       {models.length === 0 ? (
         <div className="llm-settings__empty">
-          <p>Каталог пуст. Подключите источник на вкладке «Источники».</p>
+          <p className="llm-settings__empty-icon">📦</p>
+          <p>
+            <strong>Каталог пуст</strong>
+          </p>
+          <ol className="llm-settings__empty-steps">
+            <li>Перейдите на вкладку «Источники»</li>
+            <li>Подключите провайдера</li>
+            <li>Нажмите ↻ «Обновить каталог» в строке провайдера</li>
+          </ol>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="llm-settings__empty">
+          <p>Нет моделей по запросу «{search}»</p>
         </div>
       ) : (
         <ul className="llm-settings__list">
-          {models.map((m) => (
+          {filtered.map((m) => (
             <ModelRow
               key={m.model_name}
               entry={m}
@@ -729,11 +777,7 @@ function ModelsTab() {
                   ? testMutation.data
                   : null
               }
-              onDeleteRouting={(routingId) => {
-                if (confirm("Удалить этот маршрут модели?")) {
-                  deleteRoutingMutation.mutate(routingId);
-                }
-              }}
+              onDeleteRouting={(routingId) => deleteRoutingMutation.mutate(routingId)}
               onMoveRouting={(routingIdToMove, direction) => {
                 const list = m.routings;
                 const idx = list.findIndex((r) => r.routing_id === routingIdToMove);
@@ -753,12 +797,14 @@ function ModelsTab() {
         </ul>
       )}
 
-      {addModelFor ? (
-        <AddCustomModelForm
-          providers={providers}
-          defaultConnectionId={addModelFor}
-          onClose={() => setAddModelFor(null)}
-        />
+      {showModal ? (
+        <SettingsModal title="Добавить кастомную модель" onClose={() => setShowModal(false)}>
+          <AddCustomModelForm
+            providers={providers}
+            defaultConnectionId={providers[0]?.connection_id ?? ""}
+            onClose={() => setShowModal(false)}
+          />
+        </SettingsModal>
       ) : null}
     </div>
   );
@@ -865,29 +911,31 @@ function AddCustomModelForm({
   defaultConnectionId: string;
   onClose: () => void;
 }) {
+  const toast = useToast();
   const qc = useQueryClient();
   const [connectionId, setConnectionId] = useState(defaultConnectionId);
   const [modelName, setModelName] = useState("");
 
   const addMutation = useMutation({
-    mutationFn: () =>
-      api.addCustomModel({ connection_id: connectionId, model_name: modelName }),
+    mutationFn: () => api.addCustomModel({ connection_id: connectionId, model_name: modelName }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      toast({ type: "success", message: `Модель ${modelName} добавлена` });
       onClose();
     },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка добавления" }),
   });
 
   return (
     <form
       className="llm-form"
+      style={{ border: "none", padding: 0, marginTop: 0, background: "transparent" }}
       onSubmit={(e) => {
         e.preventDefault();
         addMutation.mutate();
       }}
     >
-      <h3>Добавить кастомную модель</h3>
-
       <label>
         Источник
         <select value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
@@ -915,7 +963,7 @@ function AddCustomModelForm({
           Отмена
         </button>
         <button type="submit" className="btn btn--primary" disabled={addMutation.isPending}>
-          Добавить
+          {addMutation.isPending ? <Loader2 size={14} className="spin" /> : null} Добавить
         </button>
       </div>
     </form>
