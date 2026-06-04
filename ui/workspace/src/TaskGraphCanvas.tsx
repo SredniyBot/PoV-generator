@@ -34,6 +34,7 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 
@@ -163,14 +164,17 @@ const nodeTypes = { taskCard: TaskCardNode };
 interface TaskGraphCanvasProps {
   tree: TaskNodeView[];
   onSelectNode?: (task: TaskNodeView) => void;
+  // Дип-линк из статус-бара (?focus=<taskId>): центрировать граф на узле.
+  focusTaskId?: string;
   height?: string | number;
 }
 
-function TaskGraphCanvasInner({ tree, onSelectNode, height = "70vh" }: TaskGraphCanvasProps) {
+function TaskGraphCanvasInner({ tree, onSelectNode, focusTaskId, height = "70vh" }: TaskGraphCanvasProps) {
   const tasks = useMemo(() => flatten(tree), [tree]);
   const layout = useMemo(() => buildLayout(tasks), [tasks]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(layout.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(layout.edges);
+  const rf = useReactFlow();
 
   // Когда tree обновляется (новые задачи, изменился статус) — пересчитываем
   // layout. dagre дешёвый — пересчёт ~миллисекунды на 50 узлов.
@@ -178,6 +182,19 @@ function TaskGraphCanvasInner({ tree, onSelectNode, height = "70vh" }: TaskGraph
     setNodes(layout.nodes);
     setEdges(layout.edges);
   }, [layout, setNodes, setEdges]);
+
+  // Центрирование на focusTaskId: эффект зависит от nodes, поэтому
+  // перезапускается после dagre-лэйаута/WS-рефреша; на ещё не появившийся
+  // узел — no-op до его появления.
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const node = nodes.find((n) => n.id === focusTaskId);
+    if (!node) return;
+    rf.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + NODE_HEIGHT / 2, {
+      zoom: 1.2,
+      duration: 600,
+    });
+  }, [focusTaskId, nodes, rf]);
 
   return (
     <div className="tg-canvas" style={{ height }}>
