@@ -3424,6 +3424,7 @@ code {
   display: grid;
   gap: 0.3rem;
   cursor: pointer;
+  position: relative;
   transition: transform 0.1s ease, border-color 0.2s ease;
   font-size: 0.8rem;
 }
@@ -3434,8 +3435,14 @@ code {
 }
 
 .tg-node--current {
-  outline: 2px solid rgba(120, 184, 201, 0.55);
-  outline-offset: 1px;
+  outline: 2px solid rgba(120, 184, 201, 0.75);
+  outline-offset: 2px;
+  animation: tg-pulse 2s ease-in-out infinite;
+}
+
+@keyframes tg-pulse {
+  0%, 100% { outline-color: rgba(120, 184, 201, 0.75); box-shadow: 0 0 0 0 rgba(120, 184, 201, 0.25); }
+  50%       { outline-color: rgba(120, 184, 201, 0.35); box-shadow: 0 0 8px 3px rgba(120, 184, 201, 0.15); }
 }
 
 .tg-node--completed { border-left: 3px solid rgba(140, 196, 153, 0.7); }
@@ -3511,6 +3518,107 @@ code {
   height: 6px;
   background: rgba(120, 184, 201, 0.3);
   border: none;
+}
+
+/* Progress banner */
+.tg-banner {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.65rem;
+  background: var(--surface-primary, rgba(28, 32, 38, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-primary, #e8ecf3);
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+.tg-banner__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(150, 160, 180, 0.5);
+  flex-shrink: 0;
+}
+
+.tg-banner__dot--active {
+  background: rgba(120, 184, 201, 0.9);
+  animation: tg-pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes tg-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.tg-banner__title {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.tg-banner__progress {
+  font-weight: 600;
+  color: var(--text-primary, #e8ecf3);
+  white-space: nowrap;
+}
+
+/* Action menu on node hover */
+.tg-node__actions {
+  display: flex;
+  gap: 0.3rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  position: absolute;
+  bottom: -2rem;
+  left: 0;
+  right: 0;
+  justify-content: center;
+  z-index: 5;
+}
+
+.tg-node:hover .tg-node__actions {
+  opacity: 1;
+}
+
+.tg-action-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.68rem;
+  border-radius: 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--surface-primary, rgba(28, 32, 38, 0.95));
+  color: var(--text-secondary, #9aa4b2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.tg-action-btn:hover {
+  background: rgba(120, 184, 201, 0.15);
+  color: var(--text-primary, #e8ecf3);
+}
+
+.tg-action-btn--danger:hover {
+  background: rgba(215, 131, 131, 0.18);
+  color: #e3a3a3;
+}
+
+/* Status summary on failed node */
+.tg-node__error {
+  font-size: 0.68rem;
+  color: rgba(215, 131, 131, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: -0.15rem;
 }
 
 /* ---- Decision Log (унификация со стилем остальных вкладок) ---------- */
