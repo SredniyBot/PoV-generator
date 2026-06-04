@@ -271,6 +271,8 @@ function ProvidersTab() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
       qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      qc.invalidateQueries({ queryKey: ["llm-settings", "assignments"] });
+      qc.invalidateQueries({ queryKey: ["llm-settings", "diagnostics"] });
       toast({ type: "success", message: "Подключение удалено" });
     },
     onError: (e) =>
@@ -390,9 +392,9 @@ function ProviderRow({
   });
 
   const concurrencyMutation = useMutation({
-    mutationFn: (value: string) =>
+    mutationFn: ({ value, extras }: { value: string; extras: Record<string, string> }) =>
       api.updateProvider(provider.connection_id, {
-        extras: { ...provider.extras, max_concurrency: value },
+        extras: { ...extras, max_concurrency: value },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] }),
     onError: (e) =>
@@ -492,7 +494,7 @@ function ProviderRow({
                   value={concurrency}
                   onChange={(e) => {
                     setConcurrency(e.target.value);
-                    concurrencyMutation.mutate(e.target.value);
+                    concurrencyMutation.mutate({ value: e.target.value, extras: provider.extras });
                   }}
                 >
                   <option value="">авто ({autoDefault})</option>
@@ -576,6 +578,8 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
       toast({ type: "success", message: "Подключение добавлено" });
       onClose();
     },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка создания" }),
   });
 
   const error = createMutation.error instanceof Error ? createMutation.error.message : null;
