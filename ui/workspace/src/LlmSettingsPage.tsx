@@ -257,34 +257,54 @@ function TabButton({
 
 function ProvidersTab() {
   const qc = useQueryClient();
+  const toast = useToast();
+  const [showModal, setShowModal] = useState(false);
+
   const providersQuery = useQuery({
     queryKey: ["llm-settings", "providers"],
     queryFn: () => api.listProviders(),
   });
-  const [showForm, setShowForm] = useState(false);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteProvider(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
       qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      toast({ type: "success", message: "Подключение удалено" });
     },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка удаления" }),
   });
 
-  if (providersQuery.isLoading) return <p>Загрузка…</p>;
+  if (providersQuery.isLoading) return <SkeletonList />;
+  if (providersQuery.isError)
+    return (
+      <ErrorState
+        message="Не удалось загрузить подключения"
+        onRetry={() => providersQuery.refetch()}
+      />
+    );
+
   const providers = providersQuery.data ?? [];
 
   return (
     <div>
       <div className="llm-settings__row-head">
-        <button type="button" className="btn btn--primary" onClick={() => setShowForm(true)}>
+        <button type="button" className="btn btn--primary" onClick={() => setShowModal(true)}>
           <Plus size={14} /> Подключить источник
         </button>
       </div>
 
       {providers.length === 0 ? (
         <div className="llm-settings__empty">
-          <p>Нет подключений. Workflow не запустится без них.</p>
+          <p className="llm-settings__empty-icon">🔌</p>
+          <p>
+            <strong>Нет подключений</strong>
+          </p>
+          <p>Добавьте хотя бы один источник — без него workflow не запустится.</p>
+          <button type="button" className="btn btn--primary" onClick={() => setShowModal(true)}>
+            <Plus size={14} /> Подключить источник
+          </button>
         </div>
       ) : (
         <ul className="llm-settings__list">
@@ -298,7 +318,11 @@ function ProvidersTab() {
         </ul>
       )}
 
-      {showForm ? <NewProviderForm onClose={() => setShowForm(false)} /> : null}
+      {showModal ? (
+        <SettingsModal title="Новый источник моделей" onClose={() => setShowModal(false)}>
+          <NewProviderForm onClose={() => setShowModal(false)} />
+        </SettingsModal>
+      ) : null}
     </div>
   );
 }
@@ -530,6 +554,7 @@ function ProviderRow({
 
 
 function NewProviderForm({ onClose }: { onClose: () => void }) {
+  const toast = useToast();
   const qc = useQueryClient();
   const [providerType, setProviderType] = useState<ProviderType>("anthropic");
   const [displayName, setDisplayName] = useState("");
@@ -547,6 +572,7 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
       qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      toast({ type: "success", message: "Подключение добавлено" });
       onClose();
     },
   });
@@ -556,13 +582,12 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
   return (
     <form
       className="llm-form"
+      style={{ border: "none", padding: 0, marginTop: 0, background: "transparent" }}
       onSubmit={(e) => {
         e.preventDefault();
         createMutation.mutate();
       }}
     >
-      <h3>Новый источник моделей</h3>
-
       <label>
         Тип
         <select
