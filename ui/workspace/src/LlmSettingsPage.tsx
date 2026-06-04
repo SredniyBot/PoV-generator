@@ -19,12 +19,9 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   Plus,
   RefreshCw,
-  Search,
   Trash2,
   XCircle,
 } from "lucide-react";
