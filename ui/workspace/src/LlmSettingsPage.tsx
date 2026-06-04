@@ -976,6 +976,8 @@ function AddCustomModelForm({
 
 function AssignmentsTab() {
   const qc = useQueryClient();
+  const toast = useToast();
+
   const purposesQuery = useQuery({
     queryKey: ["llm-settings", "purposes"],
     queryFn: () => api.listPurposes(),
@@ -988,13 +990,18 @@ function AssignmentsTab() {
     queryKey: ["llm-settings", "models"],
     queryFn: () => api.listModels(),
   });
-  // Diagnostics: какой connection реально будет вызван. Перезапрашиваем
-  // при любом изменении assignments / models, чтобы пользователь видел
-  // эффект изменений сразу.
   const diagnosticsQuery = useQuery({
     queryKey: ["llm-settings", "diagnostics"],
     queryFn: () => api.getSettingsDiagnostics(),
   });
+
+  // Optimistic local state — mirrors server assignments, updated instantly on change.
+  const [localAssignments, setLocalAssignments] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setLocalAssignments(
+      Object.fromEntries((assignmentsQuery.data ?? []).map((a) => [a.purpose, a.model_name])),
+    );
+  }, [assignmentsQuery.data]);
 
   const invalidateAll = () => {
     qc.invalidateQueries({ queryKey: ["llm-settings", "assignments"] });
@@ -1004,23 +1011,61 @@ function AssignmentsTab() {
   const setMutation = useMutation({
     mutationFn: ({ purpose, modelName }: { purpose: string; modelName: string }) =>
       api.setAssignment(purpose, modelName),
-    onSuccess: invalidateAll,
+    onMutate: ({ purpose, modelName }) => {
+      const prev = localAssignments[purpose];
+      setLocalAssignments((a) => ({ ...a, [purpose]: modelName }));
+      return { prev, purpose };
+    },
+    onError: (e, _, ctx) => {
+      if (ctx) setLocalAssignments((a) => ({ ...a, [ctx.purpose]: ctx.prev ?? "" }));
+      toast({ type: "error", message: "Не удалось сохранить" });
+    },
+    onSuccess: () => {
+      toast({ type: "success", message: "Сохранено" });
+      invalidateAll();
+    },
   });
 
   const resetMutation = useMutation({
     mutationFn: () => api.resetAssignmentsToRecommended(),
-    onSuccess: invalidateAll,
+    onSuccess: () => {
+      toast({ type: "success", message: "Назначения сброшены к рекомендуемым" });
+      invalidateAll();
+    },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка сброса" }),
   });
 
-  if (purposesQuery.isLoading || assignmentsQuery.isLoading || modelsQuery.isLoading) {
-    return <p>Загрузка…</p>;
-  }
+  if (purposesQuery.isLoading || assignmentsQuery.isLoading || modelsQuery.isLoading)
+    return <SkeletonList />;
+  if (purposesQuery.isError || assignmentsQuery.isError)
+    return (
+      <ErrorState
+        message="Не удалось загрузить назначения"
+        onRetry={() => {
+          purposesQuery.refetch();
+          assignmentsQuery.refetch();
+        }}
+      />
+    );
 
   const purposes = purposesQuery.data ?? [];
-  const assignmentsByPurpose = Object.fromEntries(
-    (assignmentsQuery.data ?? []).map((a) => [a.purpose, a.model_name]),
-  );
   const availableModels = (modelsQuery.data ?? []).map((m) => m.model_name);
+
+  if (availableModels.length === 0) {
+    return (
+      <div className="llm-settings__empty">
+        <p className="llm-settings__empty-icon">⚙️</p>
+        <p>
+          <strong>Сначала добавьте модели</strong>
+        </p>
+        <p>
+          Перейдите в «Источники» → подключите провайдера → нажмите «Обновить каталог».
+          Затем вернитесь сюда.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -1030,75 +1075,64 @@ function AssignmentsTab() {
           type="button"
           className="btn btn--ghost"
           onClick={() => resetMutation.mutate()}
-          disabled={resetMutation.isPending || availableModels.length === 0}
+          disabled={resetMutation.isPending}
         >
-          {resetMutation.isPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+          {resetMutation.isPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}{" "}
           Сбросить к рекомендуемым
         </button>
       </div>
 
-      {availableModels.length === 0 ? (
-        <div className="llm-settings__empty">
-          <p>В каталоге пока нет моделей — подключите источник на вкладке «Источники».</p>
-        </div>
-      ) : (
-        <>
-          <table className="llm-table">
-            <thead>
-              <tr>
-                <th>Сценарий</th>
-                <th>Модель</th>
-                <th>Куда пойдёт при запуске</th>
+      <table className="llm-table">
+        <thead>
+          <tr>
+            <th>Сценарий</th>
+            <th>Модель</th>
+            <th>Куда пойдёт при запуске</th>
+          </tr>
+        </thead>
+        <tbody>
+          {purposes.map((p) => {
+            const current = localAssignments[p.id] ?? "";
+            const missing = Boolean(current) && !availableModels.includes(current);
+            const hasValidAssignment = Boolean(current) && !missing;
+            const diag = diagnosticsQuery.data?.find((d) => d.purpose === p.id);
+            return (
+              <tr key={p.id} className={missing ? "llm-table__row--warn" : undefined}>
+                <td>{p.label}</td>
+                <td>
+                  <select
+                    value={missing ? "" : current}
+                    onChange={(e) =>
+                      setMutation.mutate({ purpose: p.id, modelName: e.target.value })
+                    }
+                  >
+                    {!hasValidAssignment ? (
+                      <option value="" disabled>
+                        {missing
+                          ? `${current} — потеряна, выберите другую`
+                          : "не назначено"}
+                      </option>
+                    ) : null}
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                  {missing ? (
+                    <p className="llm-form__error" style={{ marginTop: 4 }}>
+                      Модель «{current}» недоступна — выберите другую.
+                    </p>
+                  ) : null}
+                </td>
+                <td className="llm-diag-cell">
+                  <ResolutionPreview diag={diag} />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {purposes.map((p) => {
-                const current = assignmentsByPurpose[p.id] ?? "";
-                const missing = Boolean(current) && !availableModels.includes(current);
-                const hasValidAssignment = Boolean(current) && !missing;
-                const diag = diagnosticsQuery.data?.find((d) => d.purpose === p.id);
-                return (
-                  <tr key={p.id} className={missing ? "llm-table__row--warn" : undefined}>
-                    <td>{p.label}</td>
-                    <td>
-                      <select
-                        value={missing ? "" : current}
-                        onChange={(e) =>
-                          setMutation.mutate({ purpose: p.id, modelName: e.target.value })
-                        }
-                      >
-                        {/* Заглушка "не назначено" показываем только когда
-                            реально ничего не назначено или назначенная
-                            модель потеряна. */}
-                        {!hasValidAssignment ? (
-                          <option value="" disabled>
-                            {missing
-                              ? `${current} — модель потеряна, выберите другую`
-                              : "не назначено"}
-                          </option>
-                        ) : null}
-                        {availableModels.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
-                      {missing ? (
-                        <p className="llm-form__error" style={{ marginTop: 4 }}>
-                          Текущая модель «{current}» больше недоступна — выберите другую.
-                        </p>
-                      ) : null}
-                    </td>
-                    <td className="llm-diag-cell">
-                      <ResolutionPreview diag={diag} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
