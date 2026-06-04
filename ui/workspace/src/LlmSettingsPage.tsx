@@ -11,15 +11,20 @@
  * дефолтами, которые здесь настраиваются.
  */
 
-import { useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -31,6 +36,134 @@ import type {
   ProviderType,
   TestResultView,
 } from "./types";
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+type ToastType = "success" | "error";
+interface ToastItem { id: number; type: ToastType; message: string; }
+
+const ToastCtx = createContext<(t: Omit<ToastItem, "id">) => void>(() => {});
+
+function ToastProvider({ children }: { children: React.ReactNode }) {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const counter = useRef(0);
+
+  const add = useCallback((t: Omit<ToastItem, "id">) => {
+    const id = counter.current++;
+    setToasts((prev) => [...prev.slice(-2), { ...t, id }]);
+    setTimeout(
+      () => setToasts((prev) => prev.filter((x) => x.id !== id)),
+      t.type === "error" ? 6000 : 4000,
+    );
+  }, []);
+
+  return (
+    <ToastCtx.Provider value={add}>
+      {children}
+      <div className="settings-toast-container">
+        {toasts.map((t) => (
+          <div key={t.id} className={`settings-toast settings-toast--${t.type}`}>
+            <span>{t.message}</span>
+            <button
+              type="button"
+              className="settings-toast__close btn-inline"
+              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+    </ToastCtx.Provider>
+  );
+}
+
+function useToast() {
+  return useContext(ToastCtx);
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────────
+
+function SettingsModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="settings-modal" onClick={onClose}>
+      <div className="settings-modal__card" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-modal__header">
+          <h3>{title}</h3>
+          <button type="button" className="btn-inline settings-modal__close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ── DeleteConfirm ─────────────────────────────────────────────────────────────
+
+function DeleteConfirm({
+  name,
+  onConfirm,
+  onCancel,
+}: {
+  name: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="llm-row__delete-confirm">
+      <span>Удалить «{name}»?</span>
+      <div className="llm-row__delete-confirm-actions">
+        <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          Отмена
+        </button>
+        <button type="button" className="btn btn--ghost btn--danger" onClick={onConfirm}>
+          Удалить
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Skeleton + Error ──────────────────────────────────────────────────────────
+
+function SkeletonList() {
+  return (
+    <div className="llm-settings__list">
+      <div className="sk-row" aria-hidden />
+      <div className="sk-row" aria-hidden />
+      <div className="sk-row" aria-hidden />
+    </div>
+  );
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="llm-settings__error">
+      <AlertCircle size={20} />
+      <p>{message}</p>
+      <button type="button" className="btn btn--ghost" onClick={onRetry}>
+        Повторить
+      </button>
+    </div>
+  );
+}
 
 type TabKey = "providers" | "models" | "assignments";
 
