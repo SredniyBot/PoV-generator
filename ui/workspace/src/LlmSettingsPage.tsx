@@ -164,34 +164,64 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
 
 type TabKey = "providers" | "models" | "assignments";
 
-
 export function LlmSettingsPage() {
   const [tab, setTab] = useState<TabKey>("providers");
 
+  const providersQuery = useQuery({
+    queryKey: ["llm-settings", "providers"],
+    queryFn: () => api.listProviders(),
+  });
+  const assignmentsQuery = useQuery({
+    queryKey: ["llm-settings", "assignments"],
+    queryFn: () => api.listAssignments(),
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["llm-settings", "models"],
+    queryFn: () => api.listModels(),
+  });
+
+  const untestedCount = (providersQuery.data ?? []).filter(
+    (p) => p.last_test_status !== "ok",
+  ).length;
+  const availableModels = (modelsQuery.data ?? []).map((m) => m.model_name);
+  const missingCount = (assignmentsQuery.data ?? []).filter(
+    (a) => a.model_name && !availableModels.includes(a.model_name),
+  ).length;
+
   return (
-    <div className="llm-settings">
-      <header className="llm-settings__header">
-        <h1>Настройки LLM</h1>
-      </header>
+    <ToastProvider>
+      <div className="llm-settings">
+        <header className="llm-settings__header">
+          <h1>Настройки LLM</h1>
+        </header>
 
-      <div className="llm-settings__tabs">
-        <TabButton active={tab === "providers"} onClick={() => setTab("providers")}>
-          Источники
-        </TabButton>
-        <TabButton active={tab === "models"} onClick={() => setTab("models")}>
-          Модели
-        </TabButton>
-        <TabButton active={tab === "assignments"} onClick={() => setTab("assignments")}>
-          Назначения
-        </TabButton>
-      </div>
+        <div className="llm-settings__tabs">
+          <TabButton
+            active={tab === "providers"}
+            onClick={() => setTab("providers")}
+            badge={untestedCount > 0}
+          >
+            Источники
+          </TabButton>
+          <TabButton active={tab === "models"} onClick={() => setTab("models")}>
+            Модели
+          </TabButton>
+          <TabButton
+            active={tab === "assignments"}
+            onClick={() => setTab("assignments")}
+            badge={missingCount > 0}
+          >
+            Назначения
+          </TabButton>
+        </div>
 
-      <div className="llm-settings__body">
-        {tab === "providers" ? <ProvidersTab /> : null}
-        {tab === "models" ? <ModelsTab /> : null}
-        {tab === "assignments" ? <AssignmentsTab /> : null}
+        <div className="llm-settings__body">
+          {tab === "providers" ? <ProvidersTab /> : null}
+          {tab === "models" ? <ModelsTab /> : null}
+          {tab === "assignments" ? <AssignmentsTab /> : null}
+        </div>
       </div>
-    </div>
+    </ToastProvider>
   );
 }
 
@@ -199,10 +229,12 @@ export function LlmSettingsPage() {
 function TabButton({
   active,
   onClick,
+  badge,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  badge?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -212,6 +244,7 @@ function TabButton({
       onClick={onClick}
     >
       {children}
+      {badge ? <span className="llm-tab__badge" aria-label="требует внимания" /> : null}
     </button>
   );
 }
