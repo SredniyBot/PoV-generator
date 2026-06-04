@@ -40,11 +40,14 @@ from ..domain.workspace_views import (
     ProjectReviewView,
     ProjectShellView,
     ProjectSituationView,
+    ProjectStagesView,
     ProjectStateView,
     ProjectTaskGraphView,
     ProjectTimelineView,
     ReviewIssueView,
     SituationBlockerView,
+    StageFailingTaskView,
+    StageView,
     TaskNodeView,
     TimelineEntryView,
 )
@@ -621,94 +624,23 @@ class WorkspaceQueryService:
         manifest = context.manifest
         snapshot = context.snapshot
 
-        # Прогресс по done_when
+        # Прогресс по done_when (артефакты + gate'ы) — вынесен в общий хелпер
+        # _objective_progress, чтобы переиспользовать в проекции этапов (stages).
         objective = snapshot.resolve_objective(manifest.objective_ref)
-        artifact_roles_present = {a.artifact_role for a in self._runtime.list_artifacts(context.workspace)}
-        artifacts_required = len(objective.done_artifact_refs)
-        artifacts_ready = sum(
-            1 for ref in objective.done_artifact_refs
-            if ref.identifier.rsplit(".", 1)[-1] in artifact_roles_present
-        )
-        # v3.1: вместо ClarificationRequest читаем реестр Decisions.
-        # Для UI важны два набора:
-        #   * open_decisions — proposed-решения (нужны для critical-блок и
-        #     для current_activity);
-        #   * approval_decisions — финализированные sign-off решения для
-        #     human-approval gates (нужны для gates_passed).
-        all_decisions = list(
-            self._runtime.list_decisions(
+        progress = self._objective_progress(context, objective)
+        artifacts_required = progress.artifacts_required
+        artifacts_ready = progress.artifacts_ready
+        gates_required = progress.gates_required
+        gates_passed = progress.gates_passed
+
+        # Открытые proposed-Decisions — для critical-блока и current_activity.
+        open_decisions = [
+            d
+            for d in self._runtime.list_decisions(
                 context.workspace, project_id=manifest.project_id
             )
-        )
-        open_decisions = [d for d in all_decisions if d.status == "proposed"]
-        approval_decisions = [
-            d
-            for d in all_decisions
-            if d.source == "reactive_validation" or d.source == "emergent"
-            and d.status in {"accepted_default", "user_overridden", "locked_in"}
+            if d.status == "proposed"
         ]
-        gates_required = len(objective.done_gate_refs)
-        gates_passed = 0
-        # Артефакты по ролям — нужны для проверки прохождения automated-gate'ов.
-        artifacts_by_role: dict[str, list] = {}
-        for art in self._runtime.list_artifacts(context.workspace):
-            artifacts_by_role.setdefault(art.artifact_role, []).append(art)
-
-        for gate_ref in objective.done_gate_refs:
-            try:
-                gate = snapshot.resolve_quality_gate(gate_ref)
-            except Exception:
-                continue
-
-            if gate.check_type == "human_approval":
-                # v3.1: gate sign-off ищется в Decisions по совпадению title
-                # gate'а и approved-выбору. См. валидацию ниже — менее
-                # точно, чем legacy source_id-матчинг, но достаточно для
-                # счётчика «N gates пройдено».
-                if any(
-                    gate.title in d.title
-                    and any(
-                        choice in {"approved", "approved_with_comments"}
-                        for choice in d.effective_chosen_ids
-                    )
-                    for d in approval_decisions
-                ):
-                    gates_passed += 1
-                continue
-
-            # Не-human gate'ы — automated_review и потенциальные другие.
-            # Раньше засчитывались UNCONDITIONALLY, из-за чего проект стартовал
-            # с «1/2 проверок» ещё до того как что-то реально выполнилось.
-            # Теперь проверяем фактическое прохождение:
-            #   1) все required-артефакты gate'а должны существовать в проекте;
-            #   2) если артефакт — review_report, его overall_status должен быть
-            #      "passed" / "passed_with_remarks" (не "failed").
-            required_roles = list(gate.required_artifact_roles) if hasattr(gate, "required_artifact_roles") else []
-            all_present = all(role in artifacts_by_role for role in required_roles) if required_roles else False
-            if not all_present:
-                continue
-
-            # Дополнительная семантическая проверка для gate'ов, привязанных к review_report.
-            review_ok = True
-            if "review_report" in required_roles:
-                review_records = artifacts_by_role.get("review_report") or []
-                if not review_records:
-                    review_ok = False
-                else:
-                    latest_review = max(review_records, key=lambda a: a.created_at)
-                    try:
-                        import json as _json
-                        payload = _json.loads(
-                            self._runtime.load_artifact_content(
-                                context.workspace, latest_review.artifact_id,
-                            )
-                        )
-                        status = str(payload.get("overall_status", "")).lower()
-                        review_ok = status in {"passed", "passed_with_remarks"}
-                    except Exception:
-                        review_ok = False
-            if review_ok:
-                gates_passed += 1
 
         # v3.1: «критичные открытые уточнения» = proposed-Decisions
         # business-уровня (= наивысший приоритет в decision-модели) или
@@ -783,18 +715,214 @@ class WorkspaceQueryService:
             objective_ref=manifest.objective_ref,
             stage_summary=stage_summary,
             current_activity=current_activity,
-            objective_progress=ObjectiveProgressView(
-                artifacts_required=artifacts_required,
-                artifacts_ready=artifacts_ready,
-                gates_required=gates_required,
-                gates_passed=gates_passed,
-            ),
+            objective_progress=progress,
             critical_clarifications=critical_items,
             key_artifacts=key_artifacts,
             active_methodology=active_methodology,
             active_domain_packs=tuple(sorted(state.process.active_domain_pack_records.keys())),
             clarification_mode=state.process.clarification_mode,
             updated_at=state.process.updated_at,
+        )
+
+    def _objective_progress(self, context: ProjectContext, objective) -> ObjectiveProgressView:
+        """Прогресс одного objective: артефакты ready/required + gate'ы passed/required.
+
+        Вынесено из project_overview, чтобы считать прогресс для любого этапа
+        в проекции stages (а не только активного). Поведение для активного
+        objective идентично прежнему инлайну (страхуется тестами).
+        """
+        artifacts = list(self._runtime.list_artifacts(context.workspace))
+        artifact_roles_present = {a.artifact_role for a in artifacts}
+        artifacts_required = len(objective.done_artifact_refs)
+        artifacts_ready = sum(
+            1
+            for ref in objective.done_artifact_refs
+            if ref.identifier.rsplit(".", 1)[-1] in artifact_roles_present
+        )
+        # Финализированные sign-off решения для human-approval gate'ов.
+        approval_decisions = [
+            d
+            for d in self._runtime.list_decisions(
+                context.workspace, project_id=context.manifest.project_id
+            )
+            if d.source == "reactive_validation" or d.source == "emergent"
+            and d.status in {"accepted_default", "user_overridden", "locked_in"}
+        ]
+        gates_required = len(objective.done_gate_refs)
+        gates_passed = 0
+        artifacts_by_role: dict[str, list] = {}
+        for art in artifacts:
+            artifacts_by_role.setdefault(art.artifact_role, []).append(art)
+        snapshot = context.snapshot
+        for gate_ref in objective.done_gate_refs:
+            try:
+                gate = snapshot.resolve_quality_gate(gate_ref)
+            except Exception:
+                continue
+
+            if gate.check_type == "human_approval":
+                # sign-off ищется в Decisions по совпадению title gate'а и
+                # approved-выбору (фаззи, но достаточно для счётчика «N/N»).
+                if any(
+                    gate.title in d.title
+                    and any(
+                        choice in {"approved", "approved_with_comments"}
+                        for choice in d.effective_chosen_ids
+                    )
+                    for d in approval_decisions
+                ):
+                    gates_passed += 1
+                continue
+
+            # automated_review и пр.: фактическое прохождение, не безусловно.
+            required_roles = (
+                list(gate.required_artifact_roles)
+                if hasattr(gate, "required_artifact_roles")
+                else []
+            )
+            all_present = (
+                all(role in artifacts_by_role for role in required_roles)
+                if required_roles
+                else False
+            )
+            if not all_present:
+                continue
+
+            review_ok = True
+            if "review_report" in required_roles:
+                review_records = artifacts_by_role.get("review_report") or []
+                if not review_records:
+                    review_ok = False
+                else:
+                    latest_review = max(review_records, key=lambda a: a.created_at)
+                    try:
+                        payload = json.loads(
+                            self._runtime.load_artifact_content(
+                                context.workspace, latest_review.artifact_id
+                            )
+                        )
+                        status = str(payload.get("overall_status", "")).lower()
+                        review_ok = status in {"passed", "passed_with_remarks"}
+                    except Exception:
+                        review_ok = False
+            if review_ok:
+                gates_passed += 1
+
+        return ObjectiveProgressView(
+            artifacts_required=artifacts_required,
+            artifacts_ready=artifacts_ready,
+            gates_required=gates_required,
+            gates_passed=gates_passed,
+        )
+
+    def project_stages(self, project_id: str) -> ProjectStagesView:
+        """Проекция этапов (gate stepper): цепочка objective'ов проекта.
+
+        history (done) → active → forward-walk compatible_next (locked).
+        Прогресс — для каждого этапа; ошибки/блокировки — только для активного
+        (см. StageView docstring про реплан по stable-key).
+        """
+        context = self._load_context(project_id)
+        manifest = context.manifest
+        snapshot = context.snapshot
+        active_ref = manifest.objective_ref
+
+        # 1. Упорядоченная цепочка этапов.
+        ordered: list[tuple[str, str]] = [
+            (ref, "done") for ref in manifest.objective_history
+        ]
+        ordered.append((active_ref, "active"))
+        seen = {ref for ref, _ in ordered}
+        cursor = active_ref
+        while True:
+            try:
+                spec = snapshot.resolve_objective(cursor)
+            except Exception:
+                break
+            nexts = [ref.as_string() for ref in spec.compatible_next_objectives]
+            if not nexts:
+                break
+            nxt = nexts[0]  # линейный степпер: берём первую ветку (R3)
+            if nxt in seen:
+                break
+            ordered.append((nxt, "locked"))
+            seen.add(nxt)
+            cursor = nxt
+
+        # 2. Прогресс + (для активного) скоуп ошибок по objective_ref задач.
+        all_tasks = self._runtime.list_tasks(context.workspace)
+        stages: list[StageView] = []
+        for ref, state in ordered:
+            try:
+                spec = snapshot.resolve_objective(ref)
+            except Exception:
+                continue  # деградируем: пропускаем нерезолвящийся (дрейф реестра)
+            progress = self._objective_progress(context, spec)
+            failed_count = 0
+            blocked_count = 0
+            awaiting_signoff = 0
+            failing: list[StageFailingTaskView] = []
+            if state == "active":
+                # «Ждут решений» = открытые proposed-Decisions (то, что реально
+                # требует ответа пользователя). Карта по source_task_id — чтобы
+                # отличить actionable-блокировку (задача ждёт решения) от обычной
+                # очерёдности (задача ждёт upstream-артефакт — НЕ показываем).
+                open_decisions = [
+                    d
+                    for d in self._runtime.list_decisions(
+                        context.workspace, project_id=manifest.project_id
+                    )
+                    if d.status == "proposed"
+                ]
+                clar_by_task: dict[str, int] = {}
+                for d in open_decisions:
+                    if d.source_task_id:
+                        clar_by_task[d.source_task_id] = clar_by_task.get(d.source_task_id, 0) + 1
+                awaiting_signoff = len(open_decisions)
+                for task in all_tasks:
+                    if task.objective_ref != ref:
+                        continue
+                    if task.status == "failed":
+                        failed_count += 1
+                        failing.append(self._stage_failing_task(task, retryable=True))
+                    elif task.status == "blocked" and clar_by_task.get(task.task_id):
+                        blocked_count += 1
+                        failing.append(self._stage_failing_task(task, retryable=False))
+            stages.append(
+                StageView(
+                    objective_ref=ref,
+                    title=spec.title,
+                    state=state,
+                    is_current=state == "active",
+                    artifacts_required=progress.artifacts_required,
+                    artifacts_ready=progress.artifacts_ready,
+                    gates_required=progress.gates_required,
+                    gates_passed=progress.gates_passed,
+                    failed_count=failed_count,
+                    blocked_count=blocked_count,
+                    awaiting_signoff=awaiting_signoff,
+                    failing_tasks=tuple(failing),
+                )
+            )
+
+        active_spec = snapshot.resolve_objective(active_ref)
+        return ProjectStagesView(
+            project_id=manifest.project_id,
+            objective_ref=active_ref,
+            stages=tuple(stages),
+            next_objective_refs=tuple(
+                ref.as_string() for ref in active_spec.compatible_next_objectives
+            ),
+            objective_complete=self._objective_done(context),
+        )
+
+    def _stage_failing_task(self, task: TaskRecord, *, retryable: bool) -> StageFailingTaskView:
+        return StageFailingTaskView(
+            task_id=task.task_id,
+            title=task.title,
+            status=task.status,
+            reason=task.error_message or self._status_summary(task) or "",
+            retryable=retryable,
         )
 
     def project_state(self, project_id: str) -> ProjectStateView:
