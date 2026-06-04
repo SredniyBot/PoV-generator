@@ -4476,6 +4476,7 @@ code {
   padding: 9px 16px;
   cursor: pointer;
   font-size: 14px;
+  position: relative;
 }
 
 .llm-settings__tab--active {
@@ -5080,7 +5081,7 @@ code {
 /* ── Settings redesign additions ─────────────────────────────────────────── */
 
 /* Shimmer skeleton */
-@keyframes shimmer {
+@keyframes sk-shimmer {
   from { background-position: -200% 0; }
   to   { background-position:  200% 0; }
 }
@@ -5095,7 +5096,7 @@ code {
     rgba(255, 255, 255, 0.04) 75%
   );
   background-size: 200% 100%;
-  animation: shimmer 1.4s ease infinite;
+  animation: sk-shimmer 1.4s linear infinite;
 }
 
 /* Error state */
@@ -5173,6 +5174,9 @@ code {
   font-size: 16px;
   color: var(--text-secondary);
   border-radius: 8px;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
 }
 
 .settings-modal__close:hover {
@@ -5181,7 +5185,7 @@ code {
 }
 
 /* Toast */
-.toast-container {
+.settings-toast-container {
   position: fixed;
   bottom: 16px;
   right: 16px;
@@ -5192,7 +5196,7 @@ code {
   pointer-events: none;
 }
 
-.toast {
+.settings-toast {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -5211,19 +5215,19 @@ code {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.toast--success {
+.settings-toast--success {
   background: rgba(120, 200, 140, 0.15);
   border: 1px solid rgba(120, 200, 140, 0.3);
   color: #a0d8b0;
 }
 
-.toast--error {
+.settings-toast--error {
   background: rgba(220, 100, 100, 0.15);
   border: 1px solid rgba(220, 100, 100, 0.3);
   color: #e8a0a0;
 }
 
-.toast__close {
+.settings-toast__close {
   flex-shrink: 0;
   padding: 2px 6px;
   border-radius: 6px;
@@ -5231,16 +5235,12 @@ code {
   font-size: 14px;
 }
 
-.toast__close:hover {
+.settings-toast__close:hover {
   opacity: 1;
   background: rgba(255, 255, 255, 0.08);
 }
 
 /* Tab badge */
-.llm-settings__tab {
-  position: relative;
-}
-
 .llm-tab__badge {
   display: inline-block;
   width: 6px;
@@ -5279,6 +5279,9 @@ code {
   padding: 4px 6px;
   border-radius: 8px;
   color: var(--text-secondary);
+  cursor: pointer;
+  border: 0;
+  background: transparent;
 }
 
 .llm-row__expand-btn:hover {
@@ -5383,4 +5386,5 @@ code {
 
 .llm-row__concurrency-select:focus {
   border-color: rgba(120, 184, 201, 0.34);
+  box-shadow: var(--focus-ring);
 }
