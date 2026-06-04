@@ -19,6 +19,8 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Loader2,
   Plus,
   RefreshCw,
@@ -269,16 +271,6 @@ function ProvidersTab() {
     },
   });
 
-  const testMutation = useMutation({
-    mutationFn: (id: string) => api.testProvider(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] }),
-  });
-
-  const syncMutation = useMutation({
-    mutationFn: (id: string) => api.syncKnownModels(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
-  });
-
   if (providersQuery.isLoading) return <p>Загрузка…</p>;
   const providers = providersQuery.data ?? [];
 
@@ -300,25 +292,7 @@ function ProvidersTab() {
             <ProviderRow
               key={p.connection_id}
               provider={p}
-              onTest={() => testMutation.mutate(p.connection_id)}
-              onDelete={() => {
-                if (confirm(`Удалить подключение «${p.display_name}»?`)) {
-                  deleteMutation.mutate(p.connection_id);
-                }
-              }}
-              onSync={() => syncMutation.mutate(p.connection_id)}
-              testPending={testMutation.isPending && testMutation.variables === p.connection_id}
-              syncPending={syncMutation.isPending && syncMutation.variables === p.connection_id}
-              testResult={
-                testMutation.data && testMutation.variables === p.connection_id
-                  ? testMutation.data
-                  : null
-              }
-              syncResult={
-                syncMutation.data && syncMutation.variables === p.connection_id
-                  ? syncMutation.data
-                  : null
-              }
+              onDelete={() => deleteMutation.mutate(p.connection_id)}
             />
           ))}
         </ul>
@@ -330,8 +304,6 @@ function ProvidersTab() {
 }
 
 
-// Auto-дефолты параллельности (зеркало backend parallel_scheduling):
-// subscription (claude_cli) осторожнее, API-провайдеры — быстрее.
 const AUTO_CONCURRENCY: Record<string, number> = {
   anthropic: 5,
   claude_cli: 2,
@@ -340,23 +312,80 @@ const AUTO_CONCURRENCY: Record<string, number> = {
 
 function ProviderRow({
   provider,
-  onTest,
   onDelete,
-  onSync,
-  testPending,
-  syncPending,
-  testResult,
-  syncResult,
 }: {
   provider: ProviderConnectionView;
-  onTest: () => void;
   onDelete: () => void;
-  onSync: () => void;
-  testPending: boolean;
-  syncPending: boolean;
-  testResult: TestResultView | null;
-  syncResult: { added_count: number; added_models: string[] } | null;
 }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+
+  const [expanded, setExpanded] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [concurrency, setConcurrency] = useState(provider.extras.max_concurrency ?? "");
+  const [lastTestResult, setLastTestResult] = useState<TestResultView | null>(null);
+  const [lastSyncResult, setLastSyncResult] = useState<{
+    added_count: number;
+    added_models: string[];
+  } | null>(null);
+
+  const testMutation = useMutation({
+    mutationFn: () => api.testProvider(provider.connection_id),
+    onSuccess: (result) => {
+      setLastTestResult(result);
+      qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
+      if (result.status === "ok") {
+        toast({ type: "success", message: `Соединение работает · ${result.latency_ms} ms` });
+      } else {
+        toast({ type: "error", message: `Ошибка: ${result.message}` });
+      }
+    },
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Ошибка теста" }),
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: () => api.syncKnownModels(provider.connection_id),
+    onSuccess: (result) => {
+      setLastSyncResult(result);
+      qc.invalidateQueries({ queryKey: ["llm-settings", "models"] });
+      toast({
+        type: "success",
+        message:
+          result.added_count === 0
+            ? "Каталог актуален"
+            : `Добавлено ${result.added_count} модель(-и)`,
+      });
+    },
+    onError: (e) =>
+      toast({
+        type: "error",
+        message: e instanceof Error ? e.message : "Ошибка синхронизации",
+      }),
+  });
+
+  const concurrencyMutation = useMutation({
+    mutationFn: (value: string) =>
+      api.updateProvider(provider.connection_id, {
+        extras: { ...provider.extras, max_concurrency: value },
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "providers"] }),
+    onError: (e) =>
+      toast({ type: "error", message: e instanceof Error ? e.message : "Не удалось сохранить" }),
+  });
+
+  if (confirmDelete) {
+    return (
+      <li className="llm-row">
+        <DeleteConfirm
+          name={provider.display_name}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={onDelete}
+        />
+      </li>
+    );
+  }
+
   const statusBadge = (() => {
     if (provider.last_test_status === "ok") {
       return (
@@ -375,30 +404,49 @@ function ProviderRow({
     return <span className="llm-badge llm-badge--neutral">не протестирован</span>;
   })();
 
-  // Параллельность workflow для ЭТОГО провайдера. Хранится в
-  // extras.max_concurrency; пусто = авто-дефолт (subscription осторожнее,
-  // API-провайдеры агрессивнее). Сохраняем по blur, если значение изменилось.
-  const queryClient = useQueryClient();
-  const [concurrency, setConcurrency] = useState(provider.extras.max_concurrency ?? "");
-  const concurrencyMutation = useMutation({
-    mutationFn: (value: string) =>
-      api.updateProvider(provider.connection_id, {
-        extras: { ...provider.extras, max_concurrency: value },
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["llm-settings", "providers"] });
-    },
-  });
-  const saveConcurrency = () => {
-    if (concurrency !== (provider.extras.max_concurrency ?? "")) {
-      concurrencyMutation.mutate(concurrency.trim());
-    }
-  };
+  const autoDefault = AUTO_CONCURRENCY[provider.provider_type] ?? 3;
 
   return (
     <li className="llm-row">
       <div className="llm-row__main">
-        <strong>{provider.display_name}</strong>
+        <div className="llm-row__top">
+          <div className="llm-row__title-group">
+            <strong>{provider.display_name}</strong>
+            {statusBadge}
+          </div>
+          <div className="llm-row__row-actions">
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => testMutation.mutate()}
+              disabled={testMutation.isPending}
+            >
+              {testMutation.isPending ? (
+                <Loader2 size={14} className="spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}{" "}
+              Проверить
+            </button>
+            <button
+              type="button"
+              className="btn-inline llm-row__expand-btn"
+              onClick={() => setExpanded((e) => !e)}
+              aria-label={expanded ? "Свернуть" : "Развернуть"}
+            >
+              {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+            <button
+              type="button"
+              className="btn-inline"
+              onClick={() => setConfirmDelete(true)}
+              title="Удалить"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+
         <span className="llm-row__sub">
           {humanProviderType(provider.provider_type)}
           {provider.api_key_preview ? ` · ключ ${provider.api_key_preview}` : null}
@@ -406,71 +454,75 @@ function ProviderRow({
             <span className="llm-badge llm-badge--neutral"> из .env</span>
           ) : null}
         </span>
-        <label className="llm-row__concurrency field">
-          <span>Параллельных шагов</span>
-          <div className="llm-row__concurrency-input">
-            <input
-              type="number"
-              min={1}
-              max={16}
-              value={concurrency}
-              placeholder={`авто · ${AUTO_CONCURRENCY[provider.provider_type] ?? 3}`}
-              title="Сколько шагов workflow выполнять одновременно для этого провайдера. Пусто = авто-дефолт."
-              onChange={(e) => setConcurrency(e.target.value)}
-              onBlur={saveConcurrency}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              }}
-            />
-            {concurrencyMutation.isPending ? (
-              <Loader2 size={13} className="spin" />
+
+        {expanded ? (
+          <div className="llm-row__details">
+            <div className="llm-row__details-row">
+              <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8, margin: 0 }}>
+                <span style={{ fontSize: 12, color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                  Параллельных шагов
+                </span>
+                <select
+                  className="llm-row__concurrency-select"
+                  value={concurrency}
+                  onChange={(e) => {
+                    setConcurrency(e.target.value);
+                    concurrencyMutation.mutate(e.target.value);
+                  }}
+                >
+                  <option value="">авто ({autoDefault})</option>
+                  {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={String(n)}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                {concurrencyMutation.isPending ? <Loader2 size={13} className="spin" /> : null}
+              </label>
+
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => syncMutation.mutate()}
+                disabled={syncMutation.isPending}
+                title="Добавить routings для известных моделей провайдера"
+              >
+                {syncMutation.isPending ? (
+                  <Loader2 size={14} className="spin" />
+                ) : (
+                  <RefreshCw size={14} />
+                )}{" "}
+                Обновить каталог
+              </button>
+            </div>
+
+            {lastTestResult ? (
+              <p
+                className={
+                  lastTestResult.status === "ok"
+                    ? "llm-row__hint llm-row__hint--ok"
+                    : "llm-row__hint llm-row__hint--err"
+                }
+              >
+                {lastTestResult.message}
+                {lastTestResult.latency_ms ? ` · ${lastTestResult.latency_ms} ms` : null}
+                {lastTestResult.sample_response
+                  ? ` · ответ: "${lastTestResult.sample_response}"`
+                  : null}
+              </p>
+            ) : provider.last_test_message ? (
+              <p className="llm-row__hint">{provider.last_test_message}</p>
+            ) : null}
+
+            {lastSyncResult ? (
+              <p className="llm-row__hint llm-row__hint--ok">
+                {lastSyncResult.added_count === 0
+                  ? "Каталог моделей уже актуален — новых записей нет."
+                  : `Добавлено ${lastSyncResult.added_count}: ${lastSyncResult.added_models.join(", ")}.`}
+              </p>
             ) : null}
           </div>
-          <span className="field__hint">
-            Пусто — авто ({AUTO_CONCURRENCY[provider.provider_type] ?? 3} для этого провайдера).
-          </span>
-        </label>
-        {provider.last_test_message ? (
-          <p className="llm-row__hint">{provider.last_test_message}</p>
         ) : null}
-        {testResult ? (
-          <p
-            className={
-              testResult.status === "ok"
-                ? "llm-row__hint llm-row__hint--ok"
-                : "llm-row__hint llm-row__hint--err"
-            }
-          >
-            {testResult.message}
-            {testResult.latency_ms ? ` · ${testResult.latency_ms} ms` : null}
-            {testResult.sample_response ? ` · ответ: "${testResult.sample_response}"` : null}
-          </p>
-        ) : null}
-        {syncResult ? (
-          <p className="llm-row__hint llm-row__hint--ok">
-            {syncResult.added_count === 0
-              ? "Каталог моделей уже актуален — новых записей нет."
-              : `Добавлено ${syncResult.added_count} модель(-и): ${syncResult.added_models.join(", ")}.`}
-          </p>
-        ) : null}
-      </div>
-      <div className="llm-row__side">
-        {statusBadge}
-        <button type="button" className="btn btn--ghost" onClick={onTest} disabled={testPending}>
-          {testPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Проверить
-        </button>
-        <button
-          type="button"
-          className="btn btn--ghost"
-          onClick={onSync}
-          disabled={syncPending}
-          title="Добавить routings для известных моделей провайдера, которых ещё нет в каталоге"
-        >
-          {syncPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Обновить каталог
-        </button>
-        <button type="button" className="btn btn--ghost btn--danger" onClick={onDelete}>
-          <Trash2 size={14} /> Удалить
-        </button>
       </div>
     </li>
   );
