@@ -1,10 +1,13 @@
 # tests/test_fan_out_tasks.py
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from pov_generator.common.errors import ConflictError
+from pov_generator.common.errors import ConflictError, ValidationError
 from pov_generator.common.serialization import utc_now_iso
+from pov_generator.domain.registry import FanOutSpec, parse_task_template
 from pov_generator.domain.tasks import (
     TaskRecord,
     apply_task_command,
@@ -67,12 +70,6 @@ def test_reset_fan_out_rejects_completed():
         apply_task_command(task, "reset_fan_out")
 
 
-from pathlib import Path
-import tempfile, textwrap, yaml
-from pov_generator.domain.registry import parse_task_template, FanOutSpec
-from pov_generator.common.errors import ValidationError
-
-
 def _template_raw_fan_out() -> dict:
     return {
         "id": "test.fan_out_template",
@@ -127,4 +124,12 @@ def test_parse_non_fan_out_template_with_fan_out_spec_raises():
     raw = _template_raw_fan_out()
     raw["type"] = "leaf"
     with pytest.raises(ValidationError, match="fan_out_spec"):
+        parse_task_template(raw, Path("test.yaml"))
+
+
+def test_parse_non_fan_out_template_with_children_template_ref_raises():
+    raw = _template_raw_fan_out()
+    raw["type"] = "leaf"
+    del raw["fan_out_spec"]
+    with pytest.raises(ValidationError, match="children_template_ref"):
         parse_task_template(raw, Path("test.yaml"))
