@@ -13,15 +13,21 @@ TaskStatus = Literal[
     "blocked",
     "in_progress",
     "waiting_for_children",
+    "waiting_for_fan_out_source",
     "completed",
     "failed",
     "skipped",
     "obsolete",
 ]
 TaskCommand = Literal[
-    "start", "complete", "fail", "retry", "obsolete", "skip", "mark_ready", "mark_blocked", "cancel"
+    "start", "complete", "fail", "retry", "obsolete", "skip",
+    "mark_ready", "mark_blocked", "cancel",
+    "expand_fan_out", "reset_fan_out",
 ]
-TaskOriginKind = Literal["objective_root", "base_child", "domain_contribution", "repair", "user_request", "system"]
+TaskOriginKind = Literal[
+    "objective_root", "base_child", "domain_contribution",
+    "repair", "user_request", "system", "fan_out_instance",
+]
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,8 @@ class TaskEvent:
 def initial_task_status(template_type: str) -> TaskStatus:
     if template_type == "composite":
         return "waiting_for_children"
+    if template_type == "fan_out":
+        return "waiting_for_fan_out_source"
     return "candidate"
 
 
@@ -119,4 +127,14 @@ def apply_task_command(task: TaskRecord, command: TaskCommand, *, error_message:
         if current in {"completed", "obsolete"}:
             raise ConflictError(f"Cannot skip task from status '{current}'.")
         return TaskRecord(**{**task.__dict__, "status": "skipped", "error_message": error_message, "updated_at": now})
+    if command == "expand_fan_out":
+        if current != "waiting_for_fan_out_source":
+            raise ConflictError(f"Cannot expand_fan_out task from status '{current}'.")
+        return TaskRecord(**{**task.__dict__, "status": "waiting_for_children", "error_message": None, "updated_at": now})
+    if command == "reset_fan_out":
+        if current not in {"waiting_for_fan_out_source", "waiting_for_children", "failed"}:
+            raise ConflictError(f"Cannot reset_fan_out task from status '{current}'.")
+        return TaskRecord(
+            **{**task.__dict__, "status": "waiting_for_fan_out_source", "attempt": task.attempt + 1, "error_message": None, "updated_at": now}
+        )
     raise TypeError(f"Unsupported task command: {command}")
