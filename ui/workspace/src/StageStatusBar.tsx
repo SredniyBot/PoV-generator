@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Network, RotateCcw } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock, MessageSquare, Network, RotateCcw } from "lucide-react";
 
 import { api } from "./api";
 import type { StageView } from "./types";
@@ -54,7 +54,8 @@ export function StageStatusBar({
   children?: ReactNode;
 }) {
   const navigate = useNavigate();
-  const [popoverOpen, setPopoverOpen] = useState(false);
+  // Какой поповер открыт: ошибки / решения / закрыт.
+  const [popover, setPopover] = useState<null | "errors" | "decisions">(null);
 
   const stagesQuery = useQuery({
     // ключ совпадает с projectionKey(projectId, "stages") в App.tsx — WS-пуш
@@ -70,13 +71,20 @@ export function StageStatusBar({
   }
 
   const active = data.stages.find((s) => s.is_current) ?? null;
-  const failedCount = active?.failed_count ?? 0;
-  const attentionCount = (active?.blocked_count ?? 0) + (active?.awaiting_signoff ?? 0);
-  const failingTasks = active?.failing_tasks ?? [];
+  // Ошибки — упавшие задачи (чинятся повтором), в своём поповере.
+  const failedTasks = (active?.failing_tasks ?? []).filter((t) => t.status === "failed");
+  const failedCount = failedTasks.length;
+  // «Ждут» — открытые решения; счётчик и список из одного источника.
+  const pendingDecisions = active?.pending_decisions ?? [];
+  const attentionCount = pendingDecisions.length;
 
   const goToNode = (taskId: string) => {
-    setPopoverOpen(false);
+    setPopover(null);
     navigate(`/projects/${projectId}/task-graph?focus=${taskId}`);
+  };
+  const goToDecisions = () => {
+    setPopover(null);
+    navigate(`/projects/${projectId}/decisions/pending`);
   };
 
   return (
@@ -97,7 +105,7 @@ export function StageStatusBar({
                 </span>
                 {stage.is_current ? (
                   <span className="stage-seg__progress">
-                    арт {stage.artifacts_ready}/{stage.artifacts_required}
+                    артефакты {stage.artifacts_ready}/{stage.artifacts_required}
                     {stage.gates_required > 0 ? (
                       <> · гейт {stage.gates_passed}/{stage.gates_required}</>
                     ) : null}
@@ -120,8 +128,8 @@ export function StageStatusBar({
                 <button
                   type="button"
                   className="stage-badge stage-badge--danger"
-                  onClick={() => setPopoverOpen((v) => !v)}
-                  aria-expanded={popoverOpen}
+                  onClick={() => setPopover((v) => (v === "errors" ? null : "errors"))}
+                  aria-expanded={popover === "errors"}
                 >
                   <AlertTriangle size={13} /> {failedCount}{" "}
                   {pluralRu(failedCount, "ошибка", "ошибки", "ошибок")}
@@ -131,66 +139,89 @@ export function StageStatusBar({
                 <button
                   type="button"
                   className="stage-badge stage-badge--warning"
-                  onClick={() => setPopoverOpen((v) => !v)}
-                  aria-expanded={popoverOpen}
+                  onClick={() => setPopover((v) => (v === "decisions" ? null : "decisions"))}
+                  aria-expanded={popover === "decisions"}
                 >
                   <Clock size={13} /> {attentionCount} ждут
                 </button>
               ) : null}
 
-              {popoverOpen && failingTasks.length > 0 ? (
-                <>
-                  <button
-                    type="button"
-                    className="stage-popover__backdrop"
-                    aria-label="Закрыть"
-                    onClick={() => setPopoverOpen(false)}
-                  />
-                  <div className="stage-popover" role="dialog">
-                    <div className="stage-popover__head">
-                      <span>Проблемные шаги этапа «{active?.title}»</span>
-                      <button
-                        type="button"
-                        className="stage-popover__close"
-                        onClick={() => setPopoverOpen(false)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                    <ul className="stage-popover__list">
-                      {failingTasks.map((t) => (
-                        <li key={t.task_id} className="stage-popover__item">
-                          <div className="stage-popover__item-head">
-                            <span className={cx("stage-popover__dot", `stage-popover__dot--${t.status}`)} />
-                            <span className="stage-popover__title">{t.title}</span>
-                          </div>
-                          {t.reason ? <div className="stage-popover__reason">{t.reason}</div> : null}
-                          <div className="stage-popover__actions">
-                            {t.retryable ? (
-                              <button
-                                type="button"
-                                className="stage-popover__action"
-                                onClick={() => {
-                                  setPopoverOpen(false);
-                                  onRetryTask(t.task_id);
-                                }}
-                              >
-                                <RotateCcw size={12} /> Повторить
-                              </button>
-                            ) : null}
+              {popover ? (
+                <button
+                  type="button"
+                  className="stage-popover__backdrop"
+                  aria-label="Закрыть"
+                  onClick={() => setPopover(null)}
+                />
+              ) : null}
+
+              {popover === "errors" && failedTasks.length > 0 ? (
+                <div className="stage-popover" role="dialog">
+                  <div className="stage-popover__head">
+                    <span>Шаги с ошибкой · этап «{active?.title}»</span>
+                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
+                      ×
+                    </button>
+                  </div>
+                  <ul className="stage-popover__list">
+                    {failedTasks.map((t) => (
+                      <li key={t.task_id} className="stage-popover__item">
+                        <div className="stage-popover__item-head">
+                          <span className={cx("stage-popover__dot", `stage-popover__dot--${t.status}`)} />
+                          <span className="stage-popover__title">{t.title}</span>
+                        </div>
+                        {t.reason ? <div className="stage-popover__reason">{t.reason}</div> : null}
+                        <div className="stage-popover__actions">
+                          {t.retryable ? (
                             <button
                               type="button"
                               className="stage-popover__action"
-                              onClick={() => goToNode(t.task_id)}
+                              onClick={() => {
+                                setPopover(null);
+                                onRetryTask(t.task_id);
+                              }}
                             >
-                              <Network size={12} /> На графе
+                              <RotateCcw size={12} /> Повторить
                             </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="stage-popover__action"
+                            onClick={() => goToNode(t.task_id)}
+                          >
+                            <Network size={12} /> На графе
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {popover === "decisions" && pendingDecisions.length > 0 ? (
+                <div className="stage-popover" role="dialog">
+                  <div className="stage-popover__head">
+                    <span>Решения ждут ответа · этап «{active?.title}»</span>
+                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
+                      ×
+                    </button>
                   </div>
-                </>
+                  <ul className="stage-popover__list">
+                    {pendingDecisions.map((d) => (
+                      <li key={d.decision_id} className="stage-popover__item">
+                        <div className="stage-popover__item-head">
+                          <span className="stage-popover__dot stage-popover__dot--blocked" />
+                          <span className="stage-popover__title">{d.title}</span>
+                        </div>
+                        <div className="stage-popover__actions">
+                          <button type="button" className="stage-popover__action" onClick={goToDecisions}>
+                            <MessageSquare size={12} /> Ответить
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
             </div>
           ) : null}

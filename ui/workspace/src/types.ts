@@ -353,6 +353,12 @@ export interface StageFailingTaskView {
   retryable: boolean;
 }
 
+export interface StagePendingDecisionView {
+  decision_id: string;
+  title: string;
+  level: string; // business | architecture | detail
+}
+
 export interface StageView {
   objective_ref: string;
   title: string;
@@ -366,6 +372,7 @@ export interface StageView {
   blocked_count: number;
   awaiting_signoff: number;
   failing_tasks: StageFailingTaskView[];
+  pending_decisions: StagePendingDecisionView[];
 }
 
 export interface ProjectStagesView {

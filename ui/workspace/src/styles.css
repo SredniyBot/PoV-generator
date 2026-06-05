@@ -5297,7 +5297,7 @@ code {
 .stage-popover {
   position: absolute;
   top: calc(100% + 0.5rem);
-  right: 0;
+  left: 0;
   z-index: 41;
   width: min(28rem, 90vw);
   padding: 0.6rem 0.7rem;

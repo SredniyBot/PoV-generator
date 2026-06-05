@@ -47,6 +47,7 @@ from ..domain.workspace_views import (
     ReviewIssueView,
     SituationBlockerView,
     StageFailingTaskView,
+    StagePendingDecisionView,
     StageView,
     TaskNodeView,
     TimelineEntryView,
@@ -862,6 +863,7 @@ class WorkspaceQueryService:
             blocked_count = 0
             awaiting_signoff = 0
             failing: list[StageFailingTaskView] = []
+            pending_decisions: list[StagePendingDecisionView] = []
             if state == "active":
                 # «Ждут решений» = открытые proposed-Decisions (то, что реально
                 # требует ответа пользователя). Карта по source_task_id — чтобы
@@ -879,6 +881,14 @@ class WorkspaceQueryService:
                     if d.source_task_id:
                         clar_by_task[d.source_task_id] = clar_by_task.get(d.source_task_id, 0) + 1
                 awaiting_signoff = len(open_decisions)
+                pending_decisions = [
+                    StagePendingDecisionView(
+                        decision_id=d.decision_id,
+                        title=d.title,
+                        level=d.effective_level,
+                    )
+                    for d in open_decisions
+                ]
                 for task in all_tasks:
                     if task.objective_ref != ref:
                         continue
@@ -902,6 +912,7 @@ class WorkspaceQueryService:
                     blocked_count=blocked_count,
                     awaiting_signoff=awaiting_signoff,
                     failing_tasks=tuple(failing),
+                    pending_decisions=tuple(pending_decisions),
                 )
             )
 

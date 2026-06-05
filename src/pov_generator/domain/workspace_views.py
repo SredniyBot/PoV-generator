@@ -499,6 +499,15 @@ class StageFailingTaskView:
 
 
 @dataclass(frozen=True)
+class StagePendingDecisionView:
+    """Открытое решение активного этапа («ждут ответа») — для поповера бара."""
+
+    decision_id: str
+    title: str
+    level: str  # business | architecture | detail
+
+
+@dataclass(frozen=True)
 class StageView:
     """Один этап (objective) в степпере.
 
@@ -525,6 +534,7 @@ class StageView:
     blocked_count: int
     awaiting_signoff: int
     failing_tasks: tuple[StageFailingTaskView, ...]
+    pending_decisions: tuple[StagePendingDecisionView, ...]
 
 
 @dataclass(frozen=True)
