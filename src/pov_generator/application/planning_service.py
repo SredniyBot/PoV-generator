@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from ..common.logging import get_logger
-from ..common.serialization import utc_now_iso
+from ..common.serialization import json_loads, utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.process_state import SetRootTaskPatch
 from ..domain.project_state import ProjectState
@@ -65,6 +65,7 @@ class PlanningService:
                 reason="root task created",
             )
         self._expand_composites(workspace, snapshot)
+        self._expand_fan_outs(workspace, snapshot)
         return tuple(self._runtime.list_tasks(workspace))
 
     def admissible_candidates(
@@ -263,6 +264,48 @@ class PlanningService:
             if changed:
                 continue
             self._refresh_composite_completion_from_tasks(workspace, by_id)
+
+    def _expand_fan_outs(self, workspace: Path, snapshot: RegistrySnapshot) -> None:
+        tasks = self._runtime.list_tasks(workspace)
+        for task in tasks:
+            if task.template_type != "fan_out" or task.status != "waiting_for_fan_out_source":
+                continue
+            template = snapshot.resolve_template(task.template_ref)
+            if template.fan_out_spec is None or template.children_template_ref is None:
+                continue
+            artifact = self._runtime.latest_artifact_by_role(workspace, template.fan_out_spec.artifact_role)
+            if artifact is None:
+                continue
+            content_str = self._runtime.load_artifact_content(workspace, artifact.artifact_id)
+            content = json_loads(content_str)
+            array: object = content
+            for part in template.fan_out_spec.array_path.split("."):
+                if not isinstance(array, dict):
+                    array = []
+                    break
+                array = array.get(part, [])
+            if not isinstance(array, list):
+                array = []
+
+            child_template = snapshot.resolve_template(template.children_template_ref)
+            for idx, item in enumerate(array):
+                item_key = str(item.get(template.fan_out_spec.key_field, idx)) if isinstance(item, dict) else str(idx)
+                stable_key = f"{task.stable_key}:instance:{item_key}:{task.attempt}"
+                if self._runtime.find_task_by_stable_key(workspace, stable_key) is not None:
+                    continue
+                self._create_task(
+                    workspace,
+                    project_id=task.project_id,
+                    objective_ref=task.objective_ref,
+                    parent_task_id=task.task_id,
+                    template=child_template,
+                    origin_kind="fan_out_instance",
+                    origin_ref=item_key,
+                    stable_key=stable_key,
+                    depth=task.depth + 1,
+                    slot_id=None,
+                )
+            self._runtime.transition_task(workspace, task.task_id, "expand_fan_out")
 
     def _create_task(
         self,
@@ -498,7 +541,7 @@ class PlanningService:
             if task.parent_task_id:
                 children_by_parent.setdefault(task.parent_task_id, []).append(task)
         for task in sorted(by_id.values(), key=lambda item: item.depth, reverse=True):
-            if task.template_type != "composite" or task.status == "completed":
+            if task.template_type not in {"composite", "fan_out"} or task.status == "completed":
                 continue
             children = children_by_parent.get(task.task_id, [])
             if children and all(child.status in {"completed", "skipped"} for child in children):
