@@ -15,7 +15,7 @@
  * - показывает прогресс-баннер и меню действий на нодах.
  */
 
-import { createContext, useContext, useEffect, useMemo } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -35,7 +35,7 @@ import dagre from "@dagrejs/dagre";
 
 import "@xyflow/react/dist/style.css";
 
-import type { TaskNodeView } from "./types";
+import type { FanOutMeta, TaskNodeView } from "./types";
 
 const NODE_WIDTH = 240;
 const NODE_HEIGHT = 96;
@@ -56,7 +56,13 @@ interface TaskNodeCardData extends Record<string, unknown> {
   task: TaskNodeView;
 }
 
-type FlowNode = Node<TaskNodeCardData>;
+interface FanOutCardData extends Record<string, unknown> {
+  task: TaskNodeView;
+  onToggleFanOut: (id: string) => void;
+  isCollapsed: boolean;
+}
+
+type FlowNode = Node<TaskNodeCardData | FanOutCardData>;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -69,7 +75,28 @@ function flatten(tree: TaskNodeView[], acc: TaskNodeView[] = []): TaskNodeView[]
   return acc;
 }
 
-function buildLayout(tasks: TaskNodeView[]): { nodes: FlowNode[]; edges: Edge[] } {
+/** Flatten with collapse support — skips children of collapsed fan-out nodes. */
+function flattenTree(nodes: TaskNodeView[], collapsed: Set<string>): TaskNodeView[] {
+  const result: TaskNodeView[] = [];
+  for (const node of nodes) {
+    result.push(node);
+    if (!collapsed.has(node.task_id) && node.children?.length) {
+      result.push(...flattenTree(node.children, collapsed));
+    }
+  }
+  return result;
+}
+
+interface BuildLayoutOptions {
+  collapsed: Set<string>;
+  onToggleFanOut: (id: string) => void;
+}
+
+function buildLayout(
+  tasks: TaskNodeView[],
+  options: BuildLayoutOptions,
+): { nodes: FlowNode[]; edges: Edge[] } {
+  const { collapsed, onToggleFanOut } = options;
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 60, marginx: 20, marginy: 20 });
@@ -91,14 +118,33 @@ function buildLayout(tasks: TaskNodeView[]): { nodes: FlowNode[]; edges: Edge[] 
       });
     }
   }
+  // Dashed data-dependency edges: producer → fan-out node
+  for (const task of tasks) {
+    if (task.template_type === "fan_out" && task.fan_out_meta?.producer_task_id) {
+      const producerId = task.fan_out_meta.producer_task_id;
+      if (tasks.some((t) => t.task_id === producerId)) {
+        edges.push({
+          id: `producer-${producerId}-${task.task_id}`,
+          source: producerId,
+          target: task.task_id,
+          style: { stroke: "#8B5CF6", strokeDasharray: "6 3", strokeWidth: 2 },
+          animated: false,
+          type: "default",
+        });
+      }
+    }
+  }
   dagre.layout(graph);
 
   const nodes: FlowNode[] = tasks.map((task) => {
     const positioned = graph.node(task.task_id);
+    const isFanOut = task.template_type === "fan_out";
     return {
       id: task.task_id,
-      type: "taskCard",
-      data: { task },
+      type: isFanOut ? "fanOutCard" : "taskCard",
+      data: isFanOut
+        ? ({ task, onToggleFanOut, isCollapsed: collapsed.has(task.task_id) } as FanOutCardData)
+        : ({ task } as TaskNodeCardData),
       position: {
         x: (positioned?.x ?? 0) - NODE_WIDTH / 2,
         y: (positioned?.y ?? 0) - NODE_HEIGHT / 2,
@@ -213,7 +259,106 @@ function TaskCardNode({ data }: NodeProps<FlowNode>) {
   );
 }
 
-const nodeTypes = { taskCard: TaskCardNode };
+// ── Fan-out card node ──────────────────────────────────────────────────────
+
+const STATUS_LABEL_FAN_OUT: Record<string, string> = {
+  waiting_for_fan_out_source: "Ожидает данных",
+  waiting_for_children: "В процессе",
+  completed: "Завершено",
+  failed: "Ошибка",
+};
+
+const STATUS_COLOR_FAN_OUT: Record<string, string> = {
+  waiting_for_fan_out_source: "#94a3b8",
+  waiting_for_children: "#3b82f6",
+  completed: "#22c55e",
+  failed: "#ef4444",
+};
+
+function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
+  const { task, onToggleFanOut, isCollapsed } = data;
+  const meta: FanOutMeta | null | undefined = task.fan_out_meta;
+  const statusLabel = STATUS_LABEL_FAN_OUT[task.status] ?? task.status;
+  const statusColor = STATUS_COLOR_FAN_OUT[task.status] ?? "#94a3b8";
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: `2px dashed ${statusColor}`,
+        borderRadius: 10,
+        padding: "8px 12px",
+        minWidth: 200,
+        maxWidth: 260,
+        fontSize: 12,
+      }}
+    >
+      <Handle type="target" position={Position.Top} style={{ background: "#7c3aed" }} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 700, fontSize: 11, color: "#7c3aed" }}>⚡ fan-out</span>
+        <span
+          style={{
+            background: statusColor,
+            color: "#fff",
+            borderRadius: 4,
+            padding: "1px 6px",
+            fontSize: 10,
+          }}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{task.title}</div>
+      {task.status === "waiting_for_fan_out_source" && meta && (
+        <div style={{ color: "#94a3b8", fontSize: 11 }}>
+          Источник: {meta.source_artifact_role}
+        </div>
+      )}
+      {task.status === "waiting_for_children" && meta && meta.total_instances > 0 && (
+        <div style={{ marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>
+            {meta.completed_instances} / {meta.total_instances} завершено
+          </div>
+          <div style={{ height: 4, background: "#e5e7eb", borderRadius: 2 }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.round((meta.completed_instances / meta.total_instances) * 100)}%`,
+                background: "#3b82f6",
+                borderRadius: 2,
+                transition: "width 0.3s",
+              }}
+            />
+          </div>
+        </div>
+      )}
+      {task.status === "failed" && task.error_message && (
+        <div style={{ color: "#ef4444", fontSize: 11, marginTop: 4 }}>{task.error_message}</div>
+      )}
+      {meta != null && meta.total_instances > 4 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleFanOut(task.task_id); }}
+          style={{
+            marginTop: 6,
+            fontSize: 10,
+            cursor: "pointer",
+            background: "none",
+            border: "1px solid #d1d5db",
+            borderRadius: 4,
+            padding: "2px 8px",
+          }}
+        >
+          {isCollapsed
+            ? `Показать все ${meta.total_instances}`
+            : "Свернуть"}
+        </button>
+      )}
+      <Handle type="source" position={Position.Bottom} style={{ background: "#7c3aed" }} />
+    </div>
+  );
+}
+
+const nodeTypes = { taskCard: TaskCardNode, fanOutCard: FanOutCardNode };
 
 // ── Progress banner ────────────────────────────────────────────────────────
 
@@ -271,8 +416,42 @@ function TaskGraphCanvasInner({
   onOpenArtifacts,
   onGoToDecisions,
 }: TaskGraphCanvasProps) {
-  const tasks = useMemo(() => flatten(tree), [tree]);
-  const layout = useMemo(() => buildLayout(tasks), [tasks]);
+  const [collapsedFanOuts, setCollapsedFanOuts] = useState<Set<string>>(new Set());
+
+  // Auto-collapse fan-out nodes with > 4 instances on first mount / tree change.
+  useEffect(() => {
+    const toCollapse = new Set<string>();
+    function walk(nodes: TaskNodeView[]) {
+      for (const n of nodes) {
+        if (n.template_type === "fan_out" && (n.fan_out_meta?.total_instances ?? 0) > 4) {
+          toCollapse.add(n.task_id);
+        }
+        if (n.children?.length) walk(n.children);
+      }
+    }
+    walk(tree);
+    setCollapsedFanOuts(toCollapse);
+  }, [tree]);
+
+  const toggleFanOut = useMemo(
+    () => (id: string) =>
+      setCollapsedFanOuts((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    [],
+  );
+
+  const tasks = useMemo(
+    () => flattenTree(tree, collapsedFanOuts),
+    [tree, collapsedFanOuts],
+  );
+  const layout = useMemo(
+    () => buildLayout(tasks, { collapsed: collapsedFanOuts, onToggleFanOut: toggleFanOut }),
+    [tasks, collapsedFanOuts, toggleFanOut],
+  );
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(layout.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(layout.edges);
   const { setCenter } = useReactFlow();
@@ -324,7 +503,7 @@ function TaskGraphCanvasInner({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={(_, node) => {
-            if (onSelectNode) onSelectNode((node.data as TaskNodeCardData).task);
+            if (onSelectNode) onSelectNode((node.data as { task: TaskNodeView }).task);
           }}
           fitView
           fitViewOptions={{ padding: 0.2 }}
@@ -340,7 +519,7 @@ function TaskGraphCanvasInner({
             zoomable
             maskColor="rgba(0, 0, 0, 0.6)"
             nodeColor={(node) => {
-              const status = (node.data as TaskNodeCardData)?.task?.status ?? "candidate";
+              const status = (node.data as { task?: TaskNodeView })?.task?.status ?? "candidate";
               return statusFillColor(status);
             }}
           />
