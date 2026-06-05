@@ -1,0 +1,8 @@
+kind: task_template
+id: demo.analyze_single_feature
+version: 1.0.0
+title: Анализ одной функции
+type: leaf
+executor: stub
+produces:
+  artifact: demo.feature_detail@1.0.0

@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: demo.feature_detail
+version: 1.0.0
+title: Детальный анализ функции
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

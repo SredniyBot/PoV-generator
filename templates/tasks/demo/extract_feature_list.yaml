@@ -1,0 +1,8 @@
+kind: task_template
+id: demo.extract_feature_list
+version: 1.0.0
+title: Извлечь список функций
+type: leaf
+executor: stub
+produces:
+  artifact: demo.feature_list@1.0.0

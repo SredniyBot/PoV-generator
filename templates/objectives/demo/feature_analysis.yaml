@@ -1,0 +1,9 @@
+kind: objective
+id: demo.feature_analysis
+version: 1.0.0
+title: Анализ функций продукта (fan-out демо)
+root: demo.analyze_product_features@1.0.0
+default_methodology_pack: process.lean_jtbd@1.0.0
+done_when:
+  artifacts: []
+  gates: []

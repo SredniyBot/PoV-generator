@@ -1,0 +1,10 @@
+kind: task_template
+id: demo.analyze_product_features
+version: 1.0.0
+title: Анализ функций продукта
+type: composite
+children:
+  - id: extract_features
+    task: demo.extract_feature_list@1.0.0
+  - id: analyze_features
+    task: demo.analyze_features_fanout@1.0.0
