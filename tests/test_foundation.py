@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import shutil
+import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 
 from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
-from pov_generator.domain.registry import ObjectRef
+from pov_generator.common.errors import ValidationError
+from pov_generator.domain.registry import ObjectRef, parse_task_template
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -691,3 +694,77 @@ def test_task_methodology_trace_returns_reasoning_and_trace(tmp_path: Path) -> N
     trace = qs.task_methodology_trace(pid, completed.task_id)
     assert trace["trace"] is not None
     assert trace["reasoning"] is not None
+
+
+# --- fan_out registry validation ---
+
+_FAN_OUT_YAML_BASE = textwrap.dedent("""\
+    id: analyze_competitors
+    version: "1.0.0"
+    kind: task_template
+    type: fan_out
+    title: Analyze Competitors
+    executor: stub
+    fan_out_spec:
+      artifact_role: competitor_list
+      array_path: competitors
+      key_field: id
+      label_field: name
+    children_template_ref: analyze_single@1.0.0
+    children: []
+    slots: []
+    requires:
+      artifacts:
+        required: []
+        optional: []
+      state: []
+      readiness: []
+      forbidden_open_gaps: []
+      domain_packs: []
+    produces: {}
+    effects:
+      readiness:
+        set: []
+      gaps:
+        close: []
+    context:
+      include: []
+    planning: {}
+    validation: {}
+""")
+
+
+def test_parse_fan_out_template_valid():
+    spec = parse_task_template(yaml.safe_load(_FAN_OUT_YAML_BASE), source_path=Path("test.yaml"))
+    assert spec.template_type == "fan_out"
+    assert spec.fan_out_spec is not None
+    assert spec.fan_out_spec.artifact_role == "competitor_list"
+    assert spec.children_template_ref == "analyze_single@1.0.0"
+
+
+def test_parse_fan_out_template_missing_fan_out_spec_raises():
+    raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
+    del raw["fan_out_spec"]
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, source_path=Path("test.yaml"))
+
+
+def test_parse_fan_out_template_missing_children_template_ref_raises():
+    raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
+    del raw["children_template_ref"]
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, source_path=Path("test.yaml"))
+
+
+def test_parse_leaf_template_with_fan_out_spec_raises():
+    raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
+    raw["type"] = "leaf"
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, source_path=Path("test.yaml"))
+
+
+def test_parse_fan_out_template_invalid_children_template_ref_raises():
+    raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
+    raw["children_template_ref"] = "analyze_single_without_version"
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, source_path=Path("test.yaml"))
