@@ -763,6 +763,14 @@ def test_parse_leaf_template_with_fan_out_spec_raises():
         parse_task_template(raw, source_path=Path("test.yaml"))
 
 
+def test_parse_leaf_template_with_children_template_ref_raises():
+    raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
+    raw["type"] = "leaf"
+    del raw["fan_out_spec"]
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, source_path=Path("test.yaml"))
+
+
 def test_parse_fan_out_template_invalid_children_template_ref_raises():
     raw = yaml.safe_load(_FAN_OUT_YAML_BASE)
     raw["children_template_ref"] = "analyze_single_without_version"
