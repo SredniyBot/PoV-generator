@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from ..common.errors import NotFoundError, ValidationError
 
-TemplateType = Literal["composite", "leaf"]
+TemplateType = Literal["composite", "leaf", "fan_out"]
 ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system"]
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 StageExecutionMode = Literal["single_call", "per_stage_cot"]
@@ -87,6 +87,14 @@ class TaskChildSpec:
 class TaskSlotSpec:
     identifier: str
     title: str
+
+
+@dataclass(frozen=True)
+class FanOutSpec:
+    artifact_role: str
+    array_path: str
+    key_field: str
+    label_field: str
 
 
 @dataclass(frozen=True)
@@ -226,6 +234,8 @@ class TemplateSpec:
     # проекту не решают — там identification только генерирует мета-шум
     # (см. docs/decision_subsystem_design_v3.6.md).
     decision_identification_enabled: bool = True
+    fan_out_spec: FanOutSpec | None = None
+    children_template_ref: str | None = None
     source_path: Path = Path("")
 
     @property
@@ -658,7 +668,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
     version = require_str(raw, "version", owner)
     parse_semver(version)
     template_type = require_str(raw, "type", owner)
-    if template_type not in {"composite", "leaf"}:
+    if template_type not in {"composite", "leaf", "fan_out"}:
         raise ValidationError(f"Unsupported task template type '{template_type}' in {owner}")
 
     children = tuple(
@@ -734,11 +744,33 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             conflict_policy=conflict_policy,  # type: ignore[arg-type]
         )
 
+    # fan_out fields — validated and parsed here, passed into TemplateSpec below
+    fan_out_spec: FanOutSpec | None = None
+    children_template_ref_val: str | None = None
+    if template_type == "fan_out":
+        fan_out_raw = raw.get("fan_out_spec")
+        if not isinstance(fan_out_raw, dict):
+            raise ValidationError(f"fan_out_spec is required for fan_out template in {owner}")
+        fan_out_spec = FanOutSpec(
+            artifact_role=require_str(fan_out_raw, "artifact_role", owner),
+            array_path=require_str(fan_out_raw, "array_path", owner),
+            key_field=require_str(fan_out_raw, "key_field", owner),
+            label_field=require_str(fan_out_raw, "label_field", owner),
+        )
+        children_template_ref_val = raw.get("children_template_ref")
+        if not isinstance(children_template_ref_val, str) or not children_template_ref_val:
+            raise ValidationError(f"children_template_ref is required for fan_out template in {owner}")
+    else:
+        if "fan_out_spec" in raw:
+            raise ValidationError(f"fan_out_spec is only allowed for fan_out templates in {owner}")
+        if "children_template_ref" in raw:
+            raise ValidationError(f"children_template_ref is only allowed for fan_out templates in {owner}")
+
     return TemplateSpec(
         identifier=require_str(raw, "id", owner),
         version=version,
         title=require_str(raw, "title", owner),
-        template_type=template_type,  # type: ignore[arg-type]
+        template_type=template_type,
         status=str(raw.get("status", "active")),
         domain=str(raw.get("domain", require_str(raw, "id", owner).split(".", 1)[0])),
         complexity=complexity_value,
@@ -784,6 +816,8 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         decision_identification_enabled=bool(
             raw.get("decision_identification", True)
         ),
+        fan_out_spec=fan_out_spec,
+        children_template_ref=children_template_ref_val,
         source_path=source_path,
     )
 
