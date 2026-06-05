@@ -205,6 +205,30 @@ def test_expand_fan_outs_empty_array_completes_wrapper(tmp_path: Path):
     assert len(instances) == 0
 
 
+def test_task_graph_view_has_fan_out_meta_for_fan_out_nodes(tmp_path: Path):
+    from pov_generator.application.registry_service import RegistryService
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.domain.workspace_views import FanOutMeta
+
+    registry_root = tmp_path / "templates"
+    workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
+    fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_view", "fan-out-view")
+
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    registry_service = RegistryService(FilesystemRegistryLoader(registry_root))
+    query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
+    tasks = runtime.list_tasks(workspace)
+    nodes = query_service._build_task_tree(workspace, tasks, None, snapshot)
+    fan_out_nodes = [n for n in nodes if n.template_type == "fan_out"]
+    assert len(fan_out_nodes) == 1
+    assert fan_out_nodes[0].fan_out_meta is not None
+    assert isinstance(fan_out_nodes[0].fan_out_meta, FanOutMeta)
+    assert fan_out_nodes[0].fan_out_meta.source_artifact_role == "item_list"
+    assert fan_out_nodes[0].fan_out_meta.total_instances == 0
+    assert fan_out_nodes[0].fan_out_meta.completed_instances == 0
+
+
 def test_fan_out_wrapper_completes_when_all_instances_done(tmp_path: Path):
     workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
     fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_wrapper4", "fan-out-4")

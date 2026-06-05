@@ -13,6 +13,7 @@ from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
     ActionDescriptor,
+    FanOutMeta,
     ArtifactDetailView,
     ArtifactSectionView,
     ArtifactSkeletonView,
@@ -301,7 +302,7 @@ class WorkspaceQueryService:
             tasks = self._runtime.list_tasks(context.workspace)
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
-        nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None)
+        nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None, context.snapshot)
         return ProjectTaskGraphView(
             project_id=context.manifest.project_id,
             objective_ref=context.manifest.objective_ref,
@@ -1286,10 +1287,21 @@ class WorkspaceQueryService:
             snapshot=snapshot,
         )
 
-    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None) -> tuple[TaskNodeView, ...]:
+    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None) -> tuple[TaskNodeView, ...]:
         children_by_parent: dict[str | None, list[TaskRecord]] = {}
         for task in tasks:
             children_by_parent.setdefault(task.parent_task_id, []).append(task)
+        children_count_by_parent: dict[str, int] = {}
+        completed_count_by_parent: dict[str, int] = {}
+        for task in tasks:
+            if task.parent_task_id:
+                children_count_by_parent[task.parent_task_id] = (
+                    children_count_by_parent.get(task.parent_task_id, 0) + 1
+                )
+                if task.status == "completed":
+                    completed_count_by_parent[task.parent_task_id] = (
+                        completed_count_by_parent.get(task.parent_task_id, 0) + 1
+                    )
         # v3.1: счётчик «блокирующих уточнений» = число open Decisions с
         # source_task_id == task_id.
         try:
@@ -1307,6 +1319,18 @@ class WorkspaceQueryService:
                 )
 
         def build(task: TaskRecord) -> TaskNodeView:
+            fan_out_meta = None
+            if task.template_type == "fan_out" and snapshot is not None:
+                try:
+                    tmpl = snapshot.resolve_template(task.template_ref)
+                    if tmpl.fan_out_spec is not None:
+                        fan_out_meta = FanOutMeta(
+                            source_artifact_role=tmpl.fan_out_spec.artifact_role,
+                            total_instances=children_count_by_parent.get(task.task_id, 0),
+                            completed_instances=completed_count_by_parent.get(task.task_id, 0),
+                        )
+                except Exception:
+                    pass
             return TaskNodeView(
                 task_id=task.task_id,
                 task_key=task.task_key,
@@ -1325,6 +1349,7 @@ class WorkspaceQueryService:
                 blocking_clarification_count=clarification_counts.get(task.task_id, 0),
                 updated_at=task.updated_at,
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
+                fan_out_meta=fan_out_meta,
             )
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))
