@@ -15,7 +15,7 @@
  * - показывает прогресс-баннер и меню действий на нодах.
  */
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -65,15 +65,6 @@ interface FanOutCardData extends Record<string, unknown> {
 type FlowNode = Node<TaskNodeCardData | FanOutCardData>;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-/** flatten рекурсивного дерева TaskNodeView[] в плоский массив (включая корни). */
-function flatten(tree: TaskNodeView[], acc: TaskNodeView[] = []): TaskNodeView[] {
-  for (const node of tree) {
-    acc.push(node);
-    if (node.children?.length) flatten(node.children, acc);
-  }
-  return acc;
-}
 
 /** Flatten with collapse support — skips children of collapsed fan-out nodes. */
 function flattenTree(nodes: TaskNodeView[], collapsed: Set<string>): TaskNodeView[] {
@@ -197,7 +188,7 @@ function resolveActions(task: TaskNodeView): {
 
 // ── Custom node ────────────────────────────────────────────────────────────
 
-function TaskCardNode({ data }: NodeProps<FlowNode>) {
+function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const task = data.task;
   const actions = useContext(TaskGraphActionsCtx);
   const { showRetry, showArtifacts, showDecisions } = resolveActions(task);
@@ -430,11 +421,15 @@ function TaskGraphCanvasInner({
       }
     }
     walk(tree);
-    setCollapsedFanOuts(toCollapse);
+    setCollapsedFanOuts((prev) => {
+      const next = new Set(prev);
+      toCollapse.forEach((id) => next.add(id));
+      return next;
+    });
   }, [tree]);
 
-  const toggleFanOut = useMemo(
-    () => (id: string) =>
+  const toggleFanOut = useCallback(
+    (id: string) =>
       setCollapsedFanOuts((prev) => {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
