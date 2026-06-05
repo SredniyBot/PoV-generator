@@ -169,6 +169,7 @@ function labelForOrigin(origin: string): string {
     case "repair":              return "исправление";
     case "user_request":        return "ручная";
     case "system":              return "система";
+    case "fan_out_instance":    return "fan-out";
     default:                    return origin;
   }
 }

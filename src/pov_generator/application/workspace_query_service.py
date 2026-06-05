@@ -1324,10 +1324,13 @@ class WorkspaceQueryService:
                 try:
                     tmpl = snapshot.resolve_template(task.template_ref)
                     if tmpl.fan_out_spec is not None:
+                        artifact = self._runtime.latest_artifact_by_role(workspace, tmpl.fan_out_spec.artifact_role)
+                        producer_task_id = artifact.created_by_task_id if artifact is not None else None
                         fan_out_meta = FanOutMeta(
                             source_artifact_role=tmpl.fan_out_spec.artifact_role,
                             total_instances=children_count_by_parent.get(task.task_id, 0),
                             completed_instances=completed_count_by_parent.get(task.task_id, 0),
+                            producer_task_id=producer_task_id,
                         )
                 except Exception:
                     pass
