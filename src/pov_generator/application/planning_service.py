@@ -305,7 +305,11 @@ class PlanningService:
                     depth=task.depth + 1,
                     slot_id=None,
                 )
+            # Transition wrapper to waiting_for_children (even if 0 instances)
             self._runtime.transition_task(workspace, task.task_id, "expand_fan_out")
+            # If no items in source array, immediately complete the wrapper
+            if not array:
+                self._runtime.transition_task(workspace, task.task_id, "complete")
 
     def _create_task(
         self,

@@ -758,8 +758,15 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             label_field=require_str(fan_out_raw, "label_field", owner),
         )
         children_template_ref_val = raw.get("children_template_ref")
-        if not isinstance(children_template_ref_val, str) or not children_template_ref_val:
+        if not isinstance(children_template_ref_val, str) or not children_template_ref_val.strip():
             raise ValidationError(f"children_template_ref is required for fan_out template in {owner}")
+        # Validate it's in <id>@<semver> format
+        try:
+            ObjectRef.parse(children_template_ref_val)
+        except (ValidationError, Exception):
+            raise ValidationError(
+                f"children_template_ref must be in '<id>@<semver>' format in {owner}, got: {children_template_ref_val!r}"
+            )
     else:
         if "fan_out_spec" in raw:
             raise ValidationError(f"fan_out_spec is only allowed for fan_out templates in {owner}")

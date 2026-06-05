@@ -133,3 +133,10 @@ def test_parse_non_fan_out_template_with_children_template_ref_raises():
     del raw["fan_out_spec"]
     with pytest.raises(ValidationError, match="children_template_ref"):
         parse_task_template(raw, Path("test.yaml"))
+
+
+def test_parse_fan_out_template_invalid_children_template_ref_raises():
+    raw = _template_raw_fan_out()
+    raw["children_template_ref"] = "bad-ref-without-semver"
+    with pytest.raises(ValidationError):
+        parse_task_template(raw, Path("test.yaml"))

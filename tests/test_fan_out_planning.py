@@ -5,7 +5,6 @@ import json
 import shutil
 from pathlib import Path
 
-import pytest
 import yaml
 
 from pov_generator.application.planning_service import PlanningService
@@ -189,6 +188,21 @@ def test_expand_fan_outs_is_idempotent(tmp_path: Path):
     count_second = len([t for t in runtime.list_tasks(workspace) if t.parent_task_id == fan_out_task.task_id])
 
     assert count_first == count_second == 1
+
+
+def test_expand_fan_outs_empty_array_completes_wrapper(tmp_path: Path):
+    workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
+    fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_wrapper_empty", "fan-out-empty")
+    # Store artifact with empty items array
+    _store_item_list_artifact(runtime, workspace, [])
+
+    planning_service._expand_fan_outs(workspace, snapshot)
+    tasks = runtime.list_tasks(workspace)
+    wrapper = next(t for t in tasks if t.task_id == fan_out_task.task_id)
+    # Empty array → wrapper should complete immediately (no children to wait for)
+    assert wrapper.status == "completed"
+    instances = [t for t in tasks if t.parent_task_id == fan_out_task.task_id]
+    assert len(instances) == 0
 
 
 def test_fan_out_wrapper_completes_when_all_instances_done(tmp_path: Path):
