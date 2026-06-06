@@ -55,6 +55,33 @@ def test_capability_limits_parsed() -> None:
     assert "reliability" in dims and dims["reliability"]
 
 
+def test_draft_trial_capability_profile_parses_as_experimental() -> None:
+    # Ф5: черновик пробного умения из зоны роста — валидный профиль, maturity=пробное.
+    from pov_generator.application.capability_authoring import draft_trial_capability_profile
+
+    text = draft_trial_capability_profile(
+        capability_id="capability.speech",
+        title="Распознавание речи",
+        role="ml",
+        capability_name="ml.speech_to_text",
+        tech=["Whisper"],
+        requires=["Доступ к аудио"],
+    )
+    spec = parse_capability_profile(yaml.safe_load(text), Path("draft.yaml"))
+    assert spec.role == "ml"
+    assert spec.capabilities[0].capability == "ml.speech_to_text"
+    assert spec.capabilities[0].maturity == "experimental"
+
+
+def test_draft_rejects_unknown_role() -> None:
+    from pov_generator.application.capability_authoring import draft_trial_capability_profile
+
+    with pytest.raises(ValueError):
+        draft_trial_capability_profile(
+            capability_id="capability.x", title="X", role="wizard", capability_name="x.y"
+        )
+
+
 def test_capability_brief_is_conservative() -> None:
     # Ф2: бриф для оценки реализуемости задаёт умолчание «не реализуемо»,
     # запрещает выдумывать умения и упоминает пределы.
