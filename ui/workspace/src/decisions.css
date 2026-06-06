@@ -738,10 +738,6 @@
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* meta-row (артефакт + альтернативы) — оставлен для совместимости со
-   старым layout'ом, но реальный рендер делает блок выше. */
-.decision-card__meta-row { display: none; }
-
 /* =====================================================================
    v3.3 — DecisionCard redesign: prominent chosen, artifact link,
    alternatives dropdown, free_text-only с «принять как есть»
