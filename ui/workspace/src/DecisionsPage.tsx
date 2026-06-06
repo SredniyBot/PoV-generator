@@ -555,6 +555,9 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
+  // Клик по счётчику уровня = фильтр; повторный клик по активному — сброс.
+  const toggleLevel = (l: DecisionLevel) =>
+    setLevelFilter((cur) => (cur === l ? "all" : l));
 
   const query = useQuery({
     queryKey: ["decisions", projectId, levelFilter, statusFilter],
@@ -622,7 +625,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
           <strong>{view.mode}</strong>.
         </p>
 
-        {/* Hero counters */}
+        {/* Счётчики = фильтр по уровню/рискам. «На вашем уровне» = сброс. */}
         <div className="decisions-hero">
           <DecisionCounter
             label="На вашем уровне"
@@ -630,59 +633,59 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
             sub={view.surfaced_pending > 0 ? `${view.surfaced_pending} ждут ответа` : "все ответы получены"}
             tone={view.surfaced_pending > 0 ? "active" : "muted"}
             emphasis
+            active={levelFilter === "all" && !showRiskyOnly}
+            onClick={() => {
+              setLevelFilter("all");
+              setShowRiskyOnly(false);
+            }}
           />
-          <DecisionCounter label="Бизнес" value={view.business_count} tone="danger" />
-          <DecisionCounter label="Архитектура" value={view.architecture_count} tone="warning" />
-          <DecisionCounter label="Детали" value={view.detail_count} tone="muted" />
+          <DecisionCounter
+            label="Бизнес"
+            value={view.business_count}
+            tone="danger"
+            active={levelFilter === "business"}
+            onClick={() => toggleLevel("business")}
+          />
+          <DecisionCounter
+            label="Архитектура"
+            value={view.architecture_count}
+            tone="warning"
+            active={levelFilter === "architecture"}
+            onClick={() => toggleLevel("architecture")}
+          />
+          <DecisionCounter
+            label="Детали"
+            value={view.detail_count}
+            tone="muted"
+            active={levelFilter === "detail"}
+            onClick={() => toggleLevel("detail")}
+          />
           <DecisionCounter
             label="Система не уверена"
             value={view.low_confidence_count}
             tone={view.low_confidence_count > 0 ? "warning" : "muted"}
+            active={showRiskyOnly}
+            onClick={() => setShowRiskyOnly((v) => !v)}
           />
         </div>
 
-        {/* Filters toolbar */}
+        {/* Тулбар: остался только статус (уровень/риски — на счётчиках выше). */}
         <div className="decisions-toolbar">
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Уровень:</span>
-            <div className="segmented">
-              {(["all", "business", "architecture", "detail"] as LevelFilter[]).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", levelFilter === f && "segmented__item--active")}
-                  onClick={() => setLevelFilter(f)}
-                >
-                  {f === "all" ? "Все" : LEVEL_LABEL[f as DecisionLevel]}
-                </button>
-              ))}
-            </div>
+          <span className="decisions-filter__label">Статус:</span>
+          <div className="segmented">
+            {(
+              ["all", "proposed", "accepted_default", "user_overridden", "deferred"] as StatusFilter[]
+            ).map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={cx("segmented__item", statusFilter === f && "segmented__item--active")}
+                onClick={() => setStatusFilter(f)}
+              >
+                {f === "all" ? "Все" : STATUS_LABEL[f as DecisionStatus]}
+              </button>
+            ))}
           </div>
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Статус:</span>
-            <div className="segmented">
-              {(
-                ["all", "proposed", "accepted_default", "user_overridden", "deferred"] as StatusFilter[]
-              ).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", statusFilter === f && "segmented__item--active")}
-                  onClick={() => setStatusFilter(f)}
-                >
-                  {f === "all" ? "Все" : STATUS_LABEL[f as DecisionStatus]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label className="decisions-filter__check">
-            <input
-              type="checkbox"
-              checked={showRiskyOnly}
-              onChange={(e) => setShowRiskyOnly(e.target.checked)}
-            />
-            <span>Только рискованные</span>
-          </label>
         </div>
 
         {visibleItems.length === 0 ? (
@@ -712,21 +715,40 @@ function DecisionCounter({
   sub,
   tone,
   emphasis,
+  active,
+  onClick,
 }: {
   label: string;
   value: number;
   sub?: string;
   tone: "active" | "danger" | "warning" | "success" | "muted";
   emphasis?: boolean;
+  active?: boolean;
+  onClick?: () => void;
 }) {
-  return (
-    <div className={cx("decision-counter", emphasis && "decision-counter--emphasis")}>
+  const className = cx(
+    "decision-counter",
+    emphasis && "decision-counter--emphasis",
+    onClick && "decision-counter--clickable",
+    active && "decision-counter--active",
+  );
+  const body = (
+    <>
       <span className={cx("decision-counter__value", `decision-counter__value--${tone}`)}>
         {value}
       </span>
       <span className="decision-counter__label">{label}</span>
       {sub ? <span className="decision-counter__sub">{sub}</span> : null}
-    </div>
+    </>
+  );
+  // Кликабельный счётчик = фильтр (фильтр уровня вынесен сюда — нагляднее,
+  // чем отдельный сегмент-контрол, особенно в автопилоте).
+  return onClick ? (
+    <button type="button" className={className} onClick={onClick} aria-pressed={active}>
+      {body}
+    </button>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }
 

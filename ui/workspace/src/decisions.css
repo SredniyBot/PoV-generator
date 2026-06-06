@@ -1033,3 +1033,20 @@
   color: var(--text-secondary);
   line-height: 1.45;
 }
+
+/* Счётчик как фильтр: сброс button-дефолтов + hover/active/focus. */
+.decision-counter--clickable {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    background var(--motion-fast) var(--motion-easing);
+}
+.decision-counter--clickable:hover { border-color: var(--border-strong); }
+.decision-counter--clickable:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.decision-counter--active {
+  border-color: var(--border-accent);
+  background: var(--surface-accent);
+}
