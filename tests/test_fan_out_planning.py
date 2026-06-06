@@ -213,7 +213,9 @@ def test_task_graph_view_has_fan_out_meta_for_fan_out_nodes(tmp_path: Path):
 
     registry_root = tmp_path / "templates"
     workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
-    fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_view", "fan-out-view")
+    # Создаём fan-out задачу ради побочного эффекта (попадёт в граф); сам
+    # объект не нужен — проверяем узлы через query_service ниже.
+    _make_fan_out_task(runtime, workspace, "test:fan_out_view", "fan-out-view")
 
     catalog = WorkspaceCatalog(workspace.parent, runtime)
     registry_service = RegistryService(FilesystemRegistryLoader(registry_root))
@@ -242,4 +244,60 @@ def test_fan_out_wrapper_completes_when_all_instances_done(tmp_path: Path):
     planning_service._refresh_composite_completion(workspace)
     tasks = runtime.list_tasks(workspace)
     wrapper = next(t for t in tasks if t.task_id == fan_out_task.task_id)
+    assert wrapper.status == "completed"
+
+
+def test_expand_fan_outs_over_width_limit_fails_wrapper(tmp_path: Path, monkeypatch):
+    # Потолок ширины: массив больше лимита → обёртка падает явно, без создания
+    # инстансов (защита от разрастания графа).
+    monkeypatch.setenv("POV_MAX_FAN_OUT_INSTANCES", "2")
+    workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
+    fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_limit", "fan-out-limit")
+    _store_item_list_artifact(runtime, workspace, [
+        {"id": "a", "name": "A"},
+        {"id": "b", "name": "B"},
+        {"id": "c", "name": "C"},
+    ])
+
+    planning_service._expand_fan_outs(workspace, snapshot)
+    tasks = runtime.list_tasks(workspace)
+    wrapper = next(t for t in tasks if t.task_id == fan_out_task.task_id)
+    assert wrapper.status == "failed"
+    assert wrapper.error_message and "POV_MAX_FAN_OUT_INSTANCES" in wrapper.error_message
+    instances = [t for t in tasks if t.parent_task_id == fan_out_task.task_id]
+    assert len(instances) == 0
+
+
+def test_reset_fan_out_obsoletes_prior_attempt_instances(tmp_path: Path):
+    # После reset (attempt+1) и повторного разворачивания старый незавершённый
+    # инстанс прошлой попытки помечается obsolete и НЕ блокирует завершение.
+    workspace, snapshot, runtime, planning_service = _make_fan_out_workspace(tmp_path)
+    fan_out_task = _make_fan_out_task(runtime, workspace, "test:fan_out_reset", "fan-out-reset")
+    _store_item_list_artifact(runtime, workspace, [{"id": "r1", "name": "R1"}])
+
+    planning_service._expand_fan_outs(workspace, snapshot)
+    old_instance = next(
+        t for t in runtime.list_tasks(workspace) if t.parent_task_id == fan_out_task.task_id
+    )
+    # Прошлая попытка «провалилась».
+    runtime.transition_task(workspace, old_instance.task_id, "fail")
+
+    # Сброс обёртки → attempt 2, статус снова waiting_for_fan_out_source.
+    runtime.transition_task(workspace, fan_out_task.task_id, "reset_fan_out")
+    planning_service._expand_fan_outs(workspace, snapshot)
+
+    tasks = runtime.list_tasks(workspace)
+    old_after = next(t for t in tasks if t.task_id == old_instance.task_id)
+    assert old_after.status == "obsolete"  # старый инстанс снят
+    fresh = [
+        t
+        for t in tasks
+        if t.parent_task_id == fan_out_task.task_id and t.status != "obsolete"
+    ]
+    assert len(fresh) == 1  # новый инстанс прошлой попытки
+
+    # Завершаем новый инстанс — обёртка должна завершиться (obsolete не мешает).
+    runtime.transition_task(workspace, fresh[0].task_id, "complete")
+    planning_service._refresh_composite_completion(workspace)
+    wrapper = next(t for t in runtime.list_tasks(workspace) if t.task_id == fan_out_task.task_id)
     assert wrapper.status == "completed"

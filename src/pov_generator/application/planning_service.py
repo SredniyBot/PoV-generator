@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -33,6 +34,31 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
 
 
 logger = get_logger("planner")
+
+# Потолок числа инстансов одного fan-out. Защита от разрастания графа задач,
+# если массив-источник внезапно огромен. Переопределяется
+# POV_MAX_FAN_OUT_INSTANCES (целое > 0).
+DEFAULT_MAX_FAN_OUT_INSTANCES = 100
+
+
+def _max_fan_out_instances() -> int:
+    raw = os.environ.get("POV_MAX_FAN_OUT_INSTANCES", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_MAX_FAN_OUT_INSTANCES
+        if value > 0:
+            return value
+    return DEFAULT_MAX_FAN_OUT_INSTANCES
+
+
+def _trailing_attempt(stable_key: str) -> int | None:
+    """Номер попытки из хвоста stable_key инстанса fan-out (``…:<attempt>``)."""
+    try:
+        return int(stable_key.rsplit(":", 1)[-1])
+    except ValueError:
+        return None
 
 
 class PlanningService:
@@ -286,6 +312,44 @@ class PlanningService:
                 array = array.get(part, [])
             if not isinstance(array, list):
                 array = []
+
+            # Потолок ширины: не разворачиваемся молча в тысячи задач. Падаем
+            # явно (обёртка → failed с понятным сообщением), чтобы оператор
+            # увидел причину и либо сократил источник, либо поднял лимит.
+            limit = _max_fan_out_instances()
+            if len(array) > limit:
+                message = (
+                    f"Fan-out даёт {len(array)} инстансов — больше потолка {limit}. "
+                    f"Сократите источник '{template.fan_out_spec.artifact_role}' "
+                    f"или поднимите POV_MAX_FAN_OUT_INSTANCES."
+                )
+                logger.error(
+                    "fan-out: превышен потолок ширины",
+                    task=task.task_id,
+                    count=len(array),
+                    limit=limit,
+                )
+                self._runtime.transition_task(
+                    workspace, task.task_id, "fail", payload={"error_message": message}
+                )
+                continue
+
+            # Повторное разворачивание (reset_fan_out поднял attempt): инстансы
+            # прошлых попыток больше не актуальны. Помечаем obsolete те из них,
+            # что не завершены — иначе старый failed-ребёнок навсегда блокирует
+            # завершение обёртки. Завершённые не трогаем (доменный запрет на
+            # obsolete из completed; для gating они безвредны).
+            instance_prefix = f"{task.stable_key}:instance:"
+            for existing in tasks:
+                if (
+                    existing.parent_task_id == task.task_id
+                    and existing.origin_kind == "fan_out_instance"
+                    and existing.stable_key.startswith(instance_prefix)
+                    and existing.status not in {"completed", "obsolete"}
+                ):
+                    existing_attempt = _trailing_attempt(existing.stable_key)
+                    if existing_attempt is not None and existing_attempt != task.attempt:
+                        self._runtime.transition_task(workspace, existing.task_id, "obsolete")
 
             child_template = snapshot.resolve_template(template.children_template_ref)
             for idx, item in enumerate(array):
@@ -547,7 +611,13 @@ class PlanningService:
         for task in sorted(by_id.values(), key=lambda item: item.depth, reverse=True):
             if task.template_type not in {"composite", "fan_out"} or task.status == "completed":
                 continue
-            children = children_by_parent.get(task.task_id, [])
+            # Obsolete-дети (например, инстансы прошлой попытки fan-out) не
+            # участвуют в gating — иначе завершение обёртки было бы недостижимо.
+            children = [
+                child
+                for child in children_by_parent.get(task.task_id, [])
+                if child.status != "obsolete"
+            ]
             if children and all(child.status in {"completed", "skipped"} for child in children):
                 self._runtime.transition_task(workspace, task.task_id, "complete")
 

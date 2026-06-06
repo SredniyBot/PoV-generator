@@ -767,10 +767,10 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         # Validate it's in <id>@<semver> format
         try:
             ObjectRef.parse(children_template_ref_val)
-        except (ValidationError, Exception):
+        except Exception as exc:
             raise ValidationError(
                 f"children_template_ref must be in '<id>@<semver>' format in {owner}, got: {children_template_ref_val!r}"
-            )
+            ) from exc
     else:
         if "fan_out_spec" in raw:
             raise ValidationError(f"fan_out_spec is only allowed for fan_out templates in {owner}")

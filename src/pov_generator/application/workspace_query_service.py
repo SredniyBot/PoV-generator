@@ -13,7 +13,6 @@ from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
 from ..domain.workspace_views import (
     ActionDescriptor,
-    FanOutMeta,
     ArtifactDetailView,
     ArtifactSectionView,
     ArtifactSkeletonView,
@@ -27,6 +26,7 @@ from ..domain.workspace_views import (
     DecisionItemView,
     DomainPackCatalogItemView,
     FailurePinView,
+    FanOutMeta,
     ObjectiveCatalogItemView,
     ObjectiveProgressView,
     OverviewArtifactItem,
