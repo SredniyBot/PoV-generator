@@ -485,10 +485,8 @@ function ProviderRow({
         {expanded ? (
           <div className="llm-row__details">
             <div className="llm-row__details-row">
-              <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8, margin: 0 }}>
-                <span style={{ fontSize: 12, color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
-                  Параллельных шагов
-                </span>
+              <label className="field llm-row__concurrency-field">
+                <span className="llm-row__concurrency-label">Параллельных шагов</span>
                 <select
                   className="llm-row__concurrency-select"
                   value={concurrency}
@@ -1200,8 +1198,8 @@ function AssignmentsTab() {
                     ))}
                   </select>
                   {missing ? (
-                    <p className="llm-form__error" style={{ marginTop: 4 }}>
-                      Модель «{current}» недоступна — выберите другую.
+                    <p className="llm-form__error llm-form__error--row">
+                      <AlertCircle size={12} /> Модель «{current}» недоступна — выберите другую.
                     </p>
                   ) : null}
                 </td>
