@@ -192,11 +192,10 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     assert result.stopped_reason == "objective_completed"
     artifact_roles = {artifact.artifact_role for artifact in runtime.list_artifacts(workspace)}
     assert {
-        "request_fact_sheet",
         "goal_hypothesis",
         "constraint_inventory",
-        "ambiguity_gap_report",
         "normalized_request",
+        "problem_statement",
         "business_outcome_model",
         "scope_boundary_matrix",
         "stakeholder_map",
@@ -308,9 +307,11 @@ def test_low_confidence_artifact_marks_for_confirmation_not_fails(tmp_path: Path
                 "request_summary": "Краткий запрос",
                 "business_problem": "Неясно, что именно нужно сделать.",
                 "requested_solution_elements": ["Что-то сделать"],
+                "explicit_facts": [],
                 "explicit_constraints": [],
                 "implicit_risks": ["Очень высокая неопределенность"],
                 "ambiguous_points": ["Почти все"],
+                "safe_assumptions": [],
                 "confidence": 0.2,
             },
             ensure_ascii=False,

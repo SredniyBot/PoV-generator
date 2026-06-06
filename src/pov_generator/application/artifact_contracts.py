@@ -698,31 +698,29 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "rationale": {"type": "string"},
             },
         },
+        # ТЗ v2: «Разбор запроса» — слияние нормализации + фактов + пробелов в
+        # один артефакт (explicit_facts и safe_assumptions добавлены сюда из
+        # бывших request_fact_sheet / ambiguity_gap_report). Меньше шагов.
         "normalized_request": _analysis_object(
-            ["request_summary", "business_problem", "requested_solution_elements", "explicit_constraints", "implicit_risks", "ambiguous_points"],
+            [
+                "request_summary",
+                "business_problem",
+                "requested_solution_elements",
+                "explicit_constraints",
+                "explicit_facts",
+                "implicit_risks",
+                "ambiguous_points",
+                "safe_assumptions",
+            ],
             {
                 "request_summary": {"type": "string"},
                 "business_problem": {"type": "string"},
                 "requested_solution_elements": _string_array_schema(),
                 "explicit_constraints": _string_array_schema(),
+                "explicit_facts": _string_array_schema(),       # факты из запроса
                 "implicit_risks": _string_array_schema(),
-                "ambiguous_points": _string_array_schema(),
-            },
-        ),
-        "request_fact_sheet": _analysis_object(
-            [
-                "explicit_facts",
-                "named_entities",
-                "requested_deliverables",
-                "mentioned_systems_and_sources",
-                "mentioned_metrics_and_targets",
-            ],
-            {
-                "explicit_facts": _string_array_schema(),
-                "named_entities": _string_array_schema(),
-                "requested_deliverables": _string_array_schema(),
-                "mentioned_systems_and_sources": _string_array_schema(),
-                "mentioned_metrics_and_targets": _string_array_schema(),
+                "ambiguous_points": _string_array_schema(),      # неоднозначности/пробелы
+                "safe_assumptions": _string_array_schema(),      # рабочие допущения
             },
         ),
         "goal_hypothesis": _analysis_object(
@@ -755,22 +753,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "stage_constraints": _string_array_schema(),
                 "environment_constraints": _string_array_schema(),
                 "dependency_constraints": _string_array_schema(),
-            },
-        ),
-        "ambiguity_gap_report": _analysis_object(
-            [
-                "ambiguous_points",
-                "conflicting_signals",
-                "missing_decisions",
-                "safe_assumptions",
-                "escalation_candidates",
-            ],
-            {
-                "ambiguous_points": _string_array_schema(),
-                "conflicting_signals": _string_array_schema(),
-                "missing_decisions": _string_array_schema(),
-                "safe_assumptions": _string_array_schema(),
-                "escalation_candidates": _string_array_schema(),
             },
         ),
         "problem_statement": _analysis_object(
@@ -2291,34 +2273,21 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     if artifact_role == "normalized_request":
         return "\n".join(
             [
-                "# Нормализованный запрос",
+                "# Разбор запроса",
                 f"## Краткое резюме\n{payload['request_summary']}",
                 f"## Бизнес-проблема\n{payload['business_problem']}",
                 "## Запрошенные элементы решения",
                 *[f"- {item}" for item in payload["requested_solution_elements"]],
+                "\n## Факты из запроса",
+                *[f"- {item}" for item in payload["explicit_facts"]],
                 "\n## Явные ограничения",
                 *[f"- {item}" for item in payload["explicit_constraints"]],
                 "\n## Неявные риски",
                 *[f"- {item}" for item in payload["implicit_risks"]],
-                "\n## Неоднозначности",
+                "\n## Неоднозначности и пробелы",
                 *[f"- {item}" for item in payload["ambiguous_points"]],
-            ]
-        )
-
-    if artifact_role == "request_fact_sheet":
-        return "\n".join(
-            [
-                "# Факты исходного запроса",
-                "## Явно названные факты",
-                *[f"- {item}" for item in payload["explicit_facts"]],
-                "\n## Названные сущности",
-                *[f"- {item}" for item in payload["named_entities"]],
-                "\n## Упомянутые результаты и поставка",
-                *[f"- {item}" for item in payload["requested_deliverables"]],
-                "\n## Упомянутые системы и источники",
-                *[f"- {item}" for item in payload["mentioned_systems_and_sources"]],
-                "\n## Упомянутые метрики и целевые значения",
-                *[f"- {item}" for item in payload["mentioned_metrics_and_targets"]],
+                "\n## Рабочие допущения",
+                *[f"- {item}" for item in payload["safe_assumptions"]],
             ]
         )
 
@@ -2351,23 +2320,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["environment_constraints"]],
                 "\n## Зависимости и внешние условия",
                 *[f"- {item}" for item in payload["dependency_constraints"]],
-            ]
-        )
-
-    if artifact_role == "ambiguity_gap_report":
-        return "\n".join(
-            [
-                "# Неоднозначности и пробелы запроса",
-                "## Неоднозначные места",
-                *[f"- {item}" for item in payload["ambiguous_points"]],
-                "\n## Конфликтующие сигналы",
-                *[f"- {item}" for item in payload["conflicting_signals"]],
-                "\n## Недостающие решения",
-                *[f"- {item}" for item in payload["missing_decisions"]],
-                "\n## Безопасные рабочие допущения",
-                *[f"- {item}" for item in payload["safe_assumptions"]],
-                "\n## Кандидаты на эскалацию",
-                *[f"- {item}" for item in payload["escalation_candidates"]],
             ]
         )
 

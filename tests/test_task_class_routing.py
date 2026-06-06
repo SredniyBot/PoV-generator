@@ -31,8 +31,6 @@ from pov_generator.infrastructure.llm_settings_store import SqliteSettingsStore
 # для него класс не объявляется (по умолчанию None → execution.standard);
 # проверяем лишь, что выборочные «средние» задачи остаются дефолтными.
 TRIVIAL_TEMPLATES = (
-    "common.request_normalization",
-    "common.request_fact_extraction",
     "common.constraint_inventory",
     "common.glossary_drafting",
     "common.stakeholder_mapping",
@@ -43,7 +41,8 @@ COMPLEX_TEMPLATES = (
 )
 STANDARD_DEFAULT_TEMPLATES = (
     "common.goal_hypothesis",
-    "common.ambiguity_gap_analysis",
+    # ТЗ v2: «Разобрать запрос» — теперь анализ (был trivial), класс standard.
+    "common.request_normalization",
     "architecture.component_decomposition",
 )
 

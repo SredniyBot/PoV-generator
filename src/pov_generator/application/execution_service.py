@@ -1757,7 +1757,7 @@ class ExecutionService:
             user_story_map = self._find_payload(parsed_inputs, "Анализ user story")
             alternatives = self._find_payload(parsed_inputs, "Сравнение альтернатив")
             ui_outline = self._find_payload(parsed_inputs, "Разобрать пользовательские потоки", "Анализ пользовательских потоков")
-            normalized_request = self._find_payload(parsed_inputs, "Нормализовать запрос", "Нормализация исходного бизнес-запроса")
+            normalized_request = self._find_payload(parsed_inputs, "Разобрать запрос", "Нормализовать запрос", "Нормализация исходного бизнес-запроса")
             business_outcome = self._find_payload(parsed_inputs, "Определить бизнес-результат", "Формализация бизнес-результата")
             scope_boundary = self._find_payload(parsed_inputs, "Зафиксировать границы этапа", "Определение границ этапа")
             stakeholders = self._find_payload(parsed_inputs, "Выделить стейкхолдеров", "Карта стейкхолдеров")

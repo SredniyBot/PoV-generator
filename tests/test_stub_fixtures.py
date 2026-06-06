@@ -29,10 +29,8 @@ FIXTURE_ROOT = REPO_ROOT / "templates" / "stub_fixtures"
 
 EXPECTED_STATIC_ROLES = {
     "clarification_notes",
-    "request_fact_sheet",
     "goal_hypothesis",
     "constraint_inventory",
-    "ambiguity_gap_report",
     "normalized_request",
     "business_outcome_model",
     "scope_boundary_matrix",

@@ -19,7 +19,6 @@ requires:
     required: []
     optional:
       - common.normalized_request@1.0.0
-      - common.request_fact_sheet@1.0.0
       - common.goal_hypothesis@1.0.0
 produces:
   artifact: common.problem_statement@1.0.0

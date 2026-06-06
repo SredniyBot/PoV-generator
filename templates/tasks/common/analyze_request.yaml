@@ -6,14 +6,12 @@ type: composite
 status: active
 domain: common
 children:
-  - id: request_fact_extraction
-    task: common.request_fact_extraction@1.0.0
+  # ТЗ v2: разбор запроса (нормализация + факты + неоднозначности/пробелы) слит
+  # в один шаг common.request_normalization.
   - id: goal_hypothesis
     task: common.goal_hypothesis@1.0.0
   - id: constraint_inventory
     task: common.constraint_inventory@1.0.0
-  - id: ambiguity_gap_analysis
-    task: common.ambiguity_gap_analysis@1.0.0
   - id: request_normalization
     task: common.request_normalization@1.0.0
   - id: problem_statement

@@ -102,15 +102,18 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     # requirements_spec_review) стало 21. Затем +1 leaf
     # common.feasibility_assessment (оценка реализуемости частей проекта) →
     # 22. ТЗ v2: +«Постановка проблемы» (стержень) и +«Интеграции и данные» →
-    # 24. Privacy_impact_assessment живёт в security-домене и появляется
-    # только когда активен security pack.
-    assert len(tasks) == 24
+    # 24; затем слияние разбора запроса (убраны request_fact_extraction и
+    # ambiguity_gap_analysis, их работа — в «Разобрать запрос») → 22.
+    # Privacy_impact_assessment живёт в security-домене и появляется только
+    # когда активен security pack.
+    assert len(tasks) == 22
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
-    assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
+    assert any(task.template_type == "leaf" and task.title == "Сформировать гипотезу цели" for task in tasks)
+    assert any(task.template_type == "leaf" and task.title == "Разобрать запрос" for task in tasks)
 
     decision = planning_service.plan(workspace, snapshot, mode="dry-run")
     assert decision.outcome == "selected"
-    assert decision.selected_task_key == "common.request_fact_extraction@1.0.0"
+    assert decision.selected_task_key == "common.goal_hypothesis@1.0.0"
 
 
 def test_domain_pack_contributes_tasks_into_configured_slots(tmp_path: Path) -> None:
