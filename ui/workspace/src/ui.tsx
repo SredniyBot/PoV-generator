@@ -513,24 +513,8 @@ export function WorkspaceHeader({
             <Layers3 size={14} />
             Доменов: {shell.active_domain_packs.length}
           </span>
-          {shell.objective_complete &&
-          shell.compatible_next_objectives &&
-          shell.compatible_next_objectives.length > 0 &&
-          onActivateNextObjective
-            ? shell.compatible_next_objectives.map((nextRef) => (
-                <button
-                  key={nextRef}
-                  type="button"
-                  className="meta-chip meta-chip--button meta-chip--cta"
-                  onClick={() => onActivateNextObjective(nextRef)}
-                  disabled={activatingNextObjective}
-                  title={`Активировать следующий objective: ${nextRef}`}
-                >
-                  <ArrowRight size={14} />
-                  Перейти к {nextRef}
-                </button>
-              ))
-            : null}
+          {/* CTA «Перейти к следующему этапу» переехала в StageStatusBar
+              (степпер над вкладками) — здесь больше не дублируется. */}
           {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
             <button
               type="button"

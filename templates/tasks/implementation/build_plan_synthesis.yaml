@@ -1,0 +1,43 @@
+kind: task_template
+id: implementation.build_plan_synthesis
+version: 1.0.0
+title: Сводный план реализации
+type: leaf
+status: active
+domain: implementation
+executor: llm
+methodology: minimal
+merge:
+  strategy: synthetic
+  conflict_policy: union
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_decomposition@1.0.0
+    optional:
+      - implementation.backend_build_spec@1.0.0
+      - implementation.ui_build_spec@1.0.0
+      - implementation.ml_build_spec@1.0.0
+      - implementation.data_build_spec@1.0.0
+      - implementation.integration_build_spec@1.0.0
+      - common.feasibility_assessment@1.0.0
+produces:
+  artifact: implementation.build_plan@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 48000
+planning:
+  priority: 100
+summary: |
+  Собери сводный план реализации из спек сборки агентов и feasibility.
+  • routing — по каждой части: агент-владелец (covered_by), способность
+    (matched_capability), статус (готово к сборке / при условии / вне зоны /
+    не покрыто);
+  • sequencing — очерёдность фаз с учётом зависимостей между компонентами;
+  • per_agent — сводка по каждому агенту (число компонентов, ключевое);
+  • risks_and_gaps — части infeasible/непокрытые из feasibility и всё, что
+    агенты вынесли в out_of_scope;
+  • executive_summary — короткий абзац: что и как строим, что под условием,
+    что вне рамок.
+  Не выдумывай компоненты, которых нет в спеках агентов или архитектуре.

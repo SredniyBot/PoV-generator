@@ -562,6 +562,10 @@ def create_app(
     def project_overview(project_id: str) -> Any:
         return to_primitive(query_service.project_overview(project_id))
 
+    @app.get("/api/projects/{project_id}/stages")
+    def project_stages(project_id: str) -> Any:
+        return to_primitive(query_service.project_stages(project_id))
+
     @app.get("/api/projects/{project_id}/task-graph")
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))
@@ -1275,6 +1279,9 @@ def create_app(
                 # which is exactly what L1 Mission Control needs.
                 "overview",
                 "methodology",
+                # Степпер этапов (gate stepper) над вкладками — постоянный
+                # статус-слой; меняется на любой записи воркспейса.
+                "stages",
                 # Прогресс workflow-ранов — первоклассная realtime-проекция.
                 # realtime_token меняется на каждой записи runner'а, поэтому
                 # клиент получает push и инвалидирует run-запросы без HTTP-

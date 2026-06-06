@@ -1,0 +1,22 @@
+kind: agent_capability
+id: agent.ml
+version: 1.0.0
+title: ML build-agent
+role: ml
+binds: ml.predictive_analytics@1.0.0
+capabilities:
+  - capability: ml.supervised_model
+    tech: [scikit-learn, XGBoost]
+    requires:
+      - Размеченная обучающая выборка
+      - Определение целевой метрики
+    maturity: reliable
+  - capability: ml.forecasting
+    tech: [Prophet, statsmodels]
+    requires:
+      - Историчные данные не менее 12 периодов
+    maturity: experimental
+cannot_do:
+  - Гарантия точности модели без репрезентативных данных
+  - Обучение на данных, которых нет в периметре проекта
+escalation: Вопросы качества данных эскалировать data-агенту

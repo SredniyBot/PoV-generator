@@ -1,0 +1,20 @@
+kind: agent_capability
+id: agent.ui
+version: 1.0.0
+title: UI build-agent
+role: ui
+capabilities:
+  - capability: ui.web_spa
+    tech: [React, TypeScript]
+    requires:
+      - Описание пользовательских потоков
+    maturity: reliable
+  - capability: ui.dashboards
+    tech: [React, Recharts]
+    requires:
+      - Перечень метрик и источник данных
+    maturity: reliable
+cannot_do:
+  - Нативные мобильные приложения (iOS/Android SDK)
+  - Pixel-perfect без согласованного дизайн-макета
+escalation: Дизайн-макеты запрашивать у продуктового дизайнера

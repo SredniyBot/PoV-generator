@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: common.feasibility_assessment
+version: 1.0.0
+title: Оценка реализуемости
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

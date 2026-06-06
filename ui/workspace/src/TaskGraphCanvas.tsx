@@ -388,6 +388,8 @@ function ProgressBanner({ tasks, completedLeafTasks, totalLeafTasks }: ProgressB
 export interface TaskGraphCanvasProps {
   tree: TaskNodeView[];
   onSelectNode?: (task: TaskNodeView) => void;
+  // Дип-линк из статус-бара (?focus=<taskId>): центрировать граф на узле.
+  focusTaskId?: string;
   height?: string | number;
   completedLeafTasks?: number;
   totalLeafTasks?: number;
@@ -401,6 +403,7 @@ export interface TaskGraphCanvasProps {
 function TaskGraphCanvasInner({
   tree,
   onSelectNode,
+  focusTaskId,
   height = "70vh",
   completedLeafTasks = 0,
   totalLeafTasks = 0,
@@ -474,6 +477,19 @@ function TaskGraphCanvasInner({
       { duration: 600, zoom: 1.2 },
     );
   }, [currentTaskId, layout.nodes, setCenter]);
+
+  // Центрирование на focusTaskId (дип-линк из статус-бара): зависит от nodes,
+  // поэтому перезапускается после лэйаута/WS-рефреша; на ещё не появившийся
+  // узел — no-op до его появления.
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const node = nodes.find((n) => n.id === focusTaskId);
+    if (!node) return;
+    setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + NODE_HEIGHT / 2, {
+      zoom: 1.2,
+      duration: 600,
+    });
+  }, [focusTaskId, nodes, setCenter]);
 
   const actions: TaskGraphActions = useMemo(
     () => ({

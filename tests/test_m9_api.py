@@ -426,3 +426,96 @@ def test_api_create_project_can_auto_select_domain_packs(tmp_path: Path) -> None
         and "подбора доменных пакетов" in str(item.get("statement", "")).lower()
         for item in state_payload["known_facts"]
     )
+
+
+ARCHITECTURE_OBJECTIVE_REF = "architecture.system_design@1.0.0"
+IMPLEMENTATION_OBJECTIVE_REF = "implementation.build_plan@1.0.0"
+
+
+def test_api_exposes_stage_roadmap(tmp_path: Path) -> None:
+    """Проекция /stages: цепочка этапов + прогресс/ошибки активного."""
+    runtime_root = tmp_path / "runtime"
+    workspace = runtime_root / "case-stages"
+    project_id = init_project(
+        workspace,
+        "Нужно подготовить техническое задание для сервиса, который структурирует бизнес-запросы.",
+    )
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.05)
+    client = TestClient(app)
+
+    # 1. Свежий проект: ТЗ — active, дальше по цепочке — locked.
+    fresh = client.get(f"/api/projects/{project_id}/stages")
+    assert fresh.status_code == 200
+    payload = fresh.json()
+    assert payload["objective_ref"] == OBJECTIVE_REF
+    assert payload["objective_complete"] is False
+    states = {s["objective_ref"]: s["state"] for s in payload["stages"]}
+    assert states[OBJECTIVE_REF] == "active"
+    assert states[ARCHITECTURE_OBJECTIVE_REF] == "locked"
+    assert states[IMPLEMENTATION_OBJECTIVE_REF] == "locked"
+    active_stage = next(s for s in payload["stages"] if s["is_current"])
+    assert active_stage["artifacts_required"] >= 1
+    assert active_stage["artifacts_ready"] == 0
+    # next_objective_refs активного ТЗ = архитектура.
+    assert ARCHITECTURE_OBJECTIVE_REF in payload["next_objective_refs"]
+
+    # 2. Форс-падение задачи → failed_count на активном этапе.
+    registry_service, _runtime, _project_service, planning_service, _workflow_service = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+    decision = planning_service.plan(workspace, snapshot, mode="apply")
+    assert decision.selected_task_id is not None
+    failed_task_id = decision.selected_task_id
+    planning_service.transition_task(
+        workspace,
+        failed_task_id,
+        "fail",
+        payload={"error_message": "Искусственно сломанная задача для теста stages."},
+    )
+
+    after_fail = client.get(f"/api/projects/{project_id}/stages").json()
+    active_stage = next(s for s in after_fail["stages"] if s["is_current"])
+    assert active_stage["failed_count"] >= 1
+    failing = active_stage["failing_tasks"]
+    assert any(
+        t["task_id"] == failed_task_id and t["retryable"] is True and t["status"] == "failed"
+        for t in failing
+    )
+
+
+def test_api_stage_roadmap_marks_done_and_advances(tmp_path: Path) -> None:
+    """После прогона ТЗ и активации архитектуры: ТЗ — done, архитектура — active."""
+    runtime_root = tmp_path / "runtime"
+    workspace = runtime_root / "case-stages-done"
+    project_id = init_project(
+        workspace,
+        "Нужно подготовить техническое задание для сервиса, который структурирует бизнес-запросы.",
+    )
+    run_stub_workflow(workspace)
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=runtime_root, websocket_poll_interval=0.05)
+    client = TestClient(app)
+
+    done = client.get(f"/api/projects/{project_id}/stages").json()
+    active_stage = next(s for s in done["stages"] if s["is_current"])
+    assert active_stage["objective_ref"] == OBJECTIVE_REF
+    assert active_stage["artifacts_ready"] == active_stage["artifacts_required"]
+    assert done["objective_complete"] is True
+    assert ARCHITECTURE_OBJECTIVE_REF in done["next_objective_refs"]
+
+    # Активируем архитектуру — ТЗ уходит в done, архитектура становится active.
+    registry_service, _runtime, project_service, planning_service, _workflow_service = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+    project_service.activate_next_objective(
+        workspace, ObjectRef.parse(ARCHITECTURE_OBJECTIVE_REF)
+    )
+    planning_service.expand_graph(workspace, snapshot)
+
+    advanced = client.get(f"/api/projects/{project_id}/stages").json()
+    states = {s["objective_ref"]: s["state"] for s in advanced["stages"]}
+    assert states[OBJECTIVE_REF] == "done"
+    assert states[ARCHITECTURE_OBJECTIVE_REF] == "active"
+    # Из архитектуры дальше по цепочке — implementation (locked).
+    assert states[IMPLEMENTATION_OBJECTIVE_REF] == "locked"

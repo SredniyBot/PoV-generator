@@ -781,6 +781,136 @@ code {
   border-color: rgba(215, 131, 131, 0.2);
 }
 
+/* Оценка реализуемости — структурный вид (FeasibilityView): цветной бейдж
+   вердикта + чип покрывающего агента по каждой части проекта. */
+.feasibility-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.feasibility-view__head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.feasibility-view__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.feas-overall {
+  align-self: flex-start;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.feas-overall--feasible {
+  background: var(--success-soft);
+  color: #dff6e8;
+  border-color: rgba(114, 193, 144, 0.25);
+}
+.feas-overall--mixed {
+  background: var(--warning-soft);
+  color: #f9e5b7;
+  border-color: rgba(214, 173, 89, 0.25);
+}
+.feas-overall--blocked {
+  background: var(--danger-soft);
+  color: #ffd9d9;
+  border-color: rgba(215, 131, 131, 0.25);
+}
+.feasibility-view__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feas-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--surface-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.feas-row__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.feas-row__name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.feas-badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.feas-badge--feasible {
+  background: rgba(114, 193, 144, 0.14);
+  color: #dff6e8;
+  border-color: rgba(114, 193, 144, 0.22);
+}
+.feas-badge--conditional {
+  background: rgba(214, 173, 89, 0.14);
+  color: #f9e5b7;
+  border-color: rgba(214, 173, 89, 0.22);
+}
+.feas-badge--uncertain {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.feas-badge--infeasible {
+  background: rgba(215, 131, 131, 0.14);
+  color: #ffd9d9;
+  border-color: rgba(215, 131, 131, 0.22);
+}
+.feas-chip {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  background: rgba(120, 184, 201, 0.12);
+  color: #d8eef4;
+  border: 1px solid rgba(120, 184, 201, 0.2);
+  white-space: nowrap;
+}
+.feas-chip--none {
+  margin-left: auto;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+  font-family: inherit;
+}
+.feas-row__rationale {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  font-size: 13px;
+}
+.feas-row__meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.feas-row__meta span {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .section-card {
   position: relative;
   overflow: hidden;
@@ -3177,6 +3307,21 @@ code {
   white-space: nowrap;
 }
 
+.workflow-run__running {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.workflow-run__stop {
+  font-size: 0.78rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.5));
+  white-space: nowrap;
+}
+
 .workflow-run__actions {
   display: flex;
   gap: 0.4rem;
@@ -5427,4 +5572,323 @@ code {
 .llm-row__concurrency-select:focus {
   border-color: rgba(120, 184, 201, 0.34);
   box-shadow: var(--focus-ring);
+}
+
+/* ===================================================================== */
+/* StageStatusBar — степпер этапов (gate stepper) над вкладками          */
+/* ===================================================================== */
+
+/* Единый бар: рамка/фон на обёртке, степпер и run-секция — строки внутри. */
+.status-bar {
+  margin: 0.25rem 0 0.75rem;
+  background: var(--surface-elevated, #161b22);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 8px);
+}
+
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.15rem;
+}
+
+/* Run-секция как нижняя строка того же бара: без своей карточки, только
+   разделитель сверху. */
+.status-bar .workflow-run {
+  margin: 0;
+  padding: 0.7rem 1.15rem;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 0;
+}
+
+.stage-bar__track {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.stage-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 0.92rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  white-space: nowrap;
+}
+
+.stage-seg--done {
+  color: var(--success, #8cc499);
+}
+
+.stage-seg--active,
+.stage-seg--current {
+  color: var(--text-primary, #e8ecf3);
+  background: var(--accent-soft, rgba(120, 184, 201, 0.18));
+}
+
+.stage-seg--locked {
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  opacity: 0.75;
+}
+
+.stage-seg__icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.stage-seg__check {
+  color: var(--success, #8cc499);
+}
+
+.stage-seg__dot {
+  font-size: 0.7rem;
+  line-height: 1;
+  color: currentColor;
+}
+
+.stage-seg--active .stage-seg__dot--filled,
+.stage-seg--current .stage-seg__dot--filled {
+  color: var(--accent, #78b8c9);
+}
+
+.stage-seg__body {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.stage-seg__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* На широких экранах заголовки видны целиком; усечение — только как
+     страховка на узких. Бар при нехватке места переносится (flex-wrap). */
+  max-width: 28rem;
+}
+
+/* Активный этап чуть просторнее — там же прогресс. */
+.stage-seg--active .stage-seg__title,
+.stage-seg--current .stage-seg__title {
+  max-width: 32rem;
+}
+
+.stage-seg__progress {
+  font-size: 0.78rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+}
+
+.stage-seg__sep {
+  margin-left: 0.35rem;
+  color: var(--border-strong, rgba(255, 255, 255, 0.2));
+  font-size: 0.95rem;
+}
+
+.stage-bar__aside {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.stage-badges {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid transparent;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.stage-badge--danger {
+  color: var(--danger, #d78383);
+  background: var(--danger-soft, rgba(215, 131, 131, 0.18));
+  border-color: var(--danger-soft, rgba(215, 131, 131, 0.18));
+}
+
+.stage-badge--danger:hover {
+  border-color: var(--danger, #d78383);
+}
+
+.stage-badge--warning {
+  color: var(--warning, #d6ad59);
+  background: var(--warning-soft, rgba(214, 173, 89, 0.15));
+  border-color: var(--warning-soft, rgba(214, 173, 89, 0.15));
+}
+
+.stage-badge--warning:hover {
+  border-color: var(--warning, #d6ad59);
+}
+
+/* Поповер со списком упавших/заблокированных шагов */
+.stage-popover__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+  border: none;
+  cursor: default;
+}
+
+.stage-popover {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 41;
+  width: min(28rem, 90vw);
+  padding: 0.6rem 0.7rem;
+  background: var(--surface-overlay, #20252b);
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.14));
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.stage-popover__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary, #e8ecf3);
+  margin-bottom: 0.5rem;
+}
+
+.stage-popover__close {
+  background: none;
+  border: none;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stage-popover__list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.stage-popover__item {
+  padding: 0.45rem 0.5rem;
+  background: var(--surface-elevated, #161b22);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-sm, 4px);
+}
+
+.stage-popover__item-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.stage-popover__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-muted, rgba(255, 255, 255, 0.4));
+}
+
+.stage-popover__dot--failed {
+  background: var(--danger, #d78383);
+}
+
+.stage-popover__dot--blocked {
+  background: var(--warning, #d6ad59);
+}
+
+.stage-popover__title {
+  font-size: 0.83rem;
+  color: var(--text-primary, #e8ecf3);
+}
+
+.stage-popover__reason {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+}
+
+.stage-popover__actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.stage-popover__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.74rem;
+  color: var(--text-secondary, #c4ccd6);
+  background: var(--surface-elevated-strong, #1c222b);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.stage-popover__action:hover {
+  color: var(--text-primary, #e8ecf3);
+  border-color: var(--border-accent, rgba(120, 184, 201, 0.32));
+}
+
+/* CTA «Перейти к следующему этапу» */
+.stage-cta-group {
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.stage-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--surface-base, #0e1217);
+  background: var(--accent, #78b8c9);
+  border: 1px solid var(--accent, #78b8c9);
+  border-radius: var(--radius-pill, 999px);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.stage-cta:hover {
+  background: var(--accent-strong, #5fa7b8);
+}
+
+.stage-cta:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }

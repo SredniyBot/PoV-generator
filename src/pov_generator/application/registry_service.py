@@ -18,6 +18,7 @@ class RegistrySummary:
     domain_pack_count: int
     methodology_pack_count: int
     quality_gate_count: int
+    agent_capability_count: int
 
 
 class RegistryService:
@@ -142,6 +143,23 @@ class RegistryService:
                             str(template.source_path),
                         )
                     )
+                if template.executor == "agent":
+                    if template.agent_ref is None:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"Задача '{template.ref.as_string()}' с executor=agent должна указывать поле agent.",
+                                str(template.source_path),
+                            )
+                        )
+                    elif template.agent_ref.as_string() not in snapshot.agent_capabilities:
+                        errors.append(
+                            RegistryIssue(
+                                "error",
+                                f"Задача '{template.ref.as_string()}' ссылается на неизвестного агента '{template.agent_ref.as_string()}'.",
+                                str(template.source_path),
+                            )
+                        )
             for child in template.children:
                 if child.task_ref.as_string() not in snapshot.templates:
                     errors.append(
@@ -274,6 +292,27 @@ class RegistryService:
                             )
                         )
 
+        for agent in snapshot.agent_capabilities.values():
+            for capability in agent.capabilities:
+                if not snapshot.has_vocabulary_entry("agent_capabilities", capability.capability):
+                    errors.append(
+                        RegistryIssue(
+                            "error",
+                            f"Неизвестная способность '{capability.capability}' в '{agent.ref.as_string()}'.",
+                            str(agent.source_path),
+                        )
+                    )
+            if agent.binds is not None:
+                binds_key = agent.binds.as_string()
+                if binds_key not in snapshot.templates and binds_key not in snapshot.domain_packs:
+                    warnings.append(
+                        RegistryIssue(
+                            "warning",
+                            f"Agent '{agent.ref.as_string()}' binds к неизвестному объекту '{binds_key}'.",
+                            str(agent.source_path),
+                        )
+                    )
+
         return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 
     def summary(self, snapshot: RegistrySnapshot) -> RegistrySummary:
@@ -285,4 +324,5 @@ class RegistryService:
             domain_pack_count=len(snapshot.domain_packs),
             methodology_pack_count=len(snapshot.methodology_packs),
             quality_gate_count=len(snapshot.quality_gates),
+            agent_capability_count=len(snapshot.agent_capabilities),
         )

@@ -1,0 +1,13 @@
+kind: objective
+id: implementation.build_plan
+version: 1.0.0
+title: Сформировать план реализации из архитектуры
+root: implementation.prepare_build_plan@1.0.0
+default_methodology_pack: process.lean_jtbd@1.0.0
+# Слой 2: после архитектуры workspace продолжается планом реализации. Агентные
+# задачи берут component_decomposition и feasibility (covered_by — агент на
+# часть) из прошлых objective'ов и выдают спеки сборки по ролям + сводный план.
+compatible_next_objectives: []
+done_when:
+  artifacts:
+    - implementation.build_plan@1.0.0

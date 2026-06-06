@@ -193,6 +193,8 @@ export const api = {
     ),
   getOverview: (projectId: string) =>
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
+  getStages: (projectId: string) =>
+    request<import("./types").ProjectStagesView>(`/api/projects/${projectId}/stages`),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
   // L6 design extensions

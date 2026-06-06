@@ -487,6 +487,75 @@ class ProjectOverviewView:
 
 
 # ---------------------------------------------------------------------------
+# Stage status bar — степпер этапов (gate stepper) над вкладками.
+#
+# Проекция `stages`: цепочка objective'ов проекта как этапы-гейты
+# (ТЗ → Архитектура → Реализация) со статусом каждого + прогресс и ошибки
+# активного этапа. Единый источник правды для постоянного статус-бара
+# (заменяет разрозненные шапку/Обзор/run-панель).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StageFailingTaskView:
+    """Упавшая/заблокированная задача активного этапа — для поповера бара."""
+
+    task_id: str  # для дип-линка на граф (?focus=<task_id>)
+    title: str
+    status: str  # "failed" | "blocked" | "waiting_for_children"
+    reason: str
+    retryable: bool
+
+
+@dataclass(frozen=True)
+class StagePendingDecisionView:
+    """Открытое решение активного этапа («ждут ответа») — для поповера бара."""
+
+    decision_id: str
+    title: str
+    level: str  # business | architecture | detail
+
+
+@dataclass(frozen=True)
+class StageView:
+    """Один этап (objective) в степпере.
+
+    Счётчики ошибок/блокировок (``failed_count``/``blocked_count``/
+    ``awaiting_signoff``/``failing_tasks``) считаются ТОЛЬКО для активного
+    этапа; для done/locked они = 0. Причина: задачи реплана́тся по stable-key,
+    и завершённые прошлые этапы не хранят историю падений — ошибки значимы на
+    активном этапе.
+
+    ``blocked_count`` — только actionable-блокировки (задача ждёт открытого
+    решения), НЕ обычная очерёдность (ожидание upstream-артефакта).
+    ``awaiting_signoff`` — число открытых proposed-Decisions («ждут решений»).
+    """
+
+    objective_ref: str
+    title: str
+    state: str  # "done" | "active" | "locked"
+    is_current: bool
+    artifacts_required: int
+    artifacts_ready: int
+    gates_required: int
+    gates_passed: int
+    failed_count: int
+    blocked_count: int
+    awaiting_signoff: int
+    failing_tasks: tuple[StageFailingTaskView, ...]
+    pending_decisions: tuple[StagePendingDecisionView, ...]
+
+
+@dataclass(frozen=True)
+class ProjectStagesView:
+    project_id: str
+    objective_ref: str  # активный этап
+    stages: tuple[StageView, ...]  # history(done) → active → forward-walk(locked)
+    next_objective_refs: tuple[str, ...]  # compatible_next активного этапа
+    objective_complete: bool  # активный этап завершён → можно «Перейти»
+
+
+# ---------------------------------------------------------------------------
 # L6 design extensions (P3 v2 skeleton, P5 failure pins, P7 decisions, P8 versions)
 #
 # Эти views агрегируют существующие данные без миграций БД. Все поля —

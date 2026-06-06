@@ -10,6 +10,7 @@ from ..common.errors import ValidationError
 from ..common.logging import get_logger
 from ..domain.registry import (
     RegistrySnapshot,
+    parse_agent_capability,
     parse_artifact_contract,
     parse_domain_pack,
     parse_methodology_pack,
@@ -52,6 +53,7 @@ class FilesystemRegistryLoader:
         domain_packs = {}
         methodology_packs = {}
         quality_gates = {}
+        agent_capabilities = {}
 
         for path in sorted((self._root / "vocabularies").glob("*.yaml")):
             raw = self._load_yaml(path)
@@ -90,6 +92,13 @@ class FilesystemRegistryLoader:
             gate = parse_quality_gate(raw, path)
             quality_gates[gate.ref.as_string()] = gate
 
+        agents_root = self._root / "agents"
+        if agents_root.exists():
+            for path in sorted(agents_root.rglob("*.yaml")):
+                raw = self._load_yaml(path)
+                agent = parse_agent_capability(raw, path)
+                agent_capabilities[agent.ref.as_string()] = agent
+
         _logger.info(
             "реестр загружен",
             objectives=len(objectives),
@@ -98,6 +107,7 @@ class FilesystemRegistryLoader:
             domain_packs=len(domain_packs),
             methodologies=len(methodology_packs),
             gates=len(quality_gates),
+            agent_capabilities=len(agent_capabilities),
             duration_ms=round((time.perf_counter() - _started) * 1000),
         )
         return RegistrySnapshot(
@@ -108,6 +118,7 @@ class FilesystemRegistryLoader:
             domain_packs=domain_packs,
             methodology_packs=methodology_packs,
             quality_gates=quality_gates,
+            agent_capabilities=agent_capabilities,
         )
 
     def _load_yaml(self, path: Path) -> dict:

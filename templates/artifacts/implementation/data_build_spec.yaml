@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: implementation.data_build_spec
+version: 1.0.0
+title: Спека сборки — data
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

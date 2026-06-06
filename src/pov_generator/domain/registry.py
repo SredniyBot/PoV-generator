@@ -7,7 +7,7 @@ from typing import Any, Literal
 from ..common.errors import NotFoundError, ValidationError
 
 TemplateType = Literal["composite", "leaf", "fan_out"]
-ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system"]
+ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system", "agent"]
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 StageExecutionMode = Literal["single_call", "per_stage_cot"]
 QualityGateCheckType = Literal["human_approval", "external_signoff", "automated_review"]
@@ -220,6 +220,10 @@ class TemplateSpec:
     # Этап 5: если задано, leaf-задача — merge-операция. Execution-слой
     # объединяет входные артефакты по стратегии вместо обычного исполнения.
     merge: MergeConfig | None = None
+    # Слой 2: для executor=="agent" — ссылка на контракт способностей агента
+    # (kind agent_capability). Execution-слой подмешивает <agent_pledge>
+    # (роль + cannot_do) в system-prompt, специализируя генерацию под агента.
+    agent_ref: ObjectRef | None = None
     # Methodology mode (Track 5) — определяет, какие стадии reasoning
     # methodology применяются к этой задаче:
     #   full       — все стадии методологии (полный CoT с option_generation
@@ -315,6 +319,32 @@ class DomainPackSpec:
     @property
     def name(self) -> str:
         return self.title
+
+
+@dataclass(frozen=True)
+class AgentCapabilityItem:
+    capability: str
+    tech: tuple[str, ...] = ()
+    requires: tuple[str, ...] = ()
+    maturity: str = "reliable"
+    produces: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentCapabilitySpec:
+    identifier: str
+    version: str
+    title: str
+    role: str
+    capabilities: tuple[AgentCapabilityItem, ...]
+    cannot_do: tuple[str, ...]
+    source_path: Path
+    binds: ObjectRef | None = None
+    escalation: str | None = None
+
+    @property
+    def ref(self) -> ObjectRef:
+        return ObjectRef(self.identifier, self.version)
 
 
 @dataclass(frozen=True)
@@ -490,6 +520,7 @@ class RegistrySnapshot:
     domain_packs: dict[str, DomainPackSpec] = field(default_factory=dict)
     methodology_packs: dict[str, MethodologyPackSpec] = field(default_factory=dict)
     quality_gates: dict[str, QualityGateSpec] = field(default_factory=dict)
+    agent_capabilities: dict[str, AgentCapabilitySpec] = field(default_factory=dict)
 
     def resolve_object_ref(self, reference: str | ObjectRef) -> ObjectRef:
         return ObjectRef.parse(reference) if isinstance(reference, str) else reference
@@ -541,6 +572,14 @@ class RegistrySnapshot:
         if gate is None:
             raise NotFoundError(f"Quality gate not found: {key}")
         return gate
+
+    def resolve_agent_capability(self, reference: str | ObjectRef) -> AgentCapabilitySpec:
+        object_ref = self.resolve_object_ref(reference)
+        key = object_ref.as_string()
+        spec = self.agent_capabilities.get(key)
+        if spec is None:
+            raise NotFoundError(f"Agent capability not found: {key}")
+        return spec
 
     def has_vocabulary_entry(self, vocabulary_id: str, entry_id: str) -> bool:
         vocabulary = self.vocabularies.get(vocabulary_id)
@@ -821,6 +860,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         instruction=optional_str(raw, "instruction"),
         summary=optional_str(raw, "summary") or "",
         merge=merge_config,
+        agent_ref=(ObjectRef.parse(_agent_raw) if (_agent_raw := optional_str(raw, "agent")) else None),
         methodology_mode=_parse_methodology_mode(raw.get("methodology"), owner),
         # v3.6: identification per-template flag. По умолчанию True.
         # Транспорт через YAML: `decision_identification: false` в task-шаблоне.
@@ -889,6 +929,47 @@ def parse_domain_pack(raw: dict[str, Any], source_path: Path) -> DomainPackSpec:
         status=str(raw.get("status", "active")),
         entry_signals=tuple(str(item) for item in require_list(detect, "signals", owner)),
         contributions=tuple(contributions),
+        source_path=source_path,
+    )
+
+
+_AGENT_ROLES = frozenset({"backend", "ui", "ml", "data", "integration"})
+_AGENT_CAPABILITY_MATURITIES = frozenset({"reliable", "experimental"})
+
+
+def parse_agent_capability(raw: dict[str, Any], source_path: Path) -> AgentCapabilitySpec:
+    owner = str(source_path)
+    version = require_str(raw, "version", owner)
+    parse_semver(version)
+    role = require_str(raw, "role", owner)
+    if role not in _AGENT_ROLES:
+        raise ValidationError(f"Поле role в {owner} должно быть одним из {sorted(_AGENT_ROLES)}")
+    items: list[AgentCapabilityItem] = []
+    for item in require_list(raw, "capabilities", owner):
+        if not isinstance(item, dict):
+            raise ValidationError(f"Элемент capabilities в {owner} должен быть mapping")
+        maturity = str(item.get("maturity", "reliable"))
+        if maturity not in _AGENT_CAPABILITY_MATURITIES:
+            raise ValidationError(f"Поле maturity в {owner} должно быть reliable|experimental")
+        items.append(
+            AgentCapabilityItem(
+                capability=require_str(item, "capability", owner),
+                tech=tuple(str(t) for t in require_list(item, "tech", owner)),
+                requires=tuple(str(r) for r in require_list(item, "requires", owner)),
+                maturity=maturity,
+                produces=optional_str(item, "produces"),
+            )
+        )
+    binds_raw = optional_str(raw, "binds")
+    return AgentCapabilitySpec(
+        identifier=require_str(raw, "id", owner),
+        version=version,
+        title=require_str(raw, "title", owner),
+        role=role,
+        capabilities=tuple(items),
+        cannot_do=tuple(str(c) for c in require_list(raw, "cannot_do", owner)),
+        binds=ObjectRef.parse(binds_raw) if binds_raw else None,
+        escalation=optional_str(raw, "escalation"),
         source_path=source_path,
     )
 

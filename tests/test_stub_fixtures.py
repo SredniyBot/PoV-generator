@@ -56,6 +56,13 @@ EXPECTED_STATIC_ROLES = {
     "system_context_definition",
     "component_decomposition",
     "interaction_view",
+    "feasibility_assessment",
+    "backend_build_spec",
+    "ui_build_spec",
+    "ml_build_spec",
+    "data_build_spec",
+    "integration_build_spec",
+    "build_plan",
 }
 
 # Эти роли намеренно остались в Python — они compose'аются из входных

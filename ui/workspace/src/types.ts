@@ -10,6 +10,7 @@ export type ProjectionName =
   | "debug"
   | "overview"
   | "methodology"
+  | "stages"
   | "workflow_runs";
 
 export interface AttachmentView {
@@ -348,6 +349,47 @@ export interface ProjectOverviewView {
   active_domain_packs: string[];
   clarification_mode: string;
   updated_at: string;
+}
+
+
+// ---- Stage status bar (gate stepper) -------------------------------------
+
+export interface StageFailingTaskView {
+  task_id: string;
+  title: string;
+  status: string; // "failed" | "blocked"
+  reason: string;
+  retryable: boolean;
+}
+
+export interface StagePendingDecisionView {
+  decision_id: string;
+  title: string;
+  level: string; // business | architecture | detail
+}
+
+export interface StageView {
+  objective_ref: string;
+  title: string;
+  state: "done" | "active" | "locked";
+  is_current: boolean;
+  artifacts_required: number;
+  artifacts_ready: number;
+  gates_required: number;
+  gates_passed: number;
+  failed_count: number;
+  blocked_count: number;
+  awaiting_signoff: number;
+  failing_tasks: StageFailingTaskView[];
+  pending_decisions: StagePendingDecisionView[];
+}
+
+export interface ProjectStagesView {
+  project_id: string;
+  objective_ref: string;
+  stages: StageView[];
+  next_objective_refs: string[];
+  objective_complete: boolean;
 }
 
 

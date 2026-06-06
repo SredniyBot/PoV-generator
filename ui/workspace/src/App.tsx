@@ -76,7 +76,6 @@ import type {
   ProjectShellView,
   ProjectionName,
   TaskNodeView,
-  WorkflowStepView,
 } from "./types";
 import { useProjectRealtime } from "./useProjectRealtime";
 import {
@@ -95,6 +94,7 @@ import {
   formatDateTime,
   prettyLabel,
 } from "./ui";
+import { StageStatusBar } from "./StageStatusBar";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
   "shell",
@@ -109,6 +109,8 @@ const REALTIME_PROJECTIONS: ProjectionName[] = [
   // and MethodologyPage queries get invalidated automatically.
   "overview",
   "methodology",
+  // Степпер этапов (gate stepper) над вкладками — постоянный статус-слой.
+  "stages",
   // Прогресс workflow-ранов теперь первоклассная realtime-проекция: запись
   // runner'а меняет realtime_token, WS присылает projection_changed, и
   // run-запросы инвалидируются по пушу — вместо отдельного HTTP-поллинга.
@@ -587,9 +589,17 @@ function WorkspaceRoute({
         activatingNextObjective={commandMutations.busy}
         actions={<CommandBar projectId={projectId} />}
       />
-      {/* Workflow-блок выше табов: пользователь сразу видит, что идёт
-          по проекту, не переключаясь между вкладками. */}
-      <WorkflowRunProgressPanel projectId={projectId} />
+      {/* Постоянный статус-слой над вкладками: степпер этапов + ошибки
+          активного этапа; живая активность прогона (тикер + лента) едет
+          внутри как RunActivitySection. */}
+      <StageStatusBar
+        projectId={projectId}
+        onActivateNextObjective={commandMutations.activateNextObjective}
+        activating={commandMutations.busy}
+        onRetryTask={commandMutations.retryTask}
+      >
+        <RunActivitySection projectId={projectId} />
+      </StageStatusBar>
       <WorkspaceTabs projectId={projectId} />
       <Routes>
         <Route
@@ -649,7 +659,7 @@ function WorkspaceRoute({
 }
 
 
-// ---- W4.1 (R1): WorkflowRunProgressPanel ---------------------------------
+// ---- RunActivitySection (live run ticker + step feed) --------------------
 
 function SettingsTabRedirect({ projectId }: { projectId: string }) {
   // Старый объединённый settings-таб удалён; bookmarks вида
@@ -664,7 +674,10 @@ function SettingsTabRedirect({ projectId }: { projectId: string }) {
 }
 
 
-function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
+// RunActivitySection — живая активность прогона внутри StageStatusBar:
+// тикер «что идёт сейчас + таймер» (всегда виден во время run'а) + лента
+// завершённых шагов в раскрытие. Счётчики ✗/⏸ убраны — их несёт степпер.
+function RunActivitySection({ projectId }: { projectId: string }) {
   const activeQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
@@ -687,7 +700,8 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
     queryFn: () => api.getTaskGraph(projectId),
   });
   const [stickyRunId, setStickyRunId] = useState<string | null>(null);
-  const [logCollapsed, setLogCollapsed] = useState(false);
+  // Лента шагов по умолчанию свёрнута — наружу торчит только живой тикер.
+  const [logCollapsed, setLogCollapsed] = useState(true);
 
   const active = activeQuery.data ?? null;
   // Когда run заканчивается, active становится null — но мы хотим
@@ -707,43 +721,6 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
   const isActive = display.status === "pending" || display.status === "running";
   const statusLabel = labelForRunStatus(display.status);
   const statusTone = toneForRunStatus(display.status);
-
-  // run.steps — append-only audit log: одна задача может иметь НЕСКОЛЬКО
-  // шагов в одном run'е (пауза на checkpoint → fail, затем после ответа
-  // пользователя — повторный проход в том же run'е; либо ретраи). Старый
-  // `paused_for_checkpoint` остаётся в логе навсегда. Для счётчиков берём
-  // ТОЛЬКО последний шаг каждой задачи, иначе «Ждут решений» не гаснет
-  // после возобновления, а «Задач выполнено» удваивается на ретраях.
-  // Шаги без task_id (планировщик) — пропускаем как есть.
-  const latestStepByTask = new Map<string, WorkflowStepView>();
-  const standaloneSteps: WorkflowStepView[] = [];
-  for (const s of display.steps) {
-    if (!s.task_id) {
-      standaloneSteps.push(s);
-      continue;
-    }
-    const prev = latestStepByTask.get(s.task_id);
-    if (!prev || s.sequence > prev.sequence) latestStepByTask.set(s.task_id, s);
-  }
-  const effectiveSteps = [...latestStepByTask.values(), ...standaloneSteps];
-
-  // Считаем выполненные задачи именно из шагов с successful validation,
-  // а не из `total_steps_completed` — это поле в БД включает ретраи и
-  // шаги планировщика, что менеджеру не интересно.
-  const successfulSteps = effectiveSteps.filter((s) => s.validation_status === "passed");
-  // Пауза на решениях (paused_for_checkpoint) — НЕ ошибка: задача ждёт
-  // ответа пользователя, а не упала. Выносим в отдельную категорию, чтобы
-  // не светить красным и не путать с реальными провалами. Учитываем только
-  // если это ПОСЛЕДНИЙ шаг задачи (т.е. она всё ещё ждёт, а не возобновилась).
-  const awaitingSteps = effectiveSteps.filter(
-    (s) => s.validation_status === "paused_for_checkpoint",
-  );
-  const failedSteps = effectiveSteps.filter(
-    (s) =>
-      s.validation_status !== "paused_for_checkpoint" &&
-      (s.validation_status === "failed" ||
-        (s.error_message && s.validation_status !== "passed")),
-  );
 
   // Сейчас в работе: leaf-задачи проекта со статусом in_progress. Список
   // расплющиваем из графа задач рекурсивно. Когда runner запустил задачу
@@ -770,117 +747,78 @@ function WorkflowRunProgressPanel({ projectId }: { projectId: string }) {
         <div className="workflow-run__title">
           <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
           <span className="workflow-run__summary">{cleanStepSummary(display.last_step_summary) || "—"}</span>
+          {inProgressTasks.length > 0 ? (
+            <span className="workflow-run__running">⚙ {inProgressTasks.length} в работе</span>
+          ) : null}
+          {display.stop_reason ? (
+            <span className="workflow-run__stop">{labelForStopReason(display.stop_reason)}</span>
+          ) : null}
         </div>
         <div className="workflow-run__actions">
-          {display.steps.length > 0 || inProgressTasks.length > 0 ? (
+          {display.steps.length > 0 ? (
             <Button tone="secondary" onClick={() => setLogCollapsed((v) => !v)}>
-              {logCollapsed ? "Показать" : "Скрыть"}
+              {logCollapsed ? "Лента шагов" : "Скрыть ленту"}
             </Button>
           ) : null}
         </div>
       </div>
 
-      {/* Счётчики выполнения + stop reason. Без прогресс-бара и без «N/M». */}
-      <div className="workflow-run__counters">
-        <div className="workflow-run__counter-item workflow-run__counter-item--success">
-          <span className="workflow-run__counter-value">{successfulSteps.length}</span>
-          <span className="workflow-run__counter-label">Задач выполнено</span>
-        </div>
-        {failedSteps.length > 0 ? (
-          <div className="workflow-run__counter-item workflow-run__counter-item--danger">
-            <span className="workflow-run__counter-value">{failedSteps.length}</span>
-            <span className="workflow-run__counter-label">С ошибкой</span>
-          </div>
-        ) : null}
-        {awaitingSteps.length > 0 ? (
-          <div className="workflow-run__counter-item workflow-run__counter-item--active">
-            <span className="workflow-run__counter-value">{awaitingSteps.length}</span>
-            <span className="workflow-run__counter-label">Ждут решений</span>
-          </div>
-        ) : null}
-        {inProgressTasks.length > 0 ? (
-          <div className="workflow-run__counter-item workflow-run__counter-item--active">
-            <span className="workflow-run__counter-value">{inProgressTasks.length}</span>
-            <span className="workflow-run__counter-label">Сейчас в работе</span>
-          </div>
-        ) : null}
-        {display.stop_reason ? (
-          <div className="workflow-run__counter-item">
-            <span className="workflow-run__counter-stop">
-              {labelForStopReason(display.stop_reason)}
-            </span>
-          </div>
-        ) : null}
-      </div>
+      {/* Живой тикер: что выполняется прямо сейчас + секундомер. Всегда виден. */}
+      {inProgressTasks.length > 0 ? (
+        <ul className="workflow-run__inprogress">
+          {inProgressTasks.map((t) => (
+            <li key={t.task_id} className="workflow-run__inprogress-item">
+              <span className="workflow-run__inprogress-dot" />
+              <span className="workflow-run__inprogress-title">{t.title}</span>
+              <InProgressTimer startedAtIso={t.updated_at} />
+              <span className="workflow-run__inprogress-template">{t.template_ref}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
-      {logCollapsed ? null : (
-        <>
-          {/* Прямо сейчас выполняются: имя задачи + real-time секундомер
-              (обновляется каждую секунду через nowTick). */}
-          {inProgressTasks.length > 0 ? (
-            <ul className="workflow-run__inprogress">
-              {inProgressTasks.map((t) => (
-                <li key={t.task_id} className="workflow-run__inprogress-item">
-                  <span className="workflow-run__inprogress-dot" />
-                  <span className="workflow-run__inprogress-title">{t.title}</span>
-                  <InProgressTimer startedAtIso={t.updated_at} />
-                  <span className="workflow-run__inprogress-template">{t.template_ref}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-
-          {/* Лог завершённых шагов. Свежие сверху. */}
-          {display.steps.length > 0 ? (
-            <ul className="workflow-run__steps">
-              {display.steps.slice().reverse().map((step) => {
-                const durationSec = step.finished_at && step.started_at
-                  ? Math.max(0, Math.round(
-                      (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
-                    ))
-                  : null;
-                const statusKey = step.validation_status ?? step.planning_outcome;
-                return (
-                  <li
-                    key={step.sequence}
-                    className={cx(
-                      "workflow-run__step",
-                      `workflow-run__step--${statusKey}`,
-                    )}
-                  >
-                    <span className="workflow-run__step-seq">#{step.sequence}</span>
-                    <span className="workflow-run__step-title">
-                      {step.selected_step_id || step.task_key || "(неизвестная задача)"}
-                    </span>
-                    <span
-                      className={cx(
-                        "workflow-run__step-status",
-                        `workflow-run__step-status--${statusKey}`,
-                      )}
-                    >
-                      {labelForStepStatus(step.validation_status, step.planning_outcome)}
-                    </span>
-                    {durationSec !== null ? (
-                      <span className="workflow-run__step-duration">
-                        {formatElapsedHMS(durationSec)}
-                      </span>
-                    ) : null}
-                    {step.error_message ? (
-                      <span className="workflow-run__step-error" title={step.error_message}>
-                        {step.error_message.length > 100
-                          ? step.error_message.slice(0, 100) + "…"
-                          : step.error_message}
-                      </span>
-                    ) : null}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : isActive && inProgressTasks.length === 0 ? (
-            <div className="workflow-run__empty">Ожидаем первый шаг…</div>
-          ) : null}
-        </>
-      )}
+      {/* Лента завершённых шагов — в раскрытие (по умолчанию свёрнута).
+          Счётчики ✗/⏸ здесь не показываем — их несёт степпер этапов. */}
+      {!logCollapsed && display.steps.length > 0 ? (
+        <ul className="workflow-run__steps">
+          {display.steps.slice().reverse().map((step) => {
+            const durationSec = step.finished_at && step.started_at
+              ? Math.max(0, Math.round(
+                  (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
+                ))
+              : null;
+            const statusKey = step.validation_status ?? step.planning_outcome;
+            return (
+              <li
+                key={step.sequence}
+                className={cx("workflow-run__step", `workflow-run__step--${statusKey}`)}
+              >
+                <span className="workflow-run__step-seq">#{step.sequence}</span>
+                <span className="workflow-run__step-title">
+                  {step.selected_step_id || step.task_key || "(неизвестная задача)"}
+                </span>
+                <span
+                  className={cx("workflow-run__step-status", `workflow-run__step-status--${statusKey}`)}
+                >
+                  {labelForStepStatus(step.validation_status, step.planning_outcome)}
+                </span>
+                {durationSec !== null ? (
+                  <span className="workflow-run__step-duration">{formatElapsedHMS(durationSec)}</span>
+                ) : null}
+                {step.error_message ? (
+                  <span className="workflow-run__step-error" title={step.error_message}>
+                    {step.error_message.length > 100
+                      ? step.error_message.slice(0, 100) + "…"
+                      : step.error_message}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : isActive && inProgressTasks.length === 0 ? (
+        <div className="workflow-run__empty">Ожидаем первый шаг…</div>
+      ) : null}
     </div>
   );
 }
@@ -1938,6 +1876,94 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
   );
 }
 
+interface FeasibilityCapability {
+  name?: string;
+  origin?: string;
+  feasibility?: string;
+  rationale?: string;
+  blockers?: string[];
+  prerequisites?: string[];
+  confidence?: number;
+  covered_by?: string;
+  matched_capability?: string;
+}
+
+interface FeasibilityPayload {
+  capabilities?: FeasibilityCapability[];
+  overall_feasibility?: string;
+  summary?: string;
+}
+
+const FEAS_VERDICT_LABEL: Record<string, string> = {
+  feasible: "реализуемо",
+  conditional: "при условии",
+  uncertain: "под вопросом",
+  infeasible: "не реализуемо",
+};
+
+const FEAS_OVERALL_LABEL: Record<string, string> = {
+  feasible: "всё реализуемо",
+  mixed: "частично реализуемо",
+  blocked: "есть нереализуемые части",
+};
+
+// Структурный вид оценки реализуемости: цветной бейдж вердикта + чип
+// покрывающего агента по каждой части. Сканируемо с одного взгляда (в отличие
+// от плоской markdown-таблицы). Данные — из json_content артефакта.
+function FeasibilityView({ data }: { data: FeasibilityPayload }) {
+  const caps = Array.isArray(data.capabilities) ? data.capabilities : [];
+  return (
+    <article className="document-surface feasibility-view">
+      {data.summary || data.overall_feasibility ? (
+        <div className="feasibility-view__head">
+          {data.overall_feasibility ? (
+            <span className={cx("feas-overall", `feas-overall--${data.overall_feasibility}`)}>
+              {FEAS_OVERALL_LABEL[data.overall_feasibility] ?? data.overall_feasibility}
+            </span>
+          ) : null}
+          {data.summary ? <p className="feasibility-view__summary">{data.summary}</p> : null}
+        </div>
+      ) : null}
+      <ul className="feasibility-view__list">
+        {caps.map((cap, index) => {
+          const verdict = cap.feasibility ?? "";
+          return (
+            <li key={index} className="feas-row">
+              <div className="feas-row__top">
+                <span className={cx("feas-badge", `feas-badge--${verdict}`)}>
+                  {FEAS_VERDICT_LABEL[verdict] ?? (verdict || "—")}
+                </span>
+                <span className="feas-row__name">{cap.name ?? "—"}</span>
+                {cap.covered_by ? (
+                  <span className="feas-chip" title="Покрывающий агент · способность">
+                    {cap.covered_by}
+                    {cap.matched_capability ? ` · ${cap.matched_capability}` : ""}
+                  </span>
+                ) : (
+                  <span className="feas-chip feas-chip--none" title="Ни один агент не покрывает эту часть">
+                    нет агента
+                  </span>
+                )}
+              </div>
+              {cap.rationale ? <p className="feas-row__rationale">{cap.rationale}</p> : null}
+              {Array.isArray(cap.blockers) && cap.blockers.length > 0 ? (
+                <p className="feas-row__meta">
+                  <span>Блокеры:</span> {cap.blockers.join("; ")}
+                </p>
+              ) : null}
+              {Array.isArray(cap.prerequisites) && cap.prerequisites.length > 0 ? (
+                <p className="feas-row__meta">
+                  <span>Нужно для реализации:</span> {cap.prerequisites.join("; ")}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </article>
+  );
+}
+
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -1963,6 +1989,17 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       .filter((entry) => entry.text.length > 0);
     return { html: parsed.body.innerHTML, toc: tocEntries };
   }, [detail.markdown_content]);
+  // Структурный вид для оценки реализуемости: парсим payload из json_content.
+  // null → откатываемся на markdown-рендер (другая роль или битый JSON).
+  const feasibilityData = useMemo<FeasibilityPayload | null>(() => {
+    if (detail.artifact_role !== "feasibility_assessment" || !detail.json_content) return null;
+    try {
+      const parsed = JSON.parse(detail.json_content) as FeasibilityPayload;
+      return Array.isArray(parsed?.capabilities) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [detail.artifact_role, detail.json_content]);
   const articleRef = useRef<HTMLElement | null>(null);
   const scrollToSection = (id: string) => {
     // Скроллим к разделу внутри текущего документа, без смены URL-хеша
@@ -2226,36 +2263,40 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         )}
       </Modal>
       {mode === "doc" ? (
-        <div className="document-layout">
-          {toc.length >= 2 ? (
-            <nav className="document-toc" aria-label="Содержание документа">
-              <p className="document-toc__title">Содержание</p>
-              <ul className="document-toc__list">
-                {toc.map((item) => (
-                  <li
-                    key={item.id}
-                    className={cx("document-toc__item", item.level === 3 && "document-toc__item--sub")}
-                  >
-                    <a
-                      href={`#${item.id}`}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        scrollToSection(item.id);
-                      }}
+        feasibilityData ? (
+          <FeasibilityView data={feasibilityData} />
+        ) : (
+          <div className="document-layout">
+            {toc.length >= 2 ? (
+              <nav className="document-toc" aria-label="Содержание документа">
+                <p className="document-toc__title">Содержание</p>
+                <ul className="document-toc__list">
+                  {toc.map((item) => (
+                    <li
+                      key={item.id}
+                      className={cx("document-toc__item", item.level === 3 && "document-toc__item--sub")}
                     >
-                      {item.text}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
-          ) : null}
-          <article
-            ref={articleRef}
-            className="document-surface"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        </div>
+                      <a
+                        href={`#${item.id}`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          scrollToSection(item.id);
+                        }}
+                      >
+                        {item.text}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
+            ) : null}
+            <article
+              ref={articleRef}
+              className="document-surface"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          </div>
+        )
       ) : null}
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />
@@ -2410,6 +2451,9 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   const model = "";
   const navigate = useNavigate();
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
+  // Дип-линк из статус-бара: /task-graph?focus=<taskId> — центрируем граф.
+  const [searchParams] = useSearchParams();
+  const focusTaskId = searchParams.get("focus") ?? undefined;
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
     queryFn: () => api.getTaskGraph(projectId),
@@ -2431,6 +2475,7 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
       <TaskGraphCanvas
         tree={data.nodes}
         onSelectNode={setSelectedTask}
+        focusTaskId={focusTaskId}
         completedLeafTasks={data.completed_leaf_tasks}
         totalLeafTasks={data.total_leaf_tasks}
         onRetry={(taskId) => retryMutation.mutate(taskId)}
