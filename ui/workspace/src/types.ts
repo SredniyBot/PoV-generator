@@ -408,6 +408,20 @@ export interface ProjectRequisitesView {
   updated_at: string | null;
 }
 
+export interface CapabilityGapView {
+  title: string;
+  reason: string;
+  suggestion: string;
+}
+
+export interface ProjectGapsView {
+  project_id: string;
+  status: string; // "ready" | "missing"
+  items: CapabilityGapView[];
+  source_artifact_id: string | null;
+  updated_at: string | null;
+}
+
 
 // ---- Async workflow runs (W4.1 / R1) -------------------------------------
 

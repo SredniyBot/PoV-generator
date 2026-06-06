@@ -1,13 +1,12 @@
 /**
- * Реквизиты — требуемые от пользователя входные данные (этап «Реализация»).
+ * Раздел этапа «Реализация»: что нужно от пользователя («Реквизиты») и что мы
+ * пока не умеем («Зоны роста»). Обе секции — производные от артефакта оценки
+ * реализуемости. Реквизиты — просьба о данных (не блокировка). Зоны роста —
+ * требования, не закрытые ни одним умением (кандидаты на расширение каталога).
  *
- * Фаза 1: показываем, что нужно предоставить (доступ / файл / настройка /
- * значение), сгруппированно по тому, что это разблокирует. Источник —
- * предусловия из артефакта оценки реализуемости. Это просьба, а не
- * блокировка: пока данные не получены, конвейер идёт по остальному.
- *
- * Следующая фаза (см. docs/plans/2026-06-06-realizability-capabilities-redesign.md):
- * предоставление данных прямо в карточке + переоценка зависящего требования.
+ * Следующие фазы (см. docs/plans/2026-06-06-realizability-capabilities-redesign.md):
+ * предоставление данных прямо в карточке реквизита + продвижение зоны роста в
+ * пробное умение.
  */
 import { useQuery } from "@tanstack/react-query";
 
@@ -26,16 +25,13 @@ function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemVie
   return Array.from(groups.entries());
 }
 
-export function RequisitesPage({ projectId }: { projectId: string }) {
+function RequisitesSection({ projectId }: { projectId: string }) {
   const query = useQuery({
     queryKey: ["project", projectId, "requisites"],
     queryFn: () => api.getRequisites(projectId),
   });
 
-  if (query.isLoading || !query.data) {
-    return <LoadingPanel title="Загрузка реквизитов…" />;
-  }
-
+  if (query.isLoading || !query.data) return <LoadingPanel title="Загрузка реквизитов…" />;
   const data = query.data;
 
   if (data.status === "missing") {
@@ -48,7 +44,6 @@ export function RequisitesPage({ projectId }: { projectId: string }) {
       </SectionCard>
     );
   }
-
   if (data.items.length === 0) {
     return (
       <SectionCard title="Реквизиты">
@@ -60,15 +55,13 @@ export function RequisitesPage({ projectId }: { projectId: string }) {
     );
   }
 
-  const groups = groupByNeededFor(data.items);
-
   return (
     <SectionCard
       title="Реквизиты"
       subtitle="Что нужно предоставить, чтобы продвинуть реализацию. Это просьба — остальное считается без ожидания."
     >
       <div className="requisites">
-        {groups.map(([neededFor, items]) => (
+        {groupByNeededFor(data.items).map(([neededFor, items]) => (
           <div key={neededFor} className="requisites__group">
             <p className="requisites__group-title">Для: {neededFor}</p>
             <ul className="requisites__list">
@@ -85,5 +78,45 @@ export function RequisitesPage({ projectId }: { projectId: string }) {
         ))}
       </div>
     </SectionCard>
+  );
+}
+
+function GapsSection({ projectId }: { projectId: string }) {
+  const query = useQuery({
+    queryKey: ["project", projectId, "capability-gaps"],
+    queryFn: () => api.getCapabilityGaps(projectId),
+  });
+
+  // Нет данных/нет оценки/нет пробелов — секцию не показываем (не шумим).
+  if (query.isLoading || !query.data) return null;
+  const data = query.data;
+  if (data.status !== "ready" || data.items.length === 0) return null;
+
+  return (
+    <SectionCard
+      title="Зоны роста"
+      subtitle="Эти требования пока не закрыты нашими умениями. Не «никогда» — кандидаты на то, чтобы научиться и брать такое в будущем."
+    >
+      <ul className="requisites__list">
+        {data.items.map((gap) => (
+          <li key={gap.title} className="gap-item">
+            <p className="gap-item__title">{gap.title}</p>
+            {gap.reason ? <p className="gap-item__reason">Почему: {gap.reason}</p> : null}
+            {gap.suggestion ? (
+              <p className="gap-item__suggestion">Как закрыть: {gap.suggestion}</p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </SectionCard>
+  );
+}
+
+export function RequisitesPage({ projectId }: { projectId: string }) {
+  return (
+    <div className="stacked-sections">
+      <RequisitesSection projectId={projectId} />
+      <GapsSection projectId={projectId} />
+    </div>
   );
 }

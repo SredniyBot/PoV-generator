@@ -20,6 +20,7 @@ from ..domain.workspace_views import (
     ArtifactValidationView,
     ArtifactVersionItemView,
     AttachmentView,
+    CapabilityGapView,
     CheckpointSessionView,
     ContextManifestSummaryView,
     DecisionAlternativeView,
@@ -36,6 +37,7 @@ from ..domain.workspace_views import (
     ProjectDebugView,
     ProjectDecisionsView,
     ProjectFailurePinsView,
+    ProjectGapsView,
     ProjectListItemView,
     ProjectOverviewView,
     ProjectRequisitesView,
@@ -647,6 +649,35 @@ class WorkspaceQueryService:
             project_id=context.manifest.project_id,
             status="ready",
             items=_extract_requisites(payload),
+            source_artifact_id=artifact.artifact_id,
+            updated_at=artifact.created_at,
+        )
+
+    def project_capability_gaps(self, project_id: str) -> ProjectGapsView:
+        """Зоны роста — требования, не закрытые ни одним умением каталога.
+
+        Фаза 3: выводим из артефакта реализуемости (пункты без covered_by).
+        Разбор изолирован в :func:`_extract_gaps`.
+        """
+        context = self._load_context(project_id)
+        artifact = self._runtime.latest_artifact_by_role(
+            context.workspace, "feasibility_assessment"
+        )
+        if artifact is None:
+            return ProjectGapsView(
+                project_id=context.manifest.project_id,
+                status="missing",
+                items=(),
+                source_artifact_id=None,
+                updated_at=None,
+            )
+        payload = json.loads(
+            self._runtime.load_artifact_content(context.workspace, artifact.artifact_id)
+        )
+        return ProjectGapsView(
+            project_id=context.manifest.project_id,
+            status="ready",
+            items=_extract_gaps(payload),
             source_artifact_id=artifact.artifact_id,
             updated_at=artifact.created_at,
         )
@@ -2024,4 +2055,38 @@ def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
             items.append(
                 RequisiteItemView(title=title, needed_for=needed_for, status="requested")
             )
+    return tuple(items)
+
+
+def _extract_gaps(payload: dict) -> tuple[CapabilityGapView, ...]:
+    """Достаёт зоны роста из артефакта реализуемости.
+
+    Пробел = пункт, который не закрыт ни одним умением (пустой ``covered_by``).
+    Это и есть «пока не умеем, но возможно добавим». Разбор защитный и с
+    дедупликацией; изолирован тут — при переходе на структурный артефакт
+    меняется только эта функция.
+    """
+    capabilities = payload.get("capabilities")
+    rows = capabilities if isinstance(capabilities, list) else []
+    seen: set[str] = set()
+    items: list[CapabilityGapView] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("covered_by") or "").strip():
+            continue  # закрыто умением — не пробел
+        title = str(row.get("name") or "").strip()
+        if not title:
+            continue
+        key = title.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        reason = str(row.get("rationale") or "").strip()
+        if not reason:
+            blockers = row.get("blockers")
+            if isinstance(blockers, list) and blockers:
+                reason = str(blockers[0]).strip()
+        suggestion = str(row.get("suggestion") or "").strip()
+        items.append(CapabilityGapView(title=title, reason=reason, suggestion=suggestion))
     return tuple(items)

@@ -584,6 +584,31 @@ class ProjectRequisitesView:
 
 
 # ---------------------------------------------------------------------------
+# Зоны роста (пробелы в умениях) — требования, которые не закрыло ни одно
+# умение каталога. Не приговор «никогда», а кандидат на расширение каталога:
+# показываем заказчику как «пока не умеем», команде — как backlog роста.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CapabilityGapView:
+    """Один пробел в умениях (зона роста)."""
+
+    title: str        # что просили
+    reason: str       # почему не закрыто умением
+    suggestion: str   # как можно закрыть (если оценка подсказала), иначе пусто
+
+
+@dataclass(frozen=True)
+class ProjectGapsView:
+    project_id: str
+    status: str  # "ready" | "missing"
+    items: tuple[CapabilityGapView, ...]
+    source_artifact_id: str | None
+    updated_at: str | None
+
+
+# ---------------------------------------------------------------------------
 # L6 design extensions (P3 v2 skeleton, P5 failure pins, P7 decisions, P8 versions)
 #
 # Эти views агрегируют существующие данные без миграций БД. Все поля —

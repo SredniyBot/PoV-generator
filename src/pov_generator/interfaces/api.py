@@ -570,6 +570,10 @@ def create_app(
     def project_requisites(project_id: str) -> Any:
         return to_primitive(query_service.project_requisites(project_id))
 
+    @app.get("/api/projects/{project_id}/capability-gaps")
+    def project_capability_gaps(project_id: str) -> Any:
+        return to_primitive(query_service.project_capability_gaps(project_id))
+
     @app.get("/api/projects/{project_id}/task-graph")
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))

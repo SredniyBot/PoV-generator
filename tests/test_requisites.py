@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from pov_generator.application.workspace_query_service import _extract_requisites
+from pov_generator.application.workspace_query_service import _extract_gaps, _extract_requisites
 
 
 def test_extracts_prerequisites_with_needed_for() -> None:
@@ -53,3 +53,31 @@ def test_missing_name_falls_back_to_project() -> None:
     items = _extract_requisites({"capabilities": [{"prerequisites": ["Значение тайм-аута"]}]})
     assert len(items) == 1
     assert items[0].needed_for == "проект"
+
+
+# --- Зоны роста (пробелы в умениях) -----------------------------------------
+
+
+def test_gaps_are_items_without_covered_by() -> None:
+    payload = {
+        "capabilities": [
+            {"name": "CRUD-сервис", "covered_by": "capability.backend@1.0.0"},  # закрыто
+            {"name": "Распознавание речи", "rationale": "нет такого умения"},   # пробел
+        ]
+    }
+    gaps = _extract_gaps(payload)
+    titles = [g.title for g in gaps]
+    assert titles == ["Распознавание речи"]
+    assert gaps[0].reason == "нет такого умения"
+
+
+def test_gap_reason_falls_back_to_first_blocker() -> None:
+    payload = {"capabilities": [{"name": "X", "blockers": ["слишком высокая точность"]}]}
+    gaps = _extract_gaps(payload)
+    assert gaps[0].reason == "слишком высокая точность"
+
+
+def test_gaps_tolerate_malformed_payload() -> None:
+    assert _extract_gaps({}) == ()
+    assert _extract_gaps({"capabilities": [None, 7, {"covered_by": "x"}]}) == ()
+    assert _extract_gaps({"capabilities": [{"name": ""}]}) == ()
