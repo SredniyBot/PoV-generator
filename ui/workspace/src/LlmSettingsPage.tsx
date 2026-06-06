@@ -825,6 +825,20 @@ function ModelsTab() {
 }
 
 
+/** Токены в компактную подпись: 200000 -> «200k», 1000000 -> «1M». */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return `${Math.round(n / 1000)}k`;
+}
+
+/**
+ * Строка каталога моделей — аккордеон. В покое: имя + основной провайдер +
+ * окно контекста тихим текстом. Редактирование (порядок маршрутов, окно,
+ * удаление) раскрывается по клику — каталог по умолчанию читается, а не правится.
+ */
 function ModelRow({
   entry,
   onTest,
@@ -844,80 +858,147 @@ function ModelRow({
   reorderPending: boolean;
   onSetContextLimit: (tokens: number | null) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const primary = entry.routings[0];
+  const extra = entry.routings.length - 1;
+
   return (
-    <li className="llm-row">
-      <div className="llm-row__main">
-        <strong>{entry.model_name}</strong>
-        <ol className="llm-row__routings">
-          {entry.routings.map((r, idx) => {
-            const isFirst = idx === 0;
-            const isLast = idx === entry.routings.length - 1;
-            const onlyOne = entry.routings.length === 1;
-            return (
-              <li key={r.routing_id} className="llm-row__routing">
-                <span className={"llm-row__routing-rank" + (isFirst ? " llm-row__routing-rank--primary" : "")}>
-                  {isFirst ? "primary" : `#${idx + 1}`}
+    <li className={"llm-model" + (open ? " llm-model--open" : "")}>
+      <div
+        className="llm-model__head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+      >
+        <span className="llm-model__chevron" aria-hidden="true">
+          {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </span>
+        <span className="llm-model__name">{entry.model_name}</span>
+        <span className="llm-model__via">
+          {primary ? (
+            <>
+              через {primary.connection_display_name}
+              <em> ({humanProviderType(primary.provider_type)})</em>
+              {extra > 0 ? (
+                <span className="llm-model__extra" title="запасных маршрутов">
+                  +{extra}
                 </span>
-                <span className="llm-row__routing-name">
-                  {r.connection_display_name}
-                  <em>({humanProviderType(r.provider_type)})</em>
-                  {!r.enabled ? <span className="llm-badge llm-badge--neutral">disabled</span> : null}
-                </span>
-                <div className="llm-row__routing-actions">
-                  <button
-                    type="button"
-                    className="btn-inline"
-                    onClick={() => onMoveRouting(r.routing_id, "up")}
-                    disabled={onlyOne || isFirst || reorderPending}
-                    title="Сделать приоритетнее"
-                  >
-                    <ArrowUp size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-inline"
-                    onClick={() => onMoveRouting(r.routing_id, "down")}
-                    disabled={onlyOne || isLast || reorderPending}
-                    title="Понизить приоритет"
-                  >
-                    <ArrowDown size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-inline"
-                    onClick={() => onDeleteRouting(r.routing_id)}
-                    title="Удалить этот маршрут"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-        {testResult ? (
-          <p
-            className={
-              testResult.status === "ok"
-                ? "llm-row__hint llm-row__hint--ok"
-                : "llm-row__hint llm-row__hint--err"
-            }
-          >
-            {testResult.message}
-            {testResult.latency_ms ? ` · ${testResult.latency_ms} ms` : null}
-          </p>
-        ) : null}
-        <ContextLimitControl
-          value={entry.context_limit}
-          isDefault={entry.context_limit_is_default}
-          onSave={onSetContextLimit}
-        />
-      </div>
-      <div className="llm-row__side">
-        <button type="button" className="btn btn--ghost" onClick={onTest} disabled={testPending}>
+              ) : null}
+            </>
+          ) : (
+            <span className="llm-model__via--none">нет маршрута</span>
+          )}
+        </span>
+        <span className="llm-model__window" title="Окно контекста модели">
+          окно {formatTokens(entry.context_limit)}
+          {!entry.context_limit_is_default ? (
+            <span className="llm-model__window-mark">изменено</span>
+          ) : null}
+        </span>
+        <button
+          type="button"
+          className="btn btn--ghost llm-model__test"
+          onClick={(e) => {
+            e.stopPropagation();
+            onTest();
+          }}
+          disabled={testPending}
+        >
           {testPending ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Тест
         </button>
       </div>
+
+      {testResult ? (
+        <p
+          className={
+            testResult.status === "ok"
+              ? "llm-model__result llm-model__result--ok"
+              : "llm-model__result llm-model__result--err"
+          }
+        >
+          {testResult.message}
+          {testResult.latency_ms ? ` · ${testResult.latency_ms} ms` : null}
+        </p>
+      ) : null}
+
+      {open ? (
+        <div className="llm-model__detail">
+          <div className="llm-model__detail-block">
+            <span className="llm-model__detail-label">Маршруты — порядок перебора</span>
+            <ol className="llm-model__routings">
+              {entry.routings.map((r, idx) => {
+                const isFirst = idx === 0;
+                const isLast = idx === entry.routings.length - 1;
+                const onlyOne = entry.routings.length === 1;
+                return (
+                  <li key={r.routing_id} className="llm-model__routing">
+                    <span
+                      className={
+                        "llm-model__rank" + (isFirst ? " llm-model__rank--primary" : "")
+                      }
+                    >
+                      {isFirst ? "основной" : `#${idx + 1}`}
+                    </span>
+                    <span className="llm-model__routing-name">
+                      {r.connection_display_name}
+                      <em> ({humanProviderType(r.provider_type)})</em>
+                      {!r.enabled ? (
+                        <span className="llm-badge llm-badge--neutral">выкл</span>
+                      ) : null}
+                    </span>
+                    <div className="llm-model__routing-actions">
+                      {!onlyOne ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn-inline"
+                            onClick={() => onMoveRouting(r.routing_id, "up")}
+                            disabled={isFirst || reorderPending}
+                            title="Сделать приоритетнее"
+                          >
+                            <ArrowUp size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-inline"
+                            onClick={() => onMoveRouting(r.routing_id, "down")}
+                            disabled={isLast || reorderPending}
+                            title="Понизить приоритет"
+                          >
+                            <ArrowDown size={14} />
+                          </button>
+                        </>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn-inline"
+                        onClick={() => onDeleteRouting(r.routing_id)}
+                        title="Удалить этот маршрут"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+          <div className="llm-model__detail-block">
+            <ContextLimitControl
+              value={entry.context_limit}
+              isDefault={entry.context_limit_is_default}
+              onSave={onSetContextLimit}
+            />
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }

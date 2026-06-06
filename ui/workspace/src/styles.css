@@ -4894,6 +4894,162 @@ code {
 .llm-badge--err { background: rgba(220, 100, 100, 0.18); color: #e88080; }
 .llm-badge--neutral { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
 
+/* ── Каталог моделей: строка-аккордеон ─────────────────────────────────
+   В покое — спокойная строка (имя + провайдер + окно тихим текстом).
+   Редактирование маршрутов/окна раскрывается по клику. */
+.llm-model {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.llm-model--open {
+  border-color: var(--border-strong);
+  background: var(--surface-elevated-strong);
+}
+.llm-model__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.llm-model--open .llm-model__head {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.llm-model__chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.llm-model__name {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.llm-model__via {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.llm-model__via em {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+.llm-model__via--none {
+  color: var(--warning);
+}
+.llm-model__extra {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.llm-model__window {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.llm-model__window-mark {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11px;
+}
+.llm-model__test {
+  flex-shrink: 0;
+}
+.llm-model__result {
+  margin: 0;
+  padding: 0 14px 10px 36px;
+  font-size: 12px;
+}
+.llm-model__result--ok { color: #6fc28a; }
+.llm-model__result--err { color: #e36b6b; }
+.llm-model__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px 14px;
+}
+.llm-model__detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.llm-model__detail-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.llm-model__routings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.llm-model__routing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.llm-model__rank {
+  flex-shrink: 0;
+  min-width: 56px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.llm-model__rank--primary {
+  color: var(--accent);
+}
+.llm-model__routing-name {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.llm-model__routing-name em {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+.llm-model__routing-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.llm-model__routing-actions .btn-inline {
+  padding: 2px;
+  color: var(--text-secondary);
+}
+.llm-model__routing-actions .btn-inline:hover {
+  color: var(--text-primary);
+}
+.llm-model__routing-actions .btn-inline:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .llm-form {
   margin-top: 20px;
   padding: 20px;
