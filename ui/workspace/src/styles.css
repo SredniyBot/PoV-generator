@@ -758,27 +758,27 @@ code {
 }
 
 .status-pill--active {
-  background: rgba(120, 184, 201, 0.12);
-  color: #d8eef4;
-  border-color: rgba(120, 184, 201, 0.18);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .status-pill--success {
-  background: rgba(114, 193, 144, 0.14);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.2);
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 
 .status-pill--warning {
-  background: rgba(214, 173, 89, 0.14);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.2);
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 
 .status-pill--danger {
-  background: rgba(215, 131, 131, 0.14);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.2);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 
 /* Оценка реализуемости — структурный вид (FeasibilityView): цветной бейдж
@@ -808,18 +808,18 @@ code {
 }
 .feas-overall--feasible {
   background: var(--success-soft);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.25);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 .feas-overall--mixed {
   background: var(--warning-soft);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.25);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 .feas-overall--blocked {
   background: var(--danger-soft);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.25);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 .feasibility-view__list {
   list-style: none;
@@ -858,24 +858,24 @@ code {
   white-space: nowrap;
 }
 .feas-badge--feasible {
-  background: rgba(114, 193, 144, 0.14);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.22);
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 .feas-badge--conditional {
-  background: rgba(214, 173, 89, 0.14);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.22);
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 .feas-badge--uncertain {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--border-subtle);
   color: var(--text-secondary);
   border-color: var(--border-subtle);
 }
 .feas-badge--infeasible {
-  background: rgba(215, 131, 131, 0.14);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.22);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 .feas-chip {
   margin-left: auto;
@@ -883,9 +883,9 @@ code {
   padding: 3px 10px;
   font-size: 11px;
   font-family: var(--font-mono, monospace);
-  background: rgba(120, 184, 201, 0.12);
-  color: #d8eef4;
-  border: 1px solid rgba(120, 184, 201, 0.2);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
   white-space: nowrap;
 }
 .feas-chip--none {
