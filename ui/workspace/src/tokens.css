@@ -117,6 +117,13 @@
   --info: #a884c6;                    /* secondary tags, hints */
   --info-soft: rgba(168, 132, 198, 0.18);
 
+  /* Semantic borders — рамка цветного бейджа/чипа (тон + ~0.35 alpha).
+     Пара к *-soft (фон): фон = *-soft, рамка = *-border. */
+  --accent-border: rgba(120, 184, 201, 0.35);
+  --success-border: rgba(140, 196, 153, 0.35);
+  --warning-border: rgba(214, 173, 89, 0.35);
+  --danger-border: rgba(215, 131, 131, 0.35);
+
   /* Role chips (decision_owner_role) — фон tag-а для роли */
   --role-business: rgba(120, 184, 201, 0.18);
   --role-client: rgba(168, 132, 198, 0.18);
