@@ -1329,6 +1329,9 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "additionalProperties": False,
             "properties": requirements_spec_properties,
         },
+        # Demo / fan-out templates — unstructured, accept any object
+        "feature_list": {"type": "object", "additionalProperties": True},
+        "feature_detail": {"type": "object", "additionalProperties": True},
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")
@@ -2690,7 +2693,9 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     if artifact_role == "design_document":
         return _render_design_document(payload)
 
-    raise ValidationError(f"Неизвестный рендерер артефакта: {artifact_role}")
+    # Generic fallback for demo / unstructured artifacts
+    import json as _json
+    return f"# {artifact_role}\n\n```json\n{_json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n"
 
 
 def _render_design_document(payload: dict[str, Any]) -> str:

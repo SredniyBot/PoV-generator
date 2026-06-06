@@ -1,0 +1,12 @@
+kind: task_template
+id: demo.analyze_features_fanout
+version: 1.0.0
+title: Анализ функций (мультиэкземпляр)
+type: fan_out
+executor: stub
+fan_out_spec:
+  artifact_role: feature_list
+  array_path: features
+  key_field: id
+  label_field: name
+children_template_ref: demo.analyze_single_feature@1.0.0

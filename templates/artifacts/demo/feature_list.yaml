@@ -1,0 +1,8 @@
+kind: artifact_contract
+id: demo.feature_list
+version: 1.0.0
+title: Список функций продукта
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

@@ -1,0 +1,27 @@
+{
+  "features": [
+    {
+      "id": "auth",
+      "name": "Авторизация и управление доступом",
+      "priority": "must-have",
+      "complexity": "medium",
+      "description": "SSO, ролевая модель, аудит"
+    },
+    {
+      "id": "tasks",
+      "name": "Управление задачами и спринтами",
+      "priority": "must-have",
+      "complexity": "high",
+      "description": "Канбан, бэклог, дедлайны, спринты"
+    },
+    {
+      "id": "notifications",
+      "name": "Уведомления и интеграции",
+      "priority": "should-have",
+      "complexity": "low",
+      "description": "Slack, Telegram, email, webhook"
+    }
+  ],
+  "total_count": 3,
+  "source": "{{business_request_short}}"
+}

@@ -2408,6 +2408,7 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   // Ни provider, ни model из UI не передаются — см. WorkspaceRoute.
   const provider = "";
   const model = "";
+  const navigate = useNavigate();
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
@@ -2427,7 +2428,15 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
       title="Граф задач"
       subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
     >
-      <TaskGraphCanvas tree={data.nodes} onSelectNode={setSelectedTask} />
+      <TaskGraphCanvas
+        tree={data.nodes}
+        onSelectNode={setSelectedTask}
+        completedLeafTasks={data.completed_leaf_tasks}
+        totalLeafTasks={data.total_leaf_tasks}
+        onRetry={(taskId) => retryMutation.mutate(taskId)}
+        onOpenArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
+        onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
+      />
       <Drawer
         open={Boolean(selectedTask)}
         title={selectedTask?.title ?? "Задача"}

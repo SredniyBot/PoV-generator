@@ -76,6 +76,14 @@ class ProjectShellView:
 
 
 @dataclass(frozen=True)
+class FanOutMeta:
+    source_artifact_role: str
+    total_instances: int
+    completed_instances: int
+    producer_task_id: str | None = None
+
+
+@dataclass(frozen=True)
 class TaskNodeView:
     task_id: str
     task_key: str
@@ -97,6 +105,7 @@ class TaskNodeView:
     # секундомер «задача X работает T сек.».
     updated_at: str = ""
     children: tuple["TaskNodeView", ...] = ()
+    fan_out_meta: FanOutMeta | None = None
 
 
 @dataclass(frozen=True)

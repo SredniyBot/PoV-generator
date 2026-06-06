@@ -72,6 +72,13 @@ export interface ProjectShellView {
   objective_complete: boolean;
 }
 
+export interface FanOutMeta {
+  source_artifact_role: string;
+  total_instances: number;
+  completed_instances: number;
+  producer_task_id?: string | null;
+}
+
 export interface TaskNodeView {
   task_id: string;
   task_key: string;
@@ -81,6 +88,7 @@ export interface TaskNodeView {
   template_type: string;
   status: string;
   status_summary: string | null;
+  error_message?: string | null;
   origin_kind: string;
   origin_ref: string;
   slot_id: string | null;
@@ -90,6 +98,7 @@ export interface TaskNodeView {
   blocking_clarification_count: number;
   updated_at: string;
   children: TaskNodeView[];
+  fan_out_meta?: FanOutMeta | null;
 }
 
 export interface ProjectTaskGraphView {
