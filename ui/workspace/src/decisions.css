@@ -37,8 +37,9 @@
 
 /* Тихая строка-сводка над фильтрами (вместо 5 крупных счётчиков). */
 .decisions-summary {
-  margin: 0 0 var(--space-3);
+  margin: 0;
   font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-regular);
   color: var(--text-secondary);
 }
 .decisions-summary__pending { color: var(--accent); font-weight: var(--font-weight-medium); }
@@ -213,22 +214,16 @@
   opacity: 0.6;
   cursor: progress;
 }
-.decisions-page__header {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  justify-content: flex-end;
-}
 .decisions-page__download {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-md);
   background: transparent;
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-meta);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   text-decoration: none;
@@ -619,9 +614,9 @@
 .decision-card__answer {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   padding-left: var(--space-3);
-  border-left: 2px solid var(--accent-border);
+  border-left: 3px solid var(--accent-border);
 }
 .decision-card__answer-head {
   display: flex;
@@ -643,7 +638,7 @@
 }
 .decision-card__answer-why {
   margin: 0;
-  font-size: var(--font-size-meta);
+  font-size: var(--font-size-body);
   color: var(--text-secondary);
   line-height: var(--line-height-body);
 }
@@ -661,18 +656,23 @@
 .decision-card__answer-conf {
   font-size: var(--font-size-meta);
   font-variant-numeric: tabular-nums;
-  color: var(--text-disabled);
+  color: var(--text-secondary);
 }
 .decision-card__answer-conf--low {
   color: var(--warning);
 }
 
-/* Что ещё рассматривали — простые строки, разделённые тонкой линией */
+/* Что ещё рассматривали — отдельная секция с разделителем сверху */
+.decision-card__considered {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
 .decision-card__considered-label {
   display: block;
   margin-bottom: var(--space-2);
   font-size: var(--font-size-meta);
-  color: var(--text-disabled);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
 }
 .decision-card__considered-list {
   list-style: none;
@@ -694,19 +694,21 @@
   align-items: baseline;
   gap: var(--space-2);
   font-size: var(--font-size-body);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 .decision-card__considered-desc {
   display: block;
-  margin-top: 0.15rem;
-  font-size: var(--font-size-meta);
-  color: var(--text-disabled);
+  margin-top: var(--space-1);
+  font-size: var(--font-size-body);
+  color: var(--text-secondary);
   line-height: var(--line-height-body);
 }
 
 /* Подвал: тихая текстовая ссылка на артефакт — не плашка, не акцент */
 .decision-card__footer {
   display: flex;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
 }
 .decision-card__artifact-link {
   display: inline-flex;

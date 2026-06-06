@@ -605,32 +605,31 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
       <DecisionsSubNav projectId={projectId} />
       <SectionCard
         title={
-          <div className="decisions-page__header">
-            <a
-              className="decisions-page__download"
-              href={`/api/projects/${projectId}/decisions/export.pdf`}
-              target="_blank"
-              rel="noreferrer"
-              title="Экспортировать весь реестр в PDF"
-            >
-              <Download size={16} /> Экспортировать PDF
-            </a>
-          </div>
+          /* Тихая строка-сводка слева в шапке карточки: внимание/доверие/режим. */
+          <span className="decisions-summary">
+            {pendingCount > 0 ? (
+              <span className="decisions-summary__pending">Ждут ответа: {pendingCount}</span>
+            ) : (
+              <span>Все ответы получены</span>
+            )}
+            {uncertainCount > 0 ? (
+              <span className="decisions-summary__uncertain"> · Система не уверена: {uncertainCount}</span>
+            ) : null}
+            <span className="decisions-summary__muted"> · Режим: {view.mode}</span>
+          </span>
+        }
+        actions={
+          <a
+            className="decisions-page__download"
+            href={`/api/projects/${projectId}/decisions/export.pdf`}
+            target="_blank"
+            rel="noreferrer"
+            title="Экспортировать весь реестр в PDF"
+          >
+            <Download size={14} /> Экспортировать PDF
+          </a>
         }
       >
-        {/* Тихая строка-сводка: только про внимание/доверие. */}
-        <p className="decisions-summary">
-          {pendingCount > 0 ? (
-            <span className="decisions-summary__pending">Ждут ответа: {pendingCount}</span>
-          ) : (
-            <span>Все ответы получены</span>
-          )}
-          {uncertainCount > 0 ? (
-            <span className="decisions-summary__uncertain"> · Система не уверена: {uncertainCount}</span>
-          ) : null}
-          <span className="decisions-summary__muted"> · Режим: {view.mode}</span>
-        </p>
-
         {/* Один лёгкий ряд фильтров: уровень (с числами) + статус + критичность. */}
         <div className="decisions-filters">
           <div className="segmented">
