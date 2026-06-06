@@ -337,7 +337,7 @@ function DecisionCard({
           {!isInteractive ? (
             <div className="decision-card__chosen-box">
               <div className="decision-card__chosen-head">
-                <span className="decision-card__chosen-icon" aria-hidden="true">✓</span>
+                <Check size={14} className="decision-card__chosen-icon" aria-hidden="true" />
                 <span className="decision-card__chosen-label">Выбрано:</span>
                 <span className="decision-card__chosen-value">
                   {chosenAlt ? chosenAlt.label : decision.chosen_option_label || (decision.user_free_text_answer ? "Свой ответ" : "—")}
