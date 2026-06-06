@@ -595,430 +595,154 @@
   color: var(--success);
 }
 
-/* ---- v3.3 — section tag + chosen-prominent + meta-row -------------- */
+/* ====================================================================
+   DecisionCard — read-only вид в реестре.
+   Принцип: почти монохром. Что решили -> почему -> что ещё рассматривали
+   -> куда попадёт. Цвет = сигнал (низкая уверенность), не декор.
+   ==================================================================== */
 
+/* Тег раздела «§ 4.3.4» из LLM-префикса (в шапке карточки) */
 .decision-card__section-tag {
   display: inline-block;
-  margin-right: 0.5rem;
-  padding: 0.05rem 0.4rem;
-  font-size: 0.7rem;
+  margin-right: var(--space-2);
+  padding: 0.05rem var(--space-2);
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
   background: var(--border-subtle);
-  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   vertical-align: middle;
 }
-.decision-card__question {
-  display: inline;
-}
 
-.decision-card__chosen {
+/* Что решили — акцентная полоса слева, без коробки и без зелёного */
+.decision-card__answer {
   display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  padding: 0.7rem 0.85rem;
-  background: rgba(127, 193, 138, 0.07);
-  border: 1px solid var(--success-border);
-  border-radius: 8px;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--accent-border);
 }
-.decision-card__chosen-mark {
-  flex-shrink: 0;
-  color: var(--success);
-  font-weight: 600;
-  font-size: 1.05rem;
-  line-height: 1.3;
+.decision-card__answer-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
-.decision-card__chosen-body {
-  flex: 1;
-  min-width: 0;
-}
-.decision-card__chosen-label {
-  font-weight: 500;
+.decision-card__answer-value {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
   color: var(--text-primary);
-  font-size: 0.95rem;
-  line-height: 1.4;
+  line-height: var(--line-height-body);
 }
-.decision-card__chosen-desc {
-  margin-top: 0.3rem;
-  font-size: 0.85rem;
+.decision-card__answer-desc {
+  margin: 0;
+  font-size: var(--font-size-body);
   color: var(--text-secondary);
-  line-height: 1.5;
+  line-height: var(--line-height-body);
 }
-.decision-card__chosen-rationale {
-  margin-top: 0.45rem;
-  font-size: 0.82rem;
+.decision-card__answer-why {
+  margin: 0;
+  font-size: var(--font-size-meta);
   color: var(--text-secondary);
+  line-height: var(--line-height-body);
+}
+.decision-card__answer-free {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body);
+  color: var(--text-primary);
   font-style: italic;
-  line-height: 1.5;
 }
 
-.decision-card__artifacts {
+/* Уверенность — тихая мелкая метка; цвет только при низкой (<0.5) */
+.decision-card__answer-conf {
+  font-size: var(--font-size-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-disabled);
+}
+.decision-card__answer-conf--low {
+  color: var(--warning);
+}
+
+/* Что ещё рассматривали — простые строки, разделённые тонкой линией */
+.decision-card__considered-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-size-meta);
+  color: var(--text-disabled);
+}
+.decision-card__considered-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
-  font-size: 0.85rem;
+  flex-direction: column;
+}
+.decision-card__considered-item {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.decision-card__considered-item:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+.decision-card__considered-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--font-size-body);
   color: var(--text-secondary);
+}
+.decision-card__considered-desc {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: var(--font-size-meta);
+  color: var(--text-disabled);
+  line-height: var(--line-height-body);
+}
+
+/* Подвал: тихая текстовая ссылка на артефакт — не плашка, не акцент */
+.decision-card__footer {
+  display: flex;
 }
 .decision-card__artifact-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  color: var(--accent);
+  gap: var(--space-1);
+  color: var(--text-secondary);
   text-decoration: none;
-  border-bottom: 1px dashed transparent;
-  transition: border-color 0.15s;
+  font-size: var(--font-size-meta);
+  border-bottom: 1px solid transparent;
+  transition: color var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing);
 }
 .decision-card__artifact-link:hover {
-  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  border-bottom-color: var(--border-strong);
 }
 
-.decision-card__alts {
-  margin-top: 0.3rem;
-}
-.decision-card__alts summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  padding: 0.3rem 0;
-  user-select: none;
-}
-.decision-card__alts summary:hover {
-  color: var(--text-primary);
-}
-.decision-card__alts-list {
-  list-style: none;
-  margin: 0.4rem 0 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.decision-card__alt-item {
-  padding: 0.5rem 0.65rem;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-.decision-card__alt-label {
-  font-size: 0.88rem;
-  color: var(--text-primary);
-}
-.decision-card__alt-desc {
-  margin-top: 0.2rem;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
-/* free_text-primary mode в checkpoint — большая textarea + skip-button */
+/* free_text-only режим в checkpoint — большая textarea + «принять как есть» */
 .decision-card__free--primary {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .decision-card__free-skip {
   align-self: flex-start;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 0.4rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
-}
-.decision-card__free-skip:hover {
-  color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-/* =====================================================================
-   v3.3 — DecisionCard redesign: prominent chosen, artifact link,
-   alternatives dropdown, free_text-only с «принять как есть»
-   ===================================================================== */
-
-/* Section tag — маленький pill для «§ 4.3.4» префикса из LLM */
-.decision-card__section-tag {
-  display: inline-block;
-  margin-right: 0.5rem;
-  padding: 0.05rem 0.4rem;
-  font-size: 0.72rem;
-  font-weight: 500;
-  background: var(--border-subtle);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  color: var(--text-secondary);
-  vertical-align: middle;
-}
-.decision-card__question {
-  /* Question формулировка — без changes */
-}
-
-/* Выбранный вариант — prominent блок в read-only */
-.decision-card__chosen {
-  display: flex;
-  gap: 0.6rem;
-  padding: 0.7rem 0.9rem;
-  background: var(--success-soft);
-  border: 1px solid var(--success-border);
-  border-left: 3px solid var(--success-border);
-  border-radius: 7px;
-  margin: 0.3rem 0;
-}
-.decision-card__chosen-mark {
-  flex-shrink: 0;
-  color: var(--success);
-  font-weight: 600;
-  font-size: 1rem;
-  line-height: 1.3;
-}
-.decision-card__chosen-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-.decision-card__chosen-label {
-  font-weight: 500;
-  color: var(--text-primary);
-  font-size: 0.95rem;
-}
-.decision-card__chosen-desc {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-.decision-card__chosen-rationale {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  font-style: italic;
-  line-height: 1.5;
-  padding-left: 0.5rem;
-  border-left: 2px solid var(--border-subtle);
-}
-
-/* Артефакт + альтернативы — meta-row в read-only */
-.decision-card__meta-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  padding-top: 0.4rem;
-}
-.decision-card__artifact-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.55rem;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: 5px;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.8rem;
-}
-.decision-card__artifact-link:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-}
-.decision-card__alts-drop {
-  display: inline-block;
-}
-.decision-card__alts-drop summary {
-  cursor: pointer;
-  padding: 0.25rem 0.55rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 5px;
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  user-select: none;
-  list-style: none;
-}
-.decision-card__alts-drop summary::-webkit-details-marker { display: none; }
-.decision-card__alts-drop summary:hover {
-  color: var(--text-primary);
-  background: var(--border-subtle);
-}
-.decision-card__alts-drop[open] summary {
-  background: var(--border-subtle);
-  margin-bottom: 0.4rem;
-}
-.decision-card__alts-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.decision-card__alt-title {
-  display: block;
-  font-size: 0.88rem;
-  color: var(--text-primary);
-  margin-bottom: 0.15rem;
-}
-.decision-card__alt-desc {
-  display: block;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  padding-left: 0.5rem;
-  border-left: 2px solid var(--border-subtle);
-}
-
-/* free_text-only режим — большая textarea + «Принять как есть» */
-.decision-card__free--primary {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.decision-card__free-skip {
-  align-self: flex-start;
-  background: none;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 0.4rem 0.8rem;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.decision-card__free-skip:hover {
-  background: var(--border-subtle);
-  color: var(--text-primary);
-}
-
-/* v3.3 — chosen-box (read-only registry view, prominent selected) */
-.decision-card__chosen-box {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.75rem 0.9rem;
-  background: var(--success-soft);
-  border: 1px solid var(--success-border);
-  border-left: 3px solid var(--success-border);
-  border-radius: 7px;
-}
-.decision-card__chosen-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.decision-card__chosen-icon {
-  color: var(--success);
-  font-weight: 600;
-  font-size: 1rem;
-}
-.decision-card__chosen-label {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-}
-.decision-card__chosen-value {
-  font-weight: 500;
-  color: var(--text-primary);
-  font-size: 0.95rem;
-}
-.decision-card__chosen-desc {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  line-height: 1.55;
-}
-.decision-card__chosen-rationale {
-  margin: 0;
-  padding-left: 0.5rem;
-  border-left: 2px solid rgba(255, 255, 255, 0.07);
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  font-style: italic;
-  line-height: 1.5;
-}
-.decision-card__chosen-freetext {
-  margin: 0;
-  padding: 0.4rem 0.6rem;
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 5px;
-  font-size: 0.88rem;
-  color: var(--text-primary);
-  font-style: italic;
-}
-
-/* meta-row (артефакт + альтернативы dropdown) */
-.decision-card__meta-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  padding-top: 0.4rem;
-}
-.decision-card__artifact-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.6rem;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: 5px;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.8rem;
-}
-.decision-card__artifact-link:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-}
-.decision-card__alts-drop {
-  display: inline-block;
-}
-.decision-card__alts-drop summary {
-  cursor: pointer;
-  padding: 0.25rem 0.6rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 5px;
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  user-select: none;
-  list-style: none;
-}
-.decision-card__alts-drop summary::-webkit-details-marker { display: none; }
-.decision-card__alts-drop summary::marker { content: ''; }
-.decision-card__alts-drop summary:hover {
-  color: var(--text-primary);
-  background: var(--border-subtle);
-}
-.decision-card__alts-drop[open] summary {
-  background: var(--border-subtle);
-  margin-bottom: 0.4rem;
-}
-.decision-card__alts-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.decision-card__alts-list li {
-  padding: 0.5rem 0.65rem;
-  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-.decision-card__alt-title {
-  display: block;
-  font-size: 0.88rem;
-  color: var(--text-primary);
-  margin-bottom: 0.15rem;
-}
-.decision-card__alt-desc {
-  display: block;
-  font-size: 0.8rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-body);
   color: var(--text-secondary);
-  line-height: 1.45;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing);
+}
+.decision-card__free-skip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }

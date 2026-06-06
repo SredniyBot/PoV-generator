@@ -333,20 +333,21 @@ function DecisionCard({
             </ul>
           ) : null}
 
-          {/* READ-ONLY РЕЖИМ (реестр): выбранный вариант — prominent */}
+          {/* READ-ONLY (реестр): что решили — акцентная полоса слева, без коробки */}
           {!isInteractive ? (
-            <div className="decision-card__chosen-box">
-              <div className="decision-card__chosen-head">
-                <span className="decision-card__chosen-icon" aria-hidden="true">✓</span>
-                <span className="decision-card__chosen-label">Выбрано:</span>
-                <span className="decision-card__chosen-value">
-                  {chosenAlt ? chosenAlt.label : decision.chosen_option_label || (decision.user_free_text_answer ? "Свой ответ" : "—")}
+            <div className="decision-card__answer">
+              <div className="decision-card__answer-head">
+                <span className="decision-card__answer-value">
+                  {chosenAlt
+                    ? chosenAlt.label
+                    : decision.chosen_option_label ||
+                      (decision.user_free_text_answer ? "Свой ответ" : "—")}
                 </span>
-                {chosenAlt && chosenAlt.confidence !== null && chosenAlt.confidence !== undefined ? (
+                {chosenAlt && chosenAlt.confidence != null ? (
                   <span
                     className={cx(
-                      "decision-card__option-confidence",
-                      chosenAlt.confidence < 0.5 && "decision-card__option-confidence--low",
+                      "decision-card__answer-conf",
+                      chosenAlt.confidence < 0.5 && "decision-card__answer-conf--low",
                     )}
                     title="Уверенность системы в выбранном варианте"
                   >
@@ -355,14 +356,46 @@ function DecisionCard({
                 ) : null}
               </div>
               {chosenAlt?.description ? (
-                <p className="decision-card__chosen-desc">{chosenAlt.description}</p>
+                <p className="decision-card__answer-desc">{chosenAlt.description}</p>
               ) : null}
               {decision.rationale && decision.rationale !== chosenAlt?.description ? (
-                <p className="decision-card__chosen-rationale">{decision.rationale}</p>
+                <p className="decision-card__answer-why">{decision.rationale}</p>
               ) : null}
               {decision.user_free_text_answer ? (
-                <p className="decision-card__chosen-freetext">«{decision.user_free_text_answer}»</p>
+                <p className="decision-card__answer-free">«{decision.user_free_text_answer}»</p>
               ) : null}
+            </div>
+          ) : null}
+
+          {/* READ-ONLY: что ещё рассматривали — сразу списком, простыми строками */}
+          {!isInteractive && decision.alternatives.length > 1 ? (
+            <div className="decision-card__considered">
+              <span className="decision-card__considered-label">Ещё рассматривали</span>
+              <ul className="decision-card__considered-list">
+                {decision.alternatives
+                  .filter((a) => a.option_id !== decision.chosen_option_id)
+                  .map((alt) => (
+                    <li key={alt.option_id} className="decision-card__considered-item">
+                      <span className="decision-card__considered-title">
+                        {alt.label}
+                        {alt.confidence != null ? (
+                          <span
+                            className={cx(
+                              "decision-card__answer-conf",
+                              alt.confidence < 0.5 && "decision-card__answer-conf--low",
+                            )}
+                            title="Уверенность системы в этом варианте"
+                          >
+                            {Math.round(alt.confidence * 100)}%
+                          </span>
+                        ) : null}
+                      </span>
+                      {alt.description ? (
+                        <span className="decision-card__considered-desc">{alt.description}</span>
+                      ) : null}
+                    </li>
+                  ))}
+              </ul>
             </div>
           ) : null}
 
@@ -455,51 +488,17 @@ function DecisionCard({
             </div>
           ) : null}
 
-          {/* META-БЛОК в режиме реестра: артефакт + альтернативы dropdown */}
-          {!isInteractive ? (
-            <div className="decision-card__meta-row">
-              {decision.affected_artifact_ids.length > 0 ? (
-                <Link
-                  to={`/projects/${decision.project_id}/artifacts/${decision.affected_artifact_ids[0]}`}
-                  className="decision-card__artifact-link"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <FileText size={13} />
-                  Артефакт
-                </Link>
-              ) : null}
-              {decision.alternatives.length > 1 ? (
-                <details className="decision-card__alts-drop">
-                  <summary>
-                    Альтернативы ({decision.alternatives.length - 1})
-                  </summary>
-                  <ul className="decision-card__alts-list">
-                    {decision.alternatives
-                      .filter((a) => a.option_id !== decision.chosen_option_id)
-                      .map((alt) => (
-                        <li key={alt.option_id}>
-                          <span className="decision-card__alt-title">
-                            {alt.label}
-                            {alt.confidence !== null && alt.confidence !== undefined ? (
-                              <span
-                                className={cx(
-                                  "decision-card__option-confidence",
-                                  alt.confidence < 0.5 && "decision-card__option-confidence--low",
-                                )}
-                                title="Уверенность системы в этом варианте"
-                              >
-                                {Math.round(alt.confidence * 100)}%
-                              </span>
-                            ) : null}
-                          </span>
-                          {alt.description ? (
-                            <span className="decision-card__alt-desc">{alt.description}</span>
-                          ) : null}
-                        </li>
-                      ))}
-                  </ul>
-                </details>
-              ) : null}
+          {/* READ-ONLY: подвал — тихая ссылка на затронутый артефакт */}
+          {!isInteractive && decision.affected_artifact_ids.length > 0 ? (
+            <div className="decision-card__footer">
+              <Link
+                to={`/projects/${decision.project_id}/artifacts/${decision.affected_artifact_ids[0]}`}
+                className="decision-card__artifact-link"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <FileText size={13} />
+                Открыть артефакт
+              </Link>
             </div>
           ) : null}
         </div>
