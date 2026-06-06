@@ -11,6 +11,10 @@ capabilities:
       - Доступ к схеме данных
     maturity: reliable
     produces: component_decomposition
+    limits:
+      reliability: обычная доступность, без жёсткого SLA
+      precision: не реального времени
+      volume: до ~100 тыс. записей на сущность
   - capability: backend.async_jobs
     tech: [Celery, Redis]
     requires:

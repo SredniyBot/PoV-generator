@@ -46,6 +46,28 @@ def test_capability_profiles_load_and_validate() -> None:
             assert snapshot.has_vocabulary_entry("capabilities", cap.capability)
 
 
+def test_capability_limits_parsed() -> None:
+    # Ф2: пределы гарантии у умения парсятся как пары (измерение, порог).
+    snapshot, _ = _validate(REPO_ROOT / "templates")
+    backend = snapshot.resolve_capability_profile("capability.backend@1.0.0")
+    rest = next(c for c in backend.capabilities if c.capability == "backend.rest_api")
+    dims = dict(rest.limits)
+    assert "reliability" in dims and dims["reliability"]
+
+
+def test_capability_brief_is_conservative() -> None:
+    # Ф2: бриф для оценки реализуемости задаёт умолчание «не реализуемо»,
+    # запрещает выдумывать умения и упоминает пределы.
+    from pov_generator.application.execution_service import _render_capability_brief
+
+    snapshot, _ = _validate(REPO_ROOT / "templates")
+    brief = _render_capability_brief(snapshot)
+    low = brief.lower()
+    assert "по умолчанию требование не реализуемо" in low
+    assert "не выдумывай умения" in low
+    assert "пределы" in low
+
+
 def test_unknown_capability_id_rejected(tmp_path: Path) -> None:
     registry_root = _copy_templates(tmp_path)
     path = registry_root / "capabilities" / "backend.yaml"

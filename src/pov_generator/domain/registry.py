@@ -329,6 +329,12 @@ class CapabilityItem:
     requires: tuple[str, ...] = ()
     maturity: str = "reliable"
     produces: str | None = None
+    # Пределы гарантии: до какого уровня нагрузки/надёжности/точности/объёма
+    # умение даёт результат. Пары (измерение, порог) — например
+    # ("reliability", "обычная доступность, без жёсткого SLA"). Именно они ловят
+    # «слишком сложное/надёжное/большое»: требование сверх предела не берётся в
+    # полном виде, даже если функционально знакомо.
+    limits: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -952,6 +958,10 @@ def parse_capability_profile(raw: dict[str, Any], source_path: Path) -> Capabili
         maturity = str(item.get("maturity", "reliable"))
         if maturity not in _CAPABILITY_MATURITIES:
             raise ValidationError(f"Поле maturity в {owner} должно быть reliable|experimental")
+        limits_raw = item.get("limits") or {}
+        if not isinstance(limits_raw, dict):
+            raise ValidationError(f"Поле limits в {owner} должно быть mapping")
+        limits = tuple((str(k), str(v)) for k, v in limits_raw.items())
         items.append(
             CapabilityItem(
                 capability=require_str(item, "capability", owner),
@@ -959,6 +969,7 @@ def parse_capability_profile(raw: dict[str, Any], source_path: Path) -> Capabili
                 requires=tuple(str(r) for r in require_list(item, "requires", owner)),
                 maturity=maturity,
                 produces=optional_str(item, "produces"),
+                limits=limits,
             )
         )
     binds_raw = optional_str(raw, "binds")

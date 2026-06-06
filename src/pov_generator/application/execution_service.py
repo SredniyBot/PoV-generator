@@ -92,23 +92,35 @@ def _render_capability_brief(snapshot: RegistrySnapshot) -> str:
     if not specs:
         return ""
     lines = [
-        "<capability_profiles>",
-        "Команда сборки — агенты с зафиксированными надёжными способностями. "
-        "Сопоставь каждую часть проекта со способностью одного из агентов "
-        "и заполни covered_by / matched_capability:",
+        "<capability_catalog>",
+        "Это ПРОВЕРЕННЫЙ каталог умений — единственный источник того, что мы "
+        "реально умеем. Правила оценки (соблюдай строго):",
+        "1. По умолчанию требование НЕ реализуемо. «Реализуемо» нужно доказать — "
+        "указать конкретное умение из каталога, которое его закрывает.",
+        "2. Не выдумывай умения. Нет совпадения в каталоге → статус «пробел» "
+        "(возможно, добавим), а НЕ «реализуемо».",
+        "3. Проверяй пределы умения (limits): если требование хочет больше "
+        "(надёжность/точность/объём/нагрузка) — это «частично» (урезанный "
+        "вариант) или «не реализуемо», даже если умение знакомо.",
+        "4. Нехватка доступа/данных — НЕ повод для «не реализуемо»: это "
+        "предусловие (prerequisites), мы запросим его отдельно.",
+        "Статусы: реализуемо | частично | пробел | не реализуемо. Для каждого "
+        "пункта заполни covered_by (id умения с версией) и matched_capability, "
+        "либо оставь пустыми и поставь «пробел».",
     ]
     for spec in specs:
-        lines.append(f"\nАгент {spec.identifier} (role={spec.role}):")
+        lines.append(f"\nПрофиль {spec.identifier} (направление: {spec.role}):")
         for capability in spec.capabilities:
             req = "; ".join(capability.requires) or "—"
             tech = ", ".join(capability.tech) or "—"
+            limits = "; ".join(f"{dim}: {val}" for dim, val in capability.limits) or "—"
             lines.append(
                 f"  • {capability.capability} [{capability.maturity}] "
-                f"tech={tech}; предусловия: {req}"
+                f"tech={tech}; предусловия: {req}; пределы: {limits}"
             )
         if spec.cannot_do:
             lines.append("  не делает: " + "; ".join(spec.cannot_do))
-    lines.append("</capability_profiles>")
+    lines.append("</capability_catalog>")
     return "\n".join(lines)
 
 
