@@ -16,7 +16,7 @@
 
 import { useState } from "react";
 import { useNavigate, useParams, Link, NavLink } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
@@ -564,6 +564,9 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
         status: statusFilter === "all" ? undefined : statusFilter,
         includeDetails: false,
       }),
+    // Не перемонтируем страницу при смене фильтра: держим прошлые данные,
+    // пока грузятся новые — иначе экран «прыгает» в LoadingPanel и наверх.
+    placeholderData: keepPreviousData,
   });
 
   if (query.isLoading || !query.data) {
@@ -615,9 +618,8 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
         }
       >
         <p className="decisions-page__intro">
-          Все решения, которые система приняла или собирается принять при сборке артефактов проекта.
-          В режиме <strong>{view.mode}</strong> вы видите как ваши участвующие решения, так и те, что
-          были приняты автоматически.
+          Что система решила и что собирается решить при сборке артефактов. Режим:{" "}
+          <strong>{view.mode}</strong>.
         </p>
 
         {/* Hero counters */}
@@ -968,10 +970,12 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
           <EmptyState
             title="Нет открытых решений"
             description="Когда параллельные шаги дойдут до точек, где нужны ваши решения — они появятся здесь все вместе."
+            action={
+              <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/overview`)}>
+                <ArrowLeft size={14} /> К проекту
+              </Button>
+            }
           />
-          <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/overview`)}>
-            К проекту
-          </Button>
         </SectionCard>
       </div>
     );
