@@ -392,6 +392,22 @@ export interface ProjectStagesView {
   objective_complete: boolean;
 }
 
+// ---- Реквизиты (требуемые от пользователя входные данные) ----------------
+
+export interface RequisiteItemView {
+  title: string;
+  needed_for: string;
+  status: string; // "requested" | "provided"
+}
+
+export interface ProjectRequisitesView {
+  project_id: string;
+  status: string; // "ready" | "missing"
+  items: RequisiteItemView[];
+  source_artifact_id: string | null;
+  updated_at: string | null;
+}
+
 
 // ---- Async workflow runs (W4.1 / R1) -------------------------------------
 

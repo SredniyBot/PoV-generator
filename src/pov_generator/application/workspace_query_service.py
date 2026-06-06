@@ -38,6 +38,7 @@ from ..domain.workspace_views import (
     ProjectFailurePinsView,
     ProjectListItemView,
     ProjectOverviewView,
+    ProjectRequisitesView,
     ProjectReviewView,
     ProjectShellView,
     ProjectSituationView,
@@ -45,6 +46,7 @@ from ..domain.workspace_views import (
     ProjectStateView,
     ProjectTaskGraphView,
     ProjectTimelineView,
+    RequisiteItemView,
     ReviewIssueView,
     SituationBlockerView,
     StageFailingTaskView,
@@ -619,6 +621,35 @@ class WorkspaceQueryService:
             updated_at=artifact.created_at,
         )
 
+    def project_requisites(self, project_id: str) -> ProjectRequisitesView:
+        """Реквизиты — требуемые от пользователя входные данные.
+
+        Фаза 1: выводим из предусловий (prerequisites) последнего артефакта
+        реализуемости. Разбор изолирован в :func:`_extract_requisites` —
+        когда артефакт станет структурным, меняется только она.
+        """
+        context = self._load_context(project_id)
+        artifact = self._runtime.latest_artifact_by_role(
+            context.workspace, "feasibility_assessment"
+        )
+        if artifact is None:
+            return ProjectRequisitesView(
+                project_id=context.manifest.project_id,
+                status="missing",
+                items=(),
+                source_artifact_id=None,
+                updated_at=None,
+            )
+        payload = json.loads(
+            self._runtime.load_artifact_content(context.workspace, artifact.artifact_id)
+        )
+        return ProjectRequisitesView(
+            project_id=context.manifest.project_id,
+            status="ready",
+            items=_extract_requisites(payload),
+            source_artifact_id=artifact.artifact_id,
+            updated_at=artifact.created_at,
+        )
 
     def project_overview(self, project_id: str) -> ProjectOverviewView:
         context = self._load_context(project_id)
@@ -1956,3 +1987,41 @@ class WorkspaceQueryService:
             "primary_artifact_id": primary_artifact.artifact_id,
             "execution": execution_summary,
         }
+
+
+def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
+    """Достаёт требуемые входные данные из артефакта реализуемости.
+
+    Берём только предусловия (``prerequisites``) по каждой возможности — это и
+    есть «дайте то-то». Блокеры (причины невыполнимости) сюда НЕ попадают: они
+    относятся к статусу реализуемости, а не к запросу данных. Разбор защитный
+    (отсутствующие/кривые поля — пропускаем) и с дедупликацией, чтобы один и тот
+    же реквизит из разных пунктов не повторялся.
+
+    Намеренно изолировано на уровне модуля: артефакт реализуемости сейчас
+    неструктурированный, и когда он станет структурным, переписывается только
+    эта функция, а не проекция/эндпоинт/UI.
+    """
+    capabilities = payload.get("capabilities")
+    rows = capabilities if isinstance(capabilities, list) else []
+    seen: set[str] = set()
+    items: list[RequisiteItemView] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        needed_for = str(row.get("name") or "").strip() or "проект"
+        prerequisites = row.get("prerequisites")
+        if not isinstance(prerequisites, list):
+            continue
+        for value in prerequisites:
+            title = str(value).strip()
+            if not title:
+                continue
+            dedup_key = title.casefold()
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            items.append(
+                RequisiteItemView(title=title, needed_for=needed_for, status="requested")
+            )
+    return tuple(items)

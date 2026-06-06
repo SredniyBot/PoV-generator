@@ -63,6 +63,7 @@ import {
 } from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
+import { RequisitesPage } from "./RequisitesPage";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
@@ -629,6 +630,7 @@ function WorkspaceRoute({
             • decisions — «Реестр» (справочник + фильтры + PDF) */}
         <Route path="decisions" element={<DecisionsRegistryPage projectId={projectId} />} />
         <Route path="decisions/pending" element={<PendingDecisionsPage projectId={projectId} />} />
+        <Route path="requisites" element={<RequisitesPage projectId={projectId} />} />
         {/* Старый плоский URL — редирект, чтобы bookmarks не ломались. */}
         <Route
           path="pending-decisions"
