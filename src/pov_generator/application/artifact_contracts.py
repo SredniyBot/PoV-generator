@@ -1006,7 +1006,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             },
         ),
         "implementation_dependency_plan": _analysis_object(
-            ["phases", "critical_dependencies", "project_risks", "proposed_timeline"],
+            ["phases", "critical_dependencies", "project_risks"],
             {
                 "phases": {
                     "type": "array",
@@ -1024,7 +1024,6 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 },
                 "critical_dependencies": _string_array_schema(),
                 "project_risks": _string_array_schema(),
-                "proposed_timeline": _string_array_schema(),
             },
         ),
         # Phase 3+4 additions: glossary, risk register, deployment topology,
@@ -2557,8 +2556,6 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
                 *[f"- {item}" for item in payload["critical_dependencies"]],
                 "\n## Риски проекта",
                 *[f"- {item}" for item in payload["project_risks"]],
-                "\n## Предлагаемый график",
-                *[f"- {item}" for item in payload["proposed_timeline"]],
             ]
         )
         return "\n".join(lines)
