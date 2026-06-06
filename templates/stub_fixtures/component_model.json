@@ -1,0 +1,95 @@
+{
+  "summary": "Декомпозиция по слоям: приём заявок (прикладной) и их хранилище (инфраструктура).",
+  "components": [
+    {
+      "id": "ingest",
+      "name": "Приём заявок",
+      "type": "service",
+      "layer": "application",
+      "responsibility": "Принимает заявки от пользователя, валидирует и передаёт на сохранение.",
+      "justification": "Единая точка входа для пользовательских заявок.",
+      "capability_owner": "capability.backend@1.0.0",
+      "nfr": ["до ~100 заявок/мин"],
+      "provided_interfaces": [
+        {
+          "name": "submitRequest",
+          "sync": "sync",
+          "criticality": "normal",
+          "input": "форма заявки",
+          "output": "идентификатор заявки",
+          "errors": ["ошибка валидации", "дубликат"]
+        }
+      ],
+      "consumed_interfaces": [
+        {"component": "store", "interface": "saveRequest"}
+      ],
+      "owned_data": ["черновики заявок"],
+      "events": {"emits": ["request.accepted"], "consumes": []},
+      "modules": [
+        {"id": "validator", "responsibility": "Проверка формы заявки.", "realizes": "submitRequest"},
+        {"id": "dispatcher", "responsibility": "Передача заявки в хранилище."}
+      ],
+      "internal_edges": [
+        {"from": "validator", "to": "dispatcher"}
+      ],
+      "requisites": [
+        {
+          "id": "ingest.crm_format",
+          "kind": "interface_format",
+          "title": "Точный формат заявки из текущей формы",
+          "needed_for": "submitRequest",
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "name": "Хранилище заявок",
+      "type": "datastore",
+      "layer": "infrastructure",
+      "responsibility": "Сохраняет заявки и отдаёт их по запросу.",
+      "justification": "Отдельное хранилище для долговременного хранения заявок.",
+      "capability_owner": "capability.backend@1.0.0",
+      "provided_interfaces": [
+        {
+          "name": "saveRequest",
+          "sync": "sync",
+          "criticality": "normal",
+          "input": "заявка",
+          "output": "подтверждение",
+          "errors": ["конфликт записи"]
+        }
+      ],
+      "owned_data": ["заявки"],
+      "modules": [
+        {"id": "repo", "responsibility": "Доступ к хранилищу заявок.", "realizes": "saveRequest"}
+      ]
+    }
+  ],
+  "coverage": {
+    "actors": [
+      {"actor": "manager", "components": ["ingest"]}
+    ],
+    "external_systems": [
+      {"system": "crm", "components": ["store"]}
+    ]
+  },
+  "diagrams": [
+    {
+      "type": "components",
+      "caption": "Компоненты и связи",
+      "spec": {
+        "kind": "flowchart",
+        "direction": "LR",
+        "nodes": [
+          {"id": "ingest", "label": "Приём заявок"},
+          {"id": "store", "label": "Хранилище", "shape": "cylinder"}
+        ],
+        "edges": [
+          {"from": "ingest", "to": "store", "label": "saveRequest"}
+        ]
+      }
+    }
+  ],
+  "confidence": 0.8
+}

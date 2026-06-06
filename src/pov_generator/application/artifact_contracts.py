@@ -32,6 +32,31 @@ _SEQUENCE_MESSAGE_ARROWS: dict[str, str] = {
 }
 _VALID_MERMAID_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# --- Общий механизм диаграмм -------------------------------------------------
+# Любой артефакт может нести блок ``diagrams`` — список диаграмм с семантическим
+# типом и подписью. Тип влияет на подпись по умолчанию; форма рендера (flowchart
+# или sequence) определяется самим ``spec``. Это снимает «диаграммы только в
+# фиксированных слотах»: новые артефакты (component_model, deployment_map)
+# несут произвольное число диаграмм единообразно.
+_DIAGRAM_TYPES = (
+    "context",      # системный контекст
+    "components",   # компоненты и связи
+    "internal",     # внутреннее устройство компонента
+    "sequence",     # последовательность сообщений
+    "flow",         # поток процесса
+    "deployment",   # развёртывание
+    "data",         # поток данных
+)
+_DIAGRAM_TYPE_HEADINGS: dict[str, str] = {
+    "context": "Контекстная диаграмма",
+    "components": "Диаграмма компонентов",
+    "internal": "Внутреннее устройство",
+    "sequence": "Диаграмма последовательности",
+    "flow": "Диаграмма потока",
+    "deployment": "Диаграмма развёртывания",
+    "data": "Поток данных",
+}
+
 
 def _sanitize_mermaid_id(raw: Any, fallback: str = "node") -> str:
     """Return a Mermaid-safe identifier.
@@ -172,6 +197,60 @@ def _build_interaction_diagram(diagram: dict[str, Any] | None) -> str:
     if kind == "flowchart":
         return _build_flowchart(diagram)
     return _build_sequence_diagram(diagram)
+
+
+def _build_diagram(spec: dict[str, Any] | None) -> str:
+    """Собрать Mermaid из произвольного diagram-spec (для общего механизма).
+
+    Форма выбирается так: явный ``kind`` главенствует; иначе выводим из формы —
+    наличие ``messages`` / ``participants`` означает sequence, иначе flowchart.
+    Это устойчивее ``_build_interaction_diagram`` (который по умолчанию даёт
+    sequence) для flowchart-спеков без явного ``kind``.
+    """
+    if not isinstance(spec, dict):
+        return ""
+    kind = spec.get("kind")
+    if kind == "flowchart":
+        return _build_flowchart(spec)
+    if kind == "sequence":
+        return _build_sequence_diagram(spec)
+    if spec.get("messages") or spec.get("participants"):
+        return _build_sequence_diagram(spec)
+    return _build_flowchart(spec)
+
+
+def _render_mermaid_block(mmd: str, heading: str) -> list[str]:
+    """Единый рендер одного Mermaid-блока: жирная подпись + fence.
+
+    Пустой ``mmd`` → пустой список (диаграмму не рисуем). Один источник правды
+    для формата, на который опираются и фиксированные слоты, и общий механизм.
+    """
+    if not mmd:
+        return []
+    return [f"\n**{heading}:**", "```mermaid", mmd, "```"]
+
+
+def _render_diagrams(diagrams: Any) -> list[str]:
+    """Отрендерить блок ``diagrams`` любого артефакта.
+
+    Каждая диаграмма: ``type`` (семантика → подпись по умолчанию), опц.
+    ``caption`` (перекрывает подпись), ``spec`` (структура). Пустые/битые
+    элементы тихо пропускаются — рендер никогда не падает на кривых данных.
+    """
+    if not isinstance(diagrams, list):
+        return []
+    out: list[str] = []
+    for block in diagrams:
+        if not isinstance(block, dict):
+            continue
+        mmd = _build_diagram(block.get("spec"))
+        if not mmd:
+            continue
+        caption = block.get("caption")
+        if not (isinstance(caption, str) and caption.strip()):
+            caption = _DIAGRAM_TYPE_HEADINGS.get(block.get("type"), "Диаграмма")
+        out.extend(_render_mermaid_block(mmd, caption.strip()))
+    return out
 
 
 def _pack_enabled(domain_pack_refs: tuple[str, ...], pack_prefix: str) -> bool:
@@ -315,6 +394,31 @@ def _interaction_diagram_schema() -> JSONSchema:
             },
         },
     }
+
+
+def _diagram_block_schema() -> JSONSchema:
+    """Схема одного элемента блока ``diagrams``.
+
+    ``spec`` переиспользует объединённую схему (sequence | flowchart) — она же
+    у interaction_view, чтобы модель не учила два разных формата диаграмм.
+    ``of`` — id компонента, к которому относится диаграмма (для type=internal).
+    """
+    return {
+        "type": "object",
+        "required": ["type", "spec"],
+        "additionalProperties": False,
+        "properties": {
+            "type": {"type": "string", "enum": list(_DIAGRAM_TYPES)},
+            "caption": {"type": "string"},
+            "of": {"type": "string"},
+            "spec": _interaction_diagram_schema(),
+        },
+    }
+
+
+def _diagrams_array_schema() -> JSONSchema:
+    """Схема блока ``diagrams`` — массив диаграмм, который может нести артефакт."""
+    return {"type": "array", "items": _diagram_block_schema()}
 
 
 def _analysis_meta_properties() -> JSONSchema:
@@ -1436,6 +1540,207 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "context_diagram": _flowchart_diagram_schema(),
                 "system_boundaries": _string_array_schema(),
                 "assumptions": _string_array_schema(),
+            },
+        ),
+        "component_model": _analysis_object(
+            ["components", "coverage"],
+            {
+                "summary": {"type": "string"},
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id",
+                            "name",
+                            "type",
+                            "layer",
+                            "responsibility",
+                            "justification",
+                            "provided_interfaces",
+                            "modules",
+                        ],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "service",
+                                    "datastore",
+                                    "queue",
+                                    "ui",
+                                    "scheduled",
+                                    "external",
+                                ],
+                            },
+                            "layer": {
+                                "type": "string",
+                                "enum": [
+                                    "core",
+                                    "application",
+                                    "adapter",
+                                    "infrastructure",
+                                ],
+                            },
+                            "responsibility": {"type": "string"},
+                            "justification": {"type": "string"},
+                            "capability_owner": {"type": "string"},
+                            "nfr": _string_array_schema(),
+                            "provided_interfaces": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "sync": {
+                                            "type": "string",
+                                            "enum": ["sync", "async"],
+                                        },
+                                        "criticality": {
+                                            "type": "string",
+                                            "enum": ["normal", "critical"],
+                                        },
+                                        "input": {"type": "string"},
+                                        "output": {"type": "string"},
+                                        "errors": _string_array_schema(),
+                                        # Углубление для critical-швов: схема/инварианты/
+                                        # идемпотентность/гарантии. Для normal — не нужно.
+                                        "detail": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "consumed_interfaces": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["component", "interface"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "component": {"type": "string"},
+                                        "interface": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "owned_data": _string_array_schema(),
+                            "events": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "emits": _string_array_schema(),
+                                    "consumes": _string_array_schema(),
+                                },
+                            },
+                            "modules": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["id", "responsibility"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "responsibility": {"type": "string"},
+                                        "realizes": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "internal_edges": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["from", "to"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "from": {"type": "string"},
+                                        "to": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "requisites": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["id", "kind", "title"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                                "credential",
+                                                "dataset",
+                                                "file",
+                                                "setting",
+                                                "interface_format",
+                                                "sample",
+                                                "other",
+                                            ],
+                                        },
+                                        "title": {"type": "string"},
+                                        "needed_for": {"type": "string"},
+                                        "blocking": {"type": "boolean"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "coverage": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "actors": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["actor", "components"],
+                                "additionalProperties": False,
+                                "properties": {
+                                    "actor": {"type": "string"},
+                                    "components": _string_array_schema(),
+                                },
+                            },
+                        },
+                        "external_systems": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["system", "components"],
+                                "additionalProperties": False,
+                                "properties": {
+                                    "system": {"type": "string"},
+                                    "components": _string_array_schema(),
+                                },
+                            },
+                        },
+                    },
+                },
+                "diagrams": _diagrams_array_schema(),
+            },
+        ),
+        "deployment_map": _analysis_object(
+            ["deployment_units"],
+            {
+                "summary": {"type": "string"},
+                "deployment_units": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "name", "components", "justification"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "runtime": {"type": "string"},
+                            "components": _string_array_schema(),
+                            "justification": {"type": "string"},
+                        },
+                    },
+                },
+                "diagrams": _diagrams_array_schema(),
             },
         ),
         "ui_requirements_outline": _analysis_object(
@@ -2928,6 +3233,12 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     if artifact_role == "component_decomposition":
         return _render_component_decomposition(payload)
 
+    if artifact_role == "component_model":
+        return _render_component_model(payload)
+
+    if artifact_role == "deployment_map":
+        return _render_deployment_map(payload)
+
     if artifact_role == "interaction_view":
         return _render_interaction_view(payload)
 
@@ -3022,12 +3333,11 @@ def _render_design_document(payload: dict[str, Any]) -> str:
                 lines.append(f"- **{system.get('name', '—')}** — {system.get('role', '—')}")
                 for interaction in system.get("interactions") or []:
                     lines.append(f"  - {interaction}")
-        context_diagram_mmd = _build_flowchart(sc.get("context_diagram"))
-        if context_diagram_mmd:
-            lines.append("\n**Контекстная диаграмма:**")
-            lines.append("```mermaid")
-            lines.append(context_diagram_mmd)
-            lines.append("```")
+        lines.extend(
+            _render_mermaid_block(
+                _build_flowchart(sc.get("context_diagram")), "Контекстная диаграмма"
+            )
+        )
 
     comp = payload.get("components") or {}
     if comp:
@@ -3049,12 +3359,11 @@ def _render_design_document(payload: dict[str, Any]) -> str:
             if deps:
                 lines.append("**Зависимости:**")
                 lines.extend(f"- {entry}" for entry in deps)
-        component_diagram_mmd = _build_flowchart(comp.get("component_diagram"))
-        if component_diagram_mmd:
-            lines.append("\n**Диаграмма компонентов:**")
-            lines.append("```mermaid")
-            lines.append(component_diagram_mmd)
-            lines.append("```")
+        lines.extend(
+            _render_mermaid_block(
+                _build_flowchart(comp.get("component_diagram")), "Диаграмма компонентов"
+            )
+        )
 
     interactions = payload.get("interactions") or {}
     if interactions:
@@ -3077,14 +3386,11 @@ def _render_design_document(payload: dict[str, Any]) -> str:
                 for i, step in enumerate(steps, 1):
                     lines.append(f"{i}. {step}")
         interaction_diagram = interactions.get("interaction_diagram") or {}
-        interaction_diagram_mmd = _build_interaction_diagram(interaction_diagram)
-        if interaction_diagram_mmd:
-            kind = interaction_diagram.get("kind", "sequence")
-            heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
-            lines.append(f"\n**{heading}:**")
-            lines.append("```mermaid")
-            lines.append(interaction_diagram_mmd)
-            lines.append("```")
+        kind = interaction_diagram.get("kind", "sequence")
+        heading = "Sequence-диаграмма" if kind == "sequence" else "Диаграмма потока"
+        lines.extend(
+            _render_mermaid_block(_build_interaction_diagram(interaction_diagram), heading)
+        )
 
     deployment = payload.get("deployment") or {}
     if deployment:
@@ -3132,6 +3438,7 @@ def _render_design_document(payload: dict[str, Any]) -> str:
         lines.append("\n## Нефункциональные требования")
         lines.extend(f"- {item}" for item in nfrs)
 
+    lines.extend(_render_diagrams(payload.get("diagrams")))
     return "\n".join(lines)
 
 
@@ -3161,6 +3468,7 @@ def _render_component_decomposition(payload: dict[str, Any]) -> str:
     if cross:
         lines.append("\n## Сквозные аспекты")
         lines.extend(f"- {item}" for item in cross)
+    lines.extend(_render_diagrams(payload.get("diagrams")))
     return "\n".join(lines)
 
 
@@ -3197,6 +3505,7 @@ def _render_interaction_view(payload: dict[str, Any]) -> str:
     if failures:
         lines.append("\n## Режимы сбоев")
         lines.extend(f"- {item}" for item in failures)
+    lines.extend(_render_diagrams(payload.get("diagrams")))
     return "\n".join(lines)
 
 
@@ -3229,4 +3538,301 @@ def _render_system_context_definition(payload: dict[str, Any]) -> str:
     lines.append("```mermaid")
     lines.append(_build_flowchart(payload["context_diagram"]))
     lines.append("```")
+    lines.extend(_render_diagrams(payload.get("diagrams")))
     return "\n".join(lines)
+
+
+# Слой компонента в порядке «изнутри наружу» — для правила зависимостей чистой
+# архитектуры: зависеть можно только внутрь (на меньший или равный индекс).
+_COMPONENT_LAYER_ORDER: dict[str, int] = {
+    "core": 0,
+    "application": 1,
+    "adapter": 2,
+    "infrastructure": 3,
+}
+_COMPONENT_TYPE_LABELS: dict[str, str] = {
+    "service": "сервис",
+    "datastore": "хранилище",
+    "queue": "очередь",
+    "ui": "интерфейс",
+    "scheduled": "по расписанию",
+    "external": "внешняя",
+}
+_REQUISITE_KIND_LABELS: dict[str, str] = {
+    "credential": "доступ/креды",
+    "dataset": "набор данных",
+    "file": "файл/таблица",
+    "setting": "настройка",
+    "interface_format": "формат интерфейса",
+    "sample": "образец",
+    "other": "прочее",
+}
+# Мягкий бюджет на количество компонентов: больше — проверка предупреждает
+# (минимизируем; каждый сверх — с обоснованием). Не блокирует.
+_COMPONENT_SOFT_BUDGET = 9
+
+
+def _render_component_model(payload: dict[str, Any]) -> str:
+    lines = ["# Модель компонентов"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    lines.append("\n## Компоненты")
+    for component in payload.get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        cid = component.get("id", "—")
+        ctype = _COMPONENT_TYPE_LABELS.get(component.get("type"), component.get("type", "—"))
+        layer = component.get("layer", "—")
+        lines.append(f"\n### {component.get('name', '—')} `{cid}`")
+        lines.append(f"_{ctype}, слой: {layer}_")
+        if component.get("responsibility"):
+            lines.append(f"\n{component['responsibility']}")
+        if component.get("justification"):
+            lines.append(f"\n**Обоснование:** {component['justification']}")
+        if component.get("capability_owner"):
+            lines.append(f"**Строит:** {component['capability_owner']}")
+        nfr = component.get("nfr") or []
+        if nfr:
+            lines.append("\n**Нефункциональные требования:**")
+            lines.extend(f"- {item}" for item in nfr)
+        provided = component.get("provided_interfaces") or []
+        if provided:
+            lines.append("\n**Предоставляет:**")
+            for iface in provided:
+                if not isinstance(iface, dict):
+                    continue
+                meta = [m for m in (iface.get("sync"), iface.get("criticality")) if m]
+                suffix = f" _({', '.join(meta)})_" if meta else ""
+                io = ""
+                if iface.get("input") or iface.get("output"):
+                    io = f": {iface.get('input', '—')} → {iface.get('output', '—')}"
+                lines.append(f"- **{iface.get('name', '—')}**{suffix}{io}")
+                errors = iface.get("errors") or []
+                if errors:
+                    lines.append(f"  - ошибки: {', '.join(errors)}")
+                if iface.get("detail"):
+                    lines.append(f"  - {iface['detail']}")
+        consumed = component.get("consumed_interfaces") or []
+        if consumed:
+            lines.append("\n**Потребляет:**")
+            for dep in consumed:
+                if isinstance(dep, dict):
+                    lines.append(f"- {dep.get('component', '—')}.{dep.get('interface', '—')}")
+        owned = component.get("owned_data") or []
+        if owned:
+            lines.append("\n**Владеет данными:**")
+            lines.extend(f"- {item}" for item in owned)
+        events = component.get("events") or {}
+        emits = events.get("emits") or []
+        consumes = events.get("consumes") or []
+        if emits or consumes:
+            lines.append("\n**События:**")
+            if emits:
+                lines.append(f"- публикует: {', '.join(emits)}")
+            if consumes:
+                lines.append(f"- потребляет: {', '.join(consumes)}")
+        modules = component.get("modules") or []
+        if modules:
+            lines.append("\n**Внутреннее устройство:**")
+            for module in modules:
+                if not isinstance(module, dict):
+                    continue
+                realizes = f" → реализует `{module['realizes']}`" if module.get("realizes") else ""
+                lines.append(
+                    f"- `{module.get('id', '—')}` — {module.get('responsibility', '—')}{realizes}"
+                )
+            edges = component.get("internal_edges") or []
+            for edge in edges:
+                if isinstance(edge, dict):
+                    lines.append(f"  - {edge.get('from', '—')} → {edge.get('to', '—')}")
+        requisites = component.get("requisites") or []
+        if requisites:
+            lines.append("\n**Реквизиты (нужно от пользователя):**")
+            for req in requisites:
+                if not isinstance(req, dict):
+                    continue
+                kind = _REQUISITE_KIND_LABELS.get(req.get("kind"), req.get("kind", "—"))
+                mark = " — блокирует переход" if req.get("blocking") else ""
+                needed = f" (для: {req['needed_for']})" if req.get("needed_for") else ""
+                lines.append(f"- {req.get('title', '—')} _({kind})_{needed}{mark}")
+
+    coverage = payload.get("coverage") or {}
+    actors = coverage.get("actors") or []
+    systems = coverage.get("external_systems") or []
+    if actors or systems:
+        lines.append("\n## Покрытие")
+        for entry in actors:
+            if isinstance(entry, dict):
+                comps = ", ".join(entry.get("components") or []) or "—"
+                lines.append(f"- актор **{entry.get('actor', '—')}** → {comps}")
+        for entry in systems:
+            if isinstance(entry, dict):
+                comps = ", ".join(entry.get("components") or []) or "—"
+                lines.append(f"- внешняя **{entry.get('system', '—')}** → {comps}")
+
+    lines.extend(_render_diagrams(payload.get("diagrams")))
+    return "\n".join(lines)
+
+
+def _render_deployment_map(payload: dict[str, Any]) -> str:
+    lines = ["# Карта развёртывания"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"\n{summary}")
+    units = payload.get("deployment_units") or []
+    if units:
+        lines.append("\n## Единицы развёртывания")
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            runtime = f" _({unit['runtime']})_" if unit.get("runtime") else ""
+            lines.append(f"\n### {unit.get('name', '—')} `{unit.get('id', '—')}`{runtime}")
+            comps = unit.get("components") or []
+            if comps:
+                lines.append(f"**Компоненты:** {', '.join(comps)}")
+            if unit.get("justification"):
+                lines.append(f"**Обоснование:** {unit['justification']}")
+    lines.extend(_render_diagrams(payload.get("diagrams")))
+    return "\n".join(lines)
+
+
+def check_component_model_consistency(payload: dict[str, Any]) -> list[str]:
+    """Детерминированная проверка целостности модели компонентов (без LLM).
+
+    Возвращает список человекочитаемых замечаний. ВСЕ они неблокирующие —
+    вызывающая сторона оформляет их как предупреждения / зоны роста, а не как
+    отказ. Цель — поймать то, что не ловит схема: висячие ссылки, нереализованные
+    интерфейсы, нарушение правила зависимостей, циклы, раздувание количества.
+    Разбор защитный: кривые элементы тихо пропускаются.
+    """
+    issues: list[str] = []
+    components = [c for c in (payload.get("components") or []) if isinstance(c, dict)]
+    ids = [str(c.get("id")) for c in components if c.get("id")]
+    id_set = set(ids)
+
+    # 1. Уникальность id компонентов.
+    seen: set[str] = set()
+    for cid in ids:
+        if cid in seen:
+            issues.append(f"Дублирующийся id компонента: '{cid}'.")
+        seen.add(cid)
+
+    if len(components) > _COMPONENT_SOFT_BUDGET:
+        issues.append(
+            f"Компонентов {len(components)} — больше мягкого бюджета "
+            f"({_COMPONENT_SOFT_BUDGET}); проверьте, обоснован ли каждый."
+        )
+
+    for component in components:
+        cid = str(component.get("id") or "?")
+        # 2. Потребляемые интерфейсы ссылаются на существующий компонент.
+        for dep in component.get("consumed_interfaces") or []:
+            if not isinstance(dep, dict):
+                continue
+            target = str(dep.get("component") or "")
+            if target and target not in id_set:
+                issues.append(
+                    f"Компонент '{cid}' потребляет интерфейс несуществующего "
+                    f"компонента '{target}'."
+                )
+            else:
+                # 6. Правило зависимостей чистой архитектуры: ядро не зависит
+                # наружу. Флагируем только этот канонический случай (а не любой
+                # service→datastore), чтобы не шуметь.
+                provider = next((c for c in components if str(c.get("id")) == target), None)
+                if provider is not None and component.get("layer") == "core":
+                    pi = _COMPONENT_LAYER_ORDER.get(provider.get("layer"))
+                    if pi is not None and pi > 0:
+                        issues.append(
+                            f"Нарушение правила зависимостей: ядро '{cid}' зависит "
+                            f"от '{target}' (слой {provider.get('layer')}) — "
+                            f"ядро не должно зависеть наружу."
+                        )
+        # 3. Каждый предоставляемый интерфейс реализован каким-то модулем.
+        realized = {
+            str(m.get("realizes"))
+            for m in (component.get("modules") or [])
+            if isinstance(m, dict) and m.get("realizes")
+        }
+        module_ids = {
+            str(m.get("id"))
+            for m in (component.get("modules") or [])
+            if isinstance(m, dict) and m.get("id")
+        }
+        for iface in component.get("provided_interfaces") or []:
+            if not isinstance(iface, dict):
+                continue
+            name = str(iface.get("name") or "")
+            if name and name not in realized:
+                issues.append(
+                    f"Компонент '{cid}': интерфейс '{name}' не закреплён ни за "
+                    f"одним внутренним модулем (realizes)."
+                )
+        # 4. Внутренние рёбра ссылаются на объявленные модули.
+        for edge in component.get("internal_edges") or []:
+            if not isinstance(edge, dict):
+                continue
+            for end in ("from", "to"):
+                ref = str(edge.get(end) or "")
+                if ref and ref not in module_ids:
+                    issues.append(
+                        f"Компонент '{cid}': внутреннее ребро ссылается на "
+                        f"несуществующий модуль '{ref}'."
+                    )
+
+    # 5. Покрытие ссылается на существующие компоненты.
+    coverage = payload.get("coverage") or {}
+    for entry in coverage.get("actors") or []:
+        if isinstance(entry, dict):
+            for comp in entry.get("components") or []:
+                if str(comp) not in id_set:
+                    issues.append(
+                        f"Покрытие актора '{entry.get('actor')}' ссылается на "
+                        f"несуществующий компонент '{comp}'."
+                    )
+    for entry in coverage.get("external_systems") or []:
+        if isinstance(entry, dict):
+            for comp in entry.get("components") or []:
+                if str(comp) not in id_set:
+                    issues.append(
+                        f"Покрытие внешней системы '{entry.get('system')}' "
+                        f"ссылается на несуществующий компонент '{comp}'."
+                    )
+
+    # 7. Цикл в графе зависимостей компонентов.
+    if _has_dependency_cycle(components):
+        issues.append("В графе зависимостей компонентов есть цикл.")
+
+    return issues
+
+
+def _has_dependency_cycle(components: list[dict[str, Any]]) -> bool:
+    """Поиск цикла в ориентированном графе зависимостей (DFS с тремя цветами)."""
+    graph: dict[str, list[str]] = {}
+    for component in components:
+        cid = str(component.get("id") or "")
+        if not cid:
+            continue
+        targets = []
+        for dep in component.get("consumed_interfaces") or []:
+            if isinstance(dep, dict) and dep.get("component"):
+                targets.append(str(dep["component"]))
+        graph[cid] = targets
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = dict.fromkeys(graph, WHITE)
+
+    def visit(node: str) -> bool:
+        color[node] = GRAY
+        for nxt in graph.get(node, ()):
+            if nxt not in color:
+                continue
+            if color[nxt] == GRAY:
+                return True
+            if color[nxt] == WHITE and visit(nxt):
+                return True
+        color[node] = BLACK
+        return False
+
+    return any(color[node] == WHITE and visit(node) for node in graph)

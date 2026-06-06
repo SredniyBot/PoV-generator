@@ -1,0 +1,32 @@
+{
+  "summary": "По умолчанию одна единица развёртывания — модульный монолит.",
+  "deployment_units": [
+    {
+      "id": "app",
+      "name": "Основное приложение",
+      "runtime": "контейнер",
+      "components": ["ingest", "store"],
+      "justification": "По умолчанию одна единица развёртывания; разбивать нет драйвера."
+    }
+  ],
+  "diagrams": [
+    {
+      "type": "deployment",
+      "caption": "Развёртывание",
+      "spec": {
+        "kind": "flowchart",
+        "direction": "TD",
+        "nodes": [
+          {"id": "app", "label": "Основное приложение"},
+          {"id": "ingest", "label": "Приём заявок"},
+          {"id": "store", "label": "Хранилище", "shape": "cylinder"}
+        ],
+        "edges": [
+          {"from": "app", "to": "ingest", "kind": "dotted"},
+          {"from": "app", "to": "store", "kind": "dotted"}
+        ]
+      }
+    }
+  ],
+  "confidence": 0.85
+}

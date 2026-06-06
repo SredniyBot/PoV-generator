@@ -13,7 +13,11 @@ from ..domain.decisions import SOURCE_IDENTIFICATION, DecisionAlternative, Decis
 from ..domain.registry import MethodologyPackSpec, RegistrySnapshot
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..infrastructure.sqlite_runtime import SqliteRuntime
-from .artifact_contracts import artifact_schema, validate_json_schema
+from .artifact_contracts import (
+    artifact_schema,
+    check_component_model_consistency,
+    validate_json_schema,
+)
 from .checkpoint_service import CheckpointService
 from .methodology_rules import evaluate_methodology_rules
 
@@ -374,6 +378,22 @@ class ValidationService:
                     related_artifact_ids=(artifact_id,),
                 )
             )
+
+        # Модель компонентов: детерминированная проверка целостности вместо
+        # шага-критика. Все находки НЕблокирующие — они становятся зонами роста
+        # / предупреждениями, а не отказом. Жёстко блокирует только схема (выше).
+        if artifact_role == "component_model":
+            for issue in check_component_model_consistency(payload):
+                findings.append(
+                    ValidationFinding(
+                        finding_id=str(uuid.uuid4()),
+                        finding_type="model_consistency",
+                        severity="warning",
+                        blocking=False,
+                        message=issue,
+                        related_artifact_ids=(artifact_id,),
+                    )
+                )
 
         if artifact_role == "requirements_spec" and template_ref == "common.requirements_spec_generation@2.0.0":
             findings.extend(self._validate_enterprise_spec(payload, active_domain_pack_refs, artifact_id))

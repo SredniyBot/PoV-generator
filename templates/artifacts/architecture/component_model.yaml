@@ -1,0 +1,11 @@
+kind: artifact_contract
+id: architecture.component_model
+version: 1.0.0
+title: Модель компонентов
+# Реальная (структурная) схema живёт в application/artifact_contracts.py —
+# как и у соседних архитектурных артефактов. Здесь контракт-объявление для
+# реестра; содержимое валидируется Python-схемой при исполнении.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

@@ -53,6 +53,8 @@ EXPECTED_STATIC_ROLES = {
     "ui_requirements_outline",
     "system_context_definition",
     "component_decomposition",
+    "component_model",
+    "deployment_map",
     "interaction_view",
     "feasibility_assessment",
     "backend_build_spec",

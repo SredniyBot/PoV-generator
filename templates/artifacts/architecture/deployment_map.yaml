@@ -1,0 +1,10 @@
+kind: artifact_contract
+id: architecture.deployment_map
+version: 1.0.0
+title: Карта развёртывания
+# Структурная схema — в application/artifact_contracts.py. Здесь объявление
+# контракта для реестра.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

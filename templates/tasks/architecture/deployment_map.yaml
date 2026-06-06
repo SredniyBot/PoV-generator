@@ -1,0 +1,50 @@
+kind: task_template
+id: architecture.deployment_map
+version: 1.0.0
+title: Собрать карту развёртывания
+type: leaf
+status: active
+domain: architecture
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+produces:
+  artifact: architecture.deployment_map@1.0.0
+context:
+  max_tokens: 14000
+planning:
+  priority: 450
+effects:
+  readiness:
+    set:
+      - dimension: deployment_mapped
+        status: ready
+summary: |
+  Отобрази компоненты из component_model на единицы развёртывания (что в каком
+  процессе/рантайме живёт).
+
+  ГЛАВНОЕ ПРАВИЛО: единиц развёртывания — минимум. По умолчанию ОДНА единица
+  (модульный монолит): все компоненты в ней. Дополнительная единица появляется
+  ТОЛЬКО под драйвер, и он указывается в `justification`: независимое
+  масштабирование, другой рантайм, изоляция данных, разный темп изменений,
+  разная доступность. Дробление без драйвера — ошибка.
+
+  По каждой единице развёртывания:
+  • `id`, `name`, `runtime` (опц. — контейнер / функция / процесс / …);
+  • `components` — список id компонентов в ней (ссылайся ТОЛЬКО на объявленные
+    в component_model id; каждый компонент — ровно в одной единице);
+  • `justification` — почему именно так (для единственной единицы — «по умолчанию
+    одна единица»).
+
+  `diagrams` (опц.) — диаграмма развёртывания (type: deployment): узлы —
+  единицы и компоненты в них, рёбра — сетевые связи между единицами.
+
+  Не выдумывай компоненты, которых нет в component_model.
+
+  ▸ `confidence` — число 0.0-1.0, отражает уверенность в раскладке по
+    развёртыванию (где разбиение на несколько единиц сделано без явного
+    нефункционального драйвера — снижай).

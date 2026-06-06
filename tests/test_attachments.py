@@ -347,13 +347,16 @@ def test_context_build_marks_attachment_used(tmp_path: Path) -> None:
 
     snapshot, _ = registry_service.validate()
     context_service = ContextService(runtime)
-    # Берём leaf без обязательных входных артефактов, чтобы build_for_task
-    # собрал контекст без подготовки upstream (как _first_leaf_task в
-    # test_context_project_state).
+    # Берём leaf, который (а) потребляет вложения (attachments в raw_inputs —
+    # иначе used_in_context не выставится) И (б) не требует upstream-артефактов
+    # (иначе build_for_task упадёт на отсутствующем входе). Оба условия нужны:
+    # «без обязательных входов» само по себе не гарантирует потребление вложения.
     leaf = next(
         t
         for t in runtime.list_tasks(workspace)
-        if t.template_type == "leaf" and not snapshot.resolve_template(t.template_ref).inputs.required_artifact_roles
+        if t.template_type == "leaf"
+        and "attachments" in snapshot.resolve_template(t.template_ref).inputs.raw_inputs
+        and not snapshot.resolve_template(t.template_ref).inputs.required_artifact_roles
     )
     context_service.build_for_task(workspace, snapshot, leaf.task_id)
 
@@ -375,11 +378,15 @@ def test_oversized_source_trimmed_visibly_not_silently(tmp_path: Path, monkeypat
     snapshot, _ = registry_service.validate()
     # Прижимаем бюджет шаблона так, что источник не влезает целиком.
     monkeypatch.setenv("POV_TEMPLATE_CONTEXT_MAX_TOKENS", "2000")
+    # Leaf, который потребляет вложения И не требует upstream-артефактов —
+    # иначе build_for_task упал бы на отсутствующем обязательном входе
+    # (например, scope_boundary_definition требует normalized_request).
     leaf = next(
         t
         for t in runtime.list_tasks(workspace)
         if t.template_type == "leaf"
         and "attachments" in snapshot.resolve_template(t.template_ref).inputs.raw_inputs
+        and not snapshot.resolve_template(t.template_ref).inputs.required_artifact_roles
     )
     result = ContextService(runtime).build_for_task(
         workspace, snapshot, leaf.task_id, model_context_window=200_000
