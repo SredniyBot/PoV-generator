@@ -556,23 +556,29 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
 
+  // Одна загрузка всех решений; фильтрация — на клиенте. Тогда счётчики на
+  // фильтрах всегда полные, смена фильтра мгновенна и НЕ дёргает экран (нет
+  // рефетча → нет «прыжка» наверх).
   const query = useQuery({
-    queryKey: ["decisions", projectId, levelFilter, statusFilter],
-    queryFn: () =>
-      api.getDecisionsRegistry(projectId, {
-        level: levelFilter === "all" ? undefined : levelFilter,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        includeDetails: false,
-      }),
+    queryKey: ["decisions", projectId],
+    queryFn: () => api.getDecisionsRegistry(projectId, { includeDetails: false }),
   });
 
   if (query.isLoading || !query.data) {
     return <LoadingPanel title="Загружаем реестр решений…" />;
   }
   const view: ProjectDecisionsView = query.data;
-  const filteredItems = showRiskyOnly
-    ? view.items.filter((d) => d.is_low_confidence)
-    : view.items;
+  const filteredItems = view.items.filter(
+    (d) =>
+      (levelFilter === "all" || d.level === levelFilter) &&
+      (statusFilter === "all" || d.status === statusFilter) &&
+      (!showRiskyOnly || d.is_low_confidence),
+  );
+  // Счётчики — из полного набора (не из отфильтрованного), чтобы числа на
+  // фильтрах не «прыгали» при выборе.
+  const levelCount = (lvl: DecisionLevel) => view.items.filter((d) => d.level === lvl).length;
+  const pendingCount = view.items.filter((d) => d.status === "proposed").length;
+  const uncertainCount = view.items.filter((d) => d.is_low_confidence).length;
   // Сортировка по важности — самые требующие внимания вверху:
   //   1. status="proposed" (ждут ответа пользователя)
   //   2. is_low_confidence (LLM не уверена в дефолте)
@@ -614,73 +620,62 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
           </div>
         }
       >
-        <p className="decisions-page__intro">
-          Все решения, которые система приняла или собирается принять при сборке артефактов проекта.
-          В режиме <strong>{view.mode}</strong> вы видите как ваши участвующие решения, так и те, что
-          были приняты автоматически.
+        {/* Тихая строка-сводка: только про внимание/доверие. */}
+        <p className="decisions-summary">
+          {pendingCount > 0 ? (
+            <span className="decisions-summary__pending">Ждут ответа: {pendingCount}</span>
+          ) : (
+            <span>Все ответы получены</span>
+          )}
+          {uncertainCount > 0 ? (
+            <span className="decisions-summary__uncertain"> · Система не уверена: {uncertainCount}</span>
+          ) : null}
+          <span className="decisions-summary__muted"> · Режим: {view.mode}</span>
         </p>
 
-        {/* Hero counters */}
-        <div className="decisions-hero">
-          <DecisionCounter
-            label="На вашем уровне"
-            value={view.surfaced_total}
-            sub={view.surfaced_pending > 0 ? `${view.surfaced_pending} ждут ответа` : "все ответы получены"}
-            tone={view.surfaced_pending > 0 ? "active" : "muted"}
-            emphasis
-          />
-          <DecisionCounter label="Бизнес" value={view.business_count} tone="danger" />
-          <DecisionCounter label="Архитектура" value={view.architecture_count} tone="warning" />
-          <DecisionCounter label="Детали" value={view.detail_count} tone="muted" />
-          <DecisionCounter
-            label="Система не уверена"
-            value={view.low_confidence_count}
-            tone={view.low_confidence_count > 0 ? "warning" : "muted"}
-          />
-        </div>
+        {/* Один лёгкий ряд фильтров: уровень (с числами) + статус + критичность. */}
+        <div className="decisions-filters">
+          <div className="segmented">
+            {(["all", "business", "architecture", "detail"] as LevelFilter[]).map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={cx("segmented__item", levelFilter === f && "segmented__item--active")}
+                onClick={() => setLevelFilter(f)}
+              >
+                {f === "all" ? "Все" : LEVEL_LABEL[f as DecisionLevel]}
+                <span className="segmented__count">
+                  {f === "all" ? view.items.length : levelCount(f as DecisionLevel)}
+                </span>
+              </button>
+            ))}
+          </div>
 
-        {/* Filters toolbar */}
-        <div className="decisions-toolbar">
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Уровень:</span>
-            <div className="segmented">
-              {(["all", "business", "architecture", "detail"] as LevelFilter[]).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", levelFilter === f && "segmented__item--active")}
-                  onClick={() => setLevelFilter(f)}
-                >
-                  {f === "all" ? "Все" : LEVEL_LABEL[f as DecisionLevel]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Статус:</span>
-            <div className="segmented">
-              {(
-                ["all", "proposed", "accepted_default", "user_overridden", "deferred"] as StatusFilter[]
-              ).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", statusFilter === f && "segmented__item--active")}
-                  onClick={() => setStatusFilter(f)}
-                >
-                  {f === "all" ? "Все" : STATUS_LABEL[f as DecisionStatus]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label className="decisions-filter__check">
-            <input
-              type="checkbox"
-              checked={showRiskyOnly}
-              onChange={(e) => setShowRiskyOnly(e.target.checked)}
-            />
-            <span>Только рискованные</span>
-          </label>
+          <select
+            className="decisions-filters__status"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label="Фильтр по статусу"
+          >
+            <option value="all">Все статусы</option>
+            <option value="proposed">{STATUS_LABEL.proposed}</option>
+            <option value="accepted_default">{STATUS_LABEL.accepted_default}</option>
+            <option value="user_overridden">{STATUS_LABEL.user_overridden}</option>
+            <option value="deferred">{STATUS_LABEL.deferred}</option>
+          </select>
+
+          <button
+            type="button"
+            className={cx(
+              "decisions-filters__risky",
+              showRiskyOnly && "decisions-filters__risky--active",
+            )}
+            onClick={() => setShowRiskyOnly((v) => !v)}
+            aria-pressed={showRiskyOnly}
+            title="Показать только решения, в которых система не уверена"
+          >
+            <AlertTriangle size={13} /> Критичные{uncertainCount > 0 ? ` · ${uncertainCount}` : ""}
+          </button>
         </div>
 
         {visibleItems.length === 0 ? (
@@ -700,30 +695,6 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
           </div>
         )}
       </SectionCard>
-    </div>
-  );
-}
-
-function DecisionCounter({
-  label,
-  value,
-  sub,
-  tone,
-  emphasis,
-}: {
-  label: string;
-  value: number;
-  sub?: string;
-  tone: "active" | "danger" | "warning" | "success" | "muted";
-  emphasis?: boolean;
-}) {
-  return (
-    <div className={cx("decision-counter", emphasis && "decision-counter--emphasis")}>
-      <span className={cx("decision-counter__value", `decision-counter__value--${tone}`)}>
-        {value}
-      </span>
-      <span className="decision-counter__label">{label}</span>
-      {sub ? <span className="decision-counter__sub">{sub}</span> : null}
     </div>
   );
 }
