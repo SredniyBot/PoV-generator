@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, MessageSquare, Network, RotateCcw } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Circle, CircleDot, Clock, MessageSquare, Network, RotateCcw, X } from "lucide-react";
 
 import { api } from "./api";
 import type { StageView } from "./types";
@@ -31,8 +31,8 @@ function pluralRu(n: number, one: string, few: string, many: string): string {
 
 function StageIcon({ stage }: { stage: StageView }) {
   if (stage.state === "done") return <CheckCircle2 size={14} className="stage-seg__check" />;
-  if (stage.state === "active") return <span className="stage-seg__dot stage-seg__dot--filled">●</span>;
-  return <span className="stage-seg__dot">○</span>;
+  if (stage.state === "active") return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--filled" />;
+  return <Circle size={14} className="stage-seg__dot" />;
 }
 
 function titleForRef(ref: string, stages: StageView[]): string {
@@ -159,8 +159,8 @@ export function StageStatusBar({
                 <div className="stage-popover" role="dialog">
                   <div className="stage-popover__head">
                     <span>Шаги с ошибкой · этап «{active?.title}»</span>
-                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
-                      ×
+                    <button type="button" className="stage-popover__close" aria-label="Закрыть" onClick={() => setPopover(null)}>
+                      <X size={16} />
                     </button>
                   </div>
                   <ul className="stage-popover__list">
@@ -202,8 +202,8 @@ export function StageStatusBar({
                 <div className="stage-popover" role="dialog">
                   <div className="stage-popover__head">
                     <span>Решения ждут ответа · этап «{active?.title}»</span>
-                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
-                      ×
+                    <button type="button" className="stage-popover__close" aria-label="Закрыть" onClick={() => setPopover(null)}>
+                      <X size={16} />
                     </button>
                   </div>
                   <ul className="stage-popover__list">

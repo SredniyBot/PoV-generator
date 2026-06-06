@@ -19,6 +19,7 @@ import {
   Download,
   FileJson2,
   Layers3,
+  Loader2,
   Plus,
   RefreshCcw,
   ShieldAlert,
@@ -750,7 +751,9 @@ function RunActivitySection({ projectId }: { projectId: string }) {
           <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
           <span className="workflow-run__summary">{cleanStepSummary(display.last_step_summary) || "—"}</span>
           {inProgressTasks.length > 0 ? (
-            <span className="workflow-run__running">⚙ {inProgressTasks.length} в работе</span>
+            <span className="workflow-run__running">
+              <Loader2 size={13} className="spin" /> {inProgressTasks.length} в работе
+            </span>
           ) : null}
           {display.stop_reason ? (
             <span className="workflow-run__stop">{labelForStopReason(display.stop_reason)}</span>
