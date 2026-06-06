@@ -230,27 +230,23 @@
   width: 100%;
   justify-content: space-between;
 }
-/* Ghost-кнопка в общей стилистике приложения (не цветная). */
 .decisions-page__download {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  background: transparent;
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  font-size: var(--font-size-meta);
-  font-weight: var(--font-weight-medium);
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 6px;
+  background: var(--success-soft);
+  border: 1px solid var(--success-border);
+  color: var(--success);
+  font-size: 0.82rem;
   text-decoration: none;
-  transition: background var(--motion-fast) var(--motion-easing),
-    border-color var(--motion-fast) var(--motion-easing),
-    color var(--motion-fast) var(--motion-easing);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 .decisions-page__download:hover {
-  background: var(--surface-elevated-strong);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  color: var(--success);
 }
 .decision-card__option-confidence {
   display: inline-flex;
@@ -907,10 +903,10 @@
   flex-direction: column;
   gap: 0.4rem;
   padding: 0.75rem 0.9rem;
-  background: var(--surface-elevated-strong);
-  border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--success);
-  border-radius: var(--radius-md);
+  background: var(--success-soft);
+  border: 1px solid var(--success-border);
+  border-left: 3px solid var(--success-border);
+  border-radius: 7px;
 }
 .decision-card__chosen-head {
   display: flex;
@@ -943,7 +939,7 @@
 .decision-card__chosen-rationale {
   margin: 0;
   padding-left: 0.5rem;
-  border-left: 2px solid var(--border-subtle);
+  border-left: 2px solid rgba(255, 255, 255, 0.07);
   font-size: 0.82rem;
   color: var(--text-secondary);
   font-style: italic;
@@ -952,8 +948,8 @@
 .decision-card__chosen-freetext {
   margin: 0;
   padding: 0.4rem 0.6rem;
-  background: var(--surface-base);
-  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 5px;
   font-size: 0.88rem;
   color: var(--text-primary);
   font-style: italic;
@@ -971,13 +967,17 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  color: var(--text-secondary);
+  padding: 0.25rem 0.6rem;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 5px;
+  color: var(--accent);
   text-decoration: none;
-  font-size: var(--font-size-meta);
+  font-size: 0.8rem;
 }
 .decision-card__artifact-link:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
 }
 .decision-card__alts-drop {
   display: inline-block;
@@ -1028,21 +1028,4 @@
   font-size: 0.8rem;
   color: var(--text-secondary);
   line-height: 1.45;
-}
-
-/* Счётчик как фильтр: сброс button-дефолтов + hover/active/focus. */
-.decision-counter--clickable {
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  width: 100%;
-  box-sizing: border-box;
-  transition: border-color var(--motion-fast) var(--motion-easing),
-    background var(--motion-fast) var(--motion-easing);
-}
-.decision-counter--clickable:hover { border-color: var(--border-strong); }
-.decision-counter--clickable:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.decision-counter--active {
-  border-color: var(--border-accent);
-  background: var(--surface-accent);
 }
