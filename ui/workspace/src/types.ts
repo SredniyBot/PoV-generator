@@ -574,6 +574,9 @@ export interface ModelCatalogEntry {
       provider_type: ProviderType;
     }
   >;
+  // Лимит контекста (токены) — бюджет секции «Контекст проекта» для модели.
+  context_limit: number;
+  context_limit_is_default: boolean;
 }
 
 export interface TestResultView {

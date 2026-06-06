@@ -4,6 +4,9 @@ version: 1.0.0
 title: Выделить стейкхолдеров
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.trivial): выделение
+# стейкхолдеров — структурное извлечение, гонится на быстрой модели.
+complexity: trivial
 domain: common
 executor: llm
 # Структурированная экстракция ролей и интересов; решений нет.
@@ -15,7 +18,6 @@ requires:
 produces:
   artifact: common.stakeholder_map@1.0.0
 context:
-  include: [artifact.common.normalized_request]
   max_tokens: 24000
 planning:
   priority: 800

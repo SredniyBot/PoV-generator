@@ -4438,6 +4438,46 @@ code {
 .llm-row__hint--ok { color: #6fc28a; }
 .llm-row__hint--err { color: #e36b6b; }
 
+/* Поле лимита контекста модели — в одну строку под маршрутами. */
+.llm-row__limit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.llm-row__limit-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.llm-row__limit-input {
+  width: 96px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.llm-row__limit-input:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+
+.llm-row__limit-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.llm-row__limit-reset {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
 .llm-row__sublist {
   list-style: none;
   margin: 6px 0 0 0;

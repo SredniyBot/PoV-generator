@@ -21,13 +21,6 @@ requires:
 produces:
   artifact: architecture.component_decomposition@1.0.0
 context:
-  include:
-    - artifact.architecture.system_context_definition
-    - artifact.common.normalized_request
-    - artifact.common.scope_boundary_matrix
-    - artifact.ml.predictive_problem_definition
-    - artifact.frontend.ui_requirements_outline
-    - artifact.integration.integration_operating_model
   max_tokens: 18000
 planning:
   priority: 470

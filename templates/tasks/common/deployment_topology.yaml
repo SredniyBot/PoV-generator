@@ -19,11 +19,6 @@ requires:
 produces:
   artifact: common.deployment_topology@1.0.0
 context:
-  include:
-    - artifact.common.normalized_request
-    - artifact.common.solution_option_inventory
-    - artifact.security.security_compliance_constraints
-    - artifact.integration.integration_operating_model
   max_tokens: 16000
 planning:
   priority: 500

@@ -195,8 +195,6 @@ class ExecutionService:
         manifest = state.manifest
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
-        context_result = self._context_service.build_for_task(workspace, snapshot, task_id)
-        context_manifest = context_result.manifest
 
         artifact_roles = template.outputs.artifact_roles
         if len(artifact_roles) != 1:
@@ -247,6 +245,17 @@ class ExecutionService:
             )
             active_provider = llm_provider.name
             active_model = llm_provider.model or ""
+
+        # Контекст строим ПОСЛЕ резолва модели: бюджет входа ограничен окном
+        # активной модели (per-model context window из настроек UI).
+        context_result = self._context_service.build_for_task(
+            workspace,
+            snapshot,
+            task_id,
+            model_context_window=self._llm.context_limit_for(active_model),
+        )
+        context_manifest = context_result.manifest
+
         active_methodology: MethodologyPackSpec | None = None
         for ref in state.process.active_methodology_pack_records.keys():
             try:

@@ -34,10 +34,12 @@ from ..domain.llm_settings import (
     PURPOSE_EXECUTION_STANDARD,
     PURPOSE_EXECUTION_TRIVIAL,
     ModelAssignment,
+    ModelContextLimit,
     ModelRouting,
     ProviderConnection,
     ProviderCredentials,
     ProviderType,
+    resolve_context_limit,
 )
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
@@ -223,14 +225,35 @@ class ProviderSettingsService:
                     "enabled": routing.enabled,
                 }
             )
+        stored_limits = {
+            limit.model_name: limit.context_limit_tokens
+            for limit in self._store.list_context_limits()
+        }
         result = []
         for model_name in sorted(by_model.keys()):
             sorted_routings = sorted(
                 by_model[model_name],
                 key=lambda r: (-int(r["priority"]), str(r["routing_id"])),
             )
-            result.append({"model_name": model_name, "routings": sorted_routings})
+            stored = stored_limits.get(model_name)
+            result.append(
+                {
+                    "model_name": model_name,
+                    "routings": sorted_routings,
+                    # Лимит контекста (токены): сохранённый или дефолт по модели.
+                    "context_limit": resolve_context_limit(stored, model_name),
+                    "context_limit_is_default": stored is None,
+                }
+            )
         return tuple(result)
+
+    def set_context_limit(self, *, model_name: str, context_limit_tokens: int) -> ModelContextLimit:
+        """Задать лимит контекста (токены) для модели (UPSERT)."""
+        return self._store.set_context_limit(model_name, context_limit_tokens)
+
+    def reset_context_limit(self, model_name: str) -> None:
+        """Сбросить лимит модели к дефолту (удалить override)."""
+        self._store.delete_context_limit(model_name)
 
     def add_custom_model(
         self,

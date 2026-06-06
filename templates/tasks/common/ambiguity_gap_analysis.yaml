@@ -9,10 +9,11 @@ executor: llm
 methodology: minimal
 requires:
   state: [business_request]
+  # Задача-интерпретатор: читает первоисточник целиком (входные файлы заказчика).
+  inputs: [attachments]
 produces:
   artifact: common.ambiguity_gap_report@1.0.0
 context:
-  include: [state.business_request]
   max_tokens: 12000
 planning:
   priority: 970

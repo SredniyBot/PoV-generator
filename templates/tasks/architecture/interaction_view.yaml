@@ -19,11 +19,6 @@ requires:
 produces:
   artifact: architecture.interaction_view@1.0.0
 context:
-  include:
-    - artifact.architecture.system_context_definition
-    - artifact.architecture.component_decomposition
-    - artifact.common.deployment_topology
-    - artifact.integration.integration_operating_model
   max_tokens: 18000
 planning:
   priority: 460

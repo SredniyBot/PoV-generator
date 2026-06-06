@@ -360,31 +360,34 @@ def test_context_build_marks_attachment_used(tmp_path: Path) -> None:
     assert runtime.load_attachment(workspace, record.attachment_id).used_in_context is True
 
 
-def test_attachment_not_marked_used_when_text_evicted(tmp_path: Path, monkeypatch) -> None:
-    """Если бюджет усёк текст вложения из промпта — used_in_context остаётся
-    False (артефакт его не видел, ложный запрет удаления недопустим)."""
+def test_oversized_source_trimmed_visibly_not_silently(tmp_path: Path, monkeypatch) -> None:
+    """Не влезающий первоисточник усекается ВИДИМО (с пометкой + запись в аудит),
+    а не режется молча и не роняет задачу."""
     workspace, project_id, runtime, registry_service = _bootstrap(tmp_path, expand=True)
     service = AttachmentService(runtime)
-    long_text = "Очень длинный текст входного файла. " * 60  # заведомо > бюджета
-    record = service.upload(
+    service.upload(
         workspace,
         project_id,
         filename="big-brief.txt",
-        content=long_text.encode("utf-8"),
+        content=("Очень длинный текст входного файла. " * 200).encode("utf-8"),
         extract_in_background=False,
     )
-    # Прижимаем бюджет секции состояния так, что текст вложения не помещается.
-    monkeypatch.setattr(ContextService, "_PROJECT_STATE_TOKEN_HARD_CAP", 20)
     snapshot, _ = registry_service.validate()
-    context_service = ContextService(runtime)
+    # Прижимаем бюджет шаблона так, что источник не влезает целиком.
+    monkeypatch.setenv("POV_TEMPLATE_CONTEXT_MAX_TOKENS", "2000")
     leaf = next(
         t
         for t in runtime.list_tasks(workspace)
-        if t.template_type == "leaf" and not snapshot.resolve_template(t.template_ref).inputs.required_artifact_roles
+        if t.template_type == "leaf"
+        and "attachments" in snapshot.resolve_template(t.template_ref).inputs.raw_inputs
     )
-    context_service.build_for_task(workspace, snapshot, leaf.task_id)
-
-    assert runtime.load_attachment(workspace, record.attachment_id).used_in_context is False
+    result = ContextService(runtime).build_for_task(
+        workspace, snapshot, leaf.task_id, model_context_window=200_000
+    )
+    sources = [it for it in result.manifest.items if it.title == "Входной файл заказчика"]
+    assert sources, "источник должен остаться (усечённым), а не исчезнуть"
+    assert "усечён" in sources[0].content                                   # видимая пометка
+    assert any("усечён" in note for note in result.manifest.excluded_items)  # в аудите
 
 
 # --- REST API ----------------------------------------------------------------

@@ -4,6 +4,9 @@ version: 1.0.0
 title: Подготовить структурированное ТЗ
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.complex): финальный synthesis
+# всего ТЗ из upstream-артефактов — качество критично, гонится на сильной модели.
+complexity: complex
 domain: common
 executor: llm
 # Финальный synthesis: option_generation/decision не применимы — выбор уже
@@ -55,7 +58,6 @@ requires:
 produces:
   artifact: common.requirements_spec@1.0.0
 context:
-  include: [artifact.*]
   max_tokens: 64000
 planning:
   priority: 100

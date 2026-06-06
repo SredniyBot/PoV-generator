@@ -4,6 +4,9 @@ version: 1.0.0
 title: Составить глоссарий проекта
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.trivial): составление
+# глоссария — извлечение терминов, гонится на быстрой модели.
+complexity: trivial
 domain: common
 executor: llm
 methodology: skip
@@ -22,10 +25,6 @@ requires:
 produces:
   artifact: common.glossary_terms@1.0.0
 context:
-  include:
-    - artifact.common.normalized_request
-    - artifact.common.stakeholder_map
-    - artifact.common.constraint_inventory
   max_tokens: 16000
 planning:
   priority: 540

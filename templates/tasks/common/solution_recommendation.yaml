@@ -19,10 +19,6 @@ requires:
 produces:
   artifact: common.solution_tradeoff_matrix@1.0.0
 context:
-  include:
-    - artifact.common.solution_option_inventory
-    - artifact.common.business_outcome_model
-    - artifact.common.scope_boundary_matrix
   max_tokens: 16000
 planning:
   priority: 700

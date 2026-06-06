@@ -4,6 +4,9 @@ version: 1.0.0
 title: Выделить факты из запроса
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.trivial): чистое извлечение
+# фактов из запроса — мощная модель не нужна, гонится на быстрой.
+complexity: trivial
 domain: common
 executor: llm
 # Чистая экстракция — methodology с option_generation/decision не даёт
@@ -15,10 +18,11 @@ methodology: skip
 decision_identification: false
 requires:
   state: [business_request]
+  # Задача-интерпретатор: читает первоисточник целиком (входные файлы заказчика).
+  inputs: [attachments]
 produces:
   artifact: common.request_fact_sheet@1.0.0
 context:
-  include: [state.business_request]
   max_tokens: 12000
 planning:
   priority: 1000

@@ -346,6 +346,12 @@ export const api = {
     request<{ status: string }>(`/api/settings/routings/${routingId}`, {
       method: "DELETE",
     }),
+  // Лимит контекста модели. tokens=null → сброс к дефолту.
+  setModelContextLimit: (modelName: string, tokens: number | null) =>
+    request<import("./types").ModelCatalogEntry>("/api/settings/models/context-limit", {
+      method: "PUT",
+      body: JSON.stringify({ model_name: modelName, context_limit_tokens: tokens }),
+    }),
 
   listAssignments: () =>
     request<{ purpose: string; model_name: string }[]>("/api/settings/assignments"),
