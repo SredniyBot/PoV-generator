@@ -50,7 +50,7 @@
 .decisions-filters {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch; /* статус и критичность тянутся под высоту сегмент-кнопок */
+  align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
 }
@@ -66,22 +66,34 @@
    тот же фон, рамка, скругление и (через stretch) высота. */
 .decisions-filters__status {
   margin-left: auto; /* примагнитить статус+критичность к правому краю */
-  display: inline-flex;
-  align-items: center;
-  padding: 0 var(--space-3);
+  appearance: none;
+  -webkit-appearance: none;
+  padding: var(--space-3) var(--space-5) var(--space-3) var(--space-3);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.025);
+  background-color: rgba(255, 255, 255, 0.025);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
   color: var(--text-secondary);
+  font-family: inherit;
   font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
   cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
 }
+.decisions-filters__status:hover { border-color: var(--border-strong); color: var(--text-primary); }
 .decisions-filters__status:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.decisions-filters__status option {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
 .decisions-filters__risky {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0 var(--space-3);
+  justify-content: center;
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.025);
@@ -122,6 +134,17 @@
 }
 .decision-card--answered {
   border-left: 2px solid var(--success-border);
+}
+/* Развёрнутая карточка: явно светлее фона + отделённая кликабельная шапка */
+.decision-card--expanded {
+  background: var(--surface-elevated-strong);
+  border-color: var(--border-strong);
+}
+.decision-card--expanded .decision-card__head {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.decision-card--expanded .decision-card__body {
+  padding-top: var(--space-3);
 }
 
 .decision-card__head {

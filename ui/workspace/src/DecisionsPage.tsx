@@ -171,6 +171,7 @@ function DecisionCard({
         "decision-card",
         isInteractive && "decision-card--interactive",
         isInteractive && currentAnswerKind && "decision-card--answered",
+        !isInteractive && expanded && "decision-card--expanded",
       )}
     >
       <header
@@ -370,7 +371,7 @@ function DecisionCard({
           {/* READ-ONLY: что ещё рассматривали — сразу списком, простыми строками */}
           {!isInteractive && decision.alternatives.length > 1 ? (
             <div className="decision-card__considered">
-              <span className="decision-card__considered-label">Ещё рассматривали</span>
+              <span className="decision-card__considered-label">Альтернативы</span>
               <ul className="decision-card__considered-list">
                 {decision.alternatives
                   .filter((a) => a.option_id !== decision.chosen_option_id)
@@ -671,7 +672,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
             aria-pressed={showRiskyOnly}
             title="Показать только решения, в которых система не уверена"
           >
-            <AlertTriangle size={13} /> Критичные{uncertainCount > 0 ? ` · ${uncertainCount}` : ""}
+            Критичные
           </button>
         </div>
 
