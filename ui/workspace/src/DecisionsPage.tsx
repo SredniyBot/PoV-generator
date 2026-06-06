@@ -534,18 +534,18 @@ export function DecisionsSubNav({ projectId }: { projectId: string }) {
   return (
     <nav className="decisions-subnav" aria-label="Разделы решений">
       <NavLink
-        to={`/projects/${projectId}/decisions/pending`}
-        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
-      >
-        Открытые
-        {pendingCount > 0 ? <span className="decisions-subnav__badge">{pendingCount}</span> : null}
-      </NavLink>
-      <NavLink
         end
         to={`/projects/${projectId}/decisions`}
         className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
       >
         Реестр
+      </NavLink>
+      <NavLink
+        to={`/projects/${projectId}/decisions/pending`}
+        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
+      >
+        Открытые
+        {pendingCount > 0 ? <span className="decisions-subnav__badge">{pendingCount}</span> : null}
       </NavLink>
     </nav>
   );
@@ -627,7 +627,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
             rel="noreferrer"
             title="Экспортировать весь реестр в PDF"
           >
-            <Download size={14} /> Экспортировать PDF
+            <Download size={14} /> Экспорт PDF
           </a>
         }
       >
@@ -672,7 +672,7 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
             aria-pressed={showRiskyOnly}
             title="Показать только решения, в которых система не уверена"
           >
-            Критичные
+            Критичные{uncertainCount > 0 ? ` · ${uncertainCount}` : ""}
           </button>
         </div>
 
@@ -938,9 +938,6 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
             title="Нет открытых решений"
             description="Когда параллельные шаги дойдут до точек, где нужны ваши решения — они появятся здесь все вместе."
           />
-          <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/overview`)}>
-            К проекту
-          </Button>
         </SectionCard>
       </div>
     );
@@ -952,16 +949,7 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
   return (
     <div className="checkpoint-page">
       <DecisionsSubNav projectId={projectId} />
-      <SectionCard
-        title={
-          <div className="checkpoint-page__title">
-            <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/overview`)}>
-              <ArrowLeft size={14} /> К проекту
-            </Button>
-            <span>Открытые решения</span>
-          </div>
-        }
-      >
+      <SectionCard title="Открытые решения">
         <p className="checkpoint-intro__lead">
           {items.length === 1 ? "1 решение" : `${items.length} решений`} из параллельных шагов ждут
           вашего ответа. Варианты по умолчанию уже выбраны — измените нужные и отправьте все разом.
