@@ -14,7 +14,6 @@ requires:
 produces:
   artifact: integration.integration_operating_model@1.0.0
 context:
-  include: [artifact.common.normalized_request]
   max_tokens: 24000
 planning:
   priority: 710

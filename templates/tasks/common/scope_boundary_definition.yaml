@@ -8,12 +8,13 @@ domain: common
 executor: llm
 requires:
   state: [business_request]
+  # Задача-интерпретатор: читает первоисточник целиком (входные файлы заказчика).
+  inputs: [attachments]
   artifacts:
     required: [common.normalized_request@1.0.0]
 produces:
   artifact: common.scope_boundary_matrix@1.0.0
 context:
-  include: [artifact.common.normalized_request]
   max_tokens: 24000
 planning:
   priority: 810

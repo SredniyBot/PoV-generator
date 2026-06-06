@@ -11,7 +11,7 @@
  * дефолтами, которые здесь настраиваются.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
@@ -435,6 +435,12 @@ function ModelsTab() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
   });
 
+  const setLimitMutation = useMutation({
+    mutationFn: ({ modelName, tokens }: { modelName: string; tokens: number | null }) =>
+      api.setModelContextLimit(modelName, tokens),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-settings", "models"] }),
+  });
+
   // Перемещение routing вверх/вниз по списку — обмениваем priority с
   // соседом. Это устраняет «магический» числовой ввод (баг #4): пользователь
   // видит порядок и двигает стрелками, как в обычных списках.
@@ -482,6 +488,9 @@ function ModelsTab() {
             <ModelRow
               key={m.model_name}
               entry={m}
+              onSetContextLimit={(tokens) =>
+                setLimitMutation.mutate({ modelName: m.model_name, tokens })
+              }
               onTest={() => testMutation.mutate(m.model_name)}
               testPending={testMutation.isPending && testMutation.variables === m.model_name}
               testResult={
@@ -533,6 +542,7 @@ function ModelRow({
   onDeleteRouting,
   onMoveRouting,
   reorderPending,
+  onSetContextLimit,
 }: {
   entry: ModelCatalogEntry;
   onTest: () => void;
@@ -541,6 +551,7 @@ function ModelRow({
   onDeleteRouting: (routingId: string) => void;
   onMoveRouting: (routingId: string, direction: "up" | "down") => void;
   reorderPending: boolean;
+  onSetContextLimit: (tokens: number | null) => void;
 }) {
   return (
     <li className="llm-row">
@@ -605,6 +616,11 @@ function ModelRow({
             {testResult.latency_ms ? ` · ${testResult.latency_ms} ms` : null}
           </p>
         ) : null}
+        <ContextLimitControl
+          value={entry.context_limit}
+          isDefault={entry.context_limit_is_default}
+          onSave={onSetContextLimit}
+        />
       </div>
       <div className="llm-row__side">
         <button type="button" className="btn btn--ghost" onClick={onTest} disabled={testPending}>
@@ -612,6 +628,63 @@ function ModelRow({
         </button>
       </div>
     </li>
+  );
+}
+
+/**
+ * Поле окна контекста модели (токены) — её реальная ёмкость. Это потолок: из
+ * него система выводит рабочий бюджет входа задачи. Сохраняется по blur;
+ * «сбросить» возвращает дефолт-окно по семейству модели.
+ */
+function ContextLimitControl({
+  value,
+  isDefault,
+  onSave,
+}: {
+  value: number;
+  isDefault: boolean;
+  onSave: (tokens: number | null) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const next = Number.parseInt(text, 10);
+    if (Number.isNaN(next) || next === value) {
+      setText(String(value));
+      return;
+    }
+    onSave(next);
+  };
+
+  return (
+    <div className="llm-row__limit">
+      <label className="llm-row__limit-label">Окно модели, токенов</label>
+      <input
+        type="number"
+        min={1000}
+        step={1000}
+        className="llm-row__limit-input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        title="Окно контекста модели (её ёмкость). Потолок бюджета входа задачи."
+      />
+      {isDefault ? (
+        <span className="llm-row__limit-hint">по умолчанию</span>
+      ) : (
+        <button
+          type="button"
+          className="btn-inline llm-row__limit-reset"
+          onClick={() => onSave(null)}
+          title="Сбросить к значению по умолчанию"
+        >
+          сбросить
+        </button>
+      )}
+    </div>
   );
 }
 

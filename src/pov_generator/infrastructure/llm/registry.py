@@ -38,6 +38,7 @@ from ...domain.llm_settings import (
     PURPOSE_EXECUTION_STANDARD,
     PURPOSE_EXECUTION_TRIVIAL,
     ProviderConnection,
+    resolve_context_limit,
 )
 from .protocol import LLMProvider, LLMResult
 from .providers.claude_sdk import ClaudeSdkProvider
@@ -169,6 +170,7 @@ class _SettingsStoreProtocol:
     def get_assignment(self, purpose: str): ...
     def list_routings_for_model(self, model_name: str): ...
     def get_connection(self, connection_id: str): ...
+    def get_context_limit(self, model_name: str) -> int | None: ...
 
 
 class LLMProviderRegistry:
@@ -186,6 +188,24 @@ class LLMProviderRegistry:
     @property
     def supported_providers(self) -> tuple[str, ...]:
         return tuple(sorted(_ENV_BUILDERS.keys()))
+
+    def context_limit_for(self, model_name: str) -> int:
+        """Действующий лимит контекста (токены) для модели.
+
+        Сохранённое в настройках значение, иначе — дефолт по классу модели
+        (см. ``resolve_context_limit``). Используется context_service как
+        бюджет секции «Контекст проекта» вместо прежнего хардкода.
+        """
+        # getattr вместо self._store: устойчиво к подклассам/мокам, которые не
+        # зовут super().__init__ (например, recording-реестры в тестах).
+        store = getattr(self, "_store", None)
+        stored: int | None = None
+        if store is not None:
+            try:
+                stored = store.get_context_limit(model_name)
+            except Exception:  # noqa: BLE001 — настройки не должны валить исполнение
+                stored = None
+        return resolve_context_limit(stored, model_name)
 
     # --- Low-level: get by explicit provider name (legacy + tests) -----------
 

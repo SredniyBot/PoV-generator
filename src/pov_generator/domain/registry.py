@@ -107,6 +107,11 @@ class TemplateInputs:
     forbidden_open_gaps: tuple[str, ...] = ()
     required_domain_packs: tuple[str, ...] = ()
     collect_optional_from_active_domain_packs: bool = False
+    # Роды первоисточника, которые задача-интерпретатор потребляет целиком:
+    # "attachments" (текст входных файлов), на будущее — "clarifications" и т.п.
+    # Источник истины подаётся неприкосновенно (см. context_assembly): только
+    # задачам, которые ОБЪЯВИЛИ потребность, а не всем подряд.
+    raw_inputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,7 +134,6 @@ class TemplateEffects:
 @dataclass(frozen=True)
 class TemplateContextPolicy:
     max_tokens: int | None = None
-    include: tuple[str, ...] = ()
     overflow: str = "trim_optional"
 
 
@@ -757,6 +761,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
                     "from_active_domain_packs", False
                 )
             ),
+            raw_inputs=tuple(str(item) for item in require_list(requires, "inputs", owner)),
         ),
         outputs=TemplateOutputs(
             artifact_roles=(artifact_role_from_ref(artifact_ref),) if artifact_ref else (),
@@ -768,7 +773,6 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         planning=TemplatePlanning(priority=int(planning.get("priority", 0))),
         context_policy=TemplateContextPolicy(
             max_tokens=int(context["max_tokens"]) if isinstance(context.get("max_tokens"), int) else None,
-            include=tuple(str(item) for item in require_list(context, "include", owner)),
             overflow=str(context.get("overflow", "trim_optional")),
         ),
         validation_policy=TemplateValidationPolicy(

@@ -83,6 +83,47 @@ PURPOSE_LABELS: dict[str, str] = {
 }
 
 
+# --- Окно контекста модели --------------------------------------------------
+#
+# Окно модели (в токенах) — её РЕАЛЬНАЯ ёмкость контекста. Это потолок: система
+# из него выводит рабочий бюджет входа (см. context_assembly.effective_input_budget).
+# Раньше в context_service был хардкод 2000, который молча резал входные файлы и
+# ответы заказчика; теперь окно настраивается на модель в UI, а дефолты — реальные
+# окна по семейству модели.
+
+# Нижняя граница разумного окна (защита от случайного 0/мусора в UI).
+MIN_MODEL_CONTEXT_LIMIT = 1000
+# Фоллбек для незнакомой модели — консервативное современное окно.
+DEFAULT_MODEL_CONTEXT_LIMIT = 128_000
+
+
+def default_context_limit(model_name: str) -> int:
+    """Окно модели (токены) по умолчанию — по семейству имени.
+
+    Имя может быть «голым» (``claude-sonnet-4-5``) или с префиксом провайдера
+    (``anthropic/claude-sonnet-4-5``, ``openai/gpt-4o-mini``). Сопоставляем по
+    подстроке; ``gpt-4.1`` проверяем раньше прочих gpt (у него окно 1M). Имена
+    моделей в каталоге гипотетические — дефолт по семейству, в UI редактируется.
+    """
+    name = (model_name or "").lower()
+    if "gpt-4.1" in name:
+        return 1_000_000
+    if "claude" in name or "opus" in name or "sonnet" in name or "haiku" in name:
+        return 200_000
+    if "gpt-4o" in name or "gpt-4" in name:
+        return 128_000
+    if "deepseek" in name:
+        return 128_000
+    return DEFAULT_MODEL_CONTEXT_LIMIT
+
+
+def resolve_context_limit(stored: int | None, model_name: str) -> int:
+    """Действующее окно: сохранённое значение или дефолт по модели."""
+    if stored is not None and stored >= MIN_MODEL_CONTEXT_LIMIT:
+        return stored
+    return default_context_limit(model_name)
+
+
 # --- Dataclasses -------------------------------------------------------------
 
 
@@ -174,3 +215,17 @@ class ModelAssignment:
 
     purpose: str
     model_name: str
+
+
+@dataclass(frozen=True)
+class ModelContextLimit:
+    """Настраиваемое окно контекста (токены) для конкретной модели.
+
+    Окно — потолок ёмкости модели; из него выводится рабочий бюджет входа задачи
+    (см. ``context_assembly.effective_input_budget``). Если для модели записи
+    нет — действует :func:`default_context_limit` (дефолт-окно по семейству).
+    Поле названо ``context_limit_tokens`` исторически; по смыслу это окно.
+    """
+
+    model_name: str
+    context_limit_tokens: int

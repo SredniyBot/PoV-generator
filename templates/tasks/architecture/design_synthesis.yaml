@@ -4,6 +4,9 @@ version: 1.0.0
 title: Собрать архитектурный документ
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.complex): финальный synthesis
+# архитектурного документа из upstream — качество критично, сильная модель.
+complexity: complex
 domain: architecture
 executor: llm
 # Финальный synthesis: descriptive-стадии не применимы — описание уже
@@ -33,7 +36,6 @@ requires:
 produces:
   artifact: architecture.design_document@1.0.0
 context:
-  include: [artifact.*]
   max_tokens: 48000
 planning:
   priority: 100

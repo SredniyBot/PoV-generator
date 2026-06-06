@@ -18,11 +18,6 @@ requires:
 produces:
   artifact: architecture.system_context_definition@1.0.0
 context:
-  include:
-    - artifact.common.normalized_request
-    - artifact.common.scope_boundary_matrix
-    - artifact.common.stakeholder_map
-    - artifact.integration.integration_operating_model
   max_tokens: 16000
 planning:
   priority: 480

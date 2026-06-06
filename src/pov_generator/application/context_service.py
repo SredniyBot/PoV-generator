@@ -14,6 +14,13 @@ from ..domain.positions import Position
 from ..domain.project_state import ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..infrastructure.sqlite_runtime import SqliteRuntime
+from .attachment_service import ATTACHMENT_POSITION_PREFIX
+from .context_assembly import (
+    ContextAuthority,
+    ContextCandidate,
+    effective_input_budget,
+    pack_context,
+)
 
 
 def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
@@ -32,7 +39,19 @@ def _resolve_state_field(state: ProjectState, field_name: str) -> object | None:
 
 
 def estimate_tokens(content: str) -> int:
-    return max(1, len(content) // 4)
+    """Грубая оценка числа токенов по тексту.
+
+    BPE-токенизаторы дробят не-ASCII (кириллицу) мельче латиницы: латиница —
+    ~4 символа на токен, кириллица/прочий не-ASCII — ~2. Считаем раздельно;
+    иначе кириллический контекст недооценивался бы и мог переполнить бюджет
+    (оценка — единственный гейт перед жёсткой проверкой бюджета, поэтому лучше
+    слегка переоценить, чем недооценить).
+    """
+    if not content:
+        return 1
+    ascii_chars = sum(1 for ch in content if ord(ch) < 128)
+    other_chars = len(content) - ascii_chars
+    return max(1, ascii_chars // 4 + (other_chars + 1) // 2)
 
 
 @dataclass(frozen=True)
@@ -44,46 +63,54 @@ class ContextService:
     def __init__(self, runtime: SqliteRuntime) -> None:
         self._runtime = runtime
 
-    def build_for_task(self, workspace: Path, snapshot: RegistrySnapshot, task_id: str) -> ContextBuildResult:
-        """B4: ContextManifest = три слоя.
+    def build_for_task(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        task_id: str,
+        *,
+        model_context_window: int | None = None,
+    ) -> ContextBuildResult:
+        """Собрать контекст задачи.
 
-        Слой 1 — Project state context (всегда): goal, business_request,
-        decisions, assumptions, gaps, known_facts. Без этого LLM не имеет
-        доступа к ответам пользователя через clarifications и работает «без
-        scope». См. USERS_AND_JTBD §5B C1/C4.
+        Принцип сборки (см. ``context_assembly``): источник истины — прямой вход
+        заказчика и подтверждённое человеком — и структурно обязательное не
+        выкидываются молча; производное укладывается в бюджет по авторитету, а
+        выкинутое фиксируется в ``excluded_items``. Первоисточник (вложения)
+        подаётся ТОЛЬКО задачам-интерпретаторам, объявившим ``requires.inputs``,
+        а не всем подряд.
 
-        Слой 2 — Task inputs (по template): required_problem_fields,
-        required_artifact_roles, optional_artifact_roles, instruction.
-
-        Слой 3 — Previous attempt context (только при retry): что было в
-        прошлой попытке + почему она забракована. Даёт LLM continuity, не
-        повторяет ту же ошибку.
+        ``model_context_window`` — окно активной модели (токены), потолок
+        бюджета входа; ``None`` — для не-LLM путей (stub) и тестов.
         """
         state = self._runtime.load_project_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
         template = snapshot.resolve_template(task.template_ref)
 
-        items: list[ContextItem] = []
-        source_refs: list[str] = []
+        candidates: list[ContextCandidate] = []
 
-        # Слой 1 — Project state (всегда первым, priority=1500 — выше
-        # инструкции, чтобы LLM видел контекст ДО постановки задачи).
-        project_state_item = self._build_project_state_section(
-            workspace, task, template, state
-        )
-        if project_state_item is not None:
-            items.append(project_state_item)
-            source_refs.append(project_state_item.source_ref)
+        def add(item: ContextItem, authority: ContextAuthority, *, pinned: bool) -> None:
+            candidates.append(
+                ContextCandidate(item, authority, pinned=pinned, display_order=len(candidates))
+            )
 
-        # Слой 3 — Previous attempt (если retry). Делаем рано, чтобы LLM
-        # сразу видел «прошлая попытка не вышла потому что …», прежде чем
-        # читать те же входы заново.
+        # 1. Источник истины — прямой вход заказчика (вложения). Только задачам,
+        #    объявившим requires.inputs. Неприкосновенно (pinned, CUSTOMER_INPUT).
+        for source_item in self._collect_source_inputs(template, state):
+            add(source_item, ContextAuthority.CUSTOMER_INPUT, pinned=True)
+
+        # 2. Прошлая попытка (retry) — производное, можно выкинуть под бюджет.
         previous_attempt_item = self._build_previous_attempt_section(workspace, task)
         if previous_attempt_item is not None:
-            items.append(previous_attempt_item)
-            source_refs.append(previous_attempt_item.source_ref)
+            add(previous_attempt_item, ContextAuthority.DERIVED, pinned=False)
 
-        # Слой 2 — Task inputs (template-declared, как раньше).
+        # 3. «Что мы уже знаем» — производная сводка (без эха запроса и без
+        #    вложений: они подаются источником выше). Можно выкинуть под бюджет.
+        project_state_item = self._build_project_state_section(workspace, task, template, state)
+        if project_state_item is not None:
+            add(project_state_item, ContextAuthority.DERIVED, pinned=False)
+
+        # 4. Обязательные поля состояния (вкл. печатный бизнес-запрос). Pinned.
         for field_name in template.inputs.required_problem_fields:
             value = _resolve_state_field(state, field_name)
             if value in (None, ""):
@@ -92,30 +119,33 @@ class ContextService:
                     f"поле состояния '{field_name}'."
                 )
             content = json_dumps(value) if isinstance(value, (dict, list, tuple)) else str(value)
-            item = ContextItem(
-                item_id=str(uuid.uuid4()),
-                item_type="problem_field",
-                source_ref=f"knowledge:{state.knowledge.version}:{field_name}",
-                title=f"State.{field_name}",
-                content=content,
-                token_estimate=estimate_tokens(content),
-                required=True,
-                priority=100,
+            field_authority = (
+                ContextAuthority.CUSTOMER_INPUT
+                if field_name == "business_request"
+                else ContextAuthority.REQUIRED
             )
-            items.append(item)
-            source_refs.append(item.source_ref)
+            add(
+                ContextItem(
+                    item_id=str(uuid.uuid4()),
+                    item_type="problem_field",
+                    source_ref=f"knowledge:{state.knowledge.version}:{field_name}",
+                    title=f"State.{field_name}",
+                    content=content,
+                    token_estimate=estimate_tokens(content),
+                    required=True,
+                    priority=100,
+                ),
+                field_authority,
+                pinned=True,
+            )
 
         required_artifact_roles = template.inputs.required_artifact_roles
         optional_artifact_roles = tuple(
             role for role in template.inputs.optional_artifact_roles if role not in required_artifact_roles
         )
 
-        # Этап 7.3: декларативный auto-collect. Когда шаблон поднял флаг
-        # `collect_optional_from_active_domain_packs`, добавляем в optional
-        # все артефакты, созданные задачами активных доменных паков
-        # (origin_kind == "domain_contribution"). Это снимает hand-coded
-        # список optional из финальной merge-задачи: новый домен попадает
-        # в контекст автоматически.
+        # Этап 7.3: декларативный auto-collect — новый домен попадает в контекст
+        # финальной merge-задачи автоматически (origin_kind == domain_contribution).
         if template.inputs.collect_optional_from_active_domain_packs:
             existing = set(required_artifact_roles) | set(optional_artifact_roles)
             for role in self._collect_domain_contribution_roles(workspace):
@@ -124,54 +154,68 @@ class ContextService:
                     existing.add(role)
 
         if not required_artifact_roles and not optional_artifact_roles:
-            optional_artifact_roles = tuple(sorted({artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}))
+            optional_artifact_roles = tuple(
+                sorted({artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)})
+            )
 
+        # 5. Обязательные артефакты — структурно необходимы (pinned, REQUIRED).
         for artifact_role in required_artifact_roles:
             artifact = self._runtime.latest_artifact_by_role(workspace, artifact_role)
             if artifact is None:
                 raise ConflictError(
                     f"Для задачи '{task.task_id}' отсутствует обязательный входной артефакт роли '{artifact_role}'."
                 )
-            self._append_artifact_item(workspace, items, source_refs, artifact, required=True)
+            add(self._make_artifact_item(workspace, artifact, required=True), ContextAuthority.REQUIRED, pinned=True)
 
-        # Краткое описание задачи (R8/TS9: методологическая часть приходит
-        # из methodology_pack wrapper'а, здесь — только task-specific guidance).
+        # 6. Инструкция задачи — pinned (без неё задача не знает, что делать).
         if template.summary:
-            instruction = ContextItem(
-                item_id=str(uuid.uuid4()),
-                item_type="instruction",
-                source_ref=f"template:{template.ref.as_string()}",
-                title="Что должна сделать задача",
-                content=template.summary,
-                token_estimate=estimate_tokens(template.summary),
-                required=True,
-                priority=1000,
+            add(
+                ContextItem(
+                    item_id=str(uuid.uuid4()),
+                    item_type="instruction",
+                    source_ref=f"template:{template.ref.as_string()}",
+                    title="Что должна сделать задача",
+                    content=template.summary,
+                    token_estimate=estimate_tokens(template.summary),
+                    required=True,
+                    priority=1000,
+                ),
+                ContextAuthority.REQUIRED,
+                pinned=True,
             )
-            items.append(instruction)
-            source_refs.append(instruction.source_ref)
 
-        max_tokens = self._effective_max_tokens(template.context_policy.max_tokens)
-
+        # 7. Опциональные артефакты — производное; подтверждённые человеком
+        #    (user_verified) приоритетнее неподтверждённых при нехватке бюджета.
         for artifact_role in optional_artifact_roles:
             artifact = self._runtime.latest_artifact_by_role(workspace, artifact_role)
             if artifact is None:
                 continue
-            candidate_item = self._make_artifact_item(workspace, artifact, required=False)
-            if max_tokens is not None and (
-                sum(item.token_estimate for item in items) + candidate_item.token_estimate > max_tokens
-            ):
-                continue
-            items.append(candidate_item)
-            source_refs.append(candidate_item.source_ref)
+            authority = (
+                ContextAuthority.CONFIRMED
+                if getattr(artifact, "user_verified", False)
+                else ContextAuthority.DERIVED
+            )
+            add(self._make_artifact_item(workspace, artifact, required=False), authority, pinned=False)
 
-        used_tokens = sum(item.token_estimate for item in items)
-        if max_tokens is not None and used_tokens > max_tokens:
+        # 8. Бюджет: окно модели (потолок) ∩ намерение шаблона.
+        template_intent = self._effective_max_tokens(template.context_policy.max_tokens)
+        budget = effective_input_budget(template_intent, model_context_window)
+
+        # 9. Укладка: pinned всегда внутри; производное — по авторитету до бюджета.
+        packed = pack_context(candidates, budget)
+        if packed.over_budget:
+            # Обязательное + источник истины сами по себе не влезли. Не режем их
+            # молча — падаем громко (оператор поднимет бюджет/окно или сократит
+            # вход). Верное сжатие источника — будущая точка расширения.
             raise ConflictError(
-                f"Контекст задачи '{task.task_id}' не помещается в budget: {used_tokens} > {max_tokens}."
+                f"Обязательный контекст задачи '{task.task_id}' не помещается в "
+                f"бюджет: {packed.used_tokens} > {budget}."
             )
 
+        items = list(packed.items)
+        source_refs = [item.source_ref for item in items]
         fingerprint = sha256("|".join(sorted(source_refs)).encode("utf-8")).hexdigest()
-        manifest_max_tokens = max_tokens if max_tokens is not None else 1_048_576
+        manifest_max_tokens = budget if budget is not None else 1_048_576
         context_manifest = ContextManifest(
             manifest_id=str(uuid.uuid4()),
             project_id=state.manifest.project_id,
@@ -181,10 +225,10 @@ class ContextService:
             budget=ContextBudget(
                 max_input_tokens=manifest_max_tokens,
                 reserved_for_output=min(1200, manifest_max_tokens // 2),
-                used_tokens=used_tokens,
+                used_tokens=packed.used_tokens,
             ),
             items=tuple(items),
-            excluded_items=(),
+            excluded_items=packed.excluded,
             input_fingerprint=fingerprint,
             created_at=utc_now_iso(),
             used_position_ids=self.collect_used_position_ids(state),
@@ -195,6 +239,38 @@ class ContextService:
             workspace, state, context_manifest.used_position_ids, prompt_text
         )
         return ContextBuildResult(manifest=context_manifest)
+
+    def _collect_source_inputs(self, template, state: ProjectState) -> list[ContextItem]:
+        """Первоисточник для задачи-интерпретатора: полный текст входных файлов.
+
+        Подаётся ТОЛЬКО задачам, объявившим соответствующий род в
+        ``requires.inputs`` — а не всем подряд. Вложения берутся из положений
+        Layer A (``attachment.<id>``) целиком, без обрезки.
+        """
+        items: list[ContextItem] = []
+        wanted = set(template.inputs.raw_inputs)
+        if "attachments" in wanted:
+            for position in state.knowledge.active():
+                if position.type != "fact" or not position.identifier.startswith(
+                    ATTACHMENT_POSITION_PREFIX
+                ):
+                    continue
+                text = (position.statement or "").strip()
+                if not text:
+                    continue
+                items.append(
+                    ContextItem(
+                        item_id=str(uuid.uuid4()),
+                        item_type="problem_field",
+                        source_ref=f"source:{position.identifier}",
+                        title="Входной файл заказчика",
+                        content=text,
+                        token_estimate=estimate_tokens(text),
+                        required=True,
+                        priority=200,
+                    )
+                )
+        return items
 
     def _mark_used_attachments(
         self,
@@ -243,19 +319,6 @@ class ContextService:
 
         return template_max_tokens
 
-    def _append_artifact_item(
-        self,
-        workspace: Path,
-        items: list[ContextItem],
-        source_refs: list[str],
-        artifact,
-        *,
-        required: bool,
-    ) -> None:
-        item = self._make_artifact_item(workspace, artifact, required=required)
-        items.append(item)
-        source_refs.append(item.source_ref)
-
     def _make_artifact_item(self, workspace: Path, artifact, *, required: bool) -> ContextItem:
         content = self._runtime.load_artifact_content(workspace, artifact.artifact_id)
         return ContextItem(
@@ -273,16 +336,9 @@ class ContextService:
     # B4: Project state context (всегда добавляется к prompt)
     # ------------------------------------------------------------------
 
-    # Внутри одной задачи decisions/assumptions делятся на «relevant к этой
-    # задаче» (полный текст) и «глобальные» (компактный список). Это даёт
-    # фокус на нужном без потери видимости общего.
-    _RELEVANT_FULL_LIMIT: int = 12   # сколько relevant items с полным телом
-    _GLOBAL_LIST_LIMIT: int = 20     # сколько global items в коротком списке
-    # B5: жёсткий cap на размер project_state section (в estimated tokens).
-    # Если контекст разрастается — relevant items сохраняются полностью,
-    # global секции обрезаются. Это защита от outsize project state,
-    # который мог бы вытолкнуть upstream артефакты из budget.
-    _PROJECT_STATE_TOKEN_HARD_CAP: int = 2000
+    # Cap на число положений (допущений/фактов) в секции состояния. Лишние
+    # сворачиваются в «… и ещё N».
+    _GLOBAL_LIST_LIMIT: int = 20
 
     def _collect_domain_contribution_roles(self, workspace: Path) -> tuple[str, ...]:
         """Роли артефактов, рождённых задачами активных доменных паков.
@@ -347,15 +403,10 @@ class ContextService:
         if goal_statement:
             sections.append("## 🎯 Цель проекта\n" + goal_statement.strip())
 
-        # 📥 Business request (исходный raw input)
-        business_request = (state.manifest.business_request or "").strip()
-        if business_request:
-            if len(business_request) > 1500:
-                business_request = business_request[:1500].rstrip() + " …"
-            sections.append(
-                "## 📥 Исходный бизнес-запрос (база — отсюда выведены остальные знания)\n"
-                + business_request
-            )
+        # Печатный бизнес-запрос здесь НЕ дублируем: он подаётся отдельным
+        # обязательным полем целиком (а вложения — источником, см.
+        # _collect_source_inputs). Раньше тут была урезанная до 1500 симв. копия —
+        # убрали дубль (один каноничный источник вместо двух).
 
         # Decisions are no longer read from Layer A here. The canonical source
         # is the decisions ledger; ExecutionService appends compact ledger
@@ -363,12 +414,8 @@ class ContextService:
 
         # 🟡 ASSUMPTIONS — рабочие, можно override decision'ом
         assumptions_section = self._format_positions_section(
-            workspace=workspace,
-            task=task,
-            template=template,
             positions=state.knowledge.by_type("assumption"),
-            relevant_title="🟡 Допущения системы для этой задачи (можно использовать, decision важнее)",
-            global_title="🟡 Другие активные допущения проекта",
+            title="🟡 Активные допущения системы (можно использовать; решение важнее)",
         )
         if assumptions_section:
             sections.append(assumptions_section)
@@ -393,10 +440,15 @@ class ContextService:
         from ..domain.project_knowledge import GOAL_POSITION_ID
 
         reserved_fact_ids = {GOAL_POSITION_ID, "project.business_request"}
+        # Факты-вложения (attachment.*) сюда НЕ попадают: они подаются
+        # первоисточником задачам-интерпретаторам (см. _collect_source_inputs)
+        # и не должны резаться как обычные факты.
         facts_lines = [
             f"- {position.statement}".rstrip()
             for position in state.knowledge.by_type("fact")
-            if position.statement and position.identifier not in reserved_fact_ids
+            if position.statement
+            and position.identifier not in reserved_fact_ids
+            and not position.identifier.startswith(ATTACHMENT_POSITION_PREFIX)
         ]
         if facts_lines:
             sections.append(
@@ -424,91 +476,49 @@ class ContextService:
             "- ⚫ = пробелы (не утверждай)\n"
         )
         content = intro + "\n\n".join(sections)
-        # B5: жёсткий cap. Если состояние проекта раздулось — truncate
-        # по символам (с явной пометкой), сохраняя intro и начало.
-        token_estimate = estimate_tokens(content)
-        if token_estimate > self._PROJECT_STATE_TOKEN_HARD_CAP:
-            # 1 token ≈ 4 char (см. estimate_tokens) → допустимо ~8000 char
-            max_chars = self._PROJECT_STATE_TOKEN_HARD_CAP * 4
-            content = (
-                content[:max_chars].rstrip()
-                + "\n\n_… [контекст проекта обрезан для соблюдения token budget — "
-                "показаны самые приоритетные секции]_"
-            )
-            token_estimate = estimate_tokens(content)
+        # Без внутренней обрезки по символам. Размер контролирует укладчик
+        # (pack_context): эта секция — производное (droppable), и под нехватку
+        # бюджета выкидывается ЦЕЛИКОМ ПОСЛЕ источников истины, а не режется
+        # вслепую (прежний хардкод 2000 токенов резал ответы заказчика — см.
+        # разбор инцидента РТК-копилот).
         return ContextItem(
             item_id=str(uuid.uuid4()),
             item_type="problem_field",
             source_ref=f"project_state:k{state.knowledge.version}/p{state.process.version}",
             title="Контекст проекта",
             content=content,
-            token_estimate=token_estimate,
+            token_estimate=estimate_tokens(content),
             required=True,
             priority=1500,
         )
 
     def _format_positions_section(
-        self,
-        *,
-        workspace: Path,
-        task,
-        template,
-        positions: Iterable[Position],
-        relevant_title: str,
-        global_title: str,
-        always_full: bool = False,
+        self, *, positions: Iterable[Position], title: str
     ) -> str | None:
-        """Разбивает положения на relevant и global, форматирует markdown.
+        """Форматирует положения (допущения/факты) одним списком, с полным телом.
 
-        Relevant — положения, релевантные конкретной задаче:
-        - пришли из clarification, чей affected_task_ids содержит task.task_id, ИЛИ
-        - related_artifact_ids уточнения пересекаются с required/optional ролями задачи.
-
-        Остальные — global, выводятся компактным списком.
-
-        ``always_full``: даже в global-секции показывать положения целиком.
-        Используется для decisions: их обрезка приводила к тому, что LLM
-        видел вопрос без ответа («Ответ: Ма…») и переспрашивал.
+        После миграции на Decision-модель деления на «релевантные задаче» и
+        «глобальные» больше нет: фильтрация по affinity не применяется (Layer A
+        уже отвечает реестр Decisions). Показываем все активные положения
+        полностью, с capом на количество и явной пометкой остатка.
         """
-        positions_list = [p for p in positions if (p.statement or "").strip()]
-        if not positions_list:
+        lines = [
+            self._format_position_line(position)
+            for position in positions
+            if (position.statement or "").strip()
+        ]
+        lines = [line for line in lines if line]
+        if not lines:
             return None
-
-        template_roles = set(template.inputs.required_artifact_roles) | set(
-            template.inputs.optional_artifact_roles
-        )
-        relevant: list[Position] = []
-        global_items: list[Position] = []
-        for position in positions_list:
-            if self._is_position_relevant_to_task(
-                workspace, position, task, template_roles
-            ):
-                relevant.append(position)
-            else:
-                global_items.append(position)
-
-        chunks: list[str] = []
-        if relevant:
-            relevant_lines = [
-                self._format_position_line(position, full=True)
-                for position in relevant[: self._RELEVANT_FULL_LIMIT]
-            ]
-            chunks.append(f"## {relevant_title}\n" + "\n".join(relevant_lines))
-        if global_items:
-            head = global_items[: self._GLOBAL_LIST_LIMIT]
-            remaining = len(global_items) - len(head)
-            global_lines = [
-                self._format_position_line(position, full=always_full)
-                for position in head
-            ]
-            if remaining > 0:
-                global_lines.append(f"- … и ещё {remaining}")
-            chunks.append(f"## {global_title}\n" + "\n".join(global_lines))
-        return "\n\n".join(chunks) if chunks else None
+        head = lines[: self._GLOBAL_LIST_LIMIT]
+        remaining = len(lines) - len(head)
+        if remaining > 0:
+            head.append(f"- … и ещё {remaining}")
+        return f"## {title}\n" + "\n".join(head)
 
     @staticmethod
-    def _format_position_line(position: Position, *, full: bool) -> str:
-        """Форматирует одну строку положения для markdown-секции."""
+    def _format_position_line(position: Position) -> str:
+        """Форматирует одну строку положения (полное тело) для markdown-секции."""
         statement = (position.statement or "").strip()
         if not statement:
             return ""
@@ -517,26 +527,7 @@ class ContextService:
             source_label = " _(ответ на вопрос пользователя)_"
         elif position.source and position.source != "system":
             source_label = f" _(источник: {position.source})_"
-        if full:
-            return f"- {statement.rstrip()}.{source_label}".replace("..", ".")
-        compact = statement if len(statement) <= 120 else statement[:117] + "…"
-        return f"- {compact}".rstrip()
-
-    def _is_position_relevant_to_task(
-        self,
-        workspace: Path,
-        position: Position,
-        task,
-        template_roles: set[str],
-    ) -> bool:
-        """v3.1: после миграции на Decision-модель положения с префиксом
-        ``clarification.`` больше не создаются. Все положения попадают в
-        relevant-категорию по умолчанию — фильтрация по affinity больше не
-        применяется на уровне контекста (Layer A знаниями уже отвечает
-        реестр Decisions, у каждого ответа есть source_task_id).
-        """
-        del workspace, position, task, template_roles
-        return True
+        return f"- {statement.rstrip()}.{source_label}".replace("..", ".")
 
     # ------------------------------------------------------------------
     # B4: Previous attempt context (для retry задач)

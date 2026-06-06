@@ -4,16 +4,20 @@ version: 1.0.0
 title: Собрать ограничения проекта
 type: leaf
 status: active
+# Класс задачи для маршрутизации модели (execution.trivial): инвентаризация
+# ограничений — структурное извлечение, гонится на быстрой модели.
+complexity: trivial
 domain: common
 executor: llm
 # Экстракция + категоризация; нет выбора между альтернативами.
 methodology: skip
 requires:
   state: [business_request]
+  # Задача-интерпретатор: читает первоисточник целиком (входные файлы заказчика).
+  inputs: [attachments]
 produces:
   artifact: common.constraint_inventory@1.0.0
 context:
-  include: [state.business_request]
   max_tokens: 12000
 planning:
   priority: 980

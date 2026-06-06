@@ -20,9 +20,6 @@ requires:
 produces:
   artifact: ml.predictive_problem_definition@1.0.0
 context:
-  include:
-    - artifact.common.normalized_request
-    - artifact.ml.data_landscape_assessment
   max_tokens: 24000
 planning:
   # Priority понижен с 740 до 720: должен идти ПОСЛЕ data_landscape (730).

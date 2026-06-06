@@ -17,10 +17,6 @@ requires:
 produces:
   artifact: common.implementation_dependency_plan@1.0.0
 context:
-  include:
-    - artifact.common.normalized_request
-    - artifact.common.scope_boundary_matrix
-    - artifact.common.solution_option_inventory
   max_tokens: 20000
 planning:
   priority: 580

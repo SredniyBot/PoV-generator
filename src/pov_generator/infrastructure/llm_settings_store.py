@@ -25,13 +25,14 @@ from pathlib import Path
 from ..common.errors import ConflictError, ValidationError
 from ..domain.llm_settings import (
     ALL_PURPOSES,
+    MIN_MODEL_CONTEXT_LIMIT,
     ModelAssignment,
+    ModelContextLimit,
     ModelRouting,
     ProviderConnection,
     ProviderCredentials,
 )
 from .secret_box import SecretBox
-
 
 _DB_FILENAME = "settings.db"
 
@@ -322,6 +323,54 @@ class SqliteSettingsStore:
             return None
         return ModelAssignment(purpose=row["purpose"], model_name=row["model_name"])
 
+    # --- Лимиты контекста на модель -----------------------------------------
+
+    def set_context_limit(self, model_name: str, context_limit_tokens: int) -> ModelContextLimit:
+        """UPSERT лимита контекста для модели. ``model_name`` — первичный ключ."""
+        if not model_name.strip():
+            raise ValidationError("Пустое имя модели.")
+        if context_limit_tokens < MIN_MODEL_CONTEXT_LIMIT:
+            raise ValidationError(
+                f"Лимит контекста должен быть ≥ {MIN_MODEL_CONTEXT_LIMIT} токенов."
+            )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into model_context_limits(model_name, context_limit_tokens) values (?, ?)
+                on conflict(model_name) do update set context_limit_tokens = excluded.context_limit_tokens
+                """,
+                (model_name, context_limit_tokens),
+            )
+            conn.commit()
+        return ModelContextLimit(model_name=model_name, context_limit_tokens=context_limit_tokens)
+
+    def delete_context_limit(self, model_name: str) -> None:
+        """Сбросить лимит модели к дефолту (удалить запись)."""
+        with self._connect() as conn:
+            conn.execute(
+                "delete from model_context_limits where model_name = ?", (model_name,)
+            )
+            conn.commit()
+
+    def get_context_limit(self, model_name: str) -> int | None:
+        """Сохранённый лимит модели или ``None`` (тогда действует дефолт)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "select context_limit_tokens from model_context_limits where model_name = ?",
+                (model_name,),
+            ).fetchone()
+        return int(row["context_limit_tokens"]) if row is not None else None
+
+    def list_context_limits(self) -> tuple[ModelContextLimit, ...]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select model_name, context_limit_tokens from model_context_limits order by model_name"
+            ).fetchall()
+        return tuple(
+            ModelContextLimit(model_name=row["model_name"], context_limit_tokens=int(row["context_limit_tokens"]))
+            for row in rows
+        )
+
     # --- Internals -----------------------------------------------------------
 
     def _connection_from_row(self, row: sqlite3.Row) -> ProviderConnection:
@@ -393,6 +442,11 @@ class SqliteSettingsStore:
             create table if not exists model_assignments (
                 purpose text primary key,
                 model_name text not null
+            );
+
+            create table if not exists model_context_limits (
+                model_name text primary key,
+                context_limit_tokens integer not null
             );
             """
         )

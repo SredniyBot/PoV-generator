@@ -440,6 +440,29 @@ def create_app(
         result = provider_settings_service.test_model(model_name=model_name)
         return _test_result_to_dict(result)
 
+    @app.put("/api/settings/models/context-limit")
+    def settings_set_context_limit(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        """Задать или сбросить лимит контекста (токены) для модели.
+
+        ``model_name`` идёт в теле (а не в пути) — имена моделей содержат «/».
+        ``context_limit_tokens`` отсутствует/null → сброс к дефолту по модели.
+        """
+        model_name = _required_str(payload, "model_name")
+        raw = payload.get("context_limit_tokens")
+        try:
+            if raw is None or raw == "":
+                provider_settings_service.reset_context_limit(model_name)
+            else:
+                provider_settings_service.set_context_limit(
+                    model_name=model_name, context_limit_tokens=int(raw)
+                )
+        except (ValidationError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        for entry in provider_settings_service.list_models():
+            if entry["model_name"] == model_name:
+                return entry
+        return {"model_name": model_name}
+
     @app.get("/api/settings/assignments")
     def settings_list_assignments() -> Any:
         return [
