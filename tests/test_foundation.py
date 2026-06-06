@@ -55,7 +55,7 @@ def test_registry_validation_passes_for_task_graph_corpus() -> None:
     assert len(snapshot.methodology_packs) >= 1
     assert len(snapshot.quality_gates) >= 1
     assert len(snapshot.vocabularies) == 6
-    assert len(snapshot.agent_capabilities) >= 5
+    assert len(snapshot.capability_profiles) >= 5
 
 
 def test_registry_validation_detects_unknown_domain_slot(tmp_path: Path) -> None:

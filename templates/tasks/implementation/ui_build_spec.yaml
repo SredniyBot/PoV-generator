@@ -5,8 +5,8 @@ title: Спека сборки — ui-агент
 type: leaf
 status: active
 domain: implementation
-executor: agent
-agent: agent.ui@1.0.0
+executor: llm
+capability: capability.ui@1.0.0
 methodology: minimal
 requires:
   state: [business_request]
@@ -26,7 +26,7 @@ planning:
   priority: 300
 summary: |
   Ты — ui-агент сборки. Из feasibility возьми части, где covered_by ==
-  agent.ui, и ui-компоненты из component_decomposition. По каждой назначенной
+  capability.ui, и ui-компоненты из component_decomposition. По каждой назначенной
   части выдай спеку сборки (name / purpose / tech / interfaces / data /
   dependencies / test_approach). Заполни assigned_parts. То, что в твой
   cannot_do, — в out_of_scope. Нерешённое — в open_questions. Если ничего не

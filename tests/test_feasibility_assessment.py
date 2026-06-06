@@ -32,7 +32,7 @@ def _full_payload() -> dict:
                 "blockers": [],
                 "prerequisites": ["Формат входных данных"],
                 "confidence": 0.85,
-                "covered_by": "agent.backend",
+                "covered_by": "capability.backend",
                 "matched_capability": "backend.data_ingestion",
             },
             {
@@ -43,7 +43,7 @@ def _full_payload() -> dict:
                 "blockers": ["Нет доступа к контуру 1С"],
                 "prerequisites": ["Тестовый контур 1С"],
                 "confidence": 0.6,
-                "covered_by": "agent.integration",
+                "covered_by": "capability.integration",
                 "matched_capability": "integration.erp_sync",
             },
             {
@@ -139,8 +139,8 @@ def test_render_shows_coverage_column() -> None:
     md = render_markdown(ROLE, _full_payload())
     assert "Покрытие" in md
     # покрытая часть показывает агента и его способность
-    assert "agent.backend / backend.data_ingestion" in md
-    assert "agent.integration / integration.erp_sync" in md
+    assert "capability.backend / backend.data_ingestion" in md
+    assert "capability.integration / integration.erp_sync" in md
 
 
 def test_schema_accepts_coverage_fields() -> None:

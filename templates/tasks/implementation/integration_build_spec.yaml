@@ -5,8 +5,8 @@ title: Спека сборки — integration-агент
 type: leaf
 status: active
 domain: implementation
-executor: agent
-agent: agent.integration@1.0.0
+executor: llm
+capability: capability.integration@1.0.0
 methodology: minimal
 requires:
   state: [business_request]
@@ -26,7 +26,7 @@ planning:
   priority: 300
 summary: |
   Ты — integration-агент сборки. Из feasibility возьми части, где covered_by
-  == agent.integration, и интеграционные компоненты из component_decomposition.
+  == capability.integration, и интеграционные компоненты из component_decomposition.
   По каждой назначенной части выдай спеку сборки (name / purpose / tech /
   interfaces / data / dependencies / test_approach). Заполни assigned_parts.
   Части без предоставленного доступа к контуру (твой cannot_do) — в

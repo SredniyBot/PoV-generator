@@ -1,5 +1,5 @@
-kind: agent_capability
-id: agent.integration
+kind: capability_profile
+id: capability.integration
 version: 1.0.0
 title: Integration build-agent
 role: integration

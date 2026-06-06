@@ -1,5 +1,5 @@
 kind: vocabulary
-id: agent_capabilities
+id: capabilities
 version: 1.0.0
 entries:
   - id: backend.rest_api

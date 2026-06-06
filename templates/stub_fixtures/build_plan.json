@@ -2,8 +2,8 @@
   "title": "План реализации PoV",
   "executive_summary": "Реализуемое ядро — приём показаний (backend) и онлайн-интеграция с 1С при условии доступа к контуру (integration). Юридически значимое начисление выходит за рамки PoV.",
   "routing": [
-    {"part": "Приём и хранение показаний приборов учёта", "agent": "agent.backend", "capability": "backend.data_ingestion", "status": "готово к сборке"},
-    {"part": "Онлайн-интеграция с учётной системой 1С", "agent": "agent.integration", "capability": "integration.erp_sync", "status": "при условии (нужен доступ к контуру 1С)"},
+    {"part": "Приём и хранение показаний приборов учёта", "agent": "capability.backend", "capability": "backend.data_ingestion", "status": "готово к сборке"},
+    {"part": "Онлайн-интеграция с учётной системой 1С", "agent": "capability.integration", "capability": "integration.erp_sync", "status": "при условии (нужен доступ к контуру 1С)"},
     {"part": "Юридически значимое автоматическое начисление", "agent": "—", "capability": "—", "status": "вне рамок PoV"}
   ],
   "sequencing": [
@@ -11,8 +11,8 @@
     {"phase": "Фаза 2 — интеграция", "items": ["Коннектор обмена с 1С (integration) — после получения доступа к контуру"]}
   ],
   "per_agent": [
-    {"agent": "agent.backend", "components_count": 1, "highlights": ["Сервис приёма показаний"]},
-    {"agent": "agent.integration", "components_count": 1, "highlights": ["Коннектор обмена с 1С (условно)"]}
+    {"agent": "capability.backend", "components_count": 1, "highlights": ["Сервис приёма показаний"]},
+    {"agent": "capability.integration", "components_count": 1, "highlights": ["Коннектор обмена с 1С (условно)"]}
   ],
   "risks_and_gaps": [
     "Юридически значимое начисление недостижимо в PoV — нет аттестованной биллинговой системы.",

@@ -18,7 +18,7 @@ class RegistrySummary:
     domain_pack_count: int
     methodology_pack_count: int
     quality_gate_count: int
-    agent_capability_count: int
+    capability_profile_count: int
 
 
 class RegistryService:
@@ -143,20 +143,12 @@ class RegistryService:
                             str(template.source_path),
                         )
                     )
-                if template.executor == "agent":
-                    if template.agent_ref is None:
+                if template.capability_ref is not None:
+                    if template.capability_ref.as_string() not in snapshot.capability_profiles:
                         errors.append(
                             RegistryIssue(
                                 "error",
-                                f"Задача '{template.ref.as_string()}' с executor=agent должна указывать поле agent.",
-                                str(template.source_path),
-                            )
-                        )
-                    elif template.agent_ref.as_string() not in snapshot.agent_capabilities:
-                        errors.append(
-                            RegistryIssue(
-                                "error",
-                                f"Задача '{template.ref.as_string()}' ссылается на неизвестного агента '{template.agent_ref.as_string()}'.",
+                                f"Задача '{template.ref.as_string()}' ссылается на неизвестный профиль умений '{template.capability_ref.as_string()}'.",
                                 str(template.source_path),
                             )
                         )
@@ -292,9 +284,9 @@ class RegistryService:
                             )
                         )
 
-        for agent in snapshot.agent_capabilities.values():
+        for agent in snapshot.capability_profiles.values():
             for capability in agent.capabilities:
-                if not snapshot.has_vocabulary_entry("agent_capabilities", capability.capability):
+                if not snapshot.has_vocabulary_entry("capabilities", capability.capability):
                     errors.append(
                         RegistryIssue(
                             "error",
@@ -324,5 +316,5 @@ class RegistryService:
             domain_pack_count=len(snapshot.domain_packs),
             methodology_pack_count=len(snapshot.methodology_packs),
             quality_gate_count=len(snapshot.quality_gates),
-            agent_capability_count=len(snapshot.agent_capabilities),
+            capability_profile_count=len(snapshot.capability_profiles),
         )

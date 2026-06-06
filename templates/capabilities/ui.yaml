@@ -1,5 +1,5 @@
-kind: agent_capability
-id: agent.ui
+kind: capability_profile
+id: capability.ui
 version: 1.0.0
 title: UI build-agent
 role: ui

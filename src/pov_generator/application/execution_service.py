@@ -18,7 +18,7 @@ from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelatio
 from ..domain.decisions import SOURCE_IDENTIFICATION, Decision
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.llm_usage import LLMUsageRecord
-from ..domain.registry import AgentCapabilitySpec, MethodologyPackSpec, RegistrySnapshot
+from ..domain.registry import CapabilityProfileSpec, MethodologyPackSpec, RegistrySnapshot
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
@@ -49,7 +49,7 @@ def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fal
     return fallback
 
 
-def _render_agent_pledge(spec: AgentCapabilitySpec) -> str:
+def _render_capability_pledge(spec: CapabilityProfileSpec) -> str:
     """System-prologue для задачи с executor=agent.
 
     Фиксирует роль агента, его надёжные способности и пределы (cannot_do).
@@ -64,7 +64,7 @@ def _render_agent_pledge(spec: AgentCapabilitySpec) -> str:
         or "—"
     )
     lines = [
-        "<agent_pledge>",
+        "<capability_pledge>",
         f"Ты выступаешь как агент сборки {spec.identifier} (роль: {spec.role}).",
         f"Твои надёжные способности: {caps}.",
     ]
@@ -75,24 +75,24 @@ def _render_agent_pledge(spec: AgentCapabilitySpec) -> str:
         "твоих способностей, явно помечай как вне зоны ответственности "
         "(out_of_scope), а не выдавай за выполнимые."
     )
-    lines.append("</agent_pledge>")
+    lines.append("</capability_pledge>")
     return "\n".join(lines)
 
 
-def _render_agent_capability_brief(snapshot: RegistrySnapshot) -> str:
+def _render_capability_brief(snapshot: RegistrySnapshot) -> str:
     """Текстовый блок с контрактами способностей агентов для промпта.
 
     Контракты — объекты реестра (не артефакты), поэтому не проходят через
     обычный artifact-контекст. Эта функция сериализует их в компактный
-    ``<agent_capabilities>``-блок, который подмешивается в user_prompt
+    ``<capability_profiles>``-блок, который подмешивается в user_prompt
     задачи оценки реализуемости (см. role-gate в ``_build_artifact``).
     Пустой результат, если контрактов нет — блок не добавляется.
     """
-    specs = sorted(snapshot.agent_capabilities.values(), key=lambda s: s.role)
+    specs = sorted(snapshot.capability_profiles.values(), key=lambda s: s.role)
     if not specs:
         return ""
     lines = [
-        "<agent_capabilities>",
+        "<capability_profiles>",
         "Команда сборки — агенты с зафиксированными надёжными способностями. "
         "Сопоставь каждую часть проекта со способностью одного из агентов "
         "и заполни covered_by / matched_capability:",
@@ -108,7 +108,7 @@ def _render_agent_capability_brief(snapshot: RegistrySnapshot) -> str:
             )
         if spec.cannot_do:
             lines.append("  не делает: " + "; ".join(spec.cannot_do))
-    lines.append("</agent_capabilities>")
+    lines.append("</capability_profiles>")
     return "\n".join(lines)
 
 
@@ -345,13 +345,15 @@ class ExecutionService:
             context_manifest=context_manifest,
         )
 
-        # Слой 2: специализация генерации под агента (executor=agent) —
-        # префиксим system-prompt контрактом агента (<agent_pledge>: роль +
-        # cannot_do). Реестр гарантирует резолв agent_ref, .get() — на всякий.
-        if template.executor == "agent" and template.agent_ref is not None:
-            agent_spec = snapshot.agent_capabilities.get(template.agent_ref.as_string())
-            if agent_spec is not None:
-                system_prompt = f"{_render_agent_pledge(agent_spec)}\n\n{system_prompt}"
+        # Слой 2: специализация генерации профилем умений. Если задан
+        # capability_ref — префиксим system-prompt контрактом (<capability_pledge>:
+        # роль + cannot_do). Это ортогонально executor=llm. .get() — на всякий.
+        if template.capability_ref is not None:
+            capability_profile = snapshot.capability_profiles.get(
+                template.capability_ref.as_string()
+            )
+            if capability_profile is not None:
+                system_prompt = f"{_render_capability_pledge(capability_profile)}\n\n{system_prompt}"
 
         # Этап ВЫЯВЛЕНИЯ решений до сборки (checkpoint).
         # Skip-условия:
@@ -425,7 +427,7 @@ class ExecutionService:
         # decision_context выше). Безвредно на stub-пути (stub не читает
         # user_prompt).
         if artifact_role == "feasibility_assessment":
-            agent_brief = _render_agent_capability_brief(snapshot)
+            agent_brief = _render_capability_brief(snapshot)
             if agent_brief:
                 user_prompt = f"{user_prompt}\n\n{agent_brief}"
 

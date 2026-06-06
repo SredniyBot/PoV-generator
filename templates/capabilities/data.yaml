@@ -1,5 +1,5 @@
-kind: agent_capability
-id: agent.data
+kind: capability_profile
+id: capability.data
 version: 1.0.0
 title: Data build-agent
 role: data
