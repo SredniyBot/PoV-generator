@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: common.integration_data_map
+version: 1.0.0
+title: Интеграции и данные
+# Этап 7.5: YAML — декларативный, реальная (строгая) схема в artifact_contracts.py.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

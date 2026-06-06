@@ -14,6 +14,8 @@ children:
     task: common.stakeholder_mapping@1.0.0
   - id: solution_option_inventory
     task: common.solution_option_inventory@1.0.0
+  - id: integration_data_map
+    task: common.integration_data_map@1.0.0
 slots:
   - id: data.entities
     title: Сущности и источники данных

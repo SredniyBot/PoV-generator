@@ -40,6 +40,8 @@ requires:
     # PoV (тривиальная сложность) могут пропускаться. Если присутствуют —
     # финальный merge берёт их разделы.
     optional:
+      - common.problem_statement@1.0.0
+      - common.integration_data_map@1.0.0
       - common.solution_tradeoff_matrix@1.0.0
       - common.acceptance_model_definition@1.0.0
       - common.implementation_dependency_plan@1.0.0

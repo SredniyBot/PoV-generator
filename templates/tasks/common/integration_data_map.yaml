@@ -1,0 +1,35 @@
+kind: task_template
+id: common.integration_data_map
+version: 1.0.0
+title: Описать интеграции и данные
+type: leaf
+status: active
+# Класс задачи (execution.standard): анализ внешних систем и данных.
+complexity: standard
+domain: common
+executor: llm
+methodology: minimal
+decision_identification: false
+requires:
+  state: [business_request]
+  artifacts:
+    required: []
+    optional:
+      - common.problem_statement@1.0.0
+      - common.normalized_request@1.0.0
+      - common.scope_boundary_matrix@1.0.0
+produces:
+  artifact: common.integration_data_map@1.0.0
+planning:
+  priority: 700
+summary: |
+  Опиши внешние системы и данные, которых касается решение (из контекста, не
+  выдумывая). Заполни:
+  • external_systems — внешние системы: name, purpose (зачем нужна),
+    integration_mode (как интегрируемся, если известно);
+  • data_sources — источники данных: name, description, owner (если известен);
+  • data_flows — какие данные куда движутся;
+  • integration_constraints — ограничения интеграции (доступы, протоколы,
+    аутентификация) — только из контекста, без выдуманных чисел/гарантий;
+  • open_questions — что нужно уточнить у заказчика (доступы, форматы).
+  Не придумывай системы, которых нет в запросе; неизвестное — в open_questions.

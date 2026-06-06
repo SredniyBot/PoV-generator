@@ -1,0 +1,37 @@
+kind: task_template
+id: common.problem_statement
+version: 1.0.0
+title: Сформулировать проблему
+type: leaf
+status: active
+# Класс задачи (execution.standard): формализация проблемы — анализ, не извлечение.
+complexity: standard
+domain: common
+executor: llm
+# Описательная формализация проблемы, а не выбор решения: methodology minimal
+# (JTBD-якорь полезен; option_generation/decision здесь не к месту).
+methodology: minimal
+# Постановка проблемы не порождает проектных решений — это описание, не выбор.
+decision_identification: false
+requires:
+  state: [business_request]
+  artifacts:
+    required: []
+    optional:
+      - common.normalized_request@1.0.0
+      - common.request_fact_sheet@1.0.0
+      - common.goal_hypothesis@1.0.0
+produces:
+  artifact: common.problem_statement@1.0.0
+planning:
+  priority: 850
+summary: |
+  Сформулируй ПРОБЛЕМУ из бизнес-запроса (не решение). Заполни:
+  • problem — суть проблемы/боли в одном-двух предложениях;
+  • affected — кто страдает (роли / пользователи / владельцы);
+  • job_to_be_done — работа пользователя: when (в какой ситуации),
+    want (что хочет сделать), so_that (ради какого исхода);
+  • desired_outcome — нужный исход качественно (без чисел и обещаний);
+  • definition_of_solved — что значит «проблема решена» в терминах проблемы;
+  • assumptions — допущения, если данных не хватает.
+  Не предлагай конкретное решение и не выдумывай числа / сроки / деньги.

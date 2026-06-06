@@ -101,9 +101,10 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     # (вариант B — убраны композит review_requirements_spec + leaf
     # requirements_spec_review) стало 21. Затем +1 leaf
     # common.feasibility_assessment (оценка реализуемости частей проекта) →
-    # 22. Privacy_impact_assessment живёт в security-домене и появляется
+    # 22. ТЗ v2: +«Постановка проблемы» (стержень) и +«Интеграции и данные» →
+    # 24. Privacy_impact_assessment живёт в security-домене и появляется
     # только когда активен security pack.
-    assert len(tasks) == 22
+    assert len(tasks) == 24
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Выделить факты из запроса" for task in tasks)
 

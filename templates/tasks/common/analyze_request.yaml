@@ -16,6 +16,8 @@ children:
     task: common.ambiguity_gap_analysis@1.0.0
   - id: request_normalization
     task: common.request_normalization@1.0.0
+  - id: problem_statement
+    task: common.problem_statement@1.0.0
 slots:
   - id: request.domain_signals
     title: Доменные сигналы исходного запроса

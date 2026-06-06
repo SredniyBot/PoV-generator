@@ -773,6 +773,61 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "escalation_candidates": _string_array_schema(),
             },
         ),
+        "problem_statement": _analysis_object(
+            ["problem", "affected", "job_to_be_done", "desired_outcome", "definition_of_solved"],
+            {
+                # Стержень ТЗ: формализованная ПРОБЛЕМА, а не решение.
+                "problem": {"type": "string"},
+                "affected": _string_array_schema(),  # кто страдает / носители боли
+                "job_to_be_done": {
+                    "type": "object",
+                    "required": ["when", "want", "so_that"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "when": {"type": "string"},
+                        "want": {"type": "string"},
+                        "so_that": {"type": "string"},
+                    },
+                },
+                "desired_outcome": _string_array_schema(),       # нужный исход (качественно)
+                "definition_of_solved": _string_array_schema(),  # что значит «решено»
+                "assumptions": _string_array_schema(),
+            },
+        ),
+        "integration_data_map": _analysis_object(
+            ["external_systems", "data_sources", "data_flows"],
+            {
+                "external_systems": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "purpose"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "integration_mode": {"type": "string"},
+                        },
+                    },
+                },
+                "data_sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "description"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "owner": {"type": "string"},
+                        },
+                    },
+                },
+                "data_flows": _string_array_schema(),
+                "integration_constraints": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
         "business_outcome_model": _analysis_object(
             [
                 "primary_business_goal",
@@ -2926,6 +2981,55 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
 
     if artifact_role == "design_document":
         return _render_design_document(payload)
+
+    if artifact_role == "problem_statement":
+        jtbd = payload.get("job_to_be_done") or {}
+        lines = ["# Постановка проблемы", "", payload.get("problem", "")]
+        if payload.get("affected"):
+            lines += ["", "## Кого затрагивает", *[f"- {x}" for x in payload["affected"]]]
+        if jtbd:
+            lines += [
+                "", "## Работа пользователя (JTBD)",
+                f"- Когда: {jtbd.get('when', '—')}",
+                f"- Хочет: {jtbd.get('want', '—')}",
+                f"- Чтобы: {jtbd.get('so_that', '—')}",
+            ]
+        if payload.get("desired_outcome"):
+            lines += ["", "## Нужный исход", *[f"- {x}" for x in payload["desired_outcome"]]]
+        if payload.get("definition_of_solved"):
+            lines += [
+                "", "## Когда считаем проблему решённой",
+                *[f"- {x}" for x in payload["definition_of_solved"]],
+            ]
+        if payload.get("assumptions"):
+            lines += ["", "## Допущения", *[f"- {x}" for x in payload["assumptions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "integration_data_map":
+        lines = ["# Интеграции и данные"]
+        systems = payload.get("external_systems") or []
+        if systems:
+            lines.append("\n## Внешние системы")
+            for s in systems:
+                if not isinstance(s, dict):
+                    continue
+                mode = f" — {s['integration_mode']}" if s.get("integration_mode") else ""
+                lines.append(f"- **{s.get('name', '—')}**: {s.get('purpose', '')}{mode}")
+        sources = payload.get("data_sources") or []
+        if sources:
+            lines.append("\n## Источники данных")
+            for d in sources:
+                if not isinstance(d, dict):
+                    continue
+                owner = f" _(владелец: {d['owner']})_" if d.get("owner") else ""
+                lines.append(f"- **{d.get('name', '—')}**: {d.get('description', '')}{owner}")
+        if payload.get("data_flows"):
+            lines += ["\n## Потоки данных", *[f"- {x}" for x in payload["data_flows"]]]
+        if payload.get("integration_constraints"):
+            lines += ["\n## Ограничения интеграции", *[f"- {x}" for x in payload["integration_constraints"]]]
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
 
     # Generic fallback for demo / unstructured artifacts
     import json as _json
