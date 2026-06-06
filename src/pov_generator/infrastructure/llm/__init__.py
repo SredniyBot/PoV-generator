@@ -1,7 +1,7 @@
 """LLM-провайдеры — единый интерфейс над OpenRouter / Anthropic / Claude CLI.
 
 Сюда обращаются все application-сервисы, которым нужен LLM-вызов
-(execution, domain-pack selection, clarification CE11, complexity selector).
+(execution, domain-pack selection, выбор сложности, выявление решений).
 Каждый сервис принимает ``LLMProviderRegistry`` через конструктор и
 вызывает ``registry.from_env(...).chat_json(...)`` — switch по
 имени провайдера живёт ровно в одном месте.

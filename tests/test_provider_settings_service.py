@@ -26,7 +26,6 @@ from pov_generator.application.provider_settings_service import (
 from pov_generator.common.errors import ValidationError
 from pov_generator.infrastructure.llm import LLMResult
 from pov_generator.domain.llm_settings import (
-    PURPOSE_CLARIFICATION_CE11,
     PURPOSE_EXECUTION_STANDARD,
 )
 from pov_generator.infrastructure.llm_settings_store import SqliteSettingsStore
@@ -257,9 +256,10 @@ def test_ensure_default_settings_imports_anthropic_and_cli(tmp_path: Path, monke
     # Должны быть assignments после bootstrap'а.
     assignments = svc.list_assignments()
     assert assignments
-    # Для CE11 должна быть назначена sonnet (она в KNOWN_MODELS для anthropic + claude_cli).
-    ce11 = next(a for a in assignments if a.purpose == PURPOSE_CLARIFICATION_CE11)
-    assert ce11.model_name in ("claude-sonnet-4-5", "claude-haiku-4-5")
+    # Для стандартного execution-purpose должна быть назначена sonnet
+    # (она в KNOWN_MODELS для anthropic + claude_cli).
+    std = next(a for a in assignments if a.purpose == PURPOSE_EXECUTION_STANDARD)
+    assert std.model_name == "claude-sonnet-4-5"
 
 
 def test_ensure_default_settings_noop_if_db_not_empty(tmp_path: Path, monkeypatch) -> None:

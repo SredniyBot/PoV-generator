@@ -12,7 +12,7 @@
 2. :meth:`resolve_for_purpose` — высокоуровневый, через settings-store:
    ``purpose → ModelAssignment → ModelRouting → ProviderConnection``.
    Это **основной путь** для всех application-сервисов. Сервис говорит
-   «дай модель для clarification_ce11», resolver сам находит, через
+   «дай модель для execution.standard», resolver сам находит, через
    какой connection её достать.
 
 Адаптеры (``providers/*.py``) умеют конструироваться тремя способами:
@@ -367,7 +367,7 @@ class LLMProviderRegistry:
 def _resolve_purpose_key(purpose: str, complexity: str | None) -> str:
     """Преобразовать ``("execution", "trivial")`` → ``"execution.trivial"``.
 
-    Для purposes без complexity-вариантов (clarification_ce11 и пр.)
+    Для purposes без complexity-вариантов (domain_pack_selector и пр.)
     возвращает purpose как есть.
     """
     if purpose == "execution":

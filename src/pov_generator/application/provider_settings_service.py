@@ -26,7 +26,6 @@ from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
 from ..domain.llm_settings import (
     ALL_PURPOSES,
-    PURPOSE_CLARIFICATION_CE11,
     PURPOSE_COMPLEXITY_SELECTOR,
     PURPOSE_DECISION_PLANNING,
     PURPOSE_DOMAIN_PACK_SELECTOR,
@@ -81,7 +80,6 @@ RECOMMENDED_BY_PURPOSE: dict[str, tuple[str, ...]] = {
     # Opus 4.7 — текущий флагман на сложных задачах синтеза.
     PURPOSE_EXECUTION_COMPLEX: ("claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-5", "openai/gpt-4.1-mini"),
     PURPOSE_DOMAIN_PACK_SELECTOR: ("claude-sonnet-4-5", "claude-haiku-4-5"),
-    PURPOSE_CLARIFICATION_CE11: ("claude-sonnet-4-5", "claude-haiku-4-5"),
     PURPOSE_COMPLEXITY_SELECTOR: ("claude-haiku-4-5", "openai/gpt-4o-mini"),
     # v3.0: выявление решений до сборки. Структурная задача
     # (перечисление выборов), не глубокий анализ — поэтому быстрая/дешёвая

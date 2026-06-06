@@ -50,7 +50,8 @@ def test_list_purposes_returns_canonical_set(tmp_path: Path, monkeypatch) -> Non
     data = response.json()
     ids = {item["id"] for item in data}
     assert "execution.standard" in ids
-    assert "clarification_ce11" in ids
+    assert "decision_planning" in ids
+    assert "clarification_ce11" not in ids
     assert "complexity_selector" in ids
     # Labels — кириллица.
     for item in data:

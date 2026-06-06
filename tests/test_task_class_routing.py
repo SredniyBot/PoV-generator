@@ -58,7 +58,7 @@ def test_purpose_key_maps_task_class_to_execution_tier() -> None:
     # Необъявленный класс (None) — это стандартный tier, а не падение.
     assert _resolve_purpose_key("execution", None) == PURPOSE_EXECUTION_STANDARD
     # Не-execution purposes игнорируют класс.
-    assert _resolve_purpose_key("clarification_ce11", "trivial") == "clarification_ce11"
+    assert _resolve_purpose_key("domain_pack_selector", "trivial") == "domain_pack_selector"
 
 
 # --- 2. Классификация шаблонов в реестре ------------------------------------
