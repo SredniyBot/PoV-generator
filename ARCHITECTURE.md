@@ -40,23 +40,33 @@ PoV Generator — фреймворк управляемого получения
 
 ---
 
-## 2. Семь kinds реестра
+## 2. Восемь kinds реестра
 
 Реестр живёт в [`templates/`](templates/). Каждый YAML — один объект одного kind.
 
 | kind | Что описывает | Где лежит | Спека |
 |---|---|---|---|
 | `objective` | цель проекта: корневая задача + done_when | `templates/objectives/` | [02_registry_dsl.md](specs/02_registry_dsl.md) |
-| `task_template` | тип работы (composite/leaf): входы, выход, контекст | `templates/tasks/<area>/` | [04_task_template_semantics.md](specs/04_task_template_semantics.md) |
+| `task_template` | тип работы (composite/leaf/fan_out): входы, выход, контекст | `templates/tasks/<area>/` | [04_task_template_semantics.md](specs/04_task_template_semantics.md) |
 | `artifact_contract` | JSON-schema выходного артефакта | `templates/artifacts/` | [02_registry_dsl.md](specs/02_registry_dsl.md) |
 | `domain_pack` | «над чем думаем»: сигналы + расширения слотов | `templates/domains/` | [09_domain_packs.md](specs/09_domain_packs.md) |
 | `methodology_pack` | «как мы думаем»: стадии + правила | `templates/methodologies/` | [02_registry_dsl.md](specs/02_registry_dsl.md) |
 | `quality_gate` | `human_approval` / `external_signoff` / `automated_review` | `templates/gates/` | [08_validation_governance.md](specs/08_validation_governance.md) |
-| `vocabulary` | общие словари (slot ids, readiness dims) | `templates/vocabularies/` | — |
+| `capability_profile` | «что и насколько мы умеем реализовать»: умения (tech/предусловия/пределы/зрелость) + cannot_do | `templates/capabilities/` | [docs/plans/2026-06-06-realizability-capabilities-redesign.md](docs/plans/2026-06-06-realizability-capabilities-redesign.md) |
+| `vocabulary` | общие словари (slot ids, readiness dims, capabilities) | `templates/vocabularies/` | — |
 
 Жёсткое правило ортогональности: `methodology_pack` («как думаем») и
 `domain_pack` («над чем думаем») не смешиваются. Конфликт по
 `reasoning_artifact` — ошибка валидации.
+
+Третья ось — **реализуемость** (`capability_profile`): «что и насколько мы реально
+умеем построить». Привязка задачи к профилю — поле `capability_ref` (ортогонально
+обычному `executor: llm`, а не новый механизм исполнения): execution-слой
+подмешивает контракт умений в system-prompt. Оценка реализуемости консервативна
+(по умолчанию «не реализуемо, пока не доказано»), непокрытое становится «зоной
+роста», а требуемые от пользователя данные — «реквизитами». Подробности и roadmap
+доработки — в
+[docs/plans/2026-06-06-realizability-capabilities-redesign.md](docs/plans/2026-06-06-realizability-capabilities-redesign.md).
 
 ---
 
