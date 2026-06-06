@@ -607,15 +607,14 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
       <SectionCard
         title={
           <div className="decisions-page__header">
-            <span>Реестр решений</span>
             <a
               className="decisions-page__download"
               href={`/api/projects/${projectId}/decisions/export.pdf`}
               target="_blank"
               rel="noreferrer"
-              title="Скачать весь реестр в PDF"
+              title="Экспортировать весь реестр в PDF"
             >
-              <Download size={14} /> Скачать PDF
+              <Download size={16} /> Экспортировать PDF
             </a>
           </div>
         }
