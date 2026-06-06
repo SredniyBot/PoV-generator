@@ -20,7 +20,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
-import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
+import { Button, EmptyState, LoadingPanel, SectionCard, cx, formatDateTime } from "./ui";
 import type {
   CheckpointAnswerPayload,
   CheckpointSessionView,
@@ -888,7 +888,7 @@ export function CheckpointsListPage({ projectId }: { projectId: string }) {
                   <div className="checkpoint-list__title">{s.task_title || s.artifact_role}</div>
                   <div className="checkpoint-list__meta">
                     {s.decisions.length}{" "}
-                    {s.decisions.length === 1 ? "решение" : "решений"} · создано {s.created_at?.slice(0, 16)?.replace("T", " ")}
+                    {s.decisions.length === 1 ? "решение" : "решений"} · создано {formatDateTime(s.created_at)}
                   </div>
                 </div>
                 <Button

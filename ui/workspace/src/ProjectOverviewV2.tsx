@@ -261,7 +261,7 @@ export function ProjectOverviewV2({
               <p className="skeleton-placeholder__title">Артефакт ещё формируется системой</p>
               <p className="skeleton-placeholder__activity">
                 {overview.data?.current_activity ??
-                  "Идёт сбор фактов из бизнес-запроса. Скоро появится скелет ТЗ."}
+                  "Идёт сбор фактов из бизнес-запроса. Структура ТЗ появляется по мере готовности первых разделов."}
               </p>
             </div>
           )}
@@ -683,10 +683,10 @@ function computePrimaryCta(input: {
     progress.gates_passed >= progress.gates_required
   ) {
     return {
+      // Состояние «готово» само по себе сигнал — не показываем мёртвую
+      // (disabled) кнопку передачи, пока формальный шаг не реализован.
       headline: "Готово",
       detail: "Артефакты собраны и проверены. Можно передавать команде.",
-      // P9 (формальная кнопка передачи) пока disabled — следующая итерация.
-      action: { label: "Принять и закрыть", disabled: true, tone: "primary" },
       secondary: retryAction ?? undefined,
     };
   }

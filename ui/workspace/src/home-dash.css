@@ -262,3 +262,10 @@
   color: var(--danger);
   font-weight: var(--font-weight-medium);
 }
+
+/* Иконки групп — на lucide вместо эмодзи, тон по токенам. */
+.home-dash__group-icon { flex-shrink: 0; }
+.home-dash__group--danger  .home-dash__group-icon { color: var(--danger); }
+.home-dash__group--accent  .home-dash__group-icon { color: var(--accent); }
+.home-dash__group--success .home-dash__group-icon { color: var(--success); }
+.home-dash__group--muted   .home-dash__group-icon { color: var(--text-disabled); }
