@@ -199,6 +199,11 @@ export const api = {
     request<import("./types").ProjectRequisitesView>(`/api/projects/${projectId}/requisites`),
   getCapabilityGaps: (projectId: string) =>
     request<import("./types").ProjectGapsView>(`/api/projects/${projectId}/capability-gaps`),
+  provideRequisite: (projectId: string, key: string, note: string) =>
+    request<import("./types").ProjectRequisitesView>(
+      `/api/projects/${projectId}/requisites/provide`,
+      { method: "POST", body: JSON.stringify({ key, note }) },
+    ),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
   // L6 design extensions

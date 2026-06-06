@@ -574,6 +574,24 @@ def create_app(
     def project_capability_gaps(project_id: str) -> Any:
         return to_primitive(query_service.project_capability_gaps(project_id))
 
+    @app.post("/api/projects/{project_id}/requisites/provide")
+    def project_requisite_provide(
+        project_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        """Отметить реквизит как предоставленный (Ф4).
+
+        Body: ``{"key": "<текст реквизита>", "note": "<необязательная заметка>"}``.
+        Секреты в системе не храним — note это пометка («доступ выдан»/значение),
+        а не хранилище токенов. Возвращает обновлённый список реквизитов.
+        """
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
+        note = str(payload.get("note") or "")
+        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        runtime.mark_requisite_provided(workspace, requisite_key=key, note=note)
+        return to_primitive(query_service.project_requisites(project_id))
+
     @app.get("/api/projects/{project_id}/task-graph")
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))

@@ -1128,6 +1128,32 @@ class SqliteRuntime:
             )
             connection.commit()
 
+    # --- requisite_provisions (предоставленные реквизиты, Ф4) ---------------
+
+    @_serialized_write
+    def mark_requisite_provided(
+        self, workspace: Path, requisite_key: str, note: str = ""
+    ) -> None:
+        """Отметить реквизит как предоставленный пользователем (idempotent)."""
+        project_id = self.load_manifest(workspace).project_id
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "insert into requisite_provisions "
+                "(project_id, requisite_key, note, provided_at) values (?, ?, ?, ?) "
+                "on conflict(project_id, requisite_key) do update set "
+                "note = excluded.note, provided_at = excluded.provided_at",
+                (project_id, requisite_key, note, utc_now_iso()),
+            )
+            connection.commit()
+
+    def list_requisite_provisions(self, workspace: Path) -> dict[str, str]:
+        """Карта requisite_key → note по предоставленным реквизитам проекта."""
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                "select requisite_key, note from requisite_provisions"
+            ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     # --- llm_usage (учёт токенов) -------------------------------------------
 
     @_serialized_write
@@ -2347,6 +2373,17 @@ class SqliteRuntime:
               summary text not null,
               details_json text not null,
               created_at text not null
+            );
+
+            -- Ф4: предоставленные пользователем реквизиты (требуемые входные
+            -- данные). Ключ реквизита — его текст (стабилен в рамках проекта).
+            -- Хранится факт «предоставлено» + заметка; сами секреты не храним.
+            create table if not exists requisite_provisions (
+              project_id text not null,
+              requisite_key text not null,
+              note text not null default '',
+              provided_at text not null,
+              primary key (project_id, requisite_key)
             );
 
             """

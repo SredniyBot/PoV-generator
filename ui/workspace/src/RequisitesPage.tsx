@@ -8,7 +8,8 @@
  * предоставление данных прямо в карточке реквизита + продвижение зоны роста в
  * пробное умение.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
 import type { RequisiteItemView } from "./types";
@@ -25,10 +26,54 @@ function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemVie
   return Array.from(groups.entries());
 }
 
+function RequisiteRow({
+  item,
+  onProvide,
+  pending,
+}: {
+  item: RequisiteItemView;
+  onProvide: (note: string) => void;
+  pending: boolean;
+}) {
+  const [note, setNote] = useState("");
+  const provided = item.status === "provided";
+  return (
+    <li className="requisites__item">
+      <span className="requisites__item-title">{item.title}</span>
+      {provided ? (
+        <StatusPill tone="success">Получено</StatusPill>
+      ) : (
+        <span className="requisites__provide">
+          <input
+            className="requisites__provide-input"
+            placeholder="значение / «доступ выдан»"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn btn--ghost"
+            disabled={pending}
+            onClick={() => onProvide(note)}
+          >
+            Предоставлено
+          </button>
+        </span>
+      )}
+    </li>
+  );
+}
+
 function RequisitesSection({ projectId }: { projectId: string }) {
+  const qc = useQueryClient();
   const query = useQuery({
     queryKey: ["project", projectId, "requisites"],
     queryFn: () => api.getRequisites(projectId),
+  });
+  const provide = useMutation({
+    mutationFn: ({ key, note }: { key: string; note: string }) =>
+      api.provideRequisite(projectId, key, note),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project", projectId, "requisites"] }),
   });
 
   if (query.isLoading || !query.data) return <LoadingPanel title="Загрузка реквизитов…" />;
@@ -66,12 +111,12 @@ function RequisitesSection({ projectId }: { projectId: string }) {
             <p className="requisites__group-title">Для: {neededFor}</p>
             <ul className="requisites__list">
               {items.map((item) => (
-                <li key={`${neededFor}:${item.title}`} className="requisites__item">
-                  <span className="requisites__item-title">{item.title}</span>
-                  <StatusPill tone={item.status === "provided" ? "success" : "warning"}>
-                    {item.status === "provided" ? "Получено" : "Нужно предоставить"}
-                  </StatusPill>
-                </li>
+                <RequisiteRow
+                  key={`${neededFor}:${item.title}`}
+                  item={item}
+                  pending={provide.isPending}
+                  onProvide={(note) => provide.mutate({ key: item.title, note })}
+                />
               ))}
             </ul>
           </div>

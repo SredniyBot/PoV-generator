@@ -7,7 +7,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from pov_generator.application.project_service import ProjectService
 from pov_generator.application.workspace_query_service import _extract_gaps, _extract_requisites
+from pov_generator.domain.registry import ObjectRef
+from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 
 
 def test_extracts_prerequisites_with_needed_for() -> None:
@@ -81,3 +86,24 @@ def test_gaps_tolerate_malformed_payload() -> None:
     assert _extract_gaps({}) == ()
     assert _extract_gaps({"capabilities": [None, 7, {"covered_by": "x"}]}) == ()
     assert _extract_gaps({"capabilities": [{"name": ""}]}) == ()
+
+
+# --- Ф4: предоставление реквизитов (round-trip стора) ------------------------
+
+
+def test_requisite_provision_round_trip(tmp_path: Path) -> None:
+    runtime = SqliteRuntime()
+    workspace = tmp_path / "ws"
+    ProjectService(runtime).init_project(
+        workspace=workspace,
+        name="T",
+        objective_ref=ObjectRef.parse("common.requirements_specification@1.0.0"),
+        request_text="req",
+        domain_packs=(),
+    )
+    assert runtime.list_requisite_provisions(workspace) == {}
+    runtime.mark_requisite_provided(workspace, requisite_key="Доступ к 1С", note="выдан")
+    assert runtime.list_requisite_provisions(workspace) == {"Доступ к 1С": "выдан"}
+    # idempotent + обновление заметки
+    runtime.mark_requisite_provided(workspace, requisite_key="Доступ к 1С", note="выдан 2")
+    assert runtime.list_requisite_provisions(workspace) == {"Доступ к 1С": "выдан 2"}

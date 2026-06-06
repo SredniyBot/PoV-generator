@@ -645,10 +645,19 @@ class WorkspaceQueryService:
         payload = json.loads(
             self._runtime.load_artifact_content(context.workspace, artifact.artifact_id)
         )
+        # Ф4: накладываем факт предоставления — отмеченный пользователем пункт
+        # показывается как «получено» (ключ реквизита — его текст).
+        provided = self._runtime.list_requisite_provisions(context.workspace)
+        items = tuple(
+            RequisiteItemView(title=item.title, needed_for=item.needed_for, status="provided")
+            if item.title in provided
+            else item
+            for item in _extract_requisites(payload)
+        )
         return ProjectRequisitesView(
             project_id=context.manifest.project_id,
             status="ready",
-            items=_extract_requisites(payload),
+            items=items,
             source_artifact_id=artifact.artifact_id,
             updated_at=artifact.created_at,
         )

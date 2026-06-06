@@ -5925,3 +5925,15 @@ code {
 .gap-item__title { margin: 0 0 0.25rem; font-weight: 600; color: var(--text-primary, #e6edf3); }
 .gap-item__reason,
 .gap-item__suggestion { margin: 0.15rem 0 0; font-size: 13px; color: var(--text-secondary, #9aa4b2); }
+
+/* ── Реквизиты: предоставление данных (Ф4) ─────────────────────────────── */
+.requisites__provide { display: inline-flex; align-items: center; gap: 0.4rem; }
+.requisites__provide-input {
+  background: var(--surface-sunken, rgba(0,0,0,0.2));
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  border-radius: 6px;
+  color: var(--text-primary, #e6edf3);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 200px;
+}
