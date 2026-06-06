@@ -1154,6 +1154,35 @@ class SqliteRuntime:
             ).fetchall()
         return {row[0]: row[1] for row in rows}
 
+    # --- pinned_registry (закрепление графа за проектом) --------------------
+
+    @_serialized_write
+    def pin_registry(
+        self, workspace: Path, files: dict[str, str], fingerprint: str = ""
+    ) -> None:
+        """Закрепить снимок реестра (сырые тексты YAML) за проектом (idempotent)."""
+        project_id = self.load_manifest(workspace).project_id
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "insert into pinned_registry "
+                "(project_id, files_json, fingerprint, created_at) values (?, ?, ?, ?) "
+                "on conflict(project_id) do update set "
+                "files_json = excluded.files_json, fingerprint = excluded.fingerprint",
+                (project_id, json_dumps(files), fingerprint, utc_now_iso()),
+            )
+            connection.commit()
+
+    def load_pinned_registry(self, workspace: Path) -> dict[str, str] | None:
+        """Тексты закреплённого снимка реестра проекта или ``None``, если нет."""
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select files_json from pinned_registry limit 1"
+            ).fetchone()
+        if row is None:
+            return None
+        files = json_loads(row[0])
+        return files if isinstance(files, dict) else None
+
     # --- llm_usage (учёт токенов) -------------------------------------------
 
     @_serialized_write
@@ -2384,6 +2413,16 @@ class SqliteRuntime:
               note text not null default '',
               provided_at text not null,
               primary key (project_id, requisite_key)
+            );
+
+            -- Закрепление графа задач за проектом: снимок реестра (сырые тексты
+            -- YAML на момент запуска). Резолв шаблонов проекта идёт из снимка,
+            -- поэтому правки templates/ не ломают прошлые проекты.
+            create table if not exists pinned_registry (
+              project_id text primary key,
+              files_json text not null,
+              fingerprint text not null default '',
+              created_at text not null
             );
 
             """

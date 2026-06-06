@@ -59,6 +59,7 @@ from ..domain.workspace_views import (
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
+from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
 from .workspace_catalog import WorkspaceCatalog, WorkspaceRef
 
@@ -95,11 +96,15 @@ class WorkspaceQueryService:
         registry_service: RegistryService,
         runtime: SqliteRuntime,
         planning_service: PlanningService,
+        registry_resolver: "ProjectRegistryResolver | None" = None,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
         self._runtime = runtime
         self._planning_service = planning_service
+        # Закреплённый граф проекта (Ф-pin): per-project просмотр идёт на снимке
+        # реестра проекта. None — fallback на живой реестр (тесты/CLI).
+        self._registry_resolver = registry_resolver
 
     def list_projects(self) -> tuple[ProjectListItemView, ...]:
         """Список всех проектов воркспейса.
@@ -1486,9 +1491,15 @@ class WorkspaceQueryService:
         валидируют его один раз на всю выборку). Если не передан —
         валидируем (дёшево за счёт мемоизации).
         """
-        if snapshot is None:
-            snapshot = self._validated_snapshot()
         workspace = workspace_ref.workspace
+        if snapshot is None:
+            # Per-project путь без явного снимка: берём закреплённый граф
+            # проекта (если резолвер внедрён), иначе — живой реестр.
+            snapshot = (
+                self._registry_resolver.snapshot_for(workspace)
+                if self._registry_resolver is not None
+                else self._validated_snapshot()
+            )
         return ProjectContext(
             workspace_ref=workspace_ref,
             workspace=workspace,

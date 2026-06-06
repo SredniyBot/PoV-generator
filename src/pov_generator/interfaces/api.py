@@ -20,6 +20,7 @@ from ..application.parallel_scheduling import (
 )
 from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
 from ..application.planning_service import PlanningService
+from ..application.project_registry import ProjectRegistryResolver
 from ..application.project_service import ProjectService
 from ..application.provider_settings_service import (
     PURPOSE_LABELS_FOR_UI,
@@ -109,6 +110,10 @@ def create_app(
         CachingRegistryLoader(FilesystemRegistryLoader(resolved_repo_root / "templates"))
     )
     runtime = SqliteRuntime()
+    # Закрепление графа за проектом: запуск/просмотр идут на снимке реестра,
+    # снятом при первом обращении к проекту. Правки templates/ не ломают
+    # прошлые проекты (их можно смотреть и перезапускать на исходном графе).
+    registry_resolver = ProjectRegistryResolver(runtime, resolved_repo_root / "templates")
     # Persistence слой настроек LLM-провайдеров (system-wide, не per-workspace).
     settings_store = SqliteSettingsStore(resolved_runtime_root)
     # Registry — единственное место в коде, где живёт switch по имени
@@ -198,10 +203,13 @@ def create_app(
         workflow_service,
         planning_service,
         concurrency_resolver=_resolve_max_concurrency,
+        registry_resolver=registry_resolver,
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     attachment_service = AttachmentService(runtime)
-    query_service = WorkspaceQueryService(catalog, registry_service, runtime, planning_service)
+    query_service = WorkspaceQueryService(
+        catalog, registry_service, runtime, planning_service, registry_resolver
+    )
     domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
     command_service = WorkspaceCommandService(
         catalog,

@@ -61,6 +61,7 @@ from .parallel_scheduling import (
     task_write_set,
 )
 from .planning_service import PlanningService
+from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 
@@ -88,11 +89,16 @@ class WorkflowRunnerService:
         planning_service: PlanningService,
         *,
         concurrency_resolver: Callable[[str | None], int] | None = None,
+        registry_resolver: "ProjectRegistryResolver | None" = None,
     ) -> None:
         self._runtime = runtime
         self._registry_service = registry_service
         self._workflow_service = workflow_service
         self._planning_service = planning_service
+        # Закреплённый граф проекта. Если внедрён — прогон идёт на снимке
+        # реестра проекта, а не на живом templates/. None — fallback на живой
+        # реестр (тесты/CLI без резолвера).
+        self._registry_resolver = registry_resolver
         # Резолвер max_concurrency по провайдеру. По умолчанию — provider-aware
         # дефолты (parallel_scheduling.max_concurrency_for). В проде инжектится
         # из api.py резолвер, читающий per-provider настройку из UI
@@ -107,6 +113,15 @@ class WorkflowRunnerService:
         # HTTP-потока — под локом.
         self._tokens: dict[str, CancellationToken] = {}
         self._tokens_lock = threading.Lock()
+
+    def _snapshot_for(self, workspace: Path) -> RegistrySnapshot:
+        """Снимок реестра для прогона: закреплённый граф проекта или живой."""
+        if self._registry_resolver is not None:
+            return self._registry_resolver.snapshot_for(workspace)
+        snapshot, report = self._registry_service.validate()
+        if not report.is_valid:
+            raise RuntimeError("Registry invalid; cannot start workflow run.")
+        return snapshot
 
     # ---- public API ------------------------------------------------------
 
@@ -132,9 +147,7 @@ class WorkflowRunnerService:
         обязаны получить свой шанс — иначе пользователю кажется, что
         система ходит по кругу.
         """
-        snapshot, report = self._registry_service.validate()
-        if not report.is_valid:
-            raise RuntimeError("Registry invalid; cannot start workflow run.")
+        snapshot = self._snapshot_for(workspace)
 
         run_id = str(uuid.uuid4())
         record = WorkflowRunRecord(
