@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..common.logging import get_logger
@@ -59,6 +60,127 @@ def _trailing_attempt(stable_key: str) -> int | None:
         return int(stable_key.rsplit(":", 1)[-1])
     except ValueError:
         return None
+
+
+# --- статический скелет графа (для подвкладок гейтов, Ф1) ---------------------
+
+
+@dataclass(frozen=True)
+class SkeletonNode:
+    """Узел статического скелета графа задач цели — построен ТОЛЬКО из реестра,
+    без runtime. Используется для предпросмотра графа ещё не запущенного гейта.
+    """
+
+    template_ref: str
+    template_type: str
+    title: str
+    origin_kind: str
+    origin_ref: str
+    slot_id: str | None
+    depth: int
+    children: tuple["SkeletonNode", ...] = field(default_factory=tuple)
+
+
+def _skeleton_from_template(
+    snapshot: RegistrySnapshot,
+    *,
+    template: TemplateSpec,
+    active_pack_refs: tuple[str, ...],
+    origin_kind: str,
+    origin_ref: str,
+    slot_id: str | None,
+    depth: int,
+    seen: frozenset[str],
+) -> SkeletonNode:
+    ref_str = template.ref.as_string()
+    children: list[SkeletonNode] = []
+    # Композит раскрываем по тем же правилам, что и runtime (_expand_composites):
+    # фиксированные children + вклады активных доменных пакетов по слотам.
+    # fan_out НЕ раскрываем — его инстансы зависят от артефактов прогона; он
+    # остаётся одним нераскрытым узлом-заглушкой.
+    if template.template_type == "composite" and ref_str not in seen:
+        seen = seen | {ref_str}
+        for child in template.children:
+            child_template = snapshot.resolve_template(child.task_ref)
+            children.append(
+                _skeleton_from_template(
+                    snapshot,
+                    template=child_template,
+                    active_pack_refs=active_pack_refs,
+                    origin_kind="base_child",
+                    origin_ref=child.identifier,
+                    slot_id=None,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+            )
+        for slot in template.slots:
+            for pack_ref in active_pack_refs:
+                try:
+                    pack = snapshot.resolve_domain_pack(pack_ref)
+                except Exception:
+                    continue
+                for contribution in pack.contributions:
+                    if contribution.slot_id != slot.identifier:
+                        continue
+                    for item in contribution.items:
+                        if item.task_ref is None:
+                            continue
+                        contribution_template = snapshot.resolve_template(item.task_ref)
+                        children.append(
+                            _skeleton_from_template(
+                                snapshot,
+                                template=contribution_template,
+                                active_pack_refs=active_pack_refs,
+                                origin_kind="domain_contribution",
+                                origin_ref=f"{pack.ref.as_string()}:{item.identifier}",
+                                slot_id=slot.identifier,
+                                depth=depth + 1,
+                                seen=seen,
+                            )
+                        )
+    return SkeletonNode(
+        template_ref=ref_str,
+        template_type=template.template_type,
+        title=template.title,
+        origin_kind=origin_kind,
+        origin_ref=origin_ref,
+        slot_id=slot_id,
+        depth=depth,
+        children=tuple(children),
+    )
+
+
+def walk_composite_skeleton(
+    snapshot: RegistrySnapshot,
+    root_task_ref: object,
+    active_pack_refs: tuple[str, ...],
+) -> SkeletonNode:
+    """Статический скелет графа задач цели из её корневого шаблона. Чистая
+    функция (без обращений к runtime) — основа предпросмотра графа гейта,
+    который ещё не запускался (Ф1)."""
+    root_template = snapshot.resolve_template(root_task_ref)
+    origin_ref = (
+        root_task_ref.as_string() if hasattr(root_task_ref, "as_string") else str(root_task_ref)
+    )
+    return _skeleton_from_template(
+        snapshot,
+        template=root_template,
+        active_pack_refs=active_pack_refs,
+        origin_kind="objective_root",
+        origin_ref=origin_ref,
+        slot_id=None,
+        depth=0,
+        seen=frozenset(),
+    )
+
+
+def count_skeleton_leaves(node: SkeletonNode) -> int:
+    """Число «листовых» узлов скелета (leaf + нераскрытый fan-out) — для
+    счётчика «N задач» в подвкладке ещё не запущенного гейта."""
+    if not node.children:
+        return 1 if node.template_type in {"leaf", "fan_out"} else 0
+    return sum(count_skeleton_leaves(child) for child in node.children)
 
 
 class PlanningService:
@@ -624,9 +746,10 @@ class PlanningService:
     def _objective_completed(self, workspace: Path, snapshot: RegistrySnapshot) -> bool:
         manifest = self._runtime.load_manifest(workspace)
         objective = snapshot.resolve_objective(manifest.objective_ref)
-        artifacts = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
+        all_artifacts = list(self._runtime.list_artifacts(workspace))
+        roles_present = {artifact.artifact_role for artifact in all_artifacts}
         artifacts_ok = all(
-            artifact_ref.identifier.rsplit(".", 1)[-1] in artifacts
+            artifact_ref.identifier.rsplit(".", 1)[-1] in roles_present
             for artifact_ref in objective.done_artifact_refs
         )
         if not artifacts_ok:
@@ -634,24 +757,17 @@ class PlanningService:
         for gate_ref in objective.done_gate_refs:
             gate = snapshot.resolve_quality_gate(gate_ref)
             if gate.check_type == "human_approval":
-                # v3.1: human-approval gate sign-off хранится как Decision
-                # со source="reactive_validation". Считаем gate пройденным,
-                # если есть финализированное (не proposed) решение с
-                # выбранной опцией "approved" или "approved_with_comments".
-                decisions = self._runtime.list_decisions(
-                    workspace,
-                    project_id=manifest.project_id,
-                    source="reactive_validation",
+                # Ф3: human-approval gate проходится согласованием итогового
+                # артефакта с заказчиком (ArtifactRecord.signed_off), а не
+                # отдельным решением в реестре. Поэтому, пока артефакт нужной
+                # роли не согласован, планировщик возвращает blocked.
+                required_roles = set(getattr(gate, "required_artifact_roles", ()) or ())
+                signed = any(
+                    art.artifact_kind == "primary"
+                    and art.signed_off
+                    and (not required_roles or art.artifact_role in required_roles)
+                    for art in all_artifacts
                 )
-                approved = any(
-                    decision.status in {"accepted_default", "user_overridden", "locked_in"}
-                    and any(
-                        chosen in {"approved", "approved_with_comments"}
-                        for chosen in decision.effective_chosen_ids
-                    )
-                    and gate.title in decision.title
-                    for decision in decisions
-                )
-                if not approved:
+                if not signed:
                     return False
         return True

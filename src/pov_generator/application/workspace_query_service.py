@@ -63,7 +63,12 @@ from ..domain.workspace_views import (
     TimelineEntryView,
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
-from .planning_service import PlanningService
+from .planning_service import (
+    PlanningService,
+    SkeletonNode,
+    count_skeleton_leaves,
+    walk_composite_skeleton,
+)
 from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
 from .rollback_graph import collect_step_footprints, compute_rollback_set
@@ -319,9 +324,18 @@ class WorkspaceQueryService:
                 context.workspace, context.snapshot, mode="dry-run", record=False
             )
             tasks = self._runtime.list_tasks(context.workspace)
+        # Только задачи активного гейта: после перехода на следующий objective
+        # list_tasks возвращает и задачи прошлых гейтов — их граф живёт в своей
+        # подвкладке, а не подмешивается в активный (Ф1).
+        active_ref = context.manifest.objective_ref
+        tasks = [task for task in tasks if task.objective_ref == active_ref]
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
         nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None, context.snapshot)
+        try:
+            title = context.snapshot.resolve_objective(context.manifest.objective_ref).title
+        except Exception:
+            title = ""
         return ProjectTaskGraphView(
             project_id=context.manifest.project_id,
             objective_ref=context.manifest.objective_ref,
@@ -329,6 +343,98 @@ class WorkspaceQueryService:
             completed_leaf_tasks=sum(1 for task in leaf_tasks if task.status == "completed"),
             total_leaf_tasks=len(leaf_tasks),
             nodes=nodes,
+            objective_state="active",
+            title=title,
+        )
+
+    def project_objective_task_graph(
+        self, project_id: str, objective_ref: str
+    ) -> ProjectTaskGraphView:
+        """Граф задач ЛЮБОГО гейта проекта (для подвкладок, Ф1):
+        - активный гейт → живой граф (как ``project_task_graph``);
+        - завершённый → сохранённые задачи этого objective (read-only);
+        - ещё не запущенный → статический скелет из реестра, fan-out не раскрыт.
+        Задачи неактивных гейтов помечаются ``available=False``.
+        """
+        from ..common.errors import NotFoundError
+
+        context = self._load_context(project_id)
+        snapshot = context.snapshot
+        try:
+            objective = snapshot.resolve_objective(objective_ref)
+        except Exception as exc:
+            raise NotFoundError(f"Цель '{objective_ref}' не найдена в реестре проекта.") from exc
+        title = objective.title
+        active_ref = context.manifest.objective_ref
+        if objective_ref == active_ref:
+            return self._build_task_graph(context)
+
+        history = set(context.manifest.objective_history or ())
+        if objective_ref in history:
+            tasks = [
+                t
+                for t in self._runtime.list_tasks(context.workspace)
+                if t.objective_ref == objective_ref
+            ]
+            # Завершённый гейт доступен (available=True): его выполненные
+            # листовые задачи можно откатить — это вернёт проект на этот гейт
+            # (см. rollback_service: кросс-objective откат). Ретрай/решения по
+            # ним не появятся (нет failed/блокеров).
+            nodes = self._build_task_tree(
+                context.workspace, tasks, None, snapshot, available=True
+            )
+            leaf = [t for t in tasks if t.template_type == "leaf"]
+            return ProjectTaskGraphView(
+                project_id=context.manifest.project_id,
+                objective_ref=objective_ref,
+                current_task_id=None,
+                completed_leaf_tasks=sum(1 for t in leaf if t.status == "completed"),
+                total_leaf_tasks=len(leaf),
+                nodes=nodes,
+                objective_state="done",
+                title=title,
+            )
+
+        # locked: статический скелет из реестра (без записи в runtime).
+        active_pack_refs = tuple(sorted(context.state.process.active_domain_pack_records.keys()))
+        skeleton = walk_composite_skeleton(snapshot, objective.root_task_ref, active_pack_refs)
+        root_node = self._skeleton_node_view(skeleton, objective_ref, parent_id=None, path="root")
+        return ProjectTaskGraphView(
+            project_id=context.manifest.project_id,
+            objective_ref=objective_ref,
+            current_task_id=None,
+            completed_leaf_tasks=0,
+            total_leaf_tasks=count_skeleton_leaves(skeleton),
+            nodes=(root_node,),
+            objective_state="locked",
+            title=title,
+        )
+
+    def _skeleton_node_view(
+        self, node: SkeletonNode, objective_ref: str, *, parent_id: str | None, path: str
+    ) -> TaskNodeView:
+        node_id = f"skeleton:{objective_ref}:{path}"
+        children = tuple(
+            self._skeleton_node_view(child, objective_ref, parent_id=node_id, path=f"{path}.{idx}")
+            for idx, child in enumerate(node.children)
+        )
+        return TaskNodeView(
+            task_id=node_id,
+            task_key=node_id,
+            parent_task_id=parent_id,
+            title=node.title,
+            template_ref=node.template_ref,
+            template_type=node.template_type,
+            status="candidate",
+            status_summary=None,
+            origin_kind=node.origin_kind,
+            origin_ref=node.origin_ref,
+            slot_id=node.slot_id,
+            depth=node.depth,
+            retryable=False,
+            is_current=False,
+            children=children,
+            available=False,
         )
 
     def project_situation(self, project_id: str) -> ProjectSituationView:
@@ -532,21 +638,49 @@ class WorkspaceQueryService:
             details_included=include_details,
         )
 
+    def _artifact_summary(self, workspace: Path, artifact, *, archived: bool) -> ArtifactSummaryView:
+        return ArtifactSummaryView(
+            artifact_id=artifact.artifact_id,
+            artifact_role=artifact.artifact_role,
+            title=artifact.title,
+            created_at=artifact.created_at,
+            created_by_task_id=artifact.created_by_task_id,
+            has_markdown=(workspace / artifact.storage_path.replace(".json", ".md")).exists(),
+            overall_confidence=artifact.metadata.overall_confidence,
+            is_low_confidence=artifact.is_low_confidence,
+            user_verified=artifact.user_verified,
+            archived=archived,
+            is_superseded=artifact.is_superseded,
+        )
+
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
+        """Текущие артефакты проекта. Заархивированные откатом исключены на
+        уровне runtime; заменённые более новой версией (is_superseded) скрыты
+        здесь — они доступны в «Архиве» и в подвкладке «Предыдущие версии»."""
         context = self._load_context(project_id)
         return tuple(
-            ArtifactSummaryView(
-                artifact_id=artifact.artifact_id,
-                artifact_role=artifact.artifact_role,
-                title=artifact.title,
-                created_at=artifact.created_at,
-                created_by_task_id=artifact.created_by_task_id,
-                has_markdown=(context.workspace / artifact.storage_path.replace(".json", ".md")).exists(),
-                overall_confidence=artifact.metadata.overall_confidence,
-                is_low_confidence=artifact.is_low_confidence,
-                user_verified=artifact.user_verified,
-            )
+            self._artifact_summary(context.workspace, artifact, archived=False)
             for artifact in self._runtime.list_artifacts(context.workspace)
+            if not artifact.is_superseded
+        )
+
+    def project_archived_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
+        """Архив проекта: артефакты, заархивированные откатом (rolled_back_by),
+        и заменённые более новой версией (is_superseded). Новые сверху."""
+        context = self._load_context(project_id)
+        archived = [
+            artifact
+            for artifact in self._runtime.list_artifacts(
+                context.workspace, include_rolled_back=True
+            )
+            if artifact.rolled_back_by is not None or artifact.is_superseded
+        ]
+        archived.sort(key=lambda a: a.created_at or "", reverse=True)
+        return tuple(
+            self._artifact_summary(
+                context.workspace, artifact, archived=artifact.rolled_back_by is not None
+            )
+            for artifact in archived
         )
 
     def project_attachments(self, project_id: str) -> tuple[AttachmentView, ...]:
@@ -574,6 +708,7 @@ class WorkspaceQueryService:
         usage = None
         if artifact.created_by_task_id is not None:
             usage = self._runtime.llm_usage_for_task(context.workspace, artifact.created_by_task_id)
+        previous_versions = self._artifact_previous_versions(context.workspace, artifact)
         return ArtifactDetailView(
             artifact_id=artifact.artifact_id,
             artifact_role=artifact.artifact_role,
@@ -600,12 +735,49 @@ class WorkspaceQueryService:
             is_low_confidence=artifact.is_low_confidence,
             user_verified=artifact.user_verified,
             user_verified_at=artifact.user_verified_at,
+            signed_off=artifact.signed_off,
+            signed_off_at=artifact.signed_off_at,
             token_usage={k: dict(v) for k, v in artifact.metadata.token_usage.items()},
             usage_input_tokens=usage.input_tokens if usage else None,
             usage_output_tokens=usage.output_tokens if usage else None,
             usage_total_tokens=usage.total_tokens if usage else None,
             usage_source=("estimated" if usage and usage.has_estimated else "actual") if usage else None,
             usage_call_count=usage.call_count if usage else 0,
+            previous_versions=previous_versions,
+        )
+
+    def _artifact_previous_versions(
+        self, workspace: Path, artifact
+    ) -> tuple[ArtifactVersionItemView, ...]:
+        """Прошлые версии того же артефакта (та же роль, primary, созданы
+        раньше) — включая заархивированные откатом. От старой к новой."""
+        if artifact.artifact_kind != "primary":
+            return ()
+        same_role = self._runtime.list_artifacts(
+            workspace, artifact_role=artifact.artifact_role, include_rolled_back=True
+        )
+        older = [
+            a
+            for a in same_role
+            if a.artifact_kind == "primary"
+            and a.artifact_id != artifact.artifact_id
+            and (a.created_at or "") < (artifact.created_at or "")
+        ]
+        older.sort(key=lambda a: a.created_at or "")
+        return tuple(
+            ArtifactVersionItemView(
+                artifact_id=a.artifact_id,
+                artifact_role=a.artifact_role,
+                title=a.title,
+                label=self._format_version_label(idx, a.created_at),
+                is_current=False,
+                created_at=a.created_at,
+                created_by_task_id=a.created_by_task_id,
+                parent_artifact_id=a.relations.parent_artifact_id,
+                description=a.description,
+                archived=a.rolled_back_by is not None,
+            )
+            for idx, a in enumerate(older)
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:
@@ -802,15 +974,12 @@ class WorkspaceQueryService:
             for ref in objective.done_artifact_refs
             if ref.identifier.rsplit(".", 1)[-1] in artifact_roles_present
         )
-        # Финализированные sign-off решения для human-approval gate'ов.
-        approval_decisions = [
-            d
-            for d in self._runtime.list_decisions(
-                context.workspace, project_id=context.manifest.project_id
-            )
-            if d.source == "reactive_validation" or d.source == "emergent"
-            and d.status in {"accepted_default", "user_overridden", "locked_in"}
-        ]
+        # Ф3: human_approval-гейт пройден, если итоговый артефакт цели
+        # согласован с заказчиком (signed_off) — не по решению в реестре.
+        key_artifact_id = self._objective_key_artifact_id(context, objective)
+        key_signed_off = bool(key_artifact_id) and any(
+            a.artifact_id == key_artifact_id and a.signed_off for a in artifacts
+        )
         gates_required = len(objective.done_gate_refs)
         gates_passed = 0
         artifacts_by_role: dict[str, list] = {}
@@ -824,16 +993,7 @@ class WorkspaceQueryService:
                 continue
 
             if gate.check_type == "human_approval":
-                # sign-off ищется в Decisions по совпадению title gate'а и
-                # approved-выбору (фаззи, но достаточно для счётчика «N/N»).
-                if any(
-                    gate.title in d.title
-                    and any(
-                        choice in {"approved", "approved_with_comments"}
-                        for choice in d.effective_chosen_ids
-                    )
-                    for d in approval_decisions
-                ):
+                if key_signed_off:
                     gates_passed += 1
                 continue
 
@@ -922,6 +1082,7 @@ class WorkspaceQueryService:
                 continue  # деградируем: пропускаем нерезолвящийся (дрейф реестра)
             progress = self._objective_progress(context, spec)
             key_artifact_id = self._objective_key_artifact_id(context, spec)
+            stage_signed_off = self._human_approval_gate_signed_off(context, spec)
             failed_count = 0
             blocked_count = 0
             awaiting_signoff = 0
@@ -977,6 +1138,7 @@ class WorkspaceQueryService:
                     failing_tasks=tuple(failing),
                     pending_decisions=tuple(pending_decisions),
                     key_artifact_id=key_artifact_id,
+                    signed_off=stage_signed_off,
                 )
             )
 
@@ -1601,7 +1763,7 @@ class WorkspaceQueryService:
             snapshot=snapshot,
         )
 
-    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None) -> tuple[TaskNodeView, ...]:
+    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None, *, available: bool = True) -> tuple[TaskNodeView, ...]:
         children_by_parent: dict[str | None, list[TaskRecord]] = {}
         for task in tasks:
             children_by_parent.setdefault(task.parent_task_id, []).append(task)
@@ -1667,6 +1829,7 @@ class WorkspaceQueryService:
                 updated_at=task.updated_at,
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
                 fan_out_meta=fan_out_meta,
+                available=available,
             )
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))
@@ -2089,10 +2252,42 @@ class WorkspaceQueryService:
         candidates.sort(key=lambda a: (order[a.artifact_role], a.created_at))
         return candidates[-1].artifact_id
 
+    def _human_approval_gate_signed_off(self, context: ProjectContext, objective) -> bool:
+        """human_approval-гейты цели пройдены, если её итоговый артефакт
+        согласован с заказчиком (ArtifactRecord.signed_off). Заменяет прежнюю
+        проверку по решению-согласованию в реестре (Ф3). Если у цели нет
+        human_approval-гейтов — считается пройденным.
+        """
+        has_human_gate = False
+        for gate_ref in getattr(objective, "done_gate_refs", ()) or ():
+            try:
+                gate = context.snapshot.resolve_quality_gate(gate_ref)
+            except Exception:
+                continue
+            if gate.check_type == "human_approval":
+                has_human_gate = True
+                break
+        if not has_human_gate:
+            return True
+        key_id = self._objective_key_artifact_id(context, objective)
+        if key_id is None:
+            return False
+        try:
+            artifact = self._runtime.load_artifact(context.workspace, key_id)
+        except Exception:
+            return False
+        return bool(artifact.signed_off)
+
     def _objective_done(self, context: ProjectContext) -> bool:
         objective = context.snapshot.resolve_objective(context.manifest.objective_ref)
         artifacts = {artifact.artifact_role for artifact in self._runtime.list_artifacts(context.workspace)}
-        return all(ref.identifier.rsplit(".", 1)[-1] in artifacts for ref in objective.done_artifact_refs)
+        artifacts_ready = all(
+            ref.identifier.rsplit(".", 1)[-1] in artifacts for ref in objective.done_artifact_refs
+        )
+        if not artifacts_ready:
+            return False
+        # Ф3: цель завершена только если итоговый артефакт согласован.
+        return self._human_approval_gate_signed_off(context, objective)
 
     def _normalize_json_columns(self, payload: dict[str, object]) -> dict[str, object]:
         result = dict(payload)

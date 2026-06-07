@@ -100,6 +100,9 @@ export interface TaskNodeView {
   updated_at: string;
   children: TaskNodeView[];
   fan_out_meta?: FanOutMeta | null;
+  /** Ф1: доступна ли задача для действий. У неактивного гейта (скелет/история)
+   *  задачи помечены недоступными (read-only, приглушены). По умолчанию true. */
+  available?: boolean;
 }
 
 export interface ProjectTaskGraphView {
@@ -109,6 +112,9 @@ export interface ProjectTaskGraphView {
   completed_leaf_tasks: number;
   total_leaf_tasks: number;
   nodes: TaskNodeView[];
+  /** Ф1: состояние гейта этого графа и его заголовок (для подвкладок). */
+  objective_state?: "done" | "active" | "locked";
+  title?: string;
 }
 
 export interface ActionDescriptor {
@@ -169,6 +175,9 @@ export interface ArtifactSummaryView {
   overall_confidence: number | null;
   is_low_confidence: boolean;
   user_verified: boolean;
+  /** Архив: заархивирован откатом / заменён более новой версией. */
+  archived?: boolean;
+  is_superseded?: boolean;
 }
 
 export interface ArtifactValidationView {
@@ -212,6 +221,9 @@ export interface ArtifactDetailView {
   is_low_confidence: boolean;
   user_verified: boolean;
   user_verified_at: string | null;
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер sign-off).
+  signed_off: boolean;
+  signed_off_at: string | null;
   // Разбивка токенов по стадиям сборки (метадата для карточки).
   token_usage: Record<string, TokenUsageStage>;
   // Агрегат расхода токенов задачи из llm_usage-БД. null = «n/a».
@@ -220,6 +232,9 @@ export interface ArtifactDetailView {
   usage_total_tokens: number | null;
   usage_source: "actual" | "estimated" | null;
   usage_call_count: number;
+  /** Прошлые версии того же артефакта (включая заархивированные), от старой
+   *  к новой, без текущей. Для подвкладки «Предыдущие версии (N)». */
+  previous_versions?: ArtifactVersionItemView[];
 }
 
 export interface ReviewIssueView {
@@ -438,6 +453,9 @@ export interface StageView {
   /** Ключевой дилеверабл этапа (ТЗ/Архитектура/...). Клик по завершённому
    *  этапу открывает этот артефакт. null — артефакта ещё нет. */
   key_artifact_id?: string | null;
+  /** Ф3: итоговый артефакт этапа согласован с заказчиком. Активный этап с
+   *  готовыми артефактами, но signed_off=false → жёлтый + блок «Следующий этап». */
+  signed_off?: boolean;
 }
 
 export interface ProjectStagesView {
@@ -652,6 +670,8 @@ export interface ArtifactVersionItemView {
   created_by_task_id: string | null;
   parent_artifact_id: string | null;
   description: string;
+  /** Версия заархивирована откатом (а не просто заменена новой). */
+  archived?: boolean;
 }
 
 export interface ProjectArtifactVersionsView {

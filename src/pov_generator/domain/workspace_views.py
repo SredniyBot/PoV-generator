@@ -106,6 +106,9 @@ class TaskNodeView:
     updated_at: str = ""
     children: tuple["TaskNodeView", ...] = ()
     fan_out_meta: FanOutMeta | None = None
+    # Ф1: доступна ли задача для действий. У неактивного (ещё не запущенного)
+    # гейта задачи показываются как скелет и помечаются недоступными.
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,10 @@ class ProjectTaskGraphView:
     completed_leaf_tasks: int
     total_leaf_tasks: int
     nodes: tuple[TaskNodeView, ...]
+    # Ф1: состояние гейта этого графа (done|active|locked) и его заголовок —
+    # для подвкладок графа по гейтам. Активный гейт == прежнее поведение.
+    objective_state: str = "active"
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -305,6 +312,10 @@ class ArtifactSummaryView:
     overall_confidence: float | None = None
     is_low_confidence: bool = False
     user_verified: bool = False
+    # Архив: артефакт заархивирован откатом (archived) или заменён более новой
+    # версией (is_superseded). В основном списке не показываются — только в «Архиве».
+    archived: bool = False
+    is_superseded: bool = False
 
 
 @dataclass(frozen=True)
@@ -359,6 +370,10 @@ class ArtifactDetailView:
     is_low_confidence: bool = False
     user_verified: bool = False
     user_verified_at: str | None = None
+    # Ф3: согласование итогового артефакта с заказчиком (sign-off). Тумблер в
+    # окне артефакта; прохождение human_approval-гейта считается по нему.
+    signed_off: bool = False
+    signed_off_at: str | None = None
     # Разбивка токенов по стадиям сборки этого артефакта (метадата для карточки).
     # Ключи: primary_generation, methodology_stage:<id>, decision_identification.
     token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -370,6 +385,10 @@ class ArtifactDetailView:
     # "actual" | "estimated" | None. estimated → UI помечает «оценка».
     usage_source: str | None = None
     usage_call_count: int = 0
+    # Прошлые версии того же артефакта (с предыдущих запусков / неудачные /
+    # заменённые), включая заархивированные откатом. От старой к новой, без
+    # самой текущей. UI показывает их в подвкладке «Предыдущие версии (N)».
+    previous_versions: tuple["ArtifactVersionItemView", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -547,6 +566,10 @@ class StageView:
     # Ключевой дилеверабл этапа (ТЗ/Архитектура/...) — последний primary-артефакт
     # из done-артефактов цели. UI открывает его по клику на завершённый этап.
     key_artifact_id: str | None = None
+    # Ф3: итоговый артефакт этапа согласован с заказчиком (sign-off). Для
+    # активного этапа с готовыми артефактами, но без согласования — UI красит
+    # этап жёлтым и блокирует «Следующий этап».
+    signed_off: bool = False
 
 
 @dataclass(frozen=True)
@@ -672,6 +695,8 @@ class ArtifactVersionItemView:
     created_by_task_id: str | None
     parent_artifact_id: str | None
     description: str
+    # Версия заархивирована откатом (а не просто заменена более новой).
+    archived: bool = False
 
 
 @dataclass(frozen=True)

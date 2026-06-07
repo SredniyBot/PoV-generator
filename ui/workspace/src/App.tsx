@@ -104,7 +104,7 @@ import {
   formatDateTime,
   prettyLabel,
 } from "./ui";
-import { StageStatusBar } from "./StageStatusBar";
+import { StageStatusBar, shortStageLabel } from "./StageStatusBar";
 import { runStatusVisual, stepStatusVisual, taskStatusVisual } from "./workflowStatus";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
@@ -935,6 +935,22 @@ function RunActivitySection({
     return out;
   })();
 
+  // Фактический статус задачи по графу. Шаг в ленте мог записаться «failed»
+  // из-за разрыва сети (WinError 10054 / IncompleteRead), но задача затем
+  // дошла до completed — тогда строку ленты сверяем с графом и не залипаем в
+  // «Ошибке» (и не предлагаем повтор завершённой задачи). П.1.
+  const statusByTaskId = (() => {
+    const map = new Map<string, string>();
+    const walk = (nodes: TaskNodeView[]) => {
+      for (const n of nodes) {
+        map.set(n.task_id, n.status);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    if (taskGraphQuery.data) walk(taskGraphQuery.data.nodes);
+    return map;
+  })();
+
   // Завершённые шаги, схлопнутые ПО ЗАДАЧЕ: одна строка на задачу (последняя
   // попытка по времени завершения). Это убирает дубли и устаревшие статусы —
   // например, когда задача сначала заблокировалась на решениях, а после ответа
@@ -1003,13 +1019,22 @@ function RunActivitySection({
                     (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
                   ))
                 : null;
-              const viz = stepStatusVisual(step.validation_status, step.planning_outcome);
+              // Если задача в графе уже завершена — сбой шага (обычно разрыв
+              // сети) считаем устаревшим: показываем как успех, без повтора и
+              // без застрявшего сообщения об ошибке.
+              const taskDone = step.task_id
+                ? statusByTaskId.get(step.task_id) === "completed"
+                : false;
+              const rawFailed = step.validation_status === "failed";
+              const isFailed = rawFailed && !taskDone;
+              const effectiveValidation =
+                rawFailed && taskDone ? "passed" : step.validation_status;
+              const viz = stepStatusVisual(effectiveValidation, step.planning_outcome);
               const name =
                 (step.task_id ? titleById.get(step.task_id) : null) ||
                 step.task_key ||
                 step.selected_step_id ||
                 "(неизвестная задача)";
-              const isFailed = step.validation_status === "failed";
               return (
                 <li key={`${runId}-${step.sequence}`} className="workflow-run__row">
                   <span className={`workflow-run__row-dot workflow-run__row-dot--${viz.tone}`} />
@@ -1047,7 +1072,7 @@ function RunActivitySection({
                       {retryingIds.has(step.task_id) ? "Повторяю…" : "Повторить"}
                     </button>
                   ) : null}
-                  {step.error_message ? (
+                  {isFailed && step.error_message ? (
                     <span className="workflow-run__row-error" title={step.error_message}>
                       {step.error_message.length > 120
                         ? step.error_message.slice(0, 120) + "…"
@@ -1897,9 +1922,17 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   // Выбранный входной файл для просмотра справа. Локальное состояние (не URL):
   // взаимоисключающе с выбранным артефактом — открытие одного снимает другое.
   const [selectedAttachment, setSelectedAttachment] = useState<AttachmentView | null>(null);
+  // Подраздел списка: текущие артефакты / архив (заархивированные откатом +
+  // заменённые новой версией).
+  const [tab, setTab] = useState<"current" | "archive">("current");
   const artifactsQuery = useQuery({
     queryKey: projectionKey(projectId, "artifacts"),
     queryFn: () => api.getArtifacts(projectId),
+  });
+  const archivedQuery = useQuery({
+    queryKey: [projectId, "artifacts-archive"],
+    queryFn: () => api.getArchivedArtifacts(projectId),
+    enabled: tab === "archive",
   });
   const artifactDetailQuery = useQuery({
     queryKey: [projectId, "artifact-detail", artifactId],
@@ -1923,13 +1956,48 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     .filter((a) => a.artifact_role !== "input.request")
     .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
 
+  // Элемент списка артефактов: только русское название + дата/время (без
+  // английской роли). Для архива — метка происхождения.
+  const renderArtifactItem = (artifact: ArtifactSummaryView) => (
+    <button
+      key={artifact.artifact_id}
+      type="button"
+      className={cx(
+        "artifact-list__item",
+        !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active",
+      )}
+      onClick={() => {
+        setSelectedAttachment(null);
+        navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`);
+      }}
+    >
+      <div className="artifact-list__title">
+        <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
+        {artifact.is_low_confidence ? (
+          <span className="artifact-lowconf-badge">
+            <AlertTriangle size={11} /> система не уверена
+          </span>
+        ) : null}
+        {artifact.archived ? (
+          <span className="artifact-list__tag">архив (откат)</span>
+        ) : artifact.is_superseded ? (
+          <span className="artifact-list__tag">прошлая версия</span>
+        ) : null}
+      </div>
+      <div className="artifact-list__meta">
+        <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
+        <span className="artifact-list__time">{formatTimeOnly(artifact.created_at)}</span>
+        <ChevronRight size={14} />
+      </div>
+    </button>
+  );
+
   return (
     <div className="artifacts-page">
       <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
       <div className="artifacts-column">
       <SectionCard
         title="Артефакты проекта"
-        subtitle="Документы и промежуточные результаты workflow"
         actions={
           artifacts.length > 0 ? (
             <a
@@ -1944,37 +2012,37 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
           ) : undefined
         }
       >
-        {artifacts.length === 0 ? (
-          <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
+        <div className="segmented artifacts-subnav">
+          <button
+            type="button"
+            className={cx("segmented__item", tab === "current" && "segmented__item--active")}
+            onClick={() => setTab("current")}
+          >
+            Текущие
+          </button>
+          <button
+            type="button"
+            className={cx("segmented__item", tab === "archive" && "segmented__item--active")}
+            onClick={() => setTab("archive")}
+          >
+            Архив
+          </button>
+        </div>
+        {tab === "current" ? (
+          artifacts.length === 0 ? (
+            <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
+          ) : (
+            <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
+          )
+        ) : archivedQuery.isLoading ? (
+          <p className="muted">Загрузка архива…</p>
+        ) : (archivedQuery.data ?? []).length === 0 ? (
+          <EmptyState
+            title="Архив пуст"
+            description="Сюда попадают артефакты, заархивированные откатом или заменённые более новой версией."
+          />
         ) : (
-          <div className="artifact-list">
-            {artifacts.map((artifact) => (
-              <button
-                key={artifact.artifact_id}
-                type="button"
-                className={cx("artifact-list__item", !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active")}
-                onClick={() => {
-                  setSelectedAttachment(null);
-                  navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`);
-                }}
-              >
-                <div className="artifact-list__title">
-                  <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
-                  <p>{prettyLabel(artifact.artifact_role)}</p>
-                  {artifact.is_low_confidence ? (
-                    <span className="artifact-lowconf-badge">
-                      <AlertTriangle size={11} /> система не уверена
-                    </span>
-                  ) : null}
-                </div>
-                <div className="artifact-list__meta">
-                  <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
-                  <span className="artifact-list__time">{formatTimeOnly(artifact.created_at)}</span>
-                  <ChevronRight size={14} />
-                </div>
-              </button>
-            ))}
-          </div>
+          <div className="artifact-list">{(archivedQuery.data ?? []).map(renderArtifactItem)}</div>
         )}
       </SectionCard>
       <AttachmentsCard
@@ -2204,7 +2272,8 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
 }
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
-  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<"doc" | "reasoning" | "validations" | "decisions" | "versions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   // За один разбор: рендерим markdown → HTML, проставляем стабильные id на
   // заголовки и собираем кликабельное оглавление. DOMParser — нативный, без
@@ -2278,6 +2347,25 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       void queryClient.invalidateQueries({ queryKey: [projectId, "artifact-detail", detail.artifact_id] });
     },
   });
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер). Инвалидирует
+  // также проекцию stages — степпер красит этап и разблокирует «Следующий этап».
+  const signOffMutation = useMutation({
+    mutationFn: (next: boolean) => api.signOffArtifact(projectId, detail.artifact_id, next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") });
+      void queryClient.invalidateQueries({ queryKey: [projectId, "artifact-detail", detail.artifact_id] });
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "stages") });
+    },
+  });
+  // Согласование показываем только на ИТОГОВОМ артефакте этапа (key_artifact_id
+  // из проекции stages) — на нём держится переход к следующему гейту.
+  const stagesQuery = useQuery({
+    queryKey: projectionKey(projectId, "stages"),
+    queryFn: () => api.getStages(projectId),
+  });
+  const isKeyArtifact = (stagesQuery.data?.stages ?? []).some(
+    (s) => s.key_artifact_id === detail.artifact_id,
+  );
 
   return (
     <div className="artifact-detail">
@@ -2298,9 +2386,6 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             Рассуждение
           </button>
         ) : null}
-        <button className={cx("segmented__item", mode === "json" && "segmented__item--active")} onClick={() => setMode("json")} type="button">
-          JSON
-        </button>
         <button
           className={cx("segmented__item", mode === "validations" && "segmented__item--active")}
           onClick={() => setMode("validations")}
@@ -2308,6 +2393,18 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         >
           Проверки
         </button>
+        {/* Прошлые версии артефакта (прошлые запуски / неудачные / заменённые,
+            включая заархивированные откатом). Вкладка появляется только если
+            такие версии есть. */}
+        {(detail.previous_versions?.length ?? 0) > 0 ? (
+          <button
+            className={cx("segmented__item", mode === "versions" && "segmented__item--active")}
+            onClick={() => setMode("versions")}
+            type="button"
+          >
+            Предыдущие версии ({detail.previous_versions?.length ?? 0})
+          </button>
+        ) : null}
         {/* v3.0: Решения, принятые при сборке этого артефакта. Вкладка
             показывается всегда (даже если 0), чтобы пользователь видел
             наличие концепта; счётчик подсказывает наполненность. */}
@@ -2435,6 +2532,35 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           </>
         ) : null}
       </div>
+      {isKeyArtifact ? (
+        <div className={cx("artifact-signoff", detail.signed_off && "artifact-signoff--done")}>
+          <div className="artifact-signoff__text">
+            {detail.signed_off ? (
+              <CheckCircle2 size={18} className="artifact-signoff__icon" aria-hidden />
+            ) : (
+              <AlertTriangle size={18} className="artifact-signoff__icon" aria-hidden />
+            )}
+            <div>
+              <strong>
+                {detail.signed_off ? "Согласовано с заказчиком" : "Согласование с заказчиком"}
+              </strong>
+              <p>
+                {detail.signed_off
+                  ? "Этап завершён. Можно переходить к следующему."
+                  : "Это итоговый артефакт этапа. Согласуйте его, чтобы завершить этап и открыть переход к следующему."}
+              </p>
+            </div>
+          </div>
+          <Button
+            tone={detail.signed_off ? "ghost" : "primary"}
+            icon={detail.signed_off ? undefined : <CheckCircle2 size={16} />}
+            busy={signOffMutation.isPending}
+            onClick={() => signOffMutation.mutate(!detail.signed_off)}
+          >
+            {detail.signed_off ? "Снять согласование" : "Согласовать"}
+          </Button>
+        </div>
+      ) : null}
       <details className="artifact-meta-extra">
         <summary>Подробные параметры артефакта</summary>
         <div className="artifact-meta-extra__grid">
@@ -2540,7 +2666,35 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />
       ) : null}
-      {mode === "json" ? <pre className="code-block">{detail.json_content}</pre> : null}
+      {mode === "versions" ? (
+        <div className="artifact-versions">
+          {(detail.previous_versions ?? [])
+            .slice()
+            .reverse()
+            .map((version) => (
+              <button
+                key={version.artifact_id}
+                type="button"
+                className="artifact-versions__item"
+                onClick={() => navigate(`/projects/${projectId}/artifacts/${version.artifact_id}`)}
+                title="Открыть эту версию"
+              >
+                <span className="artifact-versions__title">
+                  {stripRoleSuffix(version.title, version.artifact_role)}
+                  {version.archived ? (
+                    <span className="artifact-list__tag">архив (откат)</span>
+                  ) : (
+                    <span className="artifact-list__tag">прошлая версия</span>
+                  )}
+                </span>
+                <span className="artifact-versions__meta">
+                  {formatDateOnly(version.created_at)} {formatTimeOnly(version.created_at)}
+                  <ChevronRight size={14} />
+                </span>
+              </button>
+            ))}
+        </div>
+      ) : null}
       {mode === "validations" ? (
         <div className="validation-list">
           {detail.validations.length === 0 ? (
@@ -2812,6 +2966,8 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   // Цель отката (task_id выбранного шага) — открывает диалог подтверждения.
   const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+  // Ф1: выбранная подвкладка-гейт (objective_ref). null → текущий (активный) гейт.
+  const [selectedRef, setSelectedRef] = useState<string | null>(null);
   // Дип-линк из статус-бара: /task-graph?focus=<taskId> — центрируем граф.
   const [searchParams] = useSearchParams();
   const focusTaskId = searchParams.get("focus") ?? undefined;
@@ -2841,8 +2997,34 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
       }
       await queryClient.invalidateQueries({ queryKey: ROLLBACK_HISTORY_KEY(projectId) });
       setRollbackTarget(null);
+      // После отката активный гейт мог смениться (кросс-objective откат) —
+      // сбрасываем выбор подвкладки, чтобы вид следовал за восстановленным гейтом.
+      setSelectedRef(null);
       rollbackMutation.reset();
     },
+  });
+
+  // Ф1: цепочка гейтов для подвкладок + граф выбранного гейта. Все хуки —
+  // до раннего return (правила хуков).
+  const stagesQuery = useQuery({
+    queryKey: projectionKey(projectId, "stages"),
+    queryFn: () => api.getStages(projectId),
+  });
+  // Дип-линк ?focus=<taskId>: гейт задачи определяем на бэкенде, чтобы открыть
+  // ИМЕННО её подвкладку, а не граф активного гейта (п.2b).
+  const focusGateQuery = useQuery({
+    queryKey: [projectId, "task-gate", focusTaskId],
+    queryFn: () => api.getTaskGate(projectId, focusTaskId as string),
+    enabled: Boolean(focusTaskId),
+  });
+  const activeRef = taskGraphQuery.data?.objective_ref ?? null;
+  // Приоритет: явный выбор подвкладки → гейт задачи из дип-линка → активный гейт.
+  const effectiveRef = selectedRef ?? focusGateQuery.data?.objective_ref ?? activeRef;
+  const isActiveSelected = !effectiveRef || effectiveRef === activeRef;
+  const objectiveGraphQuery = useQuery({
+    queryKey: [projectId, "objective-task-graph", effectiveRef],
+    queryFn: () => api.getObjectiveTaskGraph(projectId, effectiveRef as string),
+    enabled: Boolean(effectiveRef) && !isActiveSelected,
   });
 
   if (taskGraphQuery.isLoading || !taskGraphQuery.data) {
@@ -2850,6 +3032,12 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   }
 
   const data = taskGraphQuery.data;
+  // Граф выбранного гейта: активный — живой taskGraphQuery; иной — по objective.
+  const displayGraph = isActiveSelected ? data : objectiveGraphQuery.data ?? null;
+  const stages = stagesQuery.data?.stages ?? [];
+  // Откат доступен на активном И завершённом гейте (откат завершённого вернёт
+  // проект на него — кросс-objective). На скелете будущего гейта — нельзя.
+  const canRollback = displayGraph ? displayGraph.objective_state !== "locked" : false;
   const closeRollback = () => {
     if (rollbackMutation.isPending) return; // не закрываем во время отката
     setRollbackTarget(null);
@@ -2867,50 +3055,96 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     <>
       <SectionCard
         title="Граф задач"
-        subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
+        subtitle={
+          displayGraph
+            ? `Завершено ${displayGraph.completed_leaf_tasks} из ${displayGraph.total_leaf_tasks} листовых задач`
+            : "Загрузка графа гейта…"
+        }
       >
-        <TaskGraphCanvas
-          tree={data.nodes}
-          onSelectNode={setSelectedTask}
-          focusTaskId={focusTaskId}
-          completedLeafTasks={data.completed_leaf_tasks}
-          totalLeafTasks={data.total_leaf_tasks}
-          onRetry={(taskId) => retryMutation.mutate(taskId)}
-          onOpenArtifacts={(task) => {
-            const art = (artifactsQuery.data ?? []).find(
-              (a) => a.created_by_task_id === task.task_id,
-            );
-            navigate(
-              art
-                ? `/projects/${projectId}/artifacts/${art.artifact_id}`
-                : `/projects/${projectId}/artifacts`,
-            );
-          }}
-          onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
-          onRollback={(taskId) => setRollbackTarget(taskId)}
-          retryingTaskId={retryingTaskId}
-          rollbackTargetId={rollbackTarget}
-          rollbackAffectedIds={rollbackAffectedIds}
-          rollbackOverlay={
-            rollbackTarget !== null ? (
-              <RollbackConfirmBar
-                preview={previewQuery.data}
-                loading={previewQuery.isLoading}
-                previewError={
-                  previewQuery.error instanceof Error ? previewQuery.error.message : null
-                }
-                confirming={rollbackMutation.isPending}
-                confirmError={
-                  rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null
-                }
-                onConfirm={() => {
-                  if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
-                }}
-                onCancel={closeRollback}
-              />
-            ) : null
-          }
-        />
+        {/* Ф1: подвкладки по гейтам. Текущий исполняемый гейт помечен точкой,
+            выбранная подвкладка — активным стилем. Граф неактивного гейта
+            доступен сразу, его задачи показаны недоступными. */}
+        {stages.length > 1 ? (
+          <div className="tg-subtabs" role="tablist">
+            {stages.map((s) => {
+              const isSel = effectiveRef === s.objective_ref;
+              return (
+                <button
+                  key={s.objective_ref}
+                  type="button"
+                  role="tab"
+                  aria-selected={isSel}
+                  className={cx(
+                    "tg-subtab",
+                    isSel && "tg-subtab--active",
+                    s.is_current && "tg-subtab--current",
+                  )}
+                  title={
+                    s.is_current
+                      ? "Текущий исполняемый гейт"
+                      : s.state === "done"
+                        ? "Завершённый гейт"
+                        : "Ещё не запущен — задачи показаны как недоступные"
+                  }
+                  onClick={() => setSelectedRef(s.objective_ref)}
+                >
+                  {s.is_current ? <span className="tg-subtab__dot" aria-hidden /> : null}
+                  {shortStageLabel(s.objective_ref, s.title)}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {displayGraph ? (
+          <TaskGraphCanvas
+            // key по гейту: при смене подвкладки канва перемонтируется и заново
+            // «вписывает» свой граф (fitView), а не держит камеру на узле прошлой
+            // вкладки (п.3 — корректное примагничивание камеры с вкладками).
+            key={effectiveRef ?? "active"}
+            tree={displayGraph.nodes}
+            onSelectNode={setSelectedTask}
+            focusTaskId={focusTaskId}
+            completedLeafTasks={displayGraph.completed_leaf_tasks}
+            totalLeafTasks={displayGraph.total_leaf_tasks}
+            onRetry={(taskId) => retryMutation.mutate(taskId)}
+            onOpenArtifacts={(task) => {
+              const art = (artifactsQuery.data ?? []).find(
+                (a) => a.created_by_task_id === task.task_id,
+              );
+              navigate(
+                art
+                  ? `/projects/${projectId}/artifacts/${art.artifact_id}`
+                  : `/projects/${projectId}/artifacts`,
+              );
+            }}
+            onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
+            onRollback={(taskId) => setRollbackTarget(taskId)}
+            retryingTaskId={retryingTaskId}
+            rollbackTargetId={canRollback ? rollbackTarget : null}
+            rollbackAffectedIds={canRollback ? rollbackAffectedIds : []}
+            rollbackOverlay={
+              canRollback && rollbackTarget !== null ? (
+                <RollbackConfirmBar
+                  preview={previewQuery.data}
+                  loading={previewQuery.isLoading}
+                  previewError={
+                    previewQuery.error instanceof Error ? previewQuery.error.message : null
+                  }
+                  confirming={rollbackMutation.isPending}
+                  confirmError={
+                    rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null
+                  }
+                  onConfirm={() => {
+                    if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
+                  }}
+                  onCancel={closeRollback}
+                />
+              ) : null
+            }
+          />
+        ) : (
+          <div className="tg-subtabs__loading">Загрузка графа гейта…</div>
+        )}
         <Drawer
           open={Boolean(selectedTask)}
           title={selectedTask?.title ?? "Задача"}

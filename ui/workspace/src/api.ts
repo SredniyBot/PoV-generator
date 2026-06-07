@@ -60,9 +60,20 @@ export const api = {
   listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
   getShell: (projectId: string) => request<ProjectShellView>(`/api/projects/${projectId}/shell`),
   getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
+  // Ф1: граф задач конкретного гейта (objective). ref содержит '@' — кодируем.
+  getObjectiveTaskGraph: (projectId: string, objectiveRef: string) =>
+    request<ProjectTaskGraphView>(
+      `/api/projects/${projectId}/objectives/task-graph?ref=${encodeURIComponent(objectiveRef)}`,
+    ),
+  // Гейт задачи — для дип-линка «открыть задачу на графе» (выбрать подвкладку).
+  getTaskGate: (projectId: string, taskId: string) =>
+    request<{ objective_ref: string }>(`/api/projects/${projectId}/tasks/${taskId}/gate`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
+  // Архив проекта: артефакты, заархивированные откатом + заменённые новой версией.
+  getArchivedArtifacts: (projectId: string) =>
+    request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts/archive`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
   artifactPdfUrl: (projectId: string, artifactId: string) =>
@@ -277,6 +288,15 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify({ verified }),
+      },
+    ),
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер sign-off).
+  signOffArtifact: (projectId: string, artifactId: string, signedOff: boolean = true) =>
+    request<ArtifactDetailView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/sign-off`,
+      {
+        method: "POST",
+        body: JSON.stringify({ signed_off: signedOff }),
       },
     ),
   getDecisionsForArtifact: (projectId: string, artifactId: string) =>

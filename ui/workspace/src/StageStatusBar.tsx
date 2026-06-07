@@ -29,9 +29,26 @@ function pluralRu(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
+// Ф3: активный этап, у которого все артефакты готовы, но итоговый ещё не
+// согласован с заказчиком. Такой этап красим жёлтым и приглашаем нажать —
+// согласование закрывает этап и открывает «Следующий этап».
+function awaitingSignoff(stage: StageView): boolean {
+  return (
+    stage.state === "active" &&
+    stage.artifacts_required > 0 &&
+    stage.artifacts_ready >= stage.artifacts_required &&
+    !stage.signed_off
+  );
+}
+
 function StageIcon({ stage }: { stage: StageView }) {
   if (stage.state === "done") return <CheckCircle2 size={14} className="stage-seg__check" />;
-  if (stage.state === "active") return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--filled" />;
+  if (stage.state === "active") {
+    if (awaitingSignoff(stage)) {
+      return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--awaiting" />;
+    }
+    return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--filled" />;
+  }
   return <Circle size={14} className="stage-seg__dot" />;
 }
 
@@ -43,7 +60,7 @@ function titleForRef(ref: string, stages: StageView[]): string {
 // Короткая подпись этапа из objective_ref — дорожка должна быть лаконичной,
 // а не повторять длинное процессное название цели. Полное название и прогресс
 // показываем в подсказке (stageTooltip). Неизвестная цель → исходный заголовок.
-function shortStageLabel(ref: string, fallback: string): string {
+export function shortStageLabel(ref: string, fallback: string): string {
   const id = (ref.split("@")[0] ?? "").toLowerCase();
   if (id.includes("requirements") || id.includes("specification")) return "ТЗ";
   if (id.includes("architecture") || id.includes("design")) return "Архитектура";
@@ -101,6 +118,9 @@ export function StageStatusBar({
   }
 
   const active = data.stages.find((s) => s.is_current) ?? null;
+  // Ф3: активный этап с готовыми артефактами ждёт согласования заказчиком —
+  // «Следующий этап» показываем, но держим недоступным с подсказкой.
+  const awaitingActive = active ? awaitingSignoff(active) : false;
   // Ошибки — упавшие задачи (чинятся повтором), в своём поповере.
   const failedTasks = (active?.failing_tasks ?? []).filter((t) => t.status === "failed");
   const failedCount = failedTasks.length;
@@ -125,6 +145,7 @@ export function StageStatusBar({
             // Завершённый/готовый этап с ключевым артефактом кликабелен —
             // открывает дилеверабл этапа (ТЗ/Архитектура/...).
             const openable = Boolean(stage.key_artifact_id);
+            const awaiting = awaitingSignoff(stage);
             const label = shortStageLabel(stage.objective_ref, stage.title);
             return (
               <li
@@ -134,13 +155,18 @@ export function StageStatusBar({
                   `stage-seg--${stage.state}`,
                   stage.is_current && "stage-seg--current",
                   openable && "stage-seg--openable",
+                  awaiting && "stage-seg--awaiting-signoff",
                 )}
               >
                 {openable ? (
                   <button
                     type="button"
                     className="stage-seg__open"
-                    title={`Открыть результат этапа: ${label}`}
+                    title={
+                      awaiting
+                        ? `Согласуйте итоговый артефакт, чтобы завершить этап: ${label}`
+                        : `Открыть результат этапа: ${label}`
+                    }
                     onClick={() =>
                       navigate(`/projects/${projectId}/artifacts/${stage.key_artifact_id}`)
                     }
@@ -277,24 +303,29 @@ export function StageStatusBar({
             </div>
           ) : null}
 
-          {data.objective_complete && data.next_objective_refs.length > 0 ? (
+          {/* Кнопку показываем, когда артефакты этапа готовы (цель завершена ИЛИ
+              ждёт согласования) — но пока итоговый артефакт не согласован, она
+              недоступна с поясняющей подсказкой (Ф3). */}
+          {(data.objective_complete || awaitingActive) && data.next_objective_refs.length > 0 ? (
             <div className="stage-cta-group">
               {data.next_objective_refs.map((ref) => {
                 // Ф5: переход на реализацию держат непредоставленные блокирующие
                 // реквизиты — гасим кнопку и поясняем, чего не хватает.
                 const blockers = data.blocked_by_requisites ?? [];
-                const blocked = ref.startsWith("implementation") && blockers.length > 0;
+                const reqBlocked = ref.startsWith("implementation") && blockers.length > 0;
                 return (
                   <button
                     key={ref}
                     type="button"
                     className="stage-cta"
-                    disabled={activating || blocked}
+                    disabled={activating || reqBlocked || awaitingActive}
                     onClick={() => onActivateNextObjective(ref)}
                     title={
-                      blocked
-                        ? `Заполните обязательные реквизиты: ${blockers.join("; ")}`
-                        : `Активировать этап: ${titleForRef(ref, data.stages)}`
+                      awaitingActive
+                        ? "Сначала согласуйте итоговый артефакт этапа"
+                        : reqBlocked
+                          ? `Заполните обязательные реквизиты: ${blockers.join("; ")}`
+                          : `Активировать этап: ${titleForRef(ref, data.stages)}`
                     }
                   >
                     Следующий этап <ArrowRight size={14} />

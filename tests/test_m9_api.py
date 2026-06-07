@@ -14,7 +14,6 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
-from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -22,7 +21,6 @@ from pov_generator.interfaces.api import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
-SIGNOFF_GATE_TITLE = "Согласование ТЗ с заказчиком"
 
 
 def build_services():
@@ -40,36 +38,23 @@ def build_services():
 def _approve_signoff_via_checkpoint(
     runtime: SqliteRuntime, workspace: Path, project_id: str, *, choice: str = "approved"
 ) -> None:
-    """v3.1: signoff hits Decision/CheckpointSession pipeline.
-
-    Находит pending checkpoint-сессию, в которой есть decision со signoff-title
-    ("Согласовать результат gate 'Согласование ТЗ с заказчиком'?"), и
-    финализирует её через CheckpointService.submit_answers с выбором
-    ``approved`` (или указанной альтернативой).
-    """
-    sessions = runtime.list_checkpoint_sessions(workspace, project_id=project_id, status="pending")
+    """Ф3: согласование итогового артефакта ТЗ тумблером ``signed_off``
+    (заменяет прежний ответ на CheckpointSession решения-гейта). ``choice``
+    оставлен для совместимости: "rejected" снимает согласование, остальное —
+    проставляет."""
     checkpoint_service = CheckpointService(runtime)
-    for session in sessions:
-        signoff_decisions = []
-        for decision_id in session.decision_ids:
-            decision = runtime.get_decision(workspace, decision_id)
-            if SIGNOFF_GATE_TITLE in decision.title:
-                signoff_decisions.append(decision)
-        if not signoff_decisions:
-            continue
-        answers = tuple(
-            CheckpointAnswer(
-                decision_id=decision.decision_id,
-                kind="select_alternative",
-                selected_option_id=choice,
-            )
-            for decision in signoff_decisions
-        )
-        checkpoint_service.submit_answers(workspace, session_id=session.session_id, answers=answers)
-        return
-    raise AssertionError(
-        f"Не найдена pending CheckpointSession с signoff-decision (title contains "
-        f"{SIGNOFF_GATE_TITLE!r}) для проекта {project_id!r}"
+    candidates = [
+        a
+        for a in runtime.list_artifacts(workspace)
+        if a.artifact_role == "requirements_spec" and a.artifact_kind == "primary"
+    ]
+    assert candidates, (
+        f"Не найден primary-артефакт requirements_spec для согласования "
+        f"(проект {project_id!r})"
+    )
+    latest = max(candidates, key=lambda a: a.created_at)
+    checkpoint_service.set_artifact_signed_off(
+        workspace, artifact_id=latest.artifact_id, signed_off=choice != "rejected"
     )
 
 

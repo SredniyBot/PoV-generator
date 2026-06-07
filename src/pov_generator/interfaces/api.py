@@ -642,6 +642,33 @@ def create_app(
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))
 
+    @app.get("/api/projects/{project_id}/objectives/task-graph")
+    def project_objective_task_graph(project_id: str, ref: str) -> Any:
+        """Граф задач конкретного гейта (objective) проекта — для подвкладок
+        графа по гейтам (Ф1). ``ref`` передаётся query-параметром, так как
+        содержит '@'. Активный гейт → живой граф; завершённый → сохранённые
+        задачи; ещё не запущенный → статический скелет (read-only)."""
+        from ..common.errors import NotFoundError
+
+        try:
+            return to_primitive(
+                query_service.project_objective_task_graph(project_id, ref)
+            )
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.get("/api/projects/{project_id}/tasks/{task_id}/gate")
+    def task_gate(project_id: str, task_id: str) -> Any:
+        """Гейт (objective_ref), которому принадлежит задача. Нужен дип-линку
+        «открыть задачу на графе», чтобы выбрать правильную подвкладку гейта,
+        а не открывать задачу в графе активного гейта (Ф1)."""
+        workspace = catalog.resolve_workspace(project_id).workspace
+        try:
+            task = runtime.get_task(workspace, task_id)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Задача не найдена.")
+        return {"objective_ref": task.objective_ref}
+
     @app.get("/api/projects/{project_id}/situation")
     def project_situation(project_id: str) -> Any:
         return to_primitive(query_service.project_situation(project_id))
@@ -956,6 +983,13 @@ def create_app(
     def project_artifacts(project_id: str) -> Any:
         return to_primitive(query_service.project_artifacts(project_id))
 
+    # Литеральный маршрут — ДО /{artifact_id}, иначе "archive" попадёт в него.
+    @app.get("/api/projects/{project_id}/artifacts/archive")
+    def project_archived_artifacts(project_id: str) -> Any:
+        """Архив проекта: артефакты, заархивированные откатом, и заменённые
+        более новой версией. Подраздел «Архив» во вкладке артефактов."""
+        return to_primitive(query_service.project_archived_artifacts(project_id))
+
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}")
     def project_artifact_detail(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
@@ -984,6 +1018,32 @@ def create_app(
             workspace, artifact_id=artifact_id, verified=verified
         )
         log.info("артефакт подтверждён пользователем" if verified else "снята метка подтверждения артефакта")
+        return to_primitive(query_service.artifact_detail(project_id, artifact_id))
+
+    @app.post("/api/projects/{project_id}/artifacts/{artifact_id}/sign-off")
+    def project_artifact_sign_off(
+        project_id: str, artifact_id: str, body: dict[str, Any] | None = None
+    ) -> Any:
+        """Согласовать итоговый артефакт с заказчиком (sign-off) или снять
+        согласование. Заменяет прежнее решение-согласование в реестре:
+        прохождение human_approval-гейта считается по этой метке, и пока
+        итоговый артефакт не согласован — переход на следующий этап закрыт.
+
+        Body (optional): ``{"signed_off": true}`` (default) | ``{"signed_off": false}``.
+        Возвращает обновлённый ArtifactDetailView.
+        """
+        from ..common.errors import NotFoundError
+
+        signed_off = True if body is None else bool(body.get("signed_off", True))
+        try:
+            query_service.artifact_detail(project_id, artifact_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.set_artifact_signed_off(
+            workspace, artifact_id=artifact_id, signed_off=signed_off
+        )
+        log.info("артефакт согласован с заказчиком" if signed_off else "снято согласование артефакта")
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
 
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/download.pdf")

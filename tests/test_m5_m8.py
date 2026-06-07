@@ -18,13 +18,10 @@ from pov_generator.application.registry_service import RegistryService
 from pov_generator.application.validation_service import ValidationService
 from pov_generator.application.workflow_service import WorkflowService
 from pov_generator.domain.artifacts import ArtifactMetadata, ArtifactRecord
-from pov_generator.domain.checkpoints import CheckpointAnswer
 from pov_generator.domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult
 from pov_generator.domain.registry import ObjectRef
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
-
-SIGNOFF_GATE_TITLE = "Согласование ТЗ с заказчиком"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
@@ -132,38 +129,24 @@ def test_context_builder_collects_previous_artifacts_for_spec_generation(tmp_pat
 
 
 def _approve_requirements_signoff(runtime: SqliteRuntime, workspace: Path) -> None:
-    """v3.1 helper: после первого `run_until_blocked` находит pending
-    CheckpointSession с decision sign-off ('Согласование ТЗ с заказчиком')
-    и финализирует её ответом `approved`. Без этого objective не закроется,
-    потому что human_approval gate на ТЗ блокирует завершение цели."""
+    """Ф3 helper: согласовать итоговый артефакт ТЗ с заказчиком — помечаем
+    primary-артефакт ``requirements_spec`` как ``signed_off``. Без согласования
+    human_approval-gate на ТЗ держит цель незакрытой (планировщик возвращает
+    ``blocked``). Заменяет прежний ответ на CheckpointSession решения-гейта."""
     manifest = runtime.load_manifest(workspace)
     checkpoint_service = CheckpointService(runtime)
-    sessions = runtime.list_checkpoint_sessions(
-        workspace, project_id=manifest.project_id, status="pending"
+    candidates = [
+        a
+        for a in runtime.list_artifacts(workspace)
+        if a.artifact_role == "requirements_spec" and a.artifact_kind == "primary"
+    ]
+    assert candidates, (
+        f"Не найден primary-артефакт requirements_spec для согласования "
+        f"(проект {manifest.project_id!r})"
     )
-    for session in sessions:
-        signoff_decisions = []
-        for decision_id in session.decision_ids:
-            decision = runtime.get_decision(workspace, decision_id)
-            if SIGNOFF_GATE_TITLE in decision.title:
-                signoff_decisions.append(decision)
-        if not signoff_decisions:
-            continue
-        answers = tuple(
-            CheckpointAnswer(
-                decision_id=decision.decision_id,
-                kind="select_alternative",
-                selected_option_id="approved",
-            )
-            for decision in signoff_decisions
-        )
-        checkpoint_service.submit_answers(
-            workspace, session_id=session.session_id, answers=answers
-        )
-        return
-    raise AssertionError(
-        f"Не найдена pending CheckpointSession с signoff-decision (title contains "
-        f"{SIGNOFF_GATE_TITLE!r}) для проекта {manifest.project_id!r}"
+    latest = max(candidates, key=lambda a: a.created_at)
+    checkpoint_service.set_artifact_signed_off(
+        workspace, artifact_id=latest.artifact_id, signed_off=True
     )
 
 
@@ -186,7 +169,22 @@ def test_stub_workflow_runs_common_objective_end_to_end(tmp_path: Path) -> None:
     # завершение objective: ждём согласования заказчика.
     assert result.stopped_reason == "planner_blocked"
 
+    # Ф3 регресс-замок: решение-гейт согласования в реестре больше НЕ создаётся —
+    # гейт проходится тумблером signed_off на итоговом артефакте.
+    _manifest = runtime.load_manifest(workspace)
+    assert not [
+        d
+        for d in runtime.list_decisions(workspace, project_id=_manifest.project_id)
+        if "Согласовать результат gate" in d.title
+    ], "Ф3: решение-гейт согласования не должно создаваться (костыль удалён)"
+    # До согласования итоговый артефакт не подписан → цель не завершена.
+    spec = runtime.latest_artifact_by_role(workspace, "requirements_spec")
+    assert spec is not None and not spec.signed_off
+
     _approve_requirements_signoff(runtime, workspace)
+    # После согласования метка проставлена на том же артефакте.
+    spec_signed = runtime.latest_artifact_by_role(workspace, "requirements_spec")
+    assert spec_signed is not None and spec_signed.signed_off
 
     result = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
     assert result.stopped_reason == "objective_completed"

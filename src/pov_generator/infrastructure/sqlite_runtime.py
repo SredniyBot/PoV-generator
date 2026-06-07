@@ -433,6 +433,18 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         user_verified_at_value = row["user_verified_at"]
     except (KeyError, IndexError):
         user_verified_at_value = None
+    try:
+        signed_off_value = bool(row["signed_off"])
+    except (KeyError, IndexError):
+        signed_off_value = False
+    try:
+        signed_off_at_value = row["signed_off_at"]
+    except (KeyError, IndexError):
+        signed_off_at_value = None
+    try:
+        rolled_back_by_value = row["rolled_back_by"]
+    except (KeyError, IndexError):
+        rolled_back_by_value = None
     metadata = _artifact_metadata_from_payload(json_loads(row["metadata_json"]))
     relations = _artifact_relations_from_row(row)
     return ArtifactRecord(
@@ -451,6 +463,9 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         is_superseded=bool(is_superseded_value),
         user_verified=user_verified_value,
         user_verified_at=user_verified_at_value,
+        signed_off=signed_off_value,
+        signed_off_at=signed_off_at_value,
+        rolled_back_by=rolled_back_by_value,
     )
 
 
@@ -1304,9 +1319,10 @@ class SqliteRuntime:
                 insert into artifacts(
                   artifact_id, project_id, artifact_role, title, description, artifact_format, artifact_kind,
                   created_by_task_id, parent_artifact_id, input_artifact_ids_json, child_artifact_ids_json,
-                  metadata_json, storage_path, created_at, is_superseded, user_verified, user_verified_at
+                  metadata_json, storage_path, created_at, is_superseded, user_verified, user_verified_at,
+                  signed_off, signed_off_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
@@ -1326,6 +1342,8 @@ class SqliteRuntime:
                     1 if artifact.is_superseded else 0,
                     1 if artifact.user_verified else 0,
                     artifact.user_verified_at,
+                    1 if artifact.signed_off else 0,
+                    artifact.signed_off_at,
                 ),
             )
             connection.commit()
@@ -1694,6 +1712,22 @@ class SqliteRuntime:
             connection.execute(
                 "update artifacts set user_verified = ?, user_verified_at = ? where artifact_id = ?",
                 (1 if verified else 0, verified_at if verified else None, artifact_id),
+            )
+            connection.commit()
+
+    @_serialized_write
+    def mark_artifact_signed_off(
+        self, workspace: Path, artifact_id: str, *, signed_off: bool, signed_off_at: str | None
+    ) -> None:
+        """Пометить итоговый артефакт согласованным с заказчиком (или снять).
+        Аудит-метка — содержимое артефакта не меняется. Прохождение
+        human_approval-гейта считается по этому признаку (см. validation/
+        query-сервисы), заменяя прежний механизм решения-согласования.
+        """
+        with self._connect(workspace) as connection:
+            connection.execute(
+                "update artifacts set signed_off = ?, signed_off_at = ? where artifact_id = ?",
+                (1 if signed_off else 0, signed_off_at if signed_off else None, artifact_id),
             )
             connection.commit()
 
@@ -2677,7 +2711,9 @@ class SqliteRuntime:
               created_at text not null,
               is_superseded integer not null default 0,
               user_verified integer not null default 0,
-              user_verified_at text
+              user_verified_at text,
+              signed_off integer not null default 0,
+              signed_off_at text
             );
 
             create table if not exists attachments (
@@ -2895,6 +2931,20 @@ class SqliteRuntime:
             connection,
             "artifacts",
             "user_verified_at",
+            "text",
+        )
+        # Согласование итогового артефакта с заказчиком (sign-off) — отдельно
+        # от user_verified. Старые БД мигрируются дефолтом 0 (не согласовано).
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "signed_off",
+            "integer not null default 0",
+        )
+        self._ensure_column(
+            connection,
+            "artifacts",
+            "signed_off_at",
             "text",
         )
         # Этап 1.3: связи артефактов в графе вынесены в отдельные колонки —

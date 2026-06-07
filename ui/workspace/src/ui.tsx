@@ -478,11 +478,12 @@ export function ConnectionBadge({ status }: { status: RealtimeStatus }) {
         : status === "degraded"
           ? "Backend недоступен"
           : "Backend отключён";
+  // Только значок; подпись статуса — по наведению (title) и для скринридеров
+  // (aria-label). Текст в шапке не занимает место постоянно.
   return (
-    <div className="connection-badge">
+    <div className="connection-badge" title={label} aria-label={label} role="img">
       <StatusPill tone={tone}>
         <RadioTower size={12} />
-        {label}
       </StatusPill>
     </div>
   );

@@ -1944,44 +1944,95 @@ code {
 .artifact-list__item {
   width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  background: rgba(31, 35, 40, 0.92);
-  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  padding: 9px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   text-align: left;
   min-width: 0;
 }
 
-/* Title-блок занимает всё доступное пространство и обрезается с ellipsis,
-   а meta (дата/иконка) фиксированной ширины — не «съезжает» при сжатии
-   колонки. Это решает прыжок layout'а при клике на артефакт, когда
-   `.artifacts-layout--focused` уменьшает левую колонку. */
+/* Название показывается ЦЕЛИКОМ (без обрезки троеточием) — при нехватке
+   ширины переносится. meta (дата/иконка) фиксированной ширины — не «съезжает». */
 .artifact-list__title {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .artifact-list__title strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: var(--font-weight-medium);
+  word-break: break-word;
 }
 
-.artifact-list__title p {
-  margin: 4px 0 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Метка происхождения в архиве/версиях (откат / прошлая версия). */
+.artifact-list__tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 11px;
   white-space: nowrap;
 }
 
 .artifact-list__item--active {
-  border-color: rgba(120, 184, 201, 0.28);
-  background: rgba(31, 41, 46, 0.96);
+  border-color: var(--border-accent);
+  background: var(--surface-tertiary);
+}
+
+/* Подраздел списка артефактов (Текущие / Архив). */
+.artifacts-subnav {
+  margin-bottom: var(--space-3);
+}
+
+/* Список предыдущих версий артефакта в подвкладке. */
+.artifact-versions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.artifact-versions__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing);
+}
+.artifact-versions__item:hover {
+  border-color: var(--border-accent);
+}
+.artifact-versions__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  word-break: break-word;
+}
+.artifact-versions__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+  font-variant-numeric: tabular-nums;
 }
 
 .artifact-list__meta {
@@ -3531,6 +3582,56 @@ code {
   overflow: hidden;
 }
 
+/* Ф1: подвкладки графа по гейтам — пилюли над канвой. */
+.tg-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.tg-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
+}
+.tg-subtab:hover {
+  border-color: var(--border-accent);
+}
+.tg-subtab--active {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+/* Текущий исполняемый гейт — пульсирующая точка-акцент. */
+.tg-subtab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.tg-subtabs__loading {
+  padding: 24px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
+/* Ф1: задача неактивного гейта (скелет/история) — недоступна, приглушена. */
+.tg-node--locked {
+  opacity: 0.5;
+  filter: saturate(0.7);
+}
+
 .tg-canvas .react-flow__attribution { display: none; }
 .tg-canvas .react-flow__controls {
   background: rgba(18, 22, 28, 0.85);
@@ -4262,6 +4363,47 @@ code {
   gap: 5px;
   color: rgba(140, 196, 153, 0.9);
   font-size: 0.78rem;
+}
+
+/* Ф3: блок согласования итогового артефакта с заказчиком. До согласования —
+   warning-акцент (зовёт к действию), после — success. */
+.artifact-signoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-soft);
+}
+.artifact-signoff--done {
+  border-color: var(--success-border, rgba(140, 196, 153, 0.35));
+  background: var(--success-soft, rgba(140, 196, 153, 0.14));
+}
+.artifact-signoff__text {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.artifact-signoff__icon {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.artifact-signoff--done .artifact-signoff__icon {
+  color: var(--success, #8cc499);
+}
+.artifact-signoff__text strong {
+  color: var(--text-primary);
+}
+.artifact-signoff__text p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  line-height: 1.45;
 }
 
 /* Бейдж в списке артефактов слева. */
@@ -6047,6 +6189,15 @@ code {
 .stage-seg--active .stage-seg__dot--filled,
 .stage-seg--current .stage-seg__dot--filled {
   color: var(--accent, #78b8c9);
+}
+
+/* Ф3: этап ждёт согласования итогового артефакта — жёлтый значок и подпись,
+   приглашение нажать (откроется артефакт с тумблером «Согласовать»). */
+.stage-seg__dot--awaiting {
+  color: var(--warning, #d6ad59);
+}
+.stage-seg--awaiting-signoff .stage-seg__title {
+  color: var(--warning, #d6ad59);
 }
 
 .stage-seg__title {
