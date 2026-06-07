@@ -3561,9 +3561,10 @@ code {
 
 .tg-node {
   width: 240px;
-  min-height: 96px;
+  min-height: 60px;
   background: var(--surface-primary, rgba(28, 32, 38, 0.95));
   border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left-width: 3px;
   border-radius: 0.5rem;
   padding: 0.5rem 0.6rem;
   display: grid;
@@ -3590,50 +3591,27 @@ code {
   50%       { outline-color: rgba(120, 184, 201, 0.35); box-shadow: 0 0 8px 3px rgba(120, 184, 201, 0.15); }
 }
 
-.tg-node--completed { border-left: 3px solid rgba(140, 196, 153, 0.7); }
-.tg-node--in_progress,
-.tg-node--ready { border-left: 3px solid rgba(120, 184, 201, 0.7); }
-.tg-node--waiting_for_children { border-left: 3px solid rgba(214, 173, 89, 0.6); }
-.tg-node--failed,
-.tg-node--blocked { border-left: 3px solid rgba(215, 131, 131, 0.7); }
-.tg-node--skipped,
-.tg-node--obsolete {
-  border-left: 3px solid rgba(150, 150, 150, 0.4);
-  opacity: 0.65;
-}
-.tg-node--candidate { border-left: 3px solid rgba(150, 160, 180, 0.4); }
-
-.tg-node__header {
+/* Статус-строка узла: точка + подпись + (предупреждение) + иконка типа.
+   Цвет статуса задаётся инлайн из единого STATUS_META (полоса слева + точка). */
+.tg-node__status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.4rem;
 }
-
-.tg-pill {
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
+.tg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-.tg-pill--completed { background: rgba(140, 196, 153, 0.18); color: #a8d5b3; }
-.tg-pill--in_progress,
-.tg-pill--ready { background: rgba(120, 184, 201, 0.22); color: #9fd2dd; }
-.tg-pill--waiting_for_children { background: rgba(214, 173, 89, 0.22); color: #e0c179; }
-.tg-pill--failed,
-.tg-pill--blocked { background: rgba(215, 131, 131, 0.22); color: #e3a3a3; }
-.tg-pill--skipped,
-.tg-pill--obsolete { background: rgba(150, 150, 150, 0.15); color: #aaa; }
-.tg-pill--candidate { background: rgba(150, 160, 180, 0.15); color: #b0bccc; }
-
-.tg-node__origin {
-  font-size: 0.65rem;
+.tg-node__status-label {
+  font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
-  text-transform: lowercase;
+}
+.tg-node__type-icon {
+  margin-left: auto;
+  color: var(--text-disabled, #5a6470);
+  flex-shrink: 0;
 }
 
 .tg-node__title {
@@ -3646,16 +3624,49 @@ code {
   overflow: hidden;
 }
 
-.tg-node__meta {
-  display: flex;
-  justify-content: space-between;
+.tg-node__warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: rgba(214, 173, 89, 0.95);
+}
+
+/* fan-out-узел: пунктирная рамка-маркер + прогресс инстансов */
+.tg-node--fanout {
+  border-style: dashed;
+  border-left-style: solid;
+}
+.tg-node__sub {
   font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
 }
-
-.tg-node__warn {
-  color: rgba(214, 173, 89, 0.95);
-  font-weight: 600;
+.tg-fanout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.tg-fanout__count {
+  font-size: 0.68rem;
+  color: var(--text-secondary, #9aa4b2);
+  font-variant-numeric: tabular-nums;
+}
+.tg-fanout__bar {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.tg-fanout__bar-fill {
+  height: 100%;
+  background: rgba(120, 184, 201, 0.9);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.tg-fanout__toggle {
+  justify-self: start;
+  margin-top: 0.1rem;
 }
 
 .tg-handle {
@@ -3730,8 +3741,15 @@ code {
   z-index: 5;
 }
 
-.tg-node:hover .tg-node__actions {
+.tg-node:hover .tg-node__actions,
+.react-flow__node.selected .tg-node__actions {
   opacity: 1;
+}
+
+/* Поднимаем узел при наведении/выделении, чтобы оверлей действий был поверх соседей. */
+.react-flow__node:hover,
+.react-flow__node.selected {
+  z-index: 10 !important;
 }
 
 .tg-action-btn {

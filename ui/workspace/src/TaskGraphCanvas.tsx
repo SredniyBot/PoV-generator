@@ -32,13 +32,14 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
+import { AlertTriangle, FileText, Layers, Split } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
 import type { FanOutMeta, TaskNodeView } from "./types";
 
 const NODE_WIDTH = 240;
-const NODE_HEIGHT = 96;
+const NODE_HEIGHT = 76;
 
 // ── Callbacks context ──────────────────────────────────────────────────────
 
@@ -93,7 +94,7 @@ function buildLayout(
   graph.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 60, marginx: 20, marginy: 20 });
 
   for (const task of tasks) {
-    graph.setNode(task.task_id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    graph.setNode(task.task_id, { width: NODE_WIDTH, height: nodeHeight(task) });
   }
   const edges: Edge[] = [];
   for (const task of tasks) {
@@ -130,6 +131,7 @@ function buildLayout(
   const nodes: FlowNode[] = tasks.map((task) => {
     const positioned = graph.node(task.task_id);
     const isFanOut = task.template_type === "fan_out";
+    const h = nodeHeight(task);
     return {
       id: task.task_id,
       type: isFanOut ? "fanOutCard" : "taskCard",
@@ -138,10 +140,10 @@ function buildLayout(
         : ({ task } as TaskNodeCardData),
       position: {
         x: (positioned?.x ?? 0) - NODE_WIDTH / 2,
-        y: (positioned?.y ?? 0) - NODE_HEIGHT / 2,
+        y: (positioned?.y ?? 0) - h / 2,
       },
       width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      height: h,
       draggable: false,
     };
   });
@@ -161,17 +163,28 @@ function edgeColorForOrigin(origin: string): string {
   }
 }
 
-function labelForOrigin(origin: string): string {
-  switch (origin) {
-    case "objective_root":      return "корень цели";
-    case "base_child":          return "базовая";
-    case "domain_contribution": return "domain pack";
-    case "repair":              return "исправление";
-    case "user_request":        return "ручная";
-    case "system":              return "система";
-    case "fan_out_instance":    return "fan-out";
-    default:                    return origin;
-  }
+// Единый источник «статус → подпись + цвет». Им пользуются и обычные узлы, и
+// fan-out, и мини-карта — одна палитра вместо четырёх разрозненных.
+const STATUS_META: Record<string, { label: string; color: string }> = {
+  completed:                  { label: "Готово",        color: "rgba(140, 196, 153, 0.9)" },
+  in_progress:                { label: "В работе",      color: "rgba(120, 184, 201, 0.95)" },
+  ready:                      { label: "Готова",        color: "rgba(120, 184, 201, 0.95)" },
+  waiting_for_children:       { label: "В процессе",    color: "rgba(214, 173, 89, 0.9)" },
+  waiting_for_fan_out_source: { label: "Ждёт данные",   color: "rgba(214, 173, 89, 0.9)" },
+  failed:                     { label: "Ошибка",        color: "rgba(215, 131, 131, 0.95)" },
+  blocked:                    { label: "Заблокирована", color: "rgba(215, 131, 131, 0.7)" },
+  skipped:                    { label: "Пропущена",     color: "rgba(150, 150, 150, 0.55)" },
+  obsolete:                   { label: "Устарела",      color: "rgba(150, 150, 150, 0.55)" },
+  candidate:                  { label: "Запланирована", color: "rgba(150, 160, 180, 0.6)" },
+};
+
+function statusMeta(status: string): { label: string; color: string } {
+  return STATUS_META[status] ?? { label: status, color: "rgba(150, 160, 180, 0.6)" };
+}
+
+// fan-out-узлы выше (прогресс + переключатель), остальные — компактные.
+function nodeHeight(task: TaskNodeView): number {
+  return task.template_type === "fan_out" ? 124 : NODE_HEIGHT;
 }
 
 /** Условия рендеринга кнопок действий вынесены из JSX. */
@@ -194,30 +207,36 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const actions = useContext(TaskGraphActionsCtx);
   const { showRetry, showArtifacts, showDecisions } = resolveActions(task);
   const hasActions = showRetry || showArtifacts || showDecisions;
+  const meta = statusMeta(task.status);
+  const warnCount = task.blocking_clarification_count ?? 0;
+  const isComposite = task.template_type === "composite";
 
   return (
     <div
-      className={`tg-node tg-node--${task.status}${task.is_current ? " tg-node--current" : ""}`}
+      className={`tg-node${task.is_current ? " tg-node--current" : ""}`}
+      style={{ borderLeftColor: meta.color }}
     >
       <Handle type="target" position={Position.Top} className="tg-handle" />
-      <div className="tg-node__header">
-        <span className={`tg-pill tg-pill--${task.status}`}>{task.status}</span>
-        <span className="tg-node__origin" title={task.origin_ref}>
-          {labelForOrigin(task.origin_kind)}
-        </span>
+      <div className="tg-node__status">
+        <span className="tg-dot" style={{ background: meta.color }} />
+        <span className="tg-node__status-label">{meta.label}</span>
+        {warnCount > 0 ? (
+          <span className="tg-node__warn" title={`Ждут решения: ${warnCount}`}>
+            <AlertTriangle size={12} /> {warnCount}
+          </span>
+        ) : null}
+        {isComposite ? (
+          <Layers size={13} className="tg-node__type-icon" aria-label="композит" />
+        ) : (
+          <FileText size={13} className="tg-node__type-icon" aria-label="задача" />
+        )}
       </div>
-      <div className="tg-node__title">{task.title}</div>
+      <div className="tg-node__title" title={task.title}>{task.title}</div>
       {task.status === "failed" && task.status_summary ? (
         <div className="tg-node__error" title={task.status_summary}>
           {task.status_summary}
         </div>
       ) : null}
-      <div className="tg-node__meta">
-        <span>{task.template_type === "composite" ? "композит" : "задача"}</span>
-        {(task.blocking_clarification_count ?? 0) > 0 ? (
-          <span className="tg-node__warn">⚠ {task.blocking_clarification_count}</span>
-        ) : null}
-      </div>
       {hasActions && actions ? (
         <div className="tg-node__actions">
           {showRetry && (
@@ -225,7 +244,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
               className="tg-action-btn tg-action-btn--danger"
               onClick={(e) => { e.stopPropagation(); actions.onRetry(task.task_id); }}
             >
-              Retry
+              Повторить
             </button>
           )}
           {showArtifacts && (
@@ -241,7 +260,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
               className="tg-action-btn"
               onClick={(e) => { e.stopPropagation(); actions.onGoToDecisions(); }}
             >
-              ⚠ Решения
+              Решения
             </button>
           )}
         </div>
@@ -253,99 +272,49 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
 
 // ── Fan-out card node ──────────────────────────────────────────────────────
 
-const STATUS_LABEL_FAN_OUT: Record<string, string> = {
-  waiting_for_fan_out_source: "Ожидает данных",
-  waiting_for_children: "В процессе",
-  completed: "Завершено",
-  failed: "Ошибка",
-};
-
-const STATUS_COLOR_FAN_OUT: Record<string, string> = {
-  waiting_for_fan_out_source: "#94a3b8",
-  waiting_for_children: "#3b82f6",
-  completed: "#22c55e",
-  failed: "#ef4444",
-};
-
 function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
   const { task, onToggleFanOut, isCollapsed } = data;
   const meta: FanOutMeta | null | undefined = task.fan_out_meta;
-  const statusLabel = STATUS_LABEL_FAN_OUT[task.status] ?? task.status;
-  const statusColor = STATUS_COLOR_FAN_OUT[task.status] ?? "#94a3b8";
+  const status = statusMeta(task.status);
+  const pct =
+    meta && meta.total_instances > 0
+      ? Math.round((meta.completed_instances / meta.total_instances) * 100)
+      : 0;
 
   return (
-    <div
-      style={{
-        background: "#fff",
-        border: `2px dashed ${statusColor}`,
-        borderRadius: 10,
-        padding: "8px 12px",
-        minWidth: 200,
-        maxWidth: 260,
-        fontSize: 12,
-      }}
-    >
-      <Handle type="target" position={Position.Top} style={{ background: "#7c3aed" }} />
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontWeight: 700, fontSize: 11, color: "#7c3aed" }}>⚡ fan-out</span>
-        <span
-          style={{
-            background: statusColor,
-            color: "#fff",
-            borderRadius: 4,
-            padding: "1px 6px",
-            fontSize: 10,
-          }}
-        >
-          {statusLabel}
-        </span>
+    <div className="tg-node tg-node--fanout" style={{ borderLeftColor: status.color }}>
+      <Handle type="target" position={Position.Top} className="tg-handle" />
+      <div className="tg-node__status">
+        <span className="tg-dot" style={{ background: status.color }} />
+        <span className="tg-node__status-label">{status.label}</span>
+        <Split size={13} className="tg-node__type-icon" aria-label="fan-out" />
       </div>
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>{task.title}</div>
-      {task.status === "waiting_for_fan_out_source" && meta && (
-        <div style={{ color: "#94a3b8", fontSize: 11 }}>
-          Источник: {meta.source_artifact_role}
-        </div>
-      )}
-      {task.status === "waiting_for_children" && meta && meta.total_instances > 0 && (
-        <div style={{ marginTop: 4 }}>
-          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>
-            {meta.completed_instances} / {meta.total_instances} завершено
+      <div className="tg-node__title" title={task.title}>{task.title}</div>
+      {task.status === "waiting_for_fan_out_source" && meta ? (
+        <div className="tg-node__sub">Источник: {meta.source_artifact_role}</div>
+      ) : null}
+      {task.status === "waiting_for_children" && meta && meta.total_instances > 0 ? (
+        <div className="tg-fanout">
+          <div className="tg-fanout__count">
+            {meta.completed_instances} / {meta.total_instances} готово
           </div>
-          <div style={{ height: 4, background: "#e5e7eb", borderRadius: 2 }}>
-            <div
-              style={{
-                height: "100%",
-                width: `${Math.round((meta.completed_instances / meta.total_instances) * 100)}%`,
-                background: "#3b82f6",
-                borderRadius: 2,
-                transition: "width 0.3s",
-              }}
-            />
+          <div className="tg-fanout__bar">
+            <div className="tg-fanout__bar-fill" style={{ width: `${pct}%` }} />
           </div>
         </div>
-      )}
-      {task.status === "failed" && task.error_message && (
-        <div style={{ color: "#ef4444", fontSize: 11, marginTop: 4 }}>{task.error_message}</div>
-      )}
-      {meta != null && meta.total_instances > 4 && (
+      ) : null}
+      {task.status === "failed" && task.error_message ? (
+        <div className="tg-node__error" title={task.error_message}>{task.error_message}</div>
+      ) : null}
+      {meta != null && meta.total_instances > 4 ? (
         <button
+          className="tg-action-btn tg-fanout__toggle"
           onClick={(e) => { e.stopPropagation(); onToggleFanOut(task.task_id); }}
-          style={{
-            marginTop: 6,
-            fontSize: 10,
-            cursor: "pointer",
-            background: "none",
-            border: "1px solid #d1d5db",
-            borderRadius: 4,
-            padding: "2px 8px",
-          }}
         >
-          {isCollapsed
-            ? `Показать все ${meta.total_instances}`
-            : "Свернуть"}
+          {isCollapsed ? `Показать все ${meta.total_instances}` : "Свернуть"}
         </button>
-      )}
-      <Handle type="source" position={Position.Bottom} style={{ background: "#7c3aed" }} />
+      ) : null}
+      <Handle type="source" position={Position.Bottom} className="tg-handle" />
     </div>
   );
 }
@@ -554,22 +523,5 @@ export function TaskGraphCanvas(props: TaskGraphCanvasProps) {
 // ── MiniMap fill colors ────────────────────────────────────────────────────
 
 function statusFillColor(status: string): string {
-  switch (status) {
-    case "completed":
-      return "rgba(140, 196, 153, 0.7)";
-    case "in_progress":
-    case "ready":
-      return "rgba(120, 184, 201, 0.7)";
-    case "failed":
-      return "rgba(215, 131, 131, 0.85)";
-    case "blocked":
-      return "rgba(215, 131, 131, 0.5)";
-    case "waiting_for_children":
-      return "rgba(214, 173, 89, 0.6)";
-    case "skipped":
-    case "obsolete":
-      return "rgba(150, 150, 150, 0.4)";
-    default:
-      return "rgba(150, 160, 180, 0.5)";
-  }
+  return statusMeta(status).color;
 }
