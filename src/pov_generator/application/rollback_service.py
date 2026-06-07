@@ -99,11 +99,22 @@ class RollbackService:
         for task_id in self._tasks_to_reset(workspace, reverted):
             self._runtime.transition_task(workspace, task_id, "rollback_reset")
 
-        # Кросс-objective откат: вернуть активный objective, если он сменился.
+        # Кросс-objective откат: вернуть активный objective, если он сменился,
+        # и перемотать историю гейтов. Всё, что было после восстанавливаемого
+        # гейта (включая его самого как «завершённый»), больше не done —
+        # иначе гейт оказался бы одновременно в истории и активным.
         restored_objective = earliest.objective_ref
         if restored_objective != manifest.objective_ref:
+            history = list(manifest.objective_history or ())
+            if restored_objective in history:
+                history = history[: history.index(restored_objective)]
             self._runtime.update_manifest(
-                workspace, replace(manifest, objective_ref=restored_objective)
+                workspace,
+                replace(
+                    manifest,
+                    objective_ref=restored_objective,
+                    objective_history=tuple(history),
+                ),
             )
 
         self._runtime.record_rollback(

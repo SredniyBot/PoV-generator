@@ -2891,6 +2891,9 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
       }
       await queryClient.invalidateQueries({ queryKey: ROLLBACK_HISTORY_KEY(projectId) });
       setRollbackTarget(null);
+      // После отката активный гейт мог смениться (кросс-objective откат) —
+      // сбрасываем выбор подвкладки, чтобы вид следовал за восстановленным гейтом.
+      setSelectedRef(null);
       rollbackMutation.reset();
     },
   });
@@ -2918,6 +2921,9 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   // Граф выбранного гейта: активный — живой taskGraphQuery; иной — по objective.
   const displayGraph = isActiveSelected ? data : objectiveGraphQuery.data ?? null;
   const stages = stagesQuery.data?.stages ?? [];
+  // Откат доступен на активном И завершённом гейте (откат завершённого вернёт
+  // проект на него — кросс-objective). На скелете будущего гейта — нельзя.
+  const canRollback = displayGraph ? displayGraph.objective_state !== "locked" : false;
   const closeRollback = () => {
     if (rollbackMutation.isPending) return; // не закрываем во время отката
     setRollbackTarget(null);
@@ -2996,10 +3002,10 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
             onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
             onRollback={(taskId) => setRollbackTarget(taskId)}
             retryingTaskId={retryingTaskId}
-            rollbackTargetId={isActiveSelected ? rollbackTarget : null}
-            rollbackAffectedIds={isActiveSelected ? rollbackAffectedIds : []}
+            rollbackTargetId={canRollback ? rollbackTarget : null}
+            rollbackAffectedIds={canRollback ? rollbackAffectedIds : []}
             rollbackOverlay={
-              isActiveSelected && rollbackTarget !== null ? (
+              canRollback && rollbackTarget !== null ? (
                 <RollbackConfirmBar
                   preview={previewQuery.data}
                   loading={previewQuery.isLoading}

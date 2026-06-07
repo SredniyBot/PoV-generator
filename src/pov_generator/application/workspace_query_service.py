@@ -371,8 +371,12 @@ class WorkspaceQueryService:
                 for t in self._runtime.list_tasks(context.workspace)
                 if t.objective_ref == objective_ref
             ]
+            # Завершённый гейт доступен (available=True): его выполненные
+            # листовые задачи можно откатить — это вернёт проект на этот гейт
+            # (см. rollback_service: кросс-objective откат). Ретрай/решения по
+            # ним не появятся (нет failed/блокеров).
             nodes = self._build_task_tree(
-                context.workspace, tasks, None, snapshot, available=False
+                context.workspace, tasks, None, snapshot, available=True
             )
             leaf = [t for t in tasks if t.template_type == "leaf"]
             return ProjectTaskGraphView(
