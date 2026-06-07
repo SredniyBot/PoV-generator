@@ -481,3 +481,16 @@ Governance денег/времени показываем как **внутре�
 Открытое (по ходу):
 - Нужен ли rootless-DinD для задач-оркестраторов (compose) — отдельный сценарий,
   за горизонтом; базовый «собрать образ» закрыт kaniko.
+
+Реализовано (2026-06-08, Ф5c — гейты/DoD):
+- `HarnessGate`/`GateResult` в `harness/protocol.py`; `gates` в `HarnessRunSpec`
+  и `HarnessRunResult`. `harness/gates.py::run_gates` прогоняет команды-проверки
+  в той же песочнице (исполняет ВСЕ для полноты отчёта; `passed = exit 0 и не
+  таймаут`). `CommandHarnessProvider` гонит гейты ПОСЛЕ агента и ДО сбора —
+  провал любого = `status=failed` без сбора артефакта (DoD не достигнут → штатный
+  retry). Источник гейтов — шаблон: `harness_gates` (домен `HarnessGateSpec`),
+  пробрасывается `execute_task → HarnessExecutionService.produce_artifact → spec`.
+- Сборка образа (kaniko/buildah) — частный случай команды-гейта; отдельного типа
+  не вводим, фреймворк гейтов её покрывает.
+- Stub-harness гейты не исполняет (фикстура-выход); объявление гейтов на узле
+  безопасно — реальные адаптеры (Ф7) их прогонят.

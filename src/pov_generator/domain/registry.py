@@ -193,6 +193,19 @@ class MergeConfig:
 
 
 @dataclass(frozen=True)
+class HarnessGateSpec:
+    """Гейт «готово» (DoD) harness-узла, объявленный в шаблоне (Ф5c).
+
+    ``command`` — shell-команда-проверка в песочнице (build/test/lint; сборка
+    образа kaniko — частный случай). Успех = exit 0.
+    """
+
+    name: str
+    command: str
+    timeout_s: int | None = None
+
+
+@dataclass(frozen=True)
 class TemplateSpec:
     identifier: str
     version: str
@@ -247,6 +260,9 @@ class TemplateSpec:
     # "bundle" — файловый набор (код/документы/двоичные/БД/образ), сохраняемый
     # как bundle-артефакт. Имеет смысл только для executor=harness.
     harness_output: str | None = None
+    # Ф5c: гейты «готово» (DoD) — команды-проверки в песочнице после прогона
+    # агента (build/test/lint). Провал любого = узел не выполнен.
+    harness_gates: tuple[HarnessGateSpec, ...] = ()
     fan_out_spec: FanOutSpec | None = None
     children_template_ref: str | None = None
     source_path: Path = Path("")
@@ -879,6 +895,15 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             raw.get("decision_identification", True)
         ),
         harness_output=optional_str(raw, "harness_output"),
+        harness_gates=tuple(
+            HarnessGateSpec(
+                name=str(item["name"]),
+                command=str(item["command"]),
+                timeout_s=int(item["timeout_s"]) if isinstance(item.get("timeout_s"), int) else None,
+            )
+            for item in (raw.get("harness_gates") or [])
+            if isinstance(item, dict) and item.get("name") and item.get("command")
+        ),
         fan_out_spec=fan_out_spec,
         children_template_ref=children_template_ref_val,
         source_path=source_path,

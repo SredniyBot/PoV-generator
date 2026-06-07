@@ -17,10 +17,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..common.errors import ConflictError
+from ..domain.registry import HarnessGateSpec
 from ..infrastructure.harness import (
     BudgetTotals,
     BudgetTracker,
     ExpectedArtifact,
+    HarnessGate,
     HarnessProviderRegistry,
     HarnessRunSpec,
     HarnessSlotPool,
@@ -123,6 +125,7 @@ class HarnessExecutionService:
         user_prompt: str,
         output_kind: str = "structured",
         model_hint: str | None = None,
+        gates: tuple[HarnessGateSpec, ...] = (),
     ) -> HarnessOutcome:
         """Запустить дефолтный harness и собрать выход роли.
 
@@ -145,6 +148,10 @@ class HarnessExecutionService:
             expected_artifacts=expected,
             model_hint=model_hint,
             limits=self._budget_limits,
+            gates=tuple(
+                HarnessGate(name=g.name, command=g.command, timeout_s=g.timeout_s)
+                for g in gates
+            ),
         )
         provider = self._registry.resolve_default()
         # Класс конкуррентности: занимаем слот на время прогона (бэкпрешер —

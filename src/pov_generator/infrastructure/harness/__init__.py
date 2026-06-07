@@ -6,8 +6,11 @@
 
 from .budget import BudgetExceeded, BudgetTotals, BudgetTracker
 from .capacity import HarnessCapacity, detect_host_capacity, recommend_capacity
+from .gates import run_gates
 from .protocol import (
     ExpectedArtifact,
+    GateResult,
+    HarnessGate,
     HarnessProvider,
     HarnessRunResult,
     HarnessRunSpec,
@@ -33,7 +36,9 @@ __all__ = [
     "DockerSandboxRuntime",
     "ExecResult",
     "ExpectedArtifact",
+    "GateResult",
     "HarnessCapacity",
+    "HarnessGate",
     "HarnessProvider",
     "HarnessProviderRegistry",
     "HarnessRunResult",
@@ -49,4 +54,5 @@ __all__ = [
     "StubSandboxRuntime",
     "detect_host_capacity",
     "recommend_capacity",
+    "run_gates",
 ]

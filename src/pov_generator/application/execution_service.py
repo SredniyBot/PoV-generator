@@ -474,6 +474,7 @@ class ExecutionService:
                 user_prompt=user_prompt,
                 output_kind="bundle" if bundle_output else "structured",
                 model_hint=model or None,
+                gates=template.harness_gates,
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model

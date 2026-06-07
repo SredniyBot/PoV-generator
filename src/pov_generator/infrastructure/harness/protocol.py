@@ -53,6 +53,33 @@ class HarnessRunSpec:
     inputs: dict[str, str] = field(default_factory=dict)
     model_hint: str | None = None
     limits: RunLimits | None = None
+    # Гейты «готово» (DoD): команды, которые после прогона агента проверяют
+    # результат в песочнице (build/test/lint). Провал любого = узел не выполнен.
+    gates: tuple["HarnessGate", ...] = ()
+
+
+@dataclass(frozen=True)
+class HarnessGate:
+    """Декларативный гейт «готово» — команда-проверка в песочнице.
+
+    Успех = команда завершилась с ``exit 0`` в пределах таймаута. Источник —
+    шаблон задачи (``harness_gates``). Сборка образа (kaniko) — частный случай:
+    команда, собирающая Dockerfile без демона.
+    """
+
+    name: str
+    command: str | tuple[str, ...]
+    timeout_s: int | None = None
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """Итог одного гейта."""
+
+    name: str
+    passed: bool
+    exit_code: int
+    log: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,13 +98,14 @@ class HarvestedArtifact:
 
 @dataclass(frozen=True)
 class HarnessRunResult:
-    """Итог прогона: статус + собранные артефакты + транскрипт + usage."""
+    """Итог прогона: статус + собранные артефакты + транскрипт + usage + гейты."""
 
     status: HarnessStatus
     artifacts: tuple[HarvestedArtifact, ...] = ()
     transcript: str = ""
     usage: LLMUsage | None = None
     error: str | None = None
+    gates: tuple[GateResult, ...] = ()
 
 
 @runtime_checkable

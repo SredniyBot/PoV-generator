@@ -18,6 +18,12 @@ requires:
     optional: []
 produces:
   artifact: harness.demo_bundle@1.0.0
+# Гейт «готово» (DoD): после прогона агента проверяем результат в песочнице.
+# Для stub-рантайма не исполняется (stub отдаёт фикстуру), но демонстрирует
+# объявление DoD; реальные адаптеры (Ф7) его прогонят.
+harness_gates:
+  - name: smoke
+    command: "test -f src/main.py"
 context:
   include: [artifact.*]
   max_tokens: 4000

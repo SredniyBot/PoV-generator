@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from ..gates import run_gates
 from ..protocol import (
     HarnessRunResult,
     HarnessRunSpec,
@@ -93,7 +94,25 @@ class CommandHarnessProvider:
                     error=f"Команда агента вернула код {result.exit_code}.",
                 )
 
-            # 3. Сбор результата по соглашению.
+            # 3. Гейты «готово» (DoD): проверяем результат в той же песочнице
+            #    ДО сбора. Провал любого = узел не достиг готовности.
+            gate_results = run_gates(
+                self._sandbox, handle, spec.gates, on_log=logs.append
+            )
+            transcript = "".join(logs)
+            failed_gates = [g for g in gate_results if not g.passed]
+            if failed_gates:
+                return HarnessRunResult(
+                    status="failed",
+                    transcript=transcript,
+                    gates=gate_results,
+                    error=(
+                        "Не пройдены гейты готовности: "
+                        + ", ".join(f"{g.name} (код {g.exit_code})" for g in failed_gates)
+                    ),
+                )
+
+            # 4. Сбор результата по соглашению.
             harvested: list[HarvestedArtifact] = []
             for expected in spec.expected_artifacts:
                 file_path = f"{_OUT_DIR}/{expected.role}.{expected.fmt}"
@@ -113,6 +132,7 @@ class CommandHarnessProvider:
                 status="completed",
                 artifacts=tuple(harvested),
                 transcript=transcript,
+                gates=gate_results,
             )
         finally:
             # Контейнер всегда ephemeral — сносим в любом случае.
