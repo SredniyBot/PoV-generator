@@ -76,6 +76,8 @@ import type {
   ProjectDebugView,
   ProjectShellView,
   ProjectionName,
+  RollbackPreviewView,
+  RollbackResultView,
   TaskNodeView,
 } from "./types";
 import { useProjectRealtime } from "./useProjectRealtime";
@@ -2444,6 +2446,148 @@ function flattenTaskNodes(nodes: TaskNodeView[]): TaskNodeView[] {
   return nodes.flatMap((node) => [node, ...flattenTaskNodes(node.children)]);
 }
 
+// Проекции, которые откат меняет одномоментно (без workflow-run, поэтому
+// WS-пуш их не инвалидирует — делаем это вручную после успешного отката).
+const ROLLBACK_INVALIDATED_PROJECTIONS: ProjectionName[] = [
+  "shell",
+  "task_graph",
+  "situation",
+  "timeline",
+  "artifacts",
+  "state",
+  "overview",
+  "stages",
+  "debug",
+];
+
+const ROLLBACK_HISTORY_KEY = (projectId: string) => ["rollback-history", projectId] as const;
+
+/**
+ * Диалог подтверждения отката: показывает, что именно будет инвалидировано
+ * (целевой шаг + транзитивно зависящие) и какие артефакты уйдут в архив —
+ * до того, как пользователь подтвердит необратимую (для активных данных)
+ * операцию. Превью читается отдельным запросом и не меняет состояние.
+ */
+function RollbackPreviewModal({
+  open,
+  preview,
+  loading,
+  previewError,
+  confirming,
+  confirmError,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  preview: RollbackPreviewView | undefined;
+  loading: boolean;
+  previewError: string | null;
+  confirming: boolean;
+  confirmError: string | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const stepCount = preview?.reverted_steps.length ?? 0;
+  const artifactCount = preview?.archived_artifacts.length ?? 0;
+  return (
+    <Modal open={open} title="Откат к состоянию до шага" onClose={onClose}>
+      {loading ? (
+        <p className="muted">Расчёт зависимостей…</p>
+      ) : previewError ? (
+        <div className="rollback-error">{previewError}</div>
+      ) : preview ? (
+        <div className="rollback-preview">
+          <p>
+            Проект будет возвращён к состоянию <strong>до</strong> выполнения шага{" "}
+            <strong>«{preview.target_title}»</strong>. Это действие инвалидирует
+            сам шаг и все зависящие от него; их артефакты будут перенесены в
+            архив, а задачи — сброшены для повторного выполнения. Независимые
+            ветки сохранятся.
+          </p>
+
+          <div className="rollback-preview__section">
+            <h4>Будут инвалидированы шаги: {stepCount}</h4>
+            <ul className="rollback-preview__list">
+              {preview.reverted_steps.map((step) => (
+                <li key={step.task_id} className="rollback-preview__row">
+                  <span className={`tg-pill tg-pill--${step.status}`}>{step.status}</span>
+                  <span className="rollback-preview__title">
+                    {step.title}
+                    {step.is_target ? (
+                      <span className="rollback-preview__target"> (выбранный шаг)</span>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="rollback-preview__section">
+            <h4>Уйдут в архив артефакты: {artifactCount}</h4>
+            {artifactCount === 0 ? (
+              <p className="muted">Артефактов для архивации нет.</p>
+            ) : (
+              <ul className="rollback-preview__list">
+                {preview.archived_artifacts.map((artifact) => (
+                  <li key={artifact.artifact_id} className="rollback-preview__row">
+                    <span className="rollback-preview__role">{artifact.artifact_role}</span>
+                    <span className="rollback-preview__title">{artifact.title}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {confirmError ? <div className="rollback-error">{confirmError}</div> : null}
+
+          <div className="rollback-preview__actions">
+            <Button tone="secondary" onClick={onClose} disabled={confirming}>
+              Отмена
+            </Button>
+            <Button
+              tone="danger"
+              icon={<RefreshCcw size={16} />}
+              onClick={onConfirm}
+              disabled={confirming}
+            >
+              {confirming ? "Выполняется откат…" : "Откатить"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </Modal>
+  );
+}
+
+function RollbackHistorySection({ projectId }: { projectId: string }) {
+  const historyQuery = useQuery({
+    queryKey: ROLLBACK_HISTORY_KEY(projectId),
+    queryFn: () => api.getRollbackHistory(projectId),
+  });
+  const items = historyQuery.data?.items ?? [];
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <SectionCard title="История откатов" subtitle={`Выполнено откатов: ${items.length}`}>
+      <ul className="rollback-history">
+        {items.map((item) => (
+          <li key={item.rollback_id} className="rollback-history__row">
+            <div className="rollback-history__main">
+              <strong>{item.target_title}</strong>
+              {item.reason ? <span className="muted"> — {item.reason}</span> : null}
+            </div>
+            <div className="rollback-history__meta muted">
+              {formatDateTime(item.created_at)} · шагов: {item.reverted_count} · в архив:{" "}
+              {item.archived_artifact_count}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </SectionCard>
+  );
+}
+
 function TaskGraphPage({ projectId }: { projectId: string }) {
   // W4.2 (G1): canvas-based task graph через ReactFlow + dagre.
   // Кликнул на узел → открывается drawer с тем же TaskNodeDetail,
@@ -2452,7 +2596,10 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   const provider = "";
   const model = "";
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
+  // Цель отката (task_id выбранного шага) — открывает диалог подтверждения.
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
   // Дип-линк из статус-бара: /task-graph?focus=<taskId> — центрируем граф.
   const [searchParams] = useSearchParams();
   const focusTaskId = searchParams.get("focus") ?? undefined;
@@ -2463,41 +2610,83 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   const retryMutation = useMutation({
     mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
   });
+  // Превью отката — чистое чтение; запускается только когда выбрана цель.
+  const previewQuery = useQuery({
+    queryKey: ["rollback-preview", projectId, rollbackTarget],
+    queryFn: () => api.getRollbackPreview(projectId, rollbackTarget as string),
+    enabled: rollbackTarget !== null,
+  });
+  const rollbackMutation = useMutation<RollbackResultView, Error, string>({
+    mutationFn: (taskId: string) => api.rollbackStep(projectId, taskId),
+    onSuccess: async () => {
+      for (const projection of ROLLBACK_INVALIDATED_PROJECTIONS) {
+        await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, projection) });
+      }
+      await queryClient.invalidateQueries({ queryKey: ROLLBACK_HISTORY_KEY(projectId) });
+      setRollbackTarget(null);
+      rollbackMutation.reset();
+    },
+  });
 
   if (taskGraphQuery.isLoading || !taskGraphQuery.data) {
     return <LoadingPanel title="Загрузка графа задач…" />;
   }
 
   const data = taskGraphQuery.data;
+  const closeRollback = () => {
+    if (rollbackMutation.isPending) return; // не закрываем во время отката
+    setRollbackTarget(null);
+    rollbackMutation.reset();
+  };
   return (
-    <SectionCard
-      title="Граф задач"
-      subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
-    >
-      <TaskGraphCanvas
-        tree={data.nodes}
-        onSelectNode={setSelectedTask}
-        focusTaskId={focusTaskId}
-        completedLeafTasks={data.completed_leaf_tasks}
-        totalLeafTasks={data.total_leaf_tasks}
-        onRetry={(taskId) => retryMutation.mutate(taskId)}
-        onOpenArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
-        onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
-      />
-      <Drawer
-        open={Boolean(selectedTask)}
-        title={selectedTask?.title ?? "Задача"}
-        onClose={() => setSelectedTask(null)}
+    <>
+      <SectionCard
+        title="Граф задач"
+        subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
       >
-        {selectedTask ? (
-          <TaskNodeDetail
-            task={selectedTask}
-            projectId={projectId}
-            onRetryTask={(taskId) => retryMutation.mutate(taskId)}
-          />
-        ) : null}
-      </Drawer>
-    </SectionCard>
+        <TaskGraphCanvas
+          tree={data.nodes}
+          onSelectNode={setSelectedTask}
+          focusTaskId={focusTaskId}
+          completedLeafTasks={data.completed_leaf_tasks}
+          totalLeafTasks={data.total_leaf_tasks}
+          onRetry={(taskId) => retryMutation.mutate(taskId)}
+          onOpenArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
+          onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
+          onRollback={(taskId) => setRollbackTarget(taskId)}
+        />
+        <Drawer
+          open={Boolean(selectedTask)}
+          title={selectedTask?.title ?? "Задача"}
+          onClose={() => setSelectedTask(null)}
+        >
+          {selectedTask ? (
+            <TaskNodeDetail
+              task={selectedTask}
+              projectId={projectId}
+              onRetryTask={(taskId) => retryMutation.mutate(taskId)}
+            />
+          ) : null}
+        </Drawer>
+      </SectionCard>
+
+      <RollbackHistorySection projectId={projectId} />
+
+      <RollbackPreviewModal
+        open={rollbackTarget !== null}
+        preview={previewQuery.data}
+        loading={previewQuery.isLoading}
+        previewError={
+          previewQuery.error instanceof Error ? previewQuery.error.message : null
+        }
+        confirming={rollbackMutation.isPending}
+        confirmError={rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null}
+        onConfirm={() => {
+          if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
+        }}
+        onClose={closeRollback}
+      />
+    </>
   );
 }
 

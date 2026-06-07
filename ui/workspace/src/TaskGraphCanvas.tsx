@@ -46,6 +46,7 @@ interface TaskGraphActions {
   onRetry: (taskId: string) => void;
   onOpenArtifacts: () => void;
   onGoToDecisions: () => void;
+  onRollback: (taskId: string) => void;
 }
 
 const TaskGraphActionsCtx = createContext<TaskGraphActions | null>(null);
@@ -179,11 +180,15 @@ function resolveActions(task: TaskNodeView): {
   showRetry: boolean;
   showArtifacts: boolean;
   showDecisions: boolean;
+  showRollback: boolean;
 } {
   return {
     showRetry:     task.retryable === true && task.status === "failed",
     showArtifacts: task.status === "completed",
     showDecisions: (task.blocking_clarification_count ?? 0) > 0,
+    // Откат доступен для выполненного листового шага: только у листов есть
+    // чекпоинт (pre-state их исполнения) — база реконструкции состояния.
+    showRollback:  task.status === "completed" && task.template_type === "leaf",
   };
 }
 
@@ -192,8 +197,8 @@ function resolveActions(task: TaskNodeView): {
 function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const task = data.task;
   const actions = useContext(TaskGraphActionsCtx);
-  const { showRetry, showArtifacts, showDecisions } = resolveActions(task);
-  const hasActions = showRetry || showArtifacts || showDecisions;
+  const { showRetry, showArtifacts, showDecisions, showRollback } = resolveActions(task);
+  const hasActions = showRetry || showArtifacts || showDecisions || showRollback;
 
   return (
     <div
@@ -242,6 +247,15 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
               onClick={(e) => { e.stopPropagation(); actions.onGoToDecisions(); }}
             >
               ⚠ Решения
+            </button>
+          )}
+          {showRollback && (
+            <button
+              className="tg-action-btn tg-action-btn--rollback"
+              title="Откатить проект к состоянию до выполнения этого шага"
+              onClick={(e) => { e.stopPropagation(); actions.onRollback(task.task_id); }}
+            >
+              ↶ Откатить
             </button>
           )}
         </div>
@@ -396,6 +410,7 @@ export interface TaskGraphCanvasProps {
   onRetry?: (taskId: string) => void;
   onOpenArtifacts?: () => void;
   onGoToDecisions?: () => void;
+  onRollback?: (taskId: string) => void;
 }
 
 // ── Inner canvas (needs ReactFlowProvider ancestor) ────────────────────────
@@ -410,6 +425,7 @@ function TaskGraphCanvasInner({
   onRetry,
   onOpenArtifacts,
   onGoToDecisions,
+  onRollback,
 }: TaskGraphCanvasProps) {
   const [collapsedFanOuts, setCollapsedFanOuts] = useState<Set<string>>(new Set());
 
@@ -496,8 +512,9 @@ function TaskGraphCanvasInner({
       onRetry:         (id) => onRetry?.(id),
       onOpenArtifacts: () => onOpenArtifacts?.(),
       onGoToDecisions: () => onGoToDecisions?.(),
+      onRollback:      (id) => onRollback?.(id),
     }),
-    [onRetry, onOpenArtifacts, onGoToDecisions],
+    [onRetry, onOpenArtifacts, onGoToDecisions, onRollback],
   );
 
   return (

@@ -286,6 +286,55 @@ export interface CommandResultView {
   resource_id: string | null;
 }
 
+// --- Ролбек шага -----------------------------------------------------------
+
+export interface RollbackStepView {
+  task_id: string;
+  title: string;
+  template_ref: string;
+  status: string;
+  is_target: boolean; // сам выбранный шаг (vs зависящий от него)
+}
+
+export interface RollbackArtifactView {
+  artifact_id: string;
+  artifact_role: string;
+  title: string;
+  created_by_task_id: string | null;
+}
+
+export interface RollbackPreviewView {
+  project_id: string;
+  target_task_id: string;
+  target_title: string;
+  reverted_steps: RollbackStepView[];
+  archived_artifacts: RollbackArtifactView[];
+}
+
+export interface RollbackResultView {
+  rollback_id: string;
+  target_task_id: string;
+  reverted_task_ids: string[];
+  archived_artifact_ids: string[];
+  restored_objective_ref: string;
+}
+
+export interface RollbackHistoryItemView {
+  rollback_id: string;
+  target_task_id: string;
+  target_title: string;
+  reverted_count: number;
+  archived_artifact_count: number;
+  actor: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface ProjectRollbackHistoryView {
+  project_id: string;
+  items: RollbackHistoryItemView[];
+}
+
 export interface HealthView {
   status: string;
   time: string;

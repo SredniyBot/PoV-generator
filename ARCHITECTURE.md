@@ -156,7 +156,55 @@ Floor по умолчанию: `business/client` — autopilot, `security` — b
 
 ---
 
-## 6. Cookbook — где трогать, чтобы добавить X
+## 6. Откат шага (step rollback)
+
+Откат возвращает проект к состоянию **до** выполнения выбранного шага.
+Семантика — **только зависимые**: инвалидируются целевой шаг и все транзитивно
+зависящие от него; независимые ветки сохраняются. Артефакты откаченных шагов
+**архивируются** (не удаляются), задачи сбрасываются для повторного прохода.
+Опирается на уже существующие провенанс, событийный лог состояния и отмену —
+это системная фича, а не костыль.
+
+**Почему это вообще возможно.** `knowledge`/`process` событийные: снимок-
+последнего + append-only лог патчей `state_events` (версия + `patch_type` +
+`payload_json`). Состояние восстановимо реплеем патчей. Перед каждым листовым
+шагом снимается `step_checkpoint` (pre-state). Проекции (`artifacts`,
+`decisions`, …) мутабельны, но с провенансом (`created_by_task_id`,
+`source_task_id`, `state_events.task_id`).
+
+**Граф зависимостей** (`rollback_graph.py`): звуковой, не эвристика. Ребро
+X→Y, если `write-set(X) ∩ read-set(Y) ≠ ∅` и `seq(X) < seq(Y)`; откатываемое
+множество — транзитивное замыкание от целевого шага.
+
+**Реконструкция** (`rollback_service.py`): берём чекпоинт самого раннего
+откаченного шага как базу; реплеим «пережившие» патчи (не аннулированные, не из
+откаченных шагов, по версии своего слоя — счётчики `state_events.id` и
+`step_checkpoints.seq` независимы, поэтому сравниваем именно версии
+knowledge/process); пишем новый снимок; аннулируем патчи откаченных шагов
+(`rolled_back_by`); архивируем их артефакты/решения; сбрасываем задачи командой
+`rollback_reset` (+ структурные родители для реплана).
+
+**Конкуррентность** (`rollback_coordinator.py` + `project_lock.py`): координатор
+берёт эксклюзивный `project_lock`, форсированно гасит активный прогон и ждёт
+оседания, выполняет откат и снимает замок (в `finally`). Пока замок держится,
+мутации проекта (`run`, активация objective, ответы на решения, повторный
+откат) отклоняются через `ensure_project_unlocked` → `ConflictError` (409).
+
+| Слой | Модуль |
+|---|---|
+| Домен | `domain/rollback.py` (StepCheckpoint, RollbackRecord/Result, ProjectLock) |
+| Граф/реплей | `application/rollback_graph.py`, `application/state_patch_codec.py` |
+| Движок | `application/rollback_service.py` |
+| Шлюз/оркестрация | `application/project_lock.py`, `application/rollback_coordinator.py` |
+| Инфра | `sqlite_runtime`: `step_checkpoints`/`rollbacks`/`project_locks`, `rolled_back_by` |
+| API | `GET …/rollback/preview`, `GET …/rollback/history`, `POST …/commands/rollback` |
+| UI | кнопка «↶ Откатить» на завершённом листе графа + `RollbackPreviewModal` + история |
+
+Дизайн-документ: [docs/plans/2026-06-07-step-rollback.md](docs/plans/2026-06-07-step-rollback.md).
+
+---
+
+## 7. Cookbook — где трогать, чтобы добавить X
 
 ### Новая методология
 
@@ -195,7 +243,7 @@ execution_run, provider, model, context_manifest.
 
 ---
 
-## 7. Anti-patterns
+## 8. Anti-patterns
 
 | Не делай | Почему |
 |---|---|
@@ -208,7 +256,7 @@ execution_run, provider, model, context_manifest.
 
 ---
 
-## 8. Roadmap
+## 9. Roadmap
 
 В порядке убывания важности:
 

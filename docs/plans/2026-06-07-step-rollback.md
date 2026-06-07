@@ -1,9 +1,28 @@
 # Ролбек шага: откат к состоянию ДО выполнения выбранного шага
 
-Статус: проект (design), к реализации после согласования.
-Семантика выбрана заказчиком: **только зависимые** (хирургический откат),
-**авто-отмена активного прогона + ожидание**, артефакты **архивируются** (не
-удаляются).
+Статус: **реализовано** (Ф1–Ф7). Семантика выбрана заказчиком: **только
+зависимые** (хирургический откат), **авто-отмена активного прогона +
+ожидание**, артефакты **архивируются** (не удаляются).
+
+Карта реализации:
+- Ф1–Ф2 (домен/инфра): `domain/rollback.py` (StepCheckpoint, RollbackRecord,
+  RollbackResult, ProjectLock), `StateEvent.task_id`/`rolled_back_by`, команда
+  задачи `rollback_reset`, `position_from_primitive`; в `sqlite_runtime.py` —
+  таблицы `step_checkpoints`/`rollbacks`/`project_locks`, колонки `task_id`/
+  `rolled_back_by`, методы захвата чекпоинта, архивации, замка.
+- Ф3 (движок): `rollback_graph.py` (замыкание зависимостей по write∩read),
+  `state_patch_codec.py` (декод патчей + реплей слоёв), `rollback_service.py`
+  (реконструкция из чекпоинта самого раннего откаченного шага).
+- Ф4 (шлюз/конкуррентность): `project_lock.py` (`ensure_project_unlocked`),
+  `rollback_coordinator.py` (замок + авто-отмена прогона + откат + снятие).
+- Ф5 (проекции/API): `RollbackPreviewView`/`ProjectRollbackHistoryView`,
+  `WorkspaceQueryService.rollback_preview`/`rollback_history`, эндпоинты
+  `GET /rollback/preview`, `GET /rollback/history`, `POST /commands/rollback`;
+  guard submit-эндпоинтов решений.
+- Ф6 (UI): кнопка «↶ Откатить» на завершённом листовом шаге графа, диалог
+  превью `RollbackPreviewModal` (инвалидируемые шаги + архивируемые артефакты),
+  секция «История откатов».
+- Ф7: эта запись + раздел в `ARCHITECTURE.md`.
 
 ---
 

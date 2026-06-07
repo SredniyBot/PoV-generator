@@ -191,6 +191,25 @@ export const api = {
         body: JSON.stringify({ objective_ref: objectiveRef }),
       },
     ),
+  // --- Ролбек шага -------------------------------------------------------
+  // Превью/история — чистое чтение (не блокируются замком отката).
+  getRollbackPreview: (projectId: string, targetTaskId: string) =>
+    request<import("./types").RollbackPreviewView>(
+      `/api/projects/${projectId}/rollback/preview?target_task_id=${encodeURIComponent(targetTaskId)}`,
+    ),
+  getRollbackHistory: (projectId: string) =>
+    request<import("./types").ProjectRollbackHistoryView>(
+      `/api/projects/${projectId}/rollback/history`,
+    ),
+  // Команда: координатор берёт замок, гасит активный прогон, откатывает.
+  rollbackStep: (projectId: string, targetTaskId: string, reason?: string) =>
+    request<import("./types").RollbackResultView>(
+      `/api/projects/${projectId}/commands/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_task_id: targetTaskId, reason: reason || undefined }),
+      },
+    ),
   getOverview: (projectId: string) =>
     request<import("./types").ProjectOverviewView>(`/api/projects/${projectId}/overview`),
   getStages: (projectId: string) =>
