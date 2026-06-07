@@ -157,8 +157,11 @@ def test_run_next_with_cancelled_token_resets_task_and_writes_nothing(tmp_path: 
     assert all(t.status != "in_progress" for t in tasks)
     assert all(t.status != "failed" for t in tasks)
     assert any(t.status == "ready" for t in tasks)
-    # Результаты обнулены: отмена до коммита — ни одного артефакта.
-    assert len(runtime.list_artifacts(workspace)) == 0
+    # Результаты обнулены: отмена до коммита — ни одного ПРОИЗВЕДЁННОГО
+    # артефакта. Входной артефакт (kind=input) создаётся при инициализации
+    # проекта, до прогона, и к результатам шага отношения не имеет.
+    produced = [a for a in runtime.list_artifacts(workspace) if a.artifact_kind != "input"]
+    assert produced == []
 
 
 # ---------------------------------------------------------------------------

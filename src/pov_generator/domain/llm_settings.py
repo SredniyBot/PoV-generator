@@ -14,7 +14,7 @@
   при условии ``enabled=True`` и рабочего connection.
 
 * :class:`ModelAssignment` — какая модель используется для какого сценария
-  (``execution.standard``, ``clarification_ce11`` и т.п.). Сервис говорит
+  (``execution.standard``, ``complexity_selector`` и т.п.). Сервис говорит
   «дай модель для purpose X», resolver находит assignment → routing →
   connection → готовый ``LLMProvider``.
 
@@ -53,7 +53,6 @@ PURPOSE_EXECUTION_TRIVIAL = "execution.trivial"
 PURPOSE_EXECUTION_STANDARD = "execution.standard"
 PURPOSE_EXECUTION_COMPLEX = "execution.complex"
 PURPOSE_DOMAIN_PACK_SELECTOR = "domain_pack_selector"
-PURPOSE_CLARIFICATION_CE11 = "clarification_ce11"
 PURPOSE_COMPLEXITY_SELECTOR = "complexity_selector"
 # v3.0: отдельный purpose для выявления решений до сборки артефакта.
 # Обычно дешёвая/быстрая модель — задача
@@ -66,20 +65,18 @@ ALL_PURPOSES: tuple[str, ...] = (
     PURPOSE_EXECUTION_STANDARD,
     PURPOSE_EXECUTION_COMPLEX,
     PURPOSE_DOMAIN_PACK_SELECTOR,
-    PURPOSE_CLARIFICATION_CE11,
     PURPOSE_COMPLEXITY_SELECTOR,
     PURPOSE_DECISION_PLANNING,
 )
 
 
 PURPOSE_LABELS: dict[str, str] = {
-    PURPOSE_EXECUTION_TRIVIAL: "Основной workflow — простые задачи",
-    PURPOSE_EXECUTION_STANDARD: "Основной workflow — стандартные задачи",
-    PURPOSE_EXECUTION_COMPLEX: "Основной workflow — сложные задачи",
+    PURPOSE_EXECUTION_TRIVIAL: "Простые задачи",
+    PURPOSE_EXECUTION_STANDARD: "Стандартные задачи",
+    PURPOSE_EXECUTION_COMPLEX: "Сложные задачи",
     PURPOSE_DOMAIN_PACK_SELECTOR: "Выбор доменных пакетов",
-    PURPOSE_CLARIFICATION_CE11: "Подготовка вопросов пользователю (CE11)",
-    PURPOSE_COMPLEXITY_SELECTOR: "Pre-selector сложности задачи",
-    PURPOSE_DECISION_PLANNING: "Pre-flight планирование решений (v3.0)",
+    PURPOSE_COMPLEXITY_SELECTOR: "Выбор сложности задач",
+    PURPOSE_DECISION_PLANNING: "Вычленение решений",
 }
 
 

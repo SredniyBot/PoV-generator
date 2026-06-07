@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, MessageSquare, Network, RotateCcw } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Circle, CircleDot, Clock, MessageSquare, Network, RotateCcw, X } from "lucide-react";
 
 import { api } from "./api";
 import type { StageView } from "./types";
@@ -31,13 +31,43 @@ function pluralRu(n: number, one: string, few: string, many: string): string {
 
 function StageIcon({ stage }: { stage: StageView }) {
   if (stage.state === "done") return <CheckCircle2 size={14} className="stage-seg__check" />;
-  if (stage.state === "active") return <span className="stage-seg__dot stage-seg__dot--filled">●</span>;
-  return <span className="stage-seg__dot">○</span>;
+  if (stage.state === "active") return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--filled" />;
+  return <Circle size={14} className="stage-seg__dot" />;
 }
 
 function titleForRef(ref: string, stages: StageView[]): string {
   const match = stages.find((s) => s.objective_ref === ref);
   return match ? match.title : ref.split("@")[0] ?? ref;
+}
+
+// Короткая подпись этапа из objective_ref — дорожка должна быть лаконичной,
+// а не повторять длинное процессное название цели. Полное название и прогресс
+// показываем в подсказке (stageTooltip). Неизвестная цель → исходный заголовок.
+function shortStageLabel(ref: string, fallback: string): string {
+  const id = (ref.split("@")[0] ?? "").toLowerCase();
+  if (id.includes("requirements") || id.includes("specification")) return "ТЗ";
+  if (id.includes("architecture") || id.includes("design")) return "Архитектура";
+  if (
+    id.includes("implementation") ||
+    id.includes("build") ||
+    id.includes("plan") ||
+    id.includes("realiz")
+  ) {
+    return "Реализация";
+  }
+  return fallback;
+}
+
+// Подсказка при наведении: полное название цели + прогресс активного этапа.
+function stageTooltip(stage: StageView): string {
+  let t = stage.title;
+  if (stage.is_current) {
+    t += ` · артефакты ${stage.artifacts_ready}/${stage.artifacts_required}`;
+    if (stage.gates_required > 0) {
+      t += ` · гейт ${stage.gates_passed}/${stage.gates_required}`;
+    }
+  }
+  return t;
 }
 
 export function StageStatusBar({
@@ -99,18 +129,8 @@ export function StageStatusBar({
               <span className="stage-seg__icon">
                 <StageIcon stage={stage} />
               </span>
-              <span className="stage-seg__body">
-                <span className="stage-seg__title" title={stage.objective_ref}>
-                  {stage.title}
-                </span>
-                {stage.is_current ? (
-                  <span className="stage-seg__progress">
-                    артефакты {stage.artifacts_ready}/{stage.artifacts_required}
-                    {stage.gates_required > 0 ? (
-                      <> · гейт {stage.gates_passed}/{stage.gates_required}</>
-                    ) : null}
-                  </span>
-                ) : null}
+              <span className="stage-seg__title" title={stageTooltip(stage)}>
+                {shortStageLabel(stage.objective_ref, stage.title)}
               </span>
               {idx < data.stages.length - 1 ? (
                 <span className="stage-seg__sep" aria-hidden>
@@ -159,8 +179,8 @@ export function StageStatusBar({
                 <div className="stage-popover" role="dialog">
                   <div className="stage-popover__head">
                     <span>Шаги с ошибкой · этап «{active?.title}»</span>
-                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
-                      ×
+                    <button type="button" className="stage-popover__close" aria-label="Закрыть" onClick={() => setPopover(null)}>
+                      <X size={16} />
                     </button>
                   </div>
                   <ul className="stage-popover__list">
@@ -202,8 +222,8 @@ export function StageStatusBar({
                 <div className="stage-popover" role="dialog">
                   <div className="stage-popover__head">
                     <span>Решения ждут ответа · этап «{active?.title}»</span>
-                    <button type="button" className="stage-popover__close" onClick={() => setPopover(null)}>
-                      ×
+                    <button type="button" className="stage-popover__close" aria-label="Закрыть" onClick={() => setPopover(null)}>
+                      <X size={16} />
                     </button>
                   </div>
                   <ul className="stage-popover__list">

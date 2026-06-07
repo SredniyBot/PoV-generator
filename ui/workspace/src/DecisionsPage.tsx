@@ -20,7 +20,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
 
 import { api } from "./api";
-import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
+import { Button, EmptyState, LoadingPanel, SectionCard, cx, formatDateTime } from "./ui";
 import type {
   CheckpointAnswerPayload,
   CheckpointSessionView,
@@ -171,6 +171,7 @@ function DecisionCard({
         "decision-card",
         isInteractive && "decision-card--interactive",
         isInteractive && currentAnswerKind && "decision-card--answered",
+        !isInteractive && expanded && "decision-card--expanded",
       )}
     >
       <header
@@ -333,20 +334,21 @@ function DecisionCard({
             </ul>
           ) : null}
 
-          {/* READ-ONLY РЕЖИМ (реестр): выбранный вариант — prominent */}
+          {/* READ-ONLY (реестр): что решили — акцентная полоса слева, без коробки */}
           {!isInteractive ? (
-            <div className="decision-card__chosen-box">
-              <div className="decision-card__chosen-head">
-                <span className="decision-card__chosen-icon" aria-hidden="true">✓</span>
-                <span className="decision-card__chosen-label">Выбрано:</span>
-                <span className="decision-card__chosen-value">
-                  {chosenAlt ? chosenAlt.label : decision.chosen_option_label || (decision.user_free_text_answer ? "Свой ответ" : "—")}
+            <div className="decision-card__answer">
+              <div className="decision-card__answer-head">
+                <span className="decision-card__answer-value">
+                  {chosenAlt
+                    ? chosenAlt.label
+                    : decision.chosen_option_label ||
+                      (decision.user_free_text_answer ? "Свой ответ" : "—")}
                 </span>
-                {chosenAlt && chosenAlt.confidence !== null && chosenAlt.confidence !== undefined ? (
+                {chosenAlt && chosenAlt.confidence != null ? (
                   <span
                     className={cx(
-                      "decision-card__option-confidence",
-                      chosenAlt.confidence < 0.5 && "decision-card__option-confidence--low",
+                      "decision-card__answer-conf",
+                      chosenAlt.confidence < 0.5 && "decision-card__answer-conf--low",
                     )}
                     title="Уверенность системы в выбранном варианте"
                   >
@@ -355,14 +357,46 @@ function DecisionCard({
                 ) : null}
               </div>
               {chosenAlt?.description ? (
-                <p className="decision-card__chosen-desc">{chosenAlt.description}</p>
+                <p className="decision-card__answer-desc">{chosenAlt.description}</p>
               ) : null}
               {decision.rationale && decision.rationale !== chosenAlt?.description ? (
-                <p className="decision-card__chosen-rationale">{decision.rationale}</p>
+                <p className="decision-card__answer-why">{decision.rationale}</p>
               ) : null}
               {decision.user_free_text_answer ? (
-                <p className="decision-card__chosen-freetext">«{decision.user_free_text_answer}»</p>
+                <p className="decision-card__answer-free">«{decision.user_free_text_answer}»</p>
               ) : null}
+            </div>
+          ) : null}
+
+          {/* READ-ONLY: что ещё рассматривали — сразу списком, простыми строками */}
+          {!isInteractive && decision.alternatives.length > 1 ? (
+            <div className="decision-card__considered">
+              <span className="decision-card__considered-label">Альтернативы</span>
+              <ul className="decision-card__considered-list">
+                {decision.alternatives
+                  .filter((a) => a.option_id !== decision.chosen_option_id)
+                  .map((alt) => (
+                    <li key={alt.option_id} className="decision-card__considered-item">
+                      <span className="decision-card__considered-title">
+                        {alt.label}
+                        {alt.confidence != null ? (
+                          <span
+                            className={cx(
+                              "decision-card__answer-conf",
+                              alt.confidence < 0.5 && "decision-card__answer-conf--low",
+                            )}
+                            title="Уверенность системы в этом варианте"
+                          >
+                            {Math.round(alt.confidence * 100)}%
+                          </span>
+                        ) : null}
+                      </span>
+                      {alt.description ? (
+                        <span className="decision-card__considered-desc">{alt.description}</span>
+                      ) : null}
+                    </li>
+                  ))}
+              </ul>
             </div>
           ) : null}
 
@@ -455,51 +489,17 @@ function DecisionCard({
             </div>
           ) : null}
 
-          {/* META-БЛОК в режиме реестра: артефакт + альтернативы dropdown */}
-          {!isInteractive ? (
-            <div className="decision-card__meta-row">
-              {decision.affected_artifact_ids.length > 0 ? (
-                <Link
-                  to={`/projects/${decision.project_id}/artifacts/${decision.affected_artifact_ids[0]}`}
-                  className="decision-card__artifact-link"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <FileText size={13} />
-                  Артефакт
-                </Link>
-              ) : null}
-              {decision.alternatives.length > 1 ? (
-                <details className="decision-card__alts-drop">
-                  <summary>
-                    Альтернативы ({decision.alternatives.length - 1})
-                  </summary>
-                  <ul className="decision-card__alts-list">
-                    {decision.alternatives
-                      .filter((a) => a.option_id !== decision.chosen_option_id)
-                      .map((alt) => (
-                        <li key={alt.option_id}>
-                          <span className="decision-card__alt-title">
-                            {alt.label}
-                            {alt.confidence !== null && alt.confidence !== undefined ? (
-                              <span
-                                className={cx(
-                                  "decision-card__option-confidence",
-                                  alt.confidence < 0.5 && "decision-card__option-confidence--low",
-                                )}
-                                title="Уверенность системы в этом варианте"
-                              >
-                                {Math.round(alt.confidence * 100)}%
-                              </span>
-                            ) : null}
-                          </span>
-                          {alt.description ? (
-                            <span className="decision-card__alt-desc">{alt.description}</span>
-                          ) : null}
-                        </li>
-                      ))}
-                  </ul>
-                </details>
-              ) : null}
+          {/* READ-ONLY: подвал — тихая ссылка на затронутый артефакт */}
+          {!isInteractive && decision.affected_artifact_ids.length > 0 ? (
+            <div className="decision-card__footer">
+              <Link
+                to={`/projects/${decision.project_id}/artifacts/${decision.affected_artifact_ids[0]}`}
+                className="decision-card__artifact-link"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <FileText size={13} />
+                Открыть артефакт
+              </Link>
             </div>
           ) : null}
         </div>
@@ -534,18 +534,18 @@ export function DecisionsSubNav({ projectId }: { projectId: string }) {
   return (
     <nav className="decisions-subnav" aria-label="Разделы решений">
       <NavLink
-        to={`/projects/${projectId}/decisions/pending`}
-        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
-      >
-        Открытые
-        {pendingCount > 0 ? <span className="decisions-subnav__badge">{pendingCount}</span> : null}
-      </NavLink>
-      <NavLink
         end
         to={`/projects/${projectId}/decisions`}
         className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
       >
         Реестр
+      </NavLink>
+      <NavLink
+        to={`/projects/${projectId}/decisions/pending`}
+        className={({ isActive }) => cx("decisions-subnav__item", isActive && "decisions-subnav__item--active")}
+      >
+        Открытые
+        {pendingCount > 0 ? <span className="decisions-subnav__badge">{pendingCount}</span> : null}
       </NavLink>
     </nav>
   );
@@ -556,23 +556,29 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
 
+  // Одна загрузка всех решений; фильтрация — на клиенте. Тогда счётчики на
+  // фильтрах всегда полные, смена фильтра мгновенна и НЕ дёргает экран (нет
+  // рефетча → нет «прыжка» наверх).
   const query = useQuery({
-    queryKey: ["decisions", projectId, levelFilter, statusFilter],
-    queryFn: () =>
-      api.getDecisionsRegistry(projectId, {
-        level: levelFilter === "all" ? undefined : levelFilter,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        includeDetails: false,
-      }),
+    queryKey: ["decisions", projectId],
+    queryFn: () => api.getDecisionsRegistry(projectId, { includeDetails: false }),
   });
 
   if (query.isLoading || !query.data) {
     return <LoadingPanel title="Загружаем реестр решений…" />;
   }
   const view: ProjectDecisionsView = query.data;
-  const filteredItems = showRiskyOnly
-    ? view.items.filter((d) => d.is_low_confidence)
-    : view.items;
+  const filteredItems = view.items.filter(
+    (d) =>
+      (levelFilter === "all" || d.level === levelFilter) &&
+      (statusFilter === "all" || d.status === statusFilter) &&
+      (!showRiskyOnly || d.is_low_confidence),
+  );
+  // Счётчики — из полного набора (не из отфильтрованного), чтобы числа на
+  // фильтрах не «прыгали» при выборе.
+  const levelCount = (lvl: DecisionLevel) => view.items.filter((d) => d.level === lvl).length;
+  const pendingCount = view.items.filter((d) => d.status === "proposed").length;
+  const uncertainCount = view.items.filter((d) => d.is_low_confidence).length;
   // Сортировка по важности — самые требующие внимания вверху:
   //   1. status="proposed" (ждут ответа пользователя)
   //   2. is_low_confidence (LLM не уверена в дефолте)
@@ -600,87 +606,74 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
       <DecisionsSubNav projectId={projectId} />
       <SectionCard
         title={
-          <div className="decisions-page__header">
-            <span>Реестр решений</span>
-            <a
-              className="decisions-page__download"
-              href={`/api/projects/${projectId}/decisions/export.pdf`}
-              target="_blank"
-              rel="noreferrer"
-              title="Скачать весь реестр в PDF"
-            >
-              <Download size={14} /> Скачать PDF
-            </a>
-          </div>
+          /* Тихая строка-сводка слева в шапке карточки: внимание/доверие/режим. */
+          <span className="decisions-summary">
+            {pendingCount > 0 ? (
+              <span className="decisions-summary__pending">Ждут ответа: {pendingCount}</span>
+            ) : (
+              <span>Все ответы получены</span>
+            )}
+            {uncertainCount > 0 ? (
+              <span className="decisions-summary__uncertain"> · Система не уверена: {uncertainCount}</span>
+            ) : null}
+            <span className="decisions-summary__muted"> · Режим: {view.mode}</span>
+          </span>
+        }
+        actions={
+          <a
+            className="decisions-page__download"
+            href={`/api/projects/${projectId}/decisions/export.pdf`}
+            target="_blank"
+            rel="noreferrer"
+            title="Экспортировать весь реестр в PDF"
+          >
+            <Download size={14} /> Экспорт PDF
+          </a>
         }
       >
-        <p className="decisions-page__intro">
-          Все решения, которые система приняла или собирается принять при сборке артефактов проекта.
-          В режиме <strong>{view.mode}</strong> вы видите как ваши участвующие решения, так и те, что
-          были приняты автоматически.
-        </p>
-
-        {/* Hero counters */}
-        <div className="decisions-hero">
-          <DecisionCounter
-            label="На вашем уровне"
-            value={view.surfaced_total}
-            sub={view.surfaced_pending > 0 ? `${view.surfaced_pending} ждут ответа` : "все ответы получены"}
-            tone={view.surfaced_pending > 0 ? "active" : "muted"}
-            emphasis
-          />
-          <DecisionCounter label="Бизнес" value={view.business_count} tone="danger" />
-          <DecisionCounter label="Архитектура" value={view.architecture_count} tone="warning" />
-          <DecisionCounter label="Детали" value={view.detail_count} tone="muted" />
-          <DecisionCounter
-            label="Система не уверена"
-            value={view.low_confidence_count}
-            tone={view.low_confidence_count > 0 ? "warning" : "muted"}
-          />
-        </div>
-
-        {/* Filters toolbar */}
-        <div className="decisions-toolbar">
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Уровень:</span>
-            <div className="segmented">
-              {(["all", "business", "architecture", "detail"] as LevelFilter[]).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", levelFilter === f && "segmented__item--active")}
-                  onClick={() => setLevelFilter(f)}
-                >
-                  {f === "all" ? "Все" : LEVEL_LABEL[f as DecisionLevel]}
-                </button>
-              ))}
-            </div>
+        {/* Один лёгкий ряд фильтров: уровень (с числами) + статус + критичность. */}
+        <div className="decisions-filters">
+          <div className="segmented">
+            {(["all", "business", "architecture", "detail"] as LevelFilter[]).map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={cx("segmented__item", levelFilter === f && "segmented__item--active")}
+                onClick={() => setLevelFilter(f)}
+              >
+                {f === "all" ? "Все" : LEVEL_LABEL[f as DecisionLevel]}
+                <span className="segmented__count">
+                  {f === "all" ? view.items.length : levelCount(f as DecisionLevel)}
+                </span>
+              </button>
+            ))}
           </div>
-          <div className="decisions-filter">
-            <span className="decisions-filter__label">Статус:</span>
-            <div className="segmented">
-              {(
-                ["all", "proposed", "accepted_default", "user_overridden", "deferred"] as StatusFilter[]
-              ).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  className={cx("segmented__item", statusFilter === f && "segmented__item--active")}
-                  onClick={() => setStatusFilter(f)}
-                >
-                  {f === "all" ? "Все" : STATUS_LABEL[f as DecisionStatus]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label className="decisions-filter__check">
-            <input
-              type="checkbox"
-              checked={showRiskyOnly}
-              onChange={(e) => setShowRiskyOnly(e.target.checked)}
-            />
-            <span>Только рискованные</span>
-          </label>
+
+          <select
+            className="decisions-filters__status"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label="Фильтр по статусу"
+          >
+            <option value="all">Все статусы</option>
+            <option value="proposed">{STATUS_LABEL.proposed}</option>
+            <option value="accepted_default">{STATUS_LABEL.accepted_default}</option>
+            <option value="user_overridden">{STATUS_LABEL.user_overridden}</option>
+            <option value="deferred">{STATUS_LABEL.deferred}</option>
+          </select>
+
+          <button
+            type="button"
+            className={cx(
+              "decisions-filters__risky",
+              showRiskyOnly && "decisions-filters__risky--active",
+            )}
+            onClick={() => setShowRiskyOnly((v) => !v)}
+            aria-pressed={showRiskyOnly}
+            title="Показать только решения, в которых система не уверена"
+          >
+            Критичные{uncertainCount > 0 ? ` · ${uncertainCount}` : ""}
+          </button>
         </div>
 
         {visibleItems.length === 0 ? (
@@ -700,30 +693,6 @@ export function DecisionsRegistryPage({ projectId }: { projectId: string }) {
           </div>
         )}
       </SectionCard>
-    </div>
-  );
-}
-
-function DecisionCounter({
-  label,
-  value,
-  sub,
-  tone,
-  emphasis,
-}: {
-  label: string;
-  value: number;
-  sub?: string;
-  tone: "active" | "danger" | "warning" | "success" | "muted";
-  emphasis?: boolean;
-}) {
-  return (
-    <div className={cx("decision-counter", emphasis && "decision-counter--emphasis")}>
-      <span className={cx("decision-counter__value", `decision-counter__value--${tone}`)}>
-        {value}
-      </span>
-      <span className="decision-counter__label">{label}</span>
-      {sub ? <span className="decision-counter__sub">{sub}</span> : null}
     </div>
   );
 }
@@ -755,10 +724,10 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["checkpoint", projectId, sessionId] });
       queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "shell"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
-      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task_graph"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "artifacts"] });
       // Назад на обзор — там пользователь видит свежий workflow run progress
       navigate(`/projects/${projectId}/overview`);
@@ -888,7 +857,7 @@ export function CheckpointsListPage({ projectId }: { projectId: string }) {
                   <div className="checkpoint-list__title">{s.task_title || s.artifact_role}</div>
                   <div className="checkpoint-list__meta">
                     {s.decisions.length}{" "}
-                    {s.decisions.length === 1 ? "решение" : "решений"} · создано {s.created_at?.slice(0, 16)?.replace("T", " ")}
+                    {s.decisions.length === 1 ? "решение" : "решений"} · создано {formatDateTime(s.created_at)}
                   </div>
                 </div>
                 <Button
@@ -947,10 +916,10 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "shell"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
-      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task_graph"] });
       navigate(`/projects/${projectId}/overview`);
     },
   });
@@ -969,9 +938,6 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
             title="Нет открытых решений"
             description="Когда параллельные шаги дойдут до точек, где нужны ваши решения — они появятся здесь все вместе."
           />
-          <Button tone="primary" onClick={() => navigate(`/projects/${projectId}/overview`)}>
-            К проекту
-          </Button>
         </SectionCard>
       </div>
     );
@@ -983,16 +949,7 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
   return (
     <div className="checkpoint-page">
       <DecisionsSubNav projectId={projectId} />
-      <SectionCard
-        title={
-          <div className="checkpoint-page__title">
-            <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/overview`)}>
-              <ArrowLeft size={14} /> К проекту
-            </Button>
-            <span>Открытые решения</span>
-          </div>
-        }
-      >
+      <SectionCard title="Открытые решения">
         <p className="checkpoint-intro__lead">
           {items.length === 1 ? "1 решение" : `${items.length} решений`} из параллельных шагов ждут
           вашего ответа. Варианты по умолчанию уже выбраны — измените нужные и отправьте все разом.

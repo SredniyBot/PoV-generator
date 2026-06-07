@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
+from ..domain.artifacts import ArtifactRecord
 from ..domain.positions import (
     Position,
     PositionSource,
@@ -172,6 +173,31 @@ class ProjectService:
             ),
         )
         self._runtime.create_workspace(workspace, manifest, state, bootstrap_events)
+
+        # Входной артефакт: исходный текстовый запрос как просматриваемый
+        # артефакт (kind=input). storage_path с расширением .md → бэкенд отдаёт
+        # его содержимое как markdown_content, и вьюер артефактов показывает
+        # запрос целиком. Не primary — не попадает в skeleton/ключевые артефакты.
+        request = manifest.business_request
+        if request:
+            input_artifact_id = str(uuid.uuid4())
+            self._runtime.store_artifact(
+                workspace,
+                artifact=ArtifactRecord(
+                    artifact_id=input_artifact_id,
+                    project_id=project_id,
+                    artifact_role="input.request",
+                    title="Входной запрос",
+                    description="Исходный текстовый запрос, заданный при создании проекта.",
+                    artifact_format="markdown",
+                    artifact_kind="input",
+                    created_by_task_id=None,
+                    storage_path=f"artifacts/{input_artifact_id}.md",
+                    created_at=created_at,
+                ),
+                content=request,
+            )
+
         return ProjectBootstrap(manifest=manifest, state=state)
 
     # --- чтение -------------------------------------------------------------

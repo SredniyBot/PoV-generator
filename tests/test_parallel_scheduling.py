@@ -31,7 +31,7 @@ def _ws_of(c: SimpleNamespace) -> frozenset:
 
 
 def test_max_concurrency_provider_aware() -> None:
-    assert max_concurrency_for("claude_subscription") == 2
+    assert max_concurrency_for("claude_subscription") == 3
     assert max_concurrency_for("claude_sdk") == 5
     assert max_concurrency_for("openrouter") == 5
     assert max_concurrency_for("stub") == 8

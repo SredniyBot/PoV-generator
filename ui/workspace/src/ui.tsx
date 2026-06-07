@@ -1,18 +1,14 @@
-import type { CSSProperties, PropsWithChildren, ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PropsWithChildren, ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 
-import { api as apiClient } from "./api";
-import { activeRunRefetchInterval } from "./realtime";
 import {
   AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   ChevronRight,
   CircleDot,
+  Clock,
   FileCog,
   FileText,
-  GitBranch,
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
@@ -36,7 +32,6 @@ import type {
   ProjectShellView,
   ProjectSituationView,
   ProjectStateView,
-  TaskNodeView,
   TimelineEntryView,
 } from "./types";
 import type { RealtimeStatus } from "./useProjectRealtime";
@@ -59,6 +54,21 @@ export function formatDateTime(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+// Дата последнего обновления для шапки проекта: «7 июня, 12:08» — без ведущих
+// нулей и сокращений с точкой, спокойным мета-стилем, как остальные подписи.
+function formatUpdatedAt(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const day = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(date);
+  const time = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return `${day}, ${time}`;
 }
 
 export function prettyLabel(input: string | null | undefined): string {
@@ -290,6 +300,30 @@ export function Drawer({
   );
 }
 
+type ProjectDotTone = "running" | "attention" | "done" | "paused" | "idle";
+
+// Состояние проекта одной точкой. has_blockers — самый надёжный сигнал «нужно
+// ваше решение»; остальное — эвристикой по status_label. running дополнительно
+// пульсирует. Полное состояние — в подсказке (title).
+function projectDotState(p: ProjectListItemView): {
+  tone: ProjectDotTone;
+  pulse: boolean;
+  label: string;
+} {
+  if (p.has_blockers) return { tone: "attention", pulse: false, label: "Ждёт вашего решения" };
+  const s = (p.status_label ?? "").toLowerCase();
+  if (/running|active|в работе|ид[её]т|работа/.test(s)) {
+    return { tone: "running", pulse: true, label: "Работает" };
+  }
+  if (/complete|done|готов|заверш/.test(s)) {
+    return { tone: "done", pulse: false, label: p.status_label || "Готово" };
+  }
+  if (/пауз|приостан|останов|cancel|отмен/.test(s)) {
+    return { tone: "paused", pulse: false, label: p.status_label || "Остановлен" };
+  }
+  return { tone: "idle", pulse: false, label: p.status_label || "—" };
+}
+
 export function ProjectRail({
   projects,
   selectedProjectId,
@@ -329,7 +363,9 @@ export function ProjectRail({
             icon={<Layers3 size={18} />}
           />
         ) : (
-          projects.map((project) => (
+          projects.map((project) => {
+            const dot = projectDotState(project);
+            return (
             // Кнопка удаления — сиблинг <Link>, а не потомок (button внутри
             // <a> невалиден по HTML5). Обёртка задаёт positioning-контекст.
             <div key={project.project_id} className="project-item-wrap">
@@ -337,19 +373,22 @@ export function ProjectRail({
                 className={cx(
                   "project-item",
                   selectedProjectId === project.project_id && "project-item--active",
-                  project.has_blockers && "project-item--blocked",
                 )}
                 to={`/projects/${project.project_id}/overview`}
               >
-                <div className="project-item__topline">
-                  <strong>{project.name}</strong>
-                  {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
+                <div className="project-item__row">
+                  <span
+                    className={cx(
+                      "project-item__dot",
+                      `project-item__dot--${dot.tone}`,
+                      dot.pulse && "project-item__dot--pulse",
+                    )}
+                    title={dot.label}
+                    aria-label={dot.label}
+                  />
+                  <strong className="project-item__name">{project.name}</strong>
                 </div>
-                <div className="project-item__meta">
-                  <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
-                  <span>{formatDateTime(project.updated_at)}</span>
-                </div>
-                <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
+                <span className="project-item__date">обновлено {formatDateTime(project.updated_at)}</span>
               </Link>
               <button
                 type="button"
@@ -373,7 +412,8 @@ export function ProjectRail({
                 )}
               </button>
             </div>
-          ))
+            );
+          })
         )}
       </nav>
       {/* «Настройки» — внизу рейла. Системные настройки (LLM-провайдеры,
@@ -387,7 +427,16 @@ export function ProjectRail({
   );
 }
 
-export function WorkspaceTabs({ projectId }: { projectId: string }) {
+export function WorkspaceTabs({
+  projectId,
+  pendingDecisionsCount,
+}: {
+  projectId: string;
+  // Счётчик открытых решений — бейдж на вкладке «Решения». Заменяет прежнюю
+  // кнопку «Решения ждут: N», которая жила в шапке и была удалена вместе с
+  // блоком objective-чипов. Источник — App.tsx (headerCheckpointsQuery).
+  pendingDecisionsCount?: number;
+}) {
   // 5 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
   // root-level страницей `/settings` (LLM-провайдеры). Содержимое
   // прошлого таба (Состояние / Замечания / Технические детали) — это
@@ -396,9 +445,9 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   // v3.1: legacy «Вопросы» и «Журнал решений» удалены — Decision (v3.0
   // реестр) полностью покрывает оба сценария.
   const tabs = [
-    { to: `/projects/${projectId}/overview`, label: "Обзор" },
+    { to: `/projects/${projectId}/overview`, label: "Проект" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Решения" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения", badge: pendingDecisionsCount },
     { to: `/projects/${projectId}/requisites`, label: "Реквизиты" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
@@ -408,6 +457,11 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
       {tabs.map((tab) => (
         <NavLink key={tab.to} to={tab.to} className={({ isActive }) => cx("tabs__item", isActive && "tabs__item--active")}>
           {tab.label}
+          {tab.badge && tab.badge > 0 ? (
+            <span className="tabs__badge" title="Открытые решения ждут ответа">
+              {tab.badge}
+            </span>
+          ) : null}
         </NavLink>
       ))}
     </div>
@@ -418,12 +472,12 @@ export function ConnectionBadge({ status }: { status: RealtimeStatus }) {
   const tone = status === "connected" ? "success" : status === "degraded" ? "warning" : "muted";
   const label =
     status === "connected"
-      ? "Realtime активен"
+      ? "Backend подключен"
       : status === "connecting"
         ? "Подключение…"
         : status === "degraded"
-          ? "Realtime недоступен"
-          : "Realtime отключён";
+          ? "Backend недоступен"
+          : "Backend отключён";
   return (
     <div className="connection-badge">
       <StatusPill tone={tone}>
@@ -453,244 +507,64 @@ const CLARIFICATION_MODE_OPTIONS = {
   },
 } as const;
 
+// Селектор «Режим участия пользователя». Вынесен из шапки — теперь живёт в
+// правой колонке вкладки «Проект».
+export function ModeControl({
+  value,
+  onChange,
+  pending,
+}: {
+  value?: string;
+  onChange?: (mode: string) => void;
+  pending?: boolean;
+}) {
+  const selected = value && value in CLARIFICATION_MODE_OPTIONS ? value : "balanced";
+  const option = CLARIFICATION_MODE_OPTIONS[selected as keyof typeof CLARIFICATION_MODE_OPTIONS];
+  return (
+    <div className="mode-control">
+      <label className="field">
+        <span>Режим участия пользователя</span>
+        <select value={selected} onChange={(e) => onChange?.(e.target.value)} disabled={pending}>
+          {Object.entries(CLARIFICATION_MODE_OPTIONS).map(([v, o]) => (
+            <option key={v} value={v}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p>{option.description}</p>
+    </div>
+  );
+}
+
 export function WorkspaceHeader({
   shell,
   connectionStatus,
-  clarificationMode,
-  onClarificationModeChange,
-  modePending,
+  runStatus,
   actions,
-  pendingCheckpointCount,
-  pendingCheckpointSessionId,
-  onOpenCheckpoints,
-  onActivateNextObjective,
-  activatingNextObjective,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
-  clarificationMode?: string;
-  onClarificationModeChange?: (mode: string) => void;
-  modePending?: boolean;
+  // Компактный статус прогона (пилюля + текущий шаг + N в работе) — в строке
+  // шапки вместо общего status_label проекта.
+  runStatus?: ReactNode;
   actions?: ReactNode;
-  // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
-  // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
-  // (список) или сразу на /checkpoints/{id} если одна.
-  pendingCheckpointCount?: number;
-  pendingCheckpointSessionId?: string | null;
-  onOpenCheckpoints?: () => void;
-  // Цепочка objective'ов: когда текущий objective завершён и у него есть
-  // compatible_next_objectives, UI показывает кнопку перехода.
-  onActivateNextObjective?: (objectiveRef: string) => void;
-  activatingNextObjective?: boolean;
 }) {
-  const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
-  const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
   return (
     <header className="workspace-header">
-      <div className="workspace-header__intro">
-        <div className="workspace-header__eyebrow">
-          <StatusPill tone={shell.status_label === "Готово" ? "success" : "active"}>{shell.status_label}</StatusPill>
-          <span>Обновлено {formatDateTime(shell.updated_at)}</span>
-        </div>
+      <div className="workspace-header__topline">
         <h1>{shell.name}</h1>
-        <p className="workspace-header__request">{shell.business_request}</p>
-        <div className="workspace-header__meta">
-          {shell.objective_history && shell.objective_history.length > 0 ? (
-            <>
-              {shell.objective_history.map((ref) => (
-                <span key={ref} className="meta-chip meta-chip--muted" title="Завершённый objective">
-                  <CheckCircle2 size={14} />
-                  {ref}
-                </span>
-              ))}
-              <ChevronRight size={14} className="meta-chip__sep" />
-            </>
-          ) : null}
-          <span className="meta-chip">
-            <Waypoints size={14} />
-            {shell.objective_ref}
-          </span>
-          <span className="meta-chip meta-chip--accent">
-            <Layers3 size={14} />
-            Доменов: {shell.active_domain_packs.length}
-          </span>
-          {/* CTA «Перейти к следующему этапу» переехала в StageStatusBar
-              (степпер над вкладками) — здесь больше не дублируется. */}
-          {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
-            <button
-              type="button"
-              className="meta-chip meta-chip--button meta-chip--danger"
-              onClick={onOpenCheckpoints}
-              title="Workflow приостановлен — нужны ваши решения перед сборкой артефакта"
-            >
-              <GitBranch size={14} />
-              Решения ждут: {pendingCheckpointCount}
-            </button>
-          ) : null}
+        {runStatus}
+        <span className="workspace-header__updated">
+          <Clock size={12} />
+          обновлено {formatUpdatedAt(shell.updated_at)}
+        </span>
+        <div className="workspace-header__topline-end">
+          <ConnectionBadge status={connectionStatus} />
+          {actions}
         </div>
-      </div>
-      <div className="workspace-header__side">
-        <ConnectionBadge status={connectionStatus} />
-        {onClarificationModeChange ? (
-          <div className="mode-control">
-            <label className="field">
-              <span>Режим участия пользователя</span>
-              <select
-                value={selectedMode}
-                onChange={(event) => onClarificationModeChange(event.target.value)}
-                disabled={modePending}
-              >
-                {Object.entries(CLARIFICATION_MODE_OPTIONS).map(([value, option]) => (
-                  <option key={value} value={value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p>{selectedModeOption.description}</p>
-          </div>
-        ) : null}
-        {actions}
       </div>
     </header>
-  );
-}
-
-export function CommandBar({
-  projectId,
-}: {
-  // L6-10: глобальная шапка = слой СТАТУСА, а не команд.
-  //
-  // Старое поведение (вечная кнопка «Продолжить» на каждой вкладке) давало
-  // ложный сигнал «проект простаивает» и могла предлагать запуск даже когда
-  // нужно сперва ответить на вопросы. См. USERS_AND_JTBD §5B C1 (trust
-  // calibration): UI должен честно отражать состояние, а не подталкивать к
-  // действию когда оно невозможно.
-  //
-  // Теперь шапка показывает один компактный индикатор:
-  //   - "Идёт работа"           + "Приостановить" (единственная глобальная команда)
-  //   - "Готово"                 (статус, без действия)
-  //   - ""                       (idle/блокеры) — команды живут в Обзоре,
-  //                              блокеры уже показаны бейджем в шапке выше
-  projectId: string;
-}) {
-  const queryClient = useQueryClient();
-  const activeRunQuery = useQuery({
-    queryKey: [projectId, "workflow-run-active"],
-    queryFn: () => apiClient.getActiveWorkflowRun(projectId),
-    // Прогресс инвалидируется WS-пушем (workflow_runs); полл — страховка
-    // только пока run идёт, на простое off.
-    refetchInterval: activeRunRefetchInterval,
-  });
-  const pauseMutation = useMutation({
-    mutationFn: (runId: string) => apiClient.cancelWorkflow(projectId, runId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
-    },
-  });
-
-  const activeRun = activeRunQuery.data ?? null;
-  const isRunning =
-    activeRun !== null && (activeRun.status === "running" || activeRun.status === "pending");
-
-  if (!isRunning) {
-    return null;
-  }
-
-  const pausing = pauseMutation.isPending || Boolean(activeRun?.cancel_requested);
-  return (
-    <div className="command-bar command-bar--running">
-      <span className="command-bar__pulse" aria-hidden />
-      <span className="command-bar__status">Идёт работа</span>
-      <button
-        type="button"
-        className="command-bar__pause"
-        onClick={() => activeRun && pauseMutation.mutate(activeRun.run_id)}
-        disabled={pausing}
-      >
-        {pausing ? "Останавливаем…" : "Приостановить"}
-      </button>
-    </div>
-  );
-}
-
-export function TaskGraphTree({
-  nodes,
-  onOpenTask,
-  flash,
-}: {
-  nodes: TaskNodeView[];
-  onOpenTask: (task: TaskNodeView) => void;
-  flash?: boolean;
-}) {
-  return (
-    <SectionCard title="Карта зависимостей" subtitle="Это структура работ, а не порядок выполнения: система запускает любые допустимые задачи" className={cx("task-graph-card", flash && "live-flash")}>
-      <div className="task-graph-tree task-graph-tree--stacked">
-        {nodes.length === 0 ? (
-          <EmptyState title="Граф пока пуст" description="Он появится после создания или перепланирования проекта." />
-        ) : (
-          nodes.map((node) => (
-            <TaskGraphNode key={node.task_id} node={node} onOpenTask={onOpenTask} />
-          ))
-        )}
-      </div>
-    </SectionCard>
-  );
-}
-
-function TaskGraphNode({
-  node,
-  onOpenTask,
-}: {
-  node: TaskNodeView;
-  onOpenTask: (task: TaskNodeView) => void;
-}) {
-  const tone =
-    node.status === "completed"
-      ? "success"
-      : node.status === "failed"
-        ? "danger"
-        : node.blocking_clarification_count > 0
-          ? "warning"
-          : node.is_current || node.status === "ready"
-            ? "active"
-            : "muted";
-  return (
-    <div className="task-graph-node" style={{ "--task-depth": node.depth } as CSSProperties}>
-            <button
-              className={cx(
-                "task-node",
-                "task-node--row",
-                node.is_current && "task-node--current",
-                node.status === "failed" && "task-node--danger",
-                node.blocking_clarification_count > 0 && "task-node--warning",
-              )}
-              onClick={() => onOpenTask(node)}
-              type="button"
-            >
-              <div className={cx("task-node__marker", `task-node__marker--${tone}`)} />
-              <div className="task-node__content">
-          <span className="task-node__title">{node.title}</span>
-          {node.status_summary ? <p className="task-node__summary">{node.status_summary}</p> : null}
-              </div>
-              <div className="task-node__meta">
-          <StatusPill tone={tone}>{prettyLabel(node.status)}</StatusPill>
-          {node.blocking_clarification_count > 0 ? (
-            <StatusPill tone="warning">{node.blocking_clarification_count} уточн.</StatusPill>
-          ) : null}
-          <span>{prettyLabel(node.template_type)}</span>
-          <span>{prettyLabel(node.origin_kind)}</span>
-          {node.slot_id ? <span>{node.slot_id}</span> : null}
-              </div>
-            </button>
-      {node.children.length > 0 ? (
-        <div className="task-graph-node__children">
-          {node.children.map((child) => (
-            <TaskGraphNode key={child.task_id} node={child} onOpenTask={onOpenTask} />
-          ))}
-        </div>
-      ) : null}
-    </div>
   );
 }
 

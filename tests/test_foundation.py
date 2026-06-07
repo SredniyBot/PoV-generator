@@ -531,9 +531,10 @@ def test_execution_emits_primary_artifact_with_reasoning_and_trace_metadata(
     assert output_kinds == {"primary"}
     assert bundle.request.methodology_pack_ref == "process.lean_jtbd@1.0.0"
 
-    # И только primary артефакт в реестре, без отдельных reasoning/trace.
+    # И только primary артефакт среди произведённых, без отдельных
+    # reasoning/trace (kind=input — это входной запрос, не результат шага).
     artifacts = list(runtime.list_artifacts(workspace))
-    kinds = {artifact.artifact_kind for artifact in artifacts}
+    kinds = {artifact.artifact_kind for artifact in artifacts if artifact.artifact_kind != "input"}
     assert kinds == {"primary"}
 
     # Reasoning и trace доступны через метаинформацию primary артефакта.

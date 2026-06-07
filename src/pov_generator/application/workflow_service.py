@@ -167,26 +167,20 @@ class WorkflowService:
             # v3.0: checkpoint выявления решений может остановить задачу до
             # основной генерации. В этом случае:
             #   - не запускаем валидацию (артефакта нет);
-            #   - task возвращаем в статус "blocked" (через `fail`-transition
-            #     это даст возможность retry после submit_answers);
+            #   - пауза-на-решение — это НЕ ошибка: возвращаем задачу в ready
+            #     (cancel), а планировщик сам пометит её blocked по открытому
+            #     решению (_clarification_blockers) и удержит, пока пользователь
+            #     не ответит. Так статус `failed` остаётся только для настоящих
+            #     ошибок исполнения;
             #   - возвращаем step с маркером paused_for_checkpoint.
             if execution_bundle.result.status == "paused_for_checkpoint":
-                # Сообщение — user-facing: НЕ упоминаем «сессию» и её id
-                # (пользователь не должен знать о сущности сессии вопросов).
-                # Привязываемся к понятному названию задачи/артефакта.
+                # Сообщение — user-facing для ленты/прогона: НЕ упоминаем
+                # «сессию» и её id. Привязываемся к понятному названию задачи.
                 paused_task = self._runtime.get_task(workspace, task_id)
                 pause_message = (
                     f"Ожидает ваших решений перед сборкой «{paused_task.title}»"
                 )
-                self._planning_service.transition_task(
-                    workspace,
-                    task_id,
-                    "fail",
-                    payload={
-                        "error_message": pause_message,
-                        "error_type": "paused_for_checkpoint",
-                    },
-                )
+                self._planning_service.transition_task(workspace, task_id, "cancel")
                 return WorkflowStepResult(
                     planning_outcome=planning_outcome,
                     task_id=task_id,

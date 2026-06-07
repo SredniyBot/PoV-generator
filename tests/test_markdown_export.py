@@ -82,7 +82,11 @@ def test_download_md_returns_markdown(tmp_path: Path) -> None:
     client, project_id = _setup_with_artifacts(tmp_path)
     artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
     assert artifacts
-    artifact_id = artifacts[0]["artifact_id"]
+    # Берём произведённый артефакт, а не входной запрос (kind=input): тест
+    # проверяет, что сгенерированный документ скачивается и начинается с «#».
+    artifact_id = next(
+        a["artifact_id"] for a in artifacts if a["artifact_role"] != "input.request"
+    )
 
     response = client.get(f"/api/projects/{project_id}/artifacts/{artifact_id}/download.md")
     assert response.status_code == 200
@@ -124,6 +128,10 @@ def test_export_zip_empty_project(tmp_path: Path) -> None:
     response = client.get(f"/api/projects/{project_id}/export.zip")
     assert response.status_code == 200
     archive = zipfile.ZipFile(io.BytesIO(response.content))
-    assert "MANIFEST.txt" in archive.namelist()
+    names = archive.namelist()
+    assert "MANIFEST.txt" in names
     manifest = archive.read("MANIFEST.txt").decode("utf-8")
-    assert "Включено артефактов: 0" in manifest
+    # Прогона не было, но проект всегда содержит входной запрос как артефакт
+    # (kind=input) — он и попадает в экспорт. Поэтому ровно один артефакт.
+    assert "Включено артефактов: 1" in manifest
+    assert any(name.startswith("Входной") and name.endswith(".md") for name in names)

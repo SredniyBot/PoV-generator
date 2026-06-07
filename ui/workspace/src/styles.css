@@ -174,19 +174,57 @@ code {
   border: 1px solid var(--border-subtle);
   background: rgba(24, 27, 31, 0.92);
   border-radius: var(--radius-md);
-  padding: 12px 13px;
+  /* справа — постоянный «гаттер» под кнопку удаления (появляется на hover),
+     чтобы она не налезала на текст и не сдвигала контент. */
+  padding: 9px 32px 9px 12px;
   display: flex;
   flex-direction: column;
+  gap: 3px;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+.project-item__row {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  transition: border-color 180ms ease, transform 180ms ease, background-color 180ms ease;
+  min-width: 0;
+}
+.project-item__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-disabled);
+}
+.project-item__dot--running { background: var(--accent); }
+.project-item__dot--attention { background: var(--warning); }
+.project-item__dot--done { background: var(--success); }
+.project-item__dot--paused { background: var(--text-disabled); }
+.project-item__dot--idle { background: var(--text-disabled); }
+.project-item__dot--pulse { animation: tg-pulse-dot 1.6s ease-in-out infinite; }
+.project-item__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+.project-item__date {
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-disabled);
 }
 
 /* Кнопка удаления — в правом нижнем углу карточки, проявляется на hover
    обёртки или при фокусе с клавиатуры (доступность). */
 .project-item__delete {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
+  right: 6px;
+  top: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -220,8 +258,8 @@ code {
 }
 
 .project-item:hover {
-  border-color: rgba(120, 184, 201, 0.18);
-  transform: translateY(-1px);
+  border-color: var(--accent);
+  background: var(--surface-elevated-strong);
 }
 
 .project-item--active {
@@ -269,7 +307,9 @@ code {
   margin: 0;
   color: var(--text-secondary);
   font-size: 13px;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-item__topline strong,
@@ -301,20 +341,41 @@ code {
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 44%),
     var(--surface-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  padding: 24px 26px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 430px);
-  align-items: start;
-  gap: 22px;
+  border-radius: var(--radius-lg);
+  padding: 16px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   box-shadow: var(--shadow-soft);
+}
+
+/* Имя проекта + статус + время обновления + realtime — в одной строке. */
+.workspace-header__topline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.workspace-header__topline-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.workspace-header__updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-meta);
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .workspace-header__intro {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .workspace-header__intro h1,
@@ -323,6 +384,14 @@ code {
   font-size: 32px;
   line-height: 1.08;
   letter-spacing: -0.04em;
+}
+
+/* В шапке проекта заголовок компактнее, чем на лендинге. */
+.workspace-header h1 {
+  margin: 0;
+  font-size: var(--font-size-display);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .workspace-header__intro p,
@@ -344,27 +413,33 @@ code {
   max-width: 78ch;
 }
 
-.workspace-header__request {
-  display: -webkit-box;
-  max-width: 86ch;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.workspace-header__meta {
-  display: flex;
-  flex-wrap: wrap;
+/* Статус прогона в строке шапки (HeaderRunStatus): пилюля + текущий шаг + N. */
+.header-run {
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+.header-run__summary {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
+.header-run__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-size: var(--font-size-meta);
+  white-space: nowrap;
 }
 
 .workspace-header__side {
-  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  align-items: stretch;
+  gap: 10px;
+  align-items: flex-end;
 }
 
 .connection-badge {
@@ -418,6 +493,9 @@ code {
 }
 
 .tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-secondary);
@@ -435,6 +513,22 @@ code {
   background: rgba(95, 167, 184, 0.14);
   border-color: rgba(120, 184, 201, 0.28);
   color: var(--text-primary);
+}
+
+/* Бейдж счётчика на вкладке (открытые решения): компактная пилюля-акцент. */
+.tabs__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
 }
 
 /* Под-навигация раздела «Решения» (Открытые / Реестр). Стилизована как
@@ -491,40 +585,6 @@ code {
   line-height: 1;
 }
 
-.command-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.035);
-}
-
-.command-bar__context {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.command-bar__context strong {
-  font-size: 13px;
-  letter-spacing: 0.01em;
-}
-
-.command-bar__context p {
-  margin: 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-}
-
-.command-bar__controls {
-  display: grid;
-  grid-template-columns: minmax(132px, 164px) minmax(0, 1fr);
-  gap: 12px;
-}
-
-.command-bar__actions,
 .inline-actions,
 .entity-card__actions,
 .modal__footer {
@@ -532,16 +592,6 @@ code {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.command-bar__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.command-bar__button {
-  width: 100%;
-  min-width: 0;
 }
 
 .field {
@@ -676,7 +726,7 @@ code {
   border-radius: 12px;
   padding: 10px 14px;
   cursor: pointer;
-  transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease, color 180ms ease;
+  transition: filter 180ms ease, border-color 180ms ease, background-color 180ms ease, color 180ms ease;
 }
 
 .button span {
@@ -689,7 +739,9 @@ code {
 .artifact-list__item:hover,
 .pack-card:hover,
 .choice-card:hover {
-  transform: translateY(-1px);
+  /* Отдача без движения: раньше был translateY(-1px), который у элементов в
+     плотной сетке дёргался (сдвиг менял hit-area → hover мигал). */
+  filter: brightness(1.08);
 }
 
 .button:disabled {
@@ -758,27 +810,27 @@ code {
 }
 
 .status-pill--active {
-  background: rgba(120, 184, 201, 0.12);
-  color: #d8eef4;
-  border-color: rgba(120, 184, 201, 0.18);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .status-pill--success {
-  background: rgba(114, 193, 144, 0.14);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.2);
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 
 .status-pill--warning {
-  background: rgba(214, 173, 89, 0.14);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.2);
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 
 .status-pill--danger {
-  background: rgba(215, 131, 131, 0.14);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.2);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 
 /* Оценка реализуемости — структурный вид (FeasibilityView): цветной бейдж
@@ -808,18 +860,18 @@ code {
 }
 .feas-overall--feasible {
   background: var(--success-soft);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.25);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 .feas-overall--mixed {
   background: var(--warning-soft);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.25);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 .feas-overall--blocked {
   background: var(--danger-soft);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.25);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 .feasibility-view__list {
   list-style: none;
@@ -858,24 +910,24 @@ code {
   white-space: nowrap;
 }
 .feas-badge--feasible {
-  background: rgba(114, 193, 144, 0.14);
-  color: #dff6e8;
-  border-color: rgba(114, 193, 144, 0.22);
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-border);
 }
 .feas-badge--conditional {
-  background: rgba(214, 173, 89, 0.14);
-  color: #f9e5b7;
-  border-color: rgba(214, 173, 89, 0.22);
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 .feas-badge--uncertain {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--border-subtle);
   color: var(--text-secondary);
   border-color: var(--border-subtle);
 }
 .feas-badge--infeasible {
-  background: rgba(215, 131, 131, 0.14);
-  color: #ffd9d9;
-  border-color: rgba(215, 131, 131, 0.22);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 .feas-chip {
   margin-left: auto;
@@ -883,9 +935,9 @@ code {
   padding: 3px 10px;
   font-size: 11px;
   font-family: var(--font-mono, monospace);
-  background: rgba(120, 184, 201, 0.12);
-  color: #d8eef4;
-  border: 1px solid rgba(120, 184, 201, 0.2);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
   white-space: nowrap;
 }
 .feas-chip--none {
@@ -2822,15 +2874,6 @@ code {
     justify-content: flex-start;
   }
 
-  .command-bar {
-    padding: 14px;
-  }
-
-  .command-bar__controls,
-  .command-bar__actions {
-    grid-template-columns: 1fr;
-  }
-
   .tabs {
     overflow: auto;
     padding-bottom: 4px;
@@ -3283,51 +3326,6 @@ code {
 .workflow-run--failed { border-left-color: rgba(215, 131, 131, 0.6); }
 .workflow-run--cancelled { border-left-color: rgba(214, 173, 89, 0.6); }
 
-.workflow-run__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.workflow-run__title {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-size: 0.9rem;
-  color: var(--text-primary, #e8ecf3);
-  flex: 1 1 50%;
-  min-width: 0;
-}
-
-.workflow-run__summary {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-run__running {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.82rem;
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-.workflow-run__stop {
-  font-size: 0.78rem;
-  color: var(--text-muted, rgba(255, 255, 255, 0.5));
-  white-space: nowrap;
-}
-
-.workflow-run__actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-}
-
 /* Прогресс-бар «X/Y шагов» удалён: у workflow нет фиксированной длины.
    Вместо него — счётчики выполненных задач + всегда видимый лог. */
 
@@ -3389,27 +3387,116 @@ code {
   animation: workflow-pulse 1.6s ease-in-out infinite;
 }
 
-/* Блок «сейчас в работе» — задачи проекта со status=in_progress. */
-.workflow-run__inprogress {
+/* ── Единая лента активности: идёт сейчас + завершённые шаги ──────────── */
+.workflow-run__timeline {
   list-style: none;
-  margin: 0 0 0.5rem 0;
+  margin: 0;
   padding: 0;
-  display: grid;
-  gap: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 360px;
+  overflow-y: auto;
 }
-
-.workflow-run__inprogress-item {
-  display: grid;
-  grid-template-columns: 0.7rem 1fr auto auto;
-  gap: 0.6rem;
+.workflow-run__row {
+  display: flex;
   align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
   padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 0.82rem;
+}
+.workflow-run__row--live {
   background: rgba(120, 184, 201, 0.06);
-  border-left: 2px solid rgba(120, 184, 201, 0.7);
-  border-radius: 0.3rem;
-  font-size: 0.85rem;
+}
+.workflow-run__row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-disabled, #5a6470);
+}
+.workflow-run__row-dot--success { background: rgba(140, 196, 153, 0.9); }
+.workflow-run__row-dot--danger  { background: rgba(215, 131, 131, 0.95); }
+.workflow-run__row-dot--warning { background: rgba(214, 173, 89, 0.9); }
+.workflow-run__row-dot--active  { background: rgba(120, 184, 201, 0.95); }
+.workflow-run__row-dot--neutral { background: var(--text-disabled, #5a6470); }
+.workflow-run__row-dot--live {
+  background: rgba(120, 184, 201, 0.95);
+  animation: tg-pulse-dot 1.6s ease-in-out infinite;
+}
+.workflow-run__row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #e8ecf3);
+  font: inherit;
+}
+.workflow-run__row-title--link {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.workflow-run__row-title--link:hover {
+  color: var(--accent, #78b8c9);
+  text-decoration: underline;
+}
+.workflow-run__row-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill, 999px);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-disabled, #5a6470);
+  font-size: 0.68rem;
+}
+.workflow-run__row-status {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--text-secondary, #9aa4b2);
+}
+.workflow-run__row-status--success { color: rgba(140, 196, 153, 0.9); }
+.workflow-run__row-status--danger  { color: rgba(215, 131, 131, 0.9); }
+.workflow-run__row-status--warning { color: rgba(214, 173, 89, 0.95); }
+.workflow-run__row-status--active  { color: rgba(120, 184, 201, 0.95); }
+.workflow-run__row-duration {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--text-disabled, #5a6470);
+  font-variant-numeric: tabular-nums;
+}
+.workflow-run__row-retry {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
+}
+.workflow-run__row-retry:hover {
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.14));
+  color: var(--text-primary, #e8ecf3);
+}
+.workflow-run__row-error {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: rgba(215, 131, 131, 0.85);
 }
 
+/* Секундомер активной задачи — используется в живой ленте (InProgressTimer). */
 .workflow-run__inprogress-timer {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.78rem;
@@ -3419,113 +3506,6 @@ code {
   padding: 0.1rem 0.4rem;
   border-radius: 0.25rem;
   white-space: nowrap;
-}
-
-.workflow-run__inprogress-dot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: rgba(120, 184, 201, 0.85);
-  animation: workflow-pulse 1.2s ease-in-out infinite;
-}
-
-.workflow-run__inprogress-title {
-  color: var(--text-primary, #e8ecf3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-run__inprogress-template {
-  color: var(--text-secondary, #9aa4b2);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-
-.workflow-run__steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.35rem;
-  font-size: 0.82rem;
-  max-height: 420px;
-  overflow-y: auto;
-}
-
-.workflow-run__step {
-  display: grid;
-  grid-template-columns: 2.5rem 1fr auto auto;
-  gap: 0.6rem;
-  align-items: center;
-  padding: 0.4rem 0.6rem;
-  background: rgba(255, 255, 255, 0.02);
-  border-left: 2px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0.3rem;
-}
-
-.workflow-run__step--passed {
-  border-left-color: rgba(140, 196, 153, 0.6);
-}
-
-.workflow-run__step--failed {
-  border-left-color: rgba(215, 131, 131, 0.7);
-  background: rgba(215, 131, 131, 0.04);
-}
-
-.workflow-run__step--selected,
-.workflow-run__step--retried {
-  border-left-color: rgba(120, 184, 201, 0.7);
-  background: rgba(120, 184, 201, 0.05);
-  animation: workflow-pulse 1.6s ease-in-out infinite;
-}
-
-.workflow-run__step--blocked,
-.workflow-run__step--objective_completed {
-  border-left-color: rgba(180, 180, 180, 0.4);
-}
-
-.workflow-run__step-seq {
-  color: var(--text-secondary, #9aa4b2);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.78rem;
-}
-
-.workflow-run__step-title {
-  color: var(--text-primary, #e8ecf3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.8rem;
-}
-
-.workflow-run__step-status {
-  color: var(--text-secondary, #9aa4b2);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-
-.workflow-run__step-status--passed { color: rgba(140, 196, 153, 0.85); }
-.workflow-run__step-status--failed { color: rgba(215, 131, 131, 0.85); }
-.workflow-run__step-status--error { color: rgba(215, 131, 131, 0.85); }
-.workflow-run__step-status--selected,
-.workflow-run__step-status--retried { color: rgba(120, 184, 201, 0.9); }
-
-.workflow-run__step-duration {
-  color: var(--text-secondary, #9aa4b2);
-  font-size: 0.74rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.workflow-run__step-error {
-  grid-column: 2 / -1;
-  color: rgba(215, 131, 131, 0.75);
-  font-size: 0.75rem;
-  margin-top: 0.2rem;
-  line-height: 1.3;
 }
 
 /* ---- TaskGraphCanvas (ReactFlow + dagre, W4.2 / G1) -------------------- */
@@ -3560,10 +3540,11 @@ code {
 }
 
 .tg-node {
-  width: 240px;
-  min-height: 96px;
+  width: 180px;
+  min-height: 60px;
   background: var(--surface-primary, rgba(28, 32, 38, 0.95));
   border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left-width: 3px;
   border-radius: 0.5rem;
   padding: 0.5rem 0.6rem;
   display: grid;
@@ -3590,72 +3571,104 @@ code {
   50%       { outline-color: rgba(120, 184, 201, 0.35); box-shadow: 0 0 8px 3px rgba(120, 184, 201, 0.15); }
 }
 
-.tg-node--completed { border-left: 3px solid rgba(140, 196, 153, 0.7); }
-.tg-node--in_progress,
-.tg-node--ready { border-left: 3px solid rgba(120, 184, 201, 0.7); }
-.tg-node--waiting_for_children { border-left: 3px solid rgba(214, 173, 89, 0.6); }
-.tg-node--failed,
-.tg-node--blocked { border-left: 3px solid rgba(215, 131, 131, 0.7); }
-.tg-node--skipped,
-.tg-node--obsolete {
-  border-left: 3px solid rgba(150, 150, 150, 0.4);
-  opacity: 0.65;
-}
-.tg-node--candidate { border-left: 3px solid rgba(150, 160, 180, 0.4); }
-
-.tg-node__header {
+/* Статус-строка узла: точка + подпись + (предупреждение) + иконка типа.
+   Цвет статуса задаётся инлайн из единого STATUS_META (полоса слева + точка). */
+.tg-node__status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.4rem;
 }
-
-.tg-pill {
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
+.tg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-.tg-pill--completed { background: rgba(140, 196, 153, 0.18); color: #a8d5b3; }
-.tg-pill--in_progress,
-.tg-pill--ready { background: rgba(120, 184, 201, 0.22); color: #9fd2dd; }
-.tg-pill--waiting_for_children { background: rgba(214, 173, 89, 0.22); color: #e0c179; }
-.tg-pill--failed,
-.tg-pill--blocked { background: rgba(215, 131, 131, 0.22); color: #e3a3a3; }
-.tg-pill--skipped,
-.tg-pill--obsolete { background: rgba(150, 150, 150, 0.15); color: #aaa; }
-.tg-pill--candidate { background: rgba(150, 160, 180, 0.15); color: #b0bccc; }
-
-.tg-node__origin {
-  font-size: 0.65rem;
+/* Пульс у ВСЕХ задач in_progress (а не только у активной) — видно реальную
+   параллельность работы. Переиспользуем keyframe бегущей точки. */
+.tg-dot--pulse {
+  animation: tg-pulse-dot 1.6s ease-in-out infinite;
+}
+.tg-node__status-label {
+  font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
-  text-transform: lowercase;
+}
+.tg-node__type-icon {
+  margin-left: auto;
+  color: var(--text-disabled, #5a6470);
+  flex-shrink: 0;
+}
+.tg-node__collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #9aa4b2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tg-node__collapse:hover { color: var(--text-primary, #e8ecf3); }
+.tg-node__hidden {
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .tg-node__title {
   font-weight: 600;
   color: var(--text-primary, #e8ecf3);
   line-height: 1.25;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.tg-node__meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.7rem;
-  color: var(--text-secondary, #9aa4b2);
+  overflow-wrap: anywhere;
 }
 
 .tg-node__warn {
-  color: rgba(214, 173, 89, 0.95);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.7rem;
   font-weight: 600;
+  color: rgba(214, 173, 89, 0.95);
+}
+
+/* fan-out-узел: пунктирная рамка-маркер + прогресс инстансов */
+.tg-node--fanout {
+  border-style: dashed;
+  border-left-style: solid;
+}
+.tg-node__sub {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+.tg-fanout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.tg-fanout__count {
+  font-size: 0.68rem;
+  color: var(--text-secondary, #9aa4b2);
+  font-variant-numeric: tabular-nums;
+}
+.tg-fanout__bar {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.tg-fanout__bar-fill {
+  height: 100%;
+  background: rgba(120, 184, 201, 0.9);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.tg-fanout__toggle {
+  justify-self: start;
+  margin-top: 0.1rem;
 }
 
 .tg-handle {
@@ -3730,8 +3743,15 @@ code {
   z-index: 5;
 }
 
-.tg-node:hover .tg-node__actions {
+.tg-node:hover .tg-node__actions,
+.react-flow__node.selected .tg-node__actions {
   opacity: 1;
+}
+
+/* Поднимаем узел при наведении/выделении, чтобы оверлей действий был поверх соседей. */
+.react-flow__node:hover,
+.react-flow__node.selected {
+  z-index: 10 !important;
 }
 
 .tg-action-btn {
@@ -4994,6 +5014,162 @@ code {
 .llm-badge--err { background: rgba(220, 100, 100, 0.18); color: #e88080; }
 .llm-badge--neutral { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
 
+/* ── Каталог моделей: строка-аккордеон ─────────────────────────────────
+   В покое — спокойная строка (имя + провайдер + окно тихим текстом).
+   Редактирование маршрутов/окна раскрывается по клику. */
+.llm-model {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.llm-model--open {
+  border-color: var(--border-strong);
+  background: var(--surface-elevated-strong);
+}
+.llm-model__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.llm-model--open .llm-model__head {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.llm-model__chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.llm-model__name {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.llm-model__via {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.llm-model__via em {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+.llm-model__via--none {
+  color: var(--warning);
+}
+.llm-model__extra {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.llm-model__window {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.llm-model__window-mark {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11px;
+}
+.llm-model__test {
+  flex-shrink: 0;
+}
+.llm-model__result {
+  margin: 0;
+  padding: 0 14px 10px 36px;
+  font-size: 12px;
+}
+.llm-model__result--ok { color: #6fc28a; }
+.llm-model__result--err { color: #e36b6b; }
+.llm-model__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px 14px;
+}
+.llm-model__detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.llm-model__detail-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.llm-model__routings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.llm-model__routing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.llm-model__rank {
+  flex-shrink: 0;
+  min-width: 56px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.llm-model__rank--primary {
+  color: var(--accent);
+}
+.llm-model__routing-name {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.llm-model__routing-name em {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+.llm-model__routing-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.llm-model__routing-actions .btn-inline {
+  padding: 2px;
+  color: var(--text-secondary);
+}
+.llm-model__routing-actions .btn-inline:hover {
+  color: var(--text-primary);
+}
+.llm-model__routing-actions .btn-inline:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .llm-form {
   margin-top: 20px;
   padding: 20px;
@@ -5720,10 +5896,10 @@ code {
 .stage-seg {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.4rem 0.7rem;
+  gap: 0.4rem;
+  padding: 0.28rem 0.6rem;
   border-radius: var(--radius-pill, 999px);
-  font-size: 0.92rem;
+  font-size: 0.85rem;
   color: var(--text-muted, rgba(255, 255, 255, 0.55));
   white-space: nowrap;
 }
@@ -5763,31 +5939,8 @@ code {
   color: var(--accent, #78b8c9);
 }
 
-.stage-seg__body {
-  display: inline-flex;
-  flex-direction: column;
-  line-height: 1.15;
-  min-width: 0;
-}
-
 .stage-seg__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  /* На широких экранах заголовки видны целиком; усечение — только как
-     страховка на узких. Бар при нехватке места переносится (flex-wrap). */
-  max-width: 28rem;
-}
-
-/* Активный этап чуть просторнее — там же прогресс. */
-.stage-seg--active .stage-seg__title,
-.stage-seg--current .stage-seg__title {
-  max-width: 32rem;
-}
-
-.stage-seg__progress {
-  font-size: 0.78rem;
-  color: var(--text-muted, rgba(255, 255, 255, 0.6));
 }
 
 .stage-seg__sep {

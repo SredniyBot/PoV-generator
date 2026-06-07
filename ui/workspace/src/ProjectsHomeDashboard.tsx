@@ -16,6 +16,7 @@
  * (точный) + status_label (heuristic match).
  */
 import { useMemo } from "react";
+import { AlertCircle, CheckCircle2, Circle, CircleDot, type LucideIcon } from "lucide-react";
 
 import type { ProjectListItemView } from "./types";
 
@@ -29,7 +30,7 @@ type GroupId = "attention" | "running" | "ready" | "other";
 
 interface GroupSpec {
   id: GroupId;
-  icon: string;
+  Icon: LucideIcon;
   title: string;
   helper: string;
   tone: "danger" | "accent" | "success" | "muted";
@@ -38,28 +39,28 @@ interface GroupSpec {
 const GROUP_ORDER: GroupSpec[] = [
   {
     id: "attention",
-    icon: "🔴",
+    Icon: AlertCircle,
     title: "Требуют вашего внимания",
     helper: "Заблокированы — система не может продолжить без вас.",
     tone: "danger",
   },
   {
     id: "running",
-    icon: "🟢",
+    Icon: CircleDot,
     title: "Идут сами",
     helper: "Система продолжает работать. Можно вернуться позже.",
     tone: "accent",
   },
   {
     id: "ready",
-    icon: "✅",
+    Icon: CheckCircle2,
     title: "Готовы к передаче",
     helper: "Артефакты собраны. Можно принять и отдать команде.",
     tone: "success",
   },
   {
     id: "other",
-    icon: "📦",
+    Icon: Circle,
     title: "В работе",
     helper: "Запущены, но прямо сейчас без блокеров и без активной работы.",
     tone: "muted",
@@ -106,7 +107,7 @@ export function ProjectsHomeDashboard({
             >
               <header className="home-dash__group-header">
                 <h2 id={`group-${spec.id}`} className="home-dash__group-title">
-                  <span aria-hidden>{spec.icon}</span>
+                  <spec.Icon size={16} aria-hidden className="home-dash__group-icon" />
                   <span>{spec.title}</span>
                   <span className="home-dash__group-counter">
                     {groupProjectsList.length}
@@ -190,9 +191,6 @@ function ProjectCard({ project, onClick }: ProjectCardProps) {
         )}
         <footer className="home-card__foot">
           <span className="home-card__updated">{updated}</span>
-          {project.has_blockers && (
-            <span className="home-card__alert">Заблокирован</span>
-          )}
         </footer>
       </button>
     </li>

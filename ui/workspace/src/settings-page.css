@@ -80,3 +80,25 @@
 .settings-page__panel {
   background: transparent;
 }
+
+/* Поле «Параллельных шагов» — раскладка через классы, не инлайн (узкий экран). */
+.llm-row__concurrency-field {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  flex-wrap: wrap;
+}
+.llm-row__concurrency-label {
+  font-size: var(--font-size-meta);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Сообщение об ошибке с иконкой в строке (потерянная модель и пр.). */
+.llm-form__error--row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}

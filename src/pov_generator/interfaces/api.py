@@ -278,20 +278,16 @@ def create_app(
                         )
             except Exception:
                 pass
-            # 2. Orphan tasks в статусе in_progress
+            # 2. Orphan tasks в статусе in_progress: процесс прервал их на лету.
+            # Нормализация статусов: прерванная задача — это НЕ ошибка, её надо
+            # просто переисполнить. cancel возвращает её в ready (как обычная
+            # отмена), и следующий прогон продолжит ровно с неё. Статус `failed`
+            # остаётся только для настоящих ошибок исполнения.
             try:
                 for task in runtime.list_tasks(ws):
                     if task.status == "in_progress":
                         try:
-                            runtime.transition_task(
-                                ws,
-                                task.task_id,
-                                "fail",
-                                payload={
-                                    "error_message": "Процесс был перезапущен во время исполнения задачи.",
-                                    "error_type": "process_restart",
-                                },
-                            )
+                            runtime.transition_task(ws, task.task_id, "cancel")
                             _recovered_tasks += 1
                         except Exception:
                             # state-machine может не допускать transition

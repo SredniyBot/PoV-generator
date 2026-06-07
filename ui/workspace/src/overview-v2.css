@@ -29,6 +29,66 @@
   }
 }
 
+/* Левая колонка вкладки «Проект» — блок workflow (свой card-стиль). */
+.overview-mc__main {
+  min-width: 0;
+}
+
+/* «Подробнее о проекте» — небольшой блок в духе «Режима участия». */
+.overview-about {
+  display: grid;
+  gap: var(--space-3);
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.035);
+}
+.overview-about__title {
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+.overview-about__block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--font-size-body);
+}
+.overview-about__label {
+  color: var(--text-secondary);
+}
+.overview-about__value {
+  color: var(--text-primary);
+}
+.overview-about__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.overview-about__chip {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: var(--font-size-meta);
+}
+.overview-about__link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: var(--font-size-body);
+}
+.overview-about__link:hover {
+  text-decoration: underline;
+}
+
 /* artifact panel ---------------------------------------------------- */
 
 .overview-mc__artifact {
@@ -454,76 +514,6 @@
   color: var(--text-disabled);
   font-family: var(--font-family-mono);
   margin-left: var(--space-1);
-}
-
-/* ---- Workspace-header running indicator (L6-10) ------------------- */
-
-.command-bar.command-bar--running {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  background: var(--accent-soft);
-  border: 1px solid var(--border-accent);
-  border-radius: var(--radius-pill);
-  flex-direction: row;
-}
-
-.command-bar__pulse {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: command-bar-pulse 1200ms var(--motion-easing) infinite;
-}
-
-@keyframes command-bar-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.55;
-    transform: scale(0.78);
-  }
-}
-
-.command-bar__status {
-  font-size: var(--font-size-meta);
-  font-weight: var(--font-weight-medium);
-  color: var(--accent);
-  letter-spacing: 0.02em;
-}
-
-.command-bar__pause {
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--font-size-meta);
-  cursor: pointer;
-  transition:
-    background var(--motion-fast) var(--motion-easing),
-    border-color var(--motion-fast) var(--motion-easing);
-}
-
-.command-bar__pause:hover:not(:disabled) {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.command-bar__pause:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.command-bar__pause:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .status-card__row {
