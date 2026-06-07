@@ -51,6 +51,8 @@ distro==1.9.0
     # via anthropic
 docstring-parser==0.18.0
     # via anthropic
+execnet==2.1.2
+    # via pytest-xdist
 fastapi==0.133.1
     # via pov-generator (pyproject.toml)
 freetype-py==2.5.1
@@ -131,6 +133,10 @@ pypdf==6.11.0
     #   pov-generator (pyproject.toml)
     #   xhtml2pdf
 pytest==8.4.2
+    # via
+    #   pov-generator (pyproject.toml)
+    #   pytest-xdist
+pytest-xdist==3.8.0
     # via pov-generator (pyproject.toml)
 python-bidi==0.6.10
     # via xhtml2pdf

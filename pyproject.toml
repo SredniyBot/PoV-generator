@@ -31,6 +31,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.5,<9.0",
+  "pytest-xdist>=3.6,<4.0",
   "httpx>=0.28.0,<1.0",
   "ruff>=0.15,<1.0",
   "uv>=0.11,<1.0",
@@ -54,6 +55,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Параллельный прогон по умолчанию (pytest-xdist): тесты изолированы (tmp_path +
+# своя SQLite на тест), поэтому безопасно. На 12 ядрах набор идёт в ~2.7 раза
+# быстрее. Для отладки одного теста с pdb/живым выводом — переопределить «-n0».
+addopts = "-n auto"
 
 [tool.ruff]
 target-version = "py311"

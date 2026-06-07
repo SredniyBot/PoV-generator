@@ -52,6 +52,14 @@ class OpenRouterClient:
         return cls(OpenRouterConfig(api_key=api_key, model=model, base_url=base_url))
 
     def chat_json(self, *, system_prompt: str, user_prompt: str, schema: dict[str, object]) -> LLMResult:
+        # Некоторые провайдеры (Alibaba/Qwen через OpenRouter) при заданном
+        # response_format требуют, чтобы слово "json" встречалось в сообщениях,
+        # иначе возвращают HTTP 400 (InvalidParameter). Гарантируем это
+        # безвредной инструкцией — для остальных моделей она ничего не меняет.
+        if "json" not in f"{system_prompt}\n{user_prompt}".lower():
+            system_prompt = (
+                f"{system_prompt.rstrip()}\n\nВерни ответ одним валидным JSON-объектом по схеме."
+            ).strip()
         payload = {
             "model": self._config.model,
             "messages": [

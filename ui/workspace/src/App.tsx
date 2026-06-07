@@ -2348,6 +2348,91 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
   );
 }
 
+// Интерактивный просмотр диаграммы (mermaid SVG) на канвасе: колесо — масштаб,
+// перетаскивание — перемещение, Esc/клик по фону — закрыть. Лёгкая реализация
+// через CSS-transform, без доп. зависимостей.
+function DiagramCanvasModal({ svg, onClose }: { svg: string; onClose: () => void }) {
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+
+  // Колесо — масштаб. Слушатель non-passive, чтобы можно было preventDefault
+  // (иначе страница за модалом скроллится).
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setScale((s) => Math.min(8, Math.max(0.2, s * factor)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const reset = () => {
+    setScale(1);
+    setTx(0);
+    setTy(0);
+  };
+
+  return (
+    <div className="diagram-modal" role="dialog" aria-label="Диаграмма на канвасе" onClick={onClose}>
+      <div className="diagram-modal__toolbar" onClick={(e) => e.stopPropagation()}>
+        <button type="button" onClick={() => setScale((s) => Math.min(8, s * 1.2))} title="Приблизить">
+          +
+        </button>
+        <button type="button" onClick={() => setScale((s) => Math.max(0.2, s / 1.2))} title="Отдалить">
+          −
+        </button>
+        <button type="button" onClick={reset} title="Сбросить вид">
+          Сброс
+        </button>
+        <span className="diagram-modal__zoom">{Math.round(scale * 100)}%</span>
+        <button type="button" className="diagram-modal__close" onClick={onClose} title="Закрыть (Esc)">
+          <XCircle size={18} />
+        </button>
+      </div>
+      <div
+        ref={viewportRef}
+        className="diagram-modal__viewport"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          drag.current = { x: e.clientX, y: e.clientY, tx, ty };
+        }}
+        onPointerMove={(e) => {
+          if (!drag.current) return;
+          setTx(drag.current.tx + (e.clientX - drag.current.x));
+          setTy(drag.current.ty + (e.clientY - drag.current.y));
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+        onPointerLeave={() => {
+          drag.current = null;
+        }}
+      >
+        <div
+          className="diagram-modal__canvas"
+          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"doc" | "reasoning" | "validations" | "decisions" | "versions">("doc");
@@ -2386,6 +2471,9 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     }
   }, [detail.artifact_role, detail.json_content]);
   const articleRef = useRef<HTMLElement | null>(null);
+  // Диаграмма, открытая на интерактивном канвасе (масштаб/перемещение). null —
+  // канвас закрыт. Заполняется по клику на кнопку у отрендеренной mermaid-схемы.
+  const [diagramSvg, setDiagramSvg] = useState<string | null>(null);
   const scrollToSection = (id: string) => {
     // Скроллим к разделу внутри текущего документа, без смены URL-хеша
     // (чтобы не конфликтовать с роутером).
@@ -2399,9 +2487,29 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     const nodes = Array.from(root.querySelectorAll(".mermaid-host")) as HTMLElement[];
     if (nodes.length === 0) return;
     // Безопасный вызов: невалидный mermaid-синтаксис не должен ронять UI.
-    mermaid.run({ nodes }).catch((err) => {
-      console.warn("Mermaid render failed:", err);
-    });
+    mermaid
+      .run({ nodes })
+      .then(() => {
+        // К каждой отрендеренной диаграмме добавляем кнопку «на канвасе» —
+        // открыть схему в интерактивном просмотре (масштаб/перемещение).
+        for (const node of nodes) {
+          if (node.dataset.canvasReady || !node.querySelector("svg")) continue;
+          node.dataset.canvasReady = "1";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "mermaid-host__expand";
+          btn.title = "Открыть на канвасе: масштаб и перемещение";
+          btn.textContent = "⤢ На канвасе";
+          btn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            setDiagramSvg(node.querySelector("svg")?.outerHTML ?? null);
+          });
+          node.appendChild(btn);
+        }
+      })
+      .catch((err) => {
+        console.warn("Mermaid render failed:", err);
+      });
   }, [html, mode]);
   const traceQuery = useQuery({
     queryKey: [projectId, "methodology-trace", detail.created_by_task_id],
@@ -2714,6 +2822,9 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           <EmptyState title="Provenance недоступен" description="Не удалось получить provenance для задачи-производителя." />
         )}
       </Modal>
+      {diagramSvg ? (
+        <DiagramCanvasModal svg={diagramSvg} onClose={() => setDiagramSvg(null)} />
+      ) : null}
       {mode === "doc" ? (
         feasibilityData ? (
           <FeasibilityView data={feasibilityData} />
