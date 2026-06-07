@@ -14,10 +14,19 @@ methodology: minimal
 requires:
   state: [business_request]
   artifacts:
+    # Модель компонентов выводится из утверждённого ТЗ и системного контекста.
+    # Критерии приёмки/НФТ (acceptance), выбранный подход (trade-off) и
+    # ограничения — прямые драйверы декомпозиции, поэтому подаются явно.
     required:
       - architecture.system_context_definition@1.0.0
+      - common.requirements_spec@1.0.0
     optional:
+      - common.acceptance_model_definition@1.0.0
+      - common.solution_tradeoff_matrix@1.0.0
+      - common.constraint_inventory@1.0.0
+      - common.feasibility_assessment@1.0.0
       - common.normalized_request@1.0.0
+      - common.business_outcome_model@1.0.0
       - common.scope_boundary_matrix@1.0.0
       - common.stakeholder_map@1.0.0
       - ml.predictive_problem_definition@1.0.0

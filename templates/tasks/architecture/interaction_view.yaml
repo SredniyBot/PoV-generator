@@ -14,6 +14,9 @@ requires:
       - architecture.system_context_definition@1.0.0
       - architecture.component_model@1.0.0
     optional:
+      # Сценарии/потоки опираются на ТЗ и карту данных/интеграций.
+      - common.requirements_spec@1.0.0
+      - common.integration_data_map@1.0.0
       - integration.integration_operating_model@1.0.0
 produces:
   artifact: architecture.interaction_view@1.0.0

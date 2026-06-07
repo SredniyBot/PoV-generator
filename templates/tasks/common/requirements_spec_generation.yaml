@@ -41,6 +41,7 @@ requires:
     # финальный merge берёт их разделы.
     optional:
       - common.problem_statement@1.0.0
+      - common.constraint_inventory@1.0.0
       - common.integration_data_map@1.0.0
       - common.solution_tradeoff_matrix@1.0.0
       - common.acceptance_model_definition@1.0.0

@@ -26,10 +26,17 @@ requires:
       - architecture.system_context_definition@1.0.0
       - architecture.component_model@1.0.0
       - architecture.interaction_view@1.0.0
-    # Развёртывание и риски — обогащают финальный документ, но не блокируют
-    # сборку (для совсем минимального пилота их можно пропустить).
+      # Утверждённое ТЗ — основа финального документа (трассируемость требований).
+      - common.requirements_spec@1.0.0
+    # Обогащают финальный документ, но не блокируют сборку: критерии приёмки/НФТ,
+    # выбранный подход, ограничения, реализуемость, топология, риски, безопасность.
     optional:
       - architecture.deployment_map@1.0.0
+      - common.acceptance_model_definition@1.0.0
+      - common.solution_tradeoff_matrix@1.0.0
+      - common.constraint_inventory@1.0.0
+      - common.feasibility_assessment@1.0.0
+      - common.deployment_topology@1.0.0
       - common.project_risk_register@1.0.0
       - security.security_compliance_constraints@1.0.0
       - integration.integration_operating_model@1.0.0

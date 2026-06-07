@@ -10,8 +10,14 @@ methodology: minimal
 requires:
   state: [business_request]
   artifacts:
-    optional:
+    # Архитектура строится НА утверждённом ТЗ (этап ТЗ всегда предшествует).
+    # Готовый ТЗ + нормализованный запрос — обязательная опора системного
+    # контекста, а не сырой бизнес-запрос.
+    required:
+      - common.requirements_spec@1.0.0
       - common.normalized_request@1.0.0
+    optional:
+      - common.business_outcome_model@1.0.0
       - common.scope_boundary_matrix@1.0.0
       - common.stakeholder_map@1.0.0
       - integration.integration_operating_model@1.0.0
@@ -30,7 +36,7 @@ summary: |
   Опиши системный контекст проектируемого решения — внешнюю границу системы
   и её взаимодействия с окружающим миром. Этот артефакт отвечает на вопрос
   «что система делает и с кем», но не «как она устроена внутри» — внутреннее
-  устройство пойдёт в следующей задаче (component_decomposition).
+  устройство пойдёт в следующей задаче (component_model).
 
   Структура:
 
