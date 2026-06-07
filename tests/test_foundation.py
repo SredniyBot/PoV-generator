@@ -157,6 +157,30 @@ def test_graph_expansion_is_idempotent(tmp_path: Path) -> None:
     assert first_count == second_count
 
 
+def test_plan_tolerates_orphaned_task_template(tmp_path: Path) -> None:
+    """Дрейф реестра: старый проект может ссылаться на шаблон, удалённый из
+    templates/ (например common.ambiguity_gap_analysis после слияния разбора
+    запроса). Планирование/загрузка не должны падать NotFoundError —
+    осиротевшая задача пропускается, остальной граф работает."""
+    workspace, snapshot, runtime, _project_service, planning_service = init_workspace(tmp_path)
+    planning_service.expand_graph(workspace, snapshot)
+
+    # Эмулируем удаление шаблона из реестра: одна leaf-задача ссылается на
+    # несуществующий шаблон.
+    leaf = next(t for t in runtime.list_tasks(workspace) if t.template_type == "leaf")
+    with runtime._connect(workspace) as conn:
+        conn.execute(
+            "update tasks set template_ref = ? where task_id = ?",
+            ("common.__removed_template__@1.0.0", leaf.task_id),
+        )
+        conn.commit()
+
+    # Раньше здесь вылетал NotFoundError и валил shell/task-graph.
+    decision = planning_service.plan(workspace, snapshot, mode="dry-run")
+    assert decision.outcome in {"selected", "blocked"}
+    assert decision.selected_task_key != "common.__removed_template__@1.0.0"
+
+
 def test_methodology_pack_is_registered_with_stages() -> None:
     registry_service, _, _, _ = build_services()
     snapshot, report = registry_service.validate()

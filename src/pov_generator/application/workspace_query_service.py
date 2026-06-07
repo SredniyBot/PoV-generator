@@ -1917,7 +1917,14 @@ class WorkspaceQueryService:
                 blockers=tuple(blockers),
             )
         if ready:
-            task = max(ready, key=lambda item: context.snapshot.resolve_template(item.template_ref).planning.priority)
+            def _priority(item: TaskRecord) -> int:
+                # Устойчивость к дрейфу реестра: у осиротевшей задачи (шаблон
+                # удалён) приоритет минимальный, загрузку не роняем.
+                try:
+                    return context.snapshot.resolve_template(item.template_ref).planning.priority
+                except Exception:
+                    return -1
+            task = max(ready, key=_priority)
             return ProjectSituationView(
                 project_id=context.manifest.project_id,
                 status_label="Готов к продолжению",

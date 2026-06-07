@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..common.errors import NotFoundError
 from ..common.logging import get_logger
 from ..common.serialization import json_loads, utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
@@ -59,6 +60,22 @@ def _trailing_attempt(stable_key: str) -> int | None:
     try:
         return int(stable_key.rsplit(":", 1)[-1])
     except ValueError:
+        return None
+
+
+def _safe_resolve_template(snapshot: RegistrySnapshot, template_ref: str) -> TemplateSpec | None:
+    """Резолв шаблона СУЩЕСТВУЮЩЕЙ задачи с устойчивостью к дрейфу реестра.
+
+    Старый проект может ссылаться на шаблон, удалённый из templates/ (например
+    `common.ambiguity_gap_analysis@1.0.0` после слияния разбора запроса) — и
+    snapshot пиннинг его не воскресит. Чтобы это не роняло загрузку проекта
+    (план/граф/обзор), такую «осиротевшую» задачу пропускаем (None), а не
+    падаем NotFoundError. Сама задача остаётся в БД и видна в графе со своим
+    сохранённым статусом."""
+    try:
+        return snapshot.resolve_template(template_ref)
+    except NotFoundError:
+        logger.warning(f"шаблон задачи не найден в реестре (дрейф) — задача пропущена: {template_ref}")
         return None
 
 
@@ -366,7 +383,9 @@ class PlanningService:
             for task in tasks:
                 if task.template_type != "composite" or task.status in {"obsolete", "skipped"}:
                     continue
-                template = snapshot.resolve_template(task.template_ref)
+                template = _safe_resolve_template(snapshot, task.template_ref)
+                if template is None:
+                    continue
                 for child in template.children:
                     child_template = snapshot.resolve_template(child.task_ref)
                     stable_key = f"{task.stable_key}:child:{child.identifier}:{child.task_ref.as_string()}"
@@ -418,8 +437,8 @@ class PlanningService:
         for task in tasks:
             if task.template_type != "fan_out" or task.status != "waiting_for_fan_out_source":
                 continue
-            template = snapshot.resolve_template(task.template_ref)
-            if template.fan_out_spec is None or template.children_template_ref is None:
+            template = _safe_resolve_template(snapshot, task.template_ref)
+            if template is None or template.fan_out_spec is None or template.children_template_ref is None:
                 continue
             artifact = self._runtime.latest_artifact_by_role(workspace, template.fan_out_spec.artifact_role)
             if artifact is None:
@@ -556,7 +575,9 @@ class PlanningService:
         for task in leaf_tasks:
             if task.status in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
                 continue
-            template = snapshot.resolve_template(task.template_ref)
+            template = _safe_resolve_template(snapshot, task.template_ref)
+            if template is None:
+                continue
             checks: list[AdmissionCheck] = []
 
             missing_fields = [
