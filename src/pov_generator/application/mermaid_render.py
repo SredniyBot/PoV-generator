@@ -53,6 +53,20 @@ _SVG_MERMAID_CONFIG = {"htmlLabels": False, "flowchart": {"htmlLabels": False}}
 # нулевые массивы; реальные пунктиры (есть ненулевая цифра) сохраняем.
 _DASH_RE = re.compile(r"""stroke-dasharray\s*([:=])\s*(["']?)([^;"'>]*)\2""")
 
+# Mermaid (htmlLabels:false) кладёт подпись во вложенные <tspan> с em-смещениями
+# (y="-0.1em" dy="1.1em") и разбивает слова на отдельные <tspan>. svglib режет
+# ведущие пробелы у tspan (слова слипаются: «Приёмзаявок») и неверно считает
+# em (подпись уезжает к верху узла). Поэтому перед встраиванием «уплощаем»
+# каждый <text>: склеиваем текст с сохранением пробелов и ставим явный baseline
+# (y_текста + 1em·16px — попадает в центр фигуры).
+_SVG_TEXT_RE = re.compile(r"<text\b([^>]*)>(.*?)</text>", re.DOTALL)
+_SVG_EDGE_BG_RE = re.compile(r'<rect class="background"[^>]*/>')
+_TSPAN_X_RE = re.compile(r'<tspan[^>]*\bx="([^"]+)"')
+_TEXT_FRAGMENT_RE = re.compile(r">([^<>]+)<")
+_TEXT_Y_RE = re.compile(r'\by="(-?[\d.]+)"')
+_EM_RE = re.compile(r"(-?[\d.]+)\s*em")
+_DEFAULT_LABEL_FONT_PX = 16.0
+
 
 def _is_disabled() -> bool:
     return bool(os.environ.get("POV_MERMAID_DISABLED"))
@@ -144,6 +158,12 @@ def render_mermaid_to_svg(source: str) -> str | None:
         return None
     if _is_disabled():
         return None
+    # sequence-диаграммы svglib рендерит плохо (боксы участников, активации,
+    # чёрные заливки) и их текст позиционируется иначе (dominant-baseline, не em).
+    # Для них надёжнее PNG (htmlLabels:true даёт корректную раскладку) — вернём
+    # None, вызывающий код возьмёт PNG. SVG-вектор оставляем флоучартам.
+    if source.lstrip().lower().startswith("sequencediagram"):
+        return None
 
     cache_key = hashlib.sha256(source.encode("utf-8")).hexdigest()
     cached = _svg_cache.get(cache_key)
@@ -153,7 +173,7 @@ def render_mermaid_to_svg(source: str) -> str | None:
     raw = _run_mmdc(source, suffix=".svg", extra_args=[], config=_SVG_MERMAID_CONFIG)
     if raw is None:
         return None
-    svg = _sanitize_svg(raw.decode("utf-8", errors="replace"))
+    svg = _fix_svg_text(_sanitize_svg(raw.decode("utf-8", errors="replace")))
     if not _svg_converts_cleanly(svg):
         logger.info("Mermaid SVG не конвертируется чисто (svglib/reportlab); fallback на PNG.")
         return None
@@ -208,6 +228,39 @@ def _sanitize_svg(svg: str) -> str:
         return match.group(0) if re.search(r"[1-9]", value) else ""
 
     return _DASH_RE.sub(_repl, svg)
+
+
+def _fix_svg_text(svg: str) -> str:
+    """Сделать подписи svglib-совместимыми: сохранить пробелы и центрировать.
+
+    1. Убираем фон лейблов рёбер (серый прямоугольник на прозрачном фоне).
+    2. Каждый ``<text>`` уплощаем: склеиваем весь вложенный текст (пробелы между
+       словами сохраняются, в отличие от срезания у tspan) и ставим явный
+       baseline ``y_текста + Σem·16px`` — иначе svglib неверно считает em и
+       подпись уезжает к краю фигуры.
+    Многострочные подписи (редкие у нас) схлопываются в одну строку — это
+    приемлемо для коротких имён компонентов.
+    """
+    svg = _SVG_EDGE_BG_RE.sub("", svg)
+
+    def _fix(match: re.Match[str]) -> str:
+        attrs, inner = match.group(1), match.group(2)
+        content = "".join(_TEXT_FRAGMENT_RE.findall(match.group(0)))
+        if not content.strip():
+            return ""
+        x_match = _TSPAN_X_RE.search(inner)
+        x = x_match.group(1) if x_match else "0"
+        anchor = "middle" if 'text-anchor="middle"' in match.group(0) else "start"
+        y_match = _TEXT_Y_RE.search(attrs)
+        base_y = float(y_match.group(1)) if y_match else 0.0
+        ems = _EM_RE.findall(inner)
+        # Сдвигаем baseline только когда текст позиционирован em-единицами
+        # (флоучарт-подписи). Абсолютно-позиционированный текст не трогаем по y.
+        baseline = base_y + sum(float(v) for v in ems[:2]) * _DEFAULT_LABEL_FONT_PX if ems else base_y
+        # content — это уже валидный XML-текст (сущности целы), не переэкранируем.
+        return f'<text x="{x}" y="{baseline:.2f}" text-anchor="{anchor}">{content}</text>'
+
+    return _SVG_TEXT_RE.sub(_fix, svg)
 
 
 def _svg_converts_cleanly(svg: str) -> bool:

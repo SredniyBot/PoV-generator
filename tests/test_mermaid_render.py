@@ -322,6 +322,39 @@ def test_render_svg_disabled_short_circuits(monkeypatch: pytest.MonkeyPatch) -> 
     assert mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B") is None
 
 
+def test_render_svg_returns_none_for_sequence_diagram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """sequence → SVG не используем (PNG надёжнее); subprocess даже не дёргаем."""
+
+    def boom(*a, **k):
+        raise AssertionError("subprocess не должен вызываться для sequence")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert mermaid_render.render_mermaid_to_svg("sequenceDiagram\nU->>G: ping") is None
+
+
+def test_fix_svg_text_preserves_spaces_and_centers() -> None:
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<rect class="background" x="0" y="0" width="5" height="5"/>'
+        '<text y="-10.1" text-anchor="middle"><tspan x="0" y="-0.1em" dy="1.1em">'
+        "<tspan>Приём</tspan><tspan> заявок</tspan></tspan></text>"
+        "</svg>"
+    )
+    out = mermaid_render._fix_svg_text(svg)
+    assert "Приём заявок" in out          # пробел между словами сохранён
+    assert 'class="background"' not in out  # фон лейбла ребра убран
+    assert 'y="5.90"' in out               # baseline: -10.1 + 1.0em*16 = 5.9
+    assert 'text-anchor="middle"' in out
+
+
+def test_fix_svg_text_keeps_absolute_y_without_em() -> None:
+    """Текст без em (абсолютный y) не сдвигаем — иначе уехал бы."""
+    svg = '<svg><text x="5" y="14">Ok</text></svg>'
+    out = mermaid_render._fix_svg_text(svg)
+    assert 'y="14.00"' in out
+    assert ">Ok<" in out
+
+
 def test_render_svg_caches_by_source(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
