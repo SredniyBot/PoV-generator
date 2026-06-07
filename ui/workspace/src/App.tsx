@@ -551,8 +551,34 @@ function WorkspaceRoute({
       setReadiness: (payload) => void commandRequest(() => api.setReadiness(projectId, payload)),
       enableDomainPack: (packRef: string) => void commandRequest(() => api.enableDomainPack(projectId, packRef)),
       setClarificationMode: (mode: string) => void commandRequest(() => api.setClarificationMode(projectId, mode)),
-      activateNextObjective: (objectiveRef: string) =>
-        void commandRequest(() => api.activateNextObjective(projectId, objectiveRef)),
+      activateNextObjective: (objectiveRef: string) => {
+        // Активируем следующий этап и СРАЗУ запускаем его пайплайн
+        // (run-until-blocked) — пользователю не нужно отдельно жать «Продолжить».
+        setCommandBusy(true);
+        api
+          .activateNextObjective(projectId, objectiveRef)
+          .then(async (result) => {
+            for (const projection of result.changed_projections) {
+              await queryClient.invalidateQueries({ queryKey: projectionKey(projectId, projection) });
+            }
+            notify(
+              toneForCommandStatus(result.status),
+              titleForCommandStatus(result.status),
+              result.summary,
+            );
+            const run = await api.runUntilBlocked(projectId, provider, model);
+            notify("success", "Этап запущен", `Шагов запланировано: ${run.max_steps}.`);
+            void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+          })
+          .catch((error) =>
+            notify(
+              "danger",
+              "Не удалось перейти на следующий этап",
+              error instanceof Error ? error.message : "Неизвестная ошибка",
+            ),
+          )
+          .finally(() => setCommandBusy(false));
+      },
       notify,
       busy: commandBusy,
     }),
@@ -909,103 +935,133 @@ function RunActivitySection({
     return out;
   })();
 
-  // Прошлые попытки задачи (та же задача встречается в ленте несколько раз —
-  // после retry). Помечаем все, кроме самой свежей (лента — новые сверху).
-  const prevAttemptKeys = (() => {
-    const seen = new Set<string>();
-    const keys = new Set<string>();
-    for (const { step, runId } of allSteps) {
-      if (!step.task_id) continue;
-      if (seen.has(step.task_id)) keys.add(`${runId}-${step.sequence}`);
-      else seen.add(step.task_id);
+  // Завершённые шаги, схлопнутые ПО ЗАДАЧЕ: одна строка на задачу (последняя
+  // попытка по времени завершения). Это убирает дубли и устаревшие статусы —
+  // например, когда задача сначала заблокировалась на решениях, а после ответа
+  // выполнилась заново: это одна и та же задача, а не две плашки.
+  const finishTime = (s: (typeof allSteps)[number]["step"]) =>
+    s.finished_at ? new Date(s.finished_at).getTime() : new Date(s.started_at).getTime();
+  const liveIds = new Set(inProgressTasks.map((t) => t.task_id));
+  const completedSteps = (() => {
+    const byTask = new Map<string, (typeof allSteps)[number]>();
+    for (const entry of allSteps) {
+      // Шаги без task_id не схлопываем (у каждого свой уникальный ключ).
+      const key = entry.step.task_id ?? `nokey-${entry.runId}-${entry.step.sequence}`;
+      const prev = byTask.get(key);
+      if (!prev || finishTime(entry.step) > finishTime(prev.step)) byTask.set(key, entry);
     }
-    return keys;
+    return [...byTask.values()]
+      // Задачи, которые СЕЙЧАС в работе, живут в блоке «В работе» — не дублируем.
+      .filter(({ step }) => !(step.task_id && liveIds.has(step.task_id)))
+      // Сортировка по времени ЗАВЕРШЕНИЯ: закончилась позже — выше в списке.
+      .sort((a, b) => finishTime(b.step) - finishTime(a.step));
   })();
+
+  const hasContent = inProgressTasks.length > 0 || completedSteps.length > 0;
 
   return (
     <div className={cx("workflow-run", `workflow-run--${display.status}`)}>
-      {/* Заголовок прогона (статус + текущий шаг + «N в работе») переехал в
-          шапку проекта (HeaderRunStatus) — здесь не дублируем. Остаётся только
-          уникальное: живая лента шагов. */}
-      {/* Единая лента времени: сверху — что идёт СЕЙЧАС (живой статус +
-          секундомер), ниже — завершённые шаги (новые сверху). Один и тот же
-          шаг проживает на глазах: «идёт» → «готово/ошибка». */}
-      {inProgressTasks.length > 0 || allSteps.length > 0 ? (
-        <ul className="workflow-run__timeline">
-          {inProgressTasks.map((t) => (
-            <li key={`live-${t.task_id}`} className="workflow-run__row workflow-run__row--live">
-              <span className="workflow-run__row-dot workflow-run__row-dot--live" />
-              <span className="workflow-run__row-title">{t.title}</span>
-              <span className="workflow-run__row-status workflow-run__row-status--active">идёт</span>
-              <InProgressTimer startedAtIso={t.updated_at} />
-            </li>
-          ))}
-          {allSteps.map(({ step, runId }) => {
-            const durationSec = step.finished_at && step.started_at
-              ? Math.max(0, Math.round(
-                  (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
-                ))
-              : null;
-            const viz = stepStatusVisual(step.validation_status, step.planning_outcome);
-            const name =
-              (step.task_id ? titleById.get(step.task_id) : null) ||
-              step.task_key ||
-              step.selected_step_id ||
-              "(неизвестная задача)";
-            const isFailed = step.validation_status === "failed";
-            const isPrevAttempt = prevAttemptKeys.has(`${runId}-${step.sequence}`);
-            return (
-              <li key={`${runId}-${step.sequence}`} className="workflow-run__row">
-                <span className={`workflow-run__row-dot workflow-run__row-dot--${viz.tone}`} />
-                {step.task_id ? (
-                  <button
-                    type="button"
-                    className="workflow-run__row-title workflow-run__row-title--link"
-                    title="Показать на графе задач"
-                    onClick={() =>
-                      navigate(`/projects/${projectId}/task-graph?focus=${step.task_id}`)
-                    }
-                  >
-                    {name}
-                  </button>
-                ) : (
-                  <span className="workflow-run__row-title">{name}</span>
-                )}
-                {isPrevAttempt ? (
-                  <span className="workflow-run__row-tag">прошлая попытка</span>
-                ) : null}
-                <span className={`workflow-run__row-status workflow-run__row-status--${viz.tone}`}>
-                  {viz.label}
-                </span>
-                {durationSec !== null ? (
-                  <span className="workflow-run__row-duration">{formatElapsedHMS(durationSec)}</span>
-                ) : null}
-                {isFailed && !isPrevAttempt && step.task_id && onRetryTask ? (
-                  <button
-                    type="button"
-                    className="workflow-run__row-retry"
-                    disabled={retryingIds.has(step.task_id)}
-                    onClick={() => {
-                      const id = step.task_id!;
-                      setRetryingIds((prev) => new Set(prev).add(id));
-                      onRetryTask(id);
-                    }}
-                  >
-                    {retryingIds.has(step.task_id) ? "Повторяю…" : "Повторить"}
-                  </button>
-                ) : null}
-                {step.error_message ? (
-                  <span className="workflow-run__row-error" title={step.error_message}>
-                    {step.error_message.length > 120
-                      ? step.error_message.slice(0, 120) + "…"
-                      : step.error_message}
-                  </span>
-                ) : null}
+      {/* Заголовок прогона (статус + «N в работе») живёт в шапке проекта
+          (HeaderRunStatus). Здесь — два блока: «В работе» и «Выполнено». */}
+
+      {/* «В работе» — отдельный блок, который НЕ скроллится (всегда виден
+          целиком). Каждая задача кликабельна → переход к ней на графе. */}
+      {inProgressTasks.length > 0 ? (
+        <div className="workflow-run__live-block">
+          <div className="workflow-run__section-label">В работе</div>
+          <ul className="workflow-run__live">
+            {inProgressTasks.map((t) => (
+              <li key={`live-${t.task_id}`} className="workflow-run__row workflow-run__row--live">
+                <span className="workflow-run__row-dot workflow-run__row-dot--live" />
+                <button
+                  type="button"
+                  className="workflow-run__row-title workflow-run__row-title--link"
+                  title="Показать на графе задач"
+                  onClick={() =>
+                    navigate(`/projects/${projectId}/task-graph?focus=${t.task_id}`)
+                  }
+                >
+                  {t.title}
+                </button>
+                <span className="workflow-run__row-status workflow-run__row-status--active">идёт</span>
+                <InProgressTimer startedAtIso={t.updated_at} />
               </li>
-            );
-          })}
-        </ul>
-      ) : isActive ? (
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* «Выполнено» — задачи по времени завершения (позже завершённые сверху).
+          Без внутреннего скролла: скроллится страница. */}
+      {completedSteps.length > 0 ? (
+        <div className="workflow-run__done-block">
+          <div className="workflow-run__section-label">Выполнено</div>
+          <ul className="workflow-run__timeline">
+            {completedSteps.map(({ step, runId }) => {
+              const durationSec = step.finished_at && step.started_at
+                ? Math.max(0, Math.round(
+                    (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
+                  ))
+                : null;
+              const viz = stepStatusVisual(step.validation_status, step.planning_outcome);
+              const name =
+                (step.task_id ? titleById.get(step.task_id) : null) ||
+                step.task_key ||
+                step.selected_step_id ||
+                "(неизвестная задача)";
+              const isFailed = step.validation_status === "failed";
+              return (
+                <li key={`${runId}-${step.sequence}`} className="workflow-run__row">
+                  <span className={`workflow-run__row-dot workflow-run__row-dot--${viz.tone}`} />
+                  {step.task_id ? (
+                    <button
+                      type="button"
+                      className="workflow-run__row-title workflow-run__row-title--link"
+                      title="Показать на графе задач"
+                      onClick={() =>
+                        navigate(`/projects/${projectId}/task-graph?focus=${step.task_id}`)
+                      }
+                    >
+                      {name}
+                    </button>
+                  ) : (
+                    <span className="workflow-run__row-title">{name}</span>
+                  )}
+                  <span className={`workflow-run__row-status workflow-run__row-status--${viz.tone}`}>
+                    {viz.label}
+                  </span>
+                  {durationSec !== null ? (
+                    <span className="workflow-run__row-duration">{formatElapsedHMS(durationSec)}</span>
+                  ) : null}
+                  {isFailed && step.task_id && onRetryTask ? (
+                    <button
+                      type="button"
+                      className="workflow-run__row-retry"
+                      disabled={retryingIds.has(step.task_id)}
+                      onClick={() => {
+                        const id = step.task_id!;
+                        setRetryingIds((prev) => new Set(prev).add(id));
+                        onRetryTask(id);
+                      }}
+                    >
+                      {retryingIds.has(step.task_id) ? "Повторяю…" : "Повторить"}
+                    </button>
+                  ) : null}
+                  {step.error_message ? (
+                    <span className="workflow-run__row-error" title={step.error_message}>
+                      {step.error_message.length > 120
+                        ? step.error_message.slice(0, 120) + "…"
+                        : step.error_message}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      {!hasContent && isActive ? (
         <div className="workflow-run__empty">Ожидаем первый шаг…</div>
       ) : null}
     </div>

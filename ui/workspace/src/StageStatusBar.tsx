@@ -121,24 +121,55 @@ export function StageStatusBar({
     <div className="status-bar">
       <div className="stage-bar">
         <ol className="stage-bar__track">
-          {data.stages.map((stage, idx) => (
-            <li
-              key={stage.objective_ref}
-              className={cx("stage-seg", `stage-seg--${stage.state}`, stage.is_current && "stage-seg--current")}
-            >
-              <span className="stage-seg__icon">
-                <StageIcon stage={stage} />
-              </span>
-              <span className="stage-seg__title" title={stageTooltip(stage)}>
-                {shortStageLabel(stage.objective_ref, stage.title)}
-              </span>
-              {idx < data.stages.length - 1 ? (
-                <span className="stage-seg__sep" aria-hidden>
-                  ›
-                </span>
-              ) : null}
-            </li>
-          ))}
+          {data.stages.map((stage, idx) => {
+            // Завершённый/готовый этап с ключевым артефактом кликабелен —
+            // открывает дилеверабл этапа (ТЗ/Архитектура/...).
+            const openable = Boolean(stage.key_artifact_id);
+            const label = shortStageLabel(stage.objective_ref, stage.title);
+            return (
+              <li
+                key={stage.objective_ref}
+                className={cx(
+                  "stage-seg",
+                  `stage-seg--${stage.state}`,
+                  stage.is_current && "stage-seg--current",
+                  openable && "stage-seg--openable",
+                )}
+              >
+                {openable ? (
+                  <button
+                    type="button"
+                    className="stage-seg__open"
+                    title={`Открыть результат этапа: ${label}`}
+                    onClick={() =>
+                      navigate(`/projects/${projectId}/artifacts/${stage.key_artifact_id}`)
+                    }
+                  >
+                    <span className="stage-seg__icon">
+                      <StageIcon stage={stage} />
+                    </span>
+                    <span className="stage-seg__title" title={stageTooltip(stage)}>
+                      {label}
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    <span className="stage-seg__icon">
+                      <StageIcon stage={stage} />
+                    </span>
+                    <span className="stage-seg__title" title={stageTooltip(stage)}>
+                      {label}
+                    </span>
+                  </>
+                )}
+                {idx < data.stages.length - 1 ? (
+                  <span className="stage-seg__sep" aria-hidden>
+                    ›
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
         </ol>
 
         <div className="stage-bar__aside">

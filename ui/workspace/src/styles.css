@@ -2869,6 +2869,14 @@ code {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  /* Спиннеры — функциональная обратная связь «идёт работа», а не декор.
+     При reduce-motion глобальное правило выше замораживало их (iteration-count:1),
+     и индикатор «N в работе» переставал крутиться. Возвращаем вращение именно
+     загрузочным индикаторам. */
+  .spin {
+    animation-duration: 0.8s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 /* ---- Mission Control (L1) -------------------------------------------- */
@@ -3369,8 +3377,33 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  max-height: 360px;
-  overflow-y: auto;
+  /* Без внутреннего скролла: список растёт с контентом, страница скроллится
+     целиком (как на других подвкладках). */
+}
+/* «В работе» — отдельный блок (не скроллится). «Выполнено» — лента ниже. */
+.workflow-run__live-block,
+.workflow-run__done-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.workflow-run__live-block {
+  margin-bottom: 0.6rem;
+}
+.workflow-run__live {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.workflow-run__section-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, #8a94a0);
 }
 .workflow-run__row {
   display: flex;
@@ -5964,6 +5997,36 @@ code {
 .stage-seg--locked {
   color: var(--text-muted, rgba(255, 255, 255, 0.4));
   opacity: 0.75;
+}
+
+/* Кликабельный сегмент этапа: открывает ключевой артефакт (ТЗ/Архитектура/...).
+   Кнопка-обёртка наследует цвет сегмента, добавляет hover-подсветку. */
+.stage-seg__open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.28rem -0.6rem;
+  padding: 0.28rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--motion-fast, 120ms) ease;
+}
+
+.stage-seg__open:hover {
+  background: var(--surface-elevated-strong, rgba(255, 255, 255, 0.06));
+}
+
+.stage-seg__open:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(120, 184, 201, 0.5));
+}
+
+.stage-seg--openable {
+  text-decoration: none;
 }
 
 .stage-seg__icon {

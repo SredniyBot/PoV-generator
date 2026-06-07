@@ -435,6 +435,9 @@ export interface StageView {
   awaiting_signoff: number;
   failing_tasks: StageFailingTaskView[];
   pending_decisions: StagePendingDecisionView[];
+  /** Ключевой дилеверабл этапа (ТЗ/Архитектура/...). Клик по завершённому
+   *  этапу открывает этот артефакт. null — артефакта ещё нет. */
+  key_artifact_id?: string | null;
 }
 
 export interface ProjectStagesView {

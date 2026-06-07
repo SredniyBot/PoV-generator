@@ -519,3 +519,12 @@ def test_api_stage_roadmap_marks_done_and_advances(tmp_path: Path) -> None:
     assert states[ARCHITECTURE_OBJECTIVE_REF] == "active"
     # Из архитектуры дальше по цепочке — implementation (locked).
     assert states[IMPLEMENTATION_OBJECTIVE_REF] == "locked"
+
+    # #4: завершённый этап несёт ключевой артефакт (дилеверабл ТЗ) — UI
+    # открывает его по клику на этап. Должен ссылаться на реальный артефакт.
+    done_stage = next(s for s in advanced["stages"] if s["objective_ref"] == OBJECTIVE_REF)
+    assert done_stage["key_artifact_id"], "у завершённого этапа нет ключевого артефакта"
+    artifact_ids = {
+        a["artifact_id"] for a in client.get(f"/api/projects/{project_id}/artifacts").json()
+    }
+    assert done_stage["key_artifact_id"] in artifact_ids

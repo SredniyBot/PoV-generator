@@ -544,6 +544,9 @@ class StageView:
     awaiting_signoff: int
     failing_tasks: tuple[StageFailingTaskView, ...]
     pending_decisions: tuple[StagePendingDecisionView, ...]
+    # Ключевой дилеверабл этапа (ТЗ/Архитектура/...) — последний primary-артефакт
+    # из done-артефактов цели. UI открывает его по клику на завершённый этап.
+    key_artifact_id: str | None = None
 
 
 @dataclass(frozen=True)

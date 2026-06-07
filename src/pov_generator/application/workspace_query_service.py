@@ -921,6 +921,7 @@ class WorkspaceQueryService:
             except Exception:
                 continue  # деградируем: пропускаем нерезолвящийся (дрейф реестра)
             progress = self._objective_progress(context, spec)
+            key_artifact_id = self._objective_key_artifact_id(context, spec)
             failed_count = 0
             blocked_count = 0
             awaiting_signoff = 0
@@ -975,6 +976,7 @@ class WorkspaceQueryService:
                     awaiting_signoff=awaiting_signoff,
                     failing_tasks=tuple(failing),
                     pending_decisions=tuple(pending_decisions),
+                    key_artifact_id=key_artifact_id,
                 )
             )
 
@@ -2061,6 +2063,31 @@ class WorkspaceQueryService:
             if nested:
                 return nested
         return None
+
+    def _objective_key_artifact_id(self, context: ProjectContext, objective) -> str | None:
+        """Ключевой дилеверабл этапа — id артефакта финальной done-роли цели.
+
+        Done-артефакты цели объявлены как refs; роль артефакта = последний
+        сегмент identifier (та же логика, что в ``_objective_progress``). Берём
+        primary-артефакт самой «поздней» по порядку done-роли (финальный
+        результат этапа), при равенстве — свежий по времени. UI открывает его
+        по клику на завершённый этап в степпере.
+        """
+        order = {
+            ref.identifier.rsplit(".", 1)[-1]: idx
+            for idx, ref in enumerate(objective.done_artifact_refs)
+        }
+        if not order:
+            return None
+        candidates = [
+            artifact
+            for artifact in self._runtime.list_artifacts(context.workspace)
+            if artifact.artifact_role in order and artifact.artifact_kind == "primary"
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda a: (order[a.artifact_role], a.created_at))
+        return candidates[-1].artifact_id
 
     def _objective_done(self, context: ProjectContext) -> bool:
         objective = context.snapshot.resolve_objective(context.manifest.objective_ref)
