@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ChevronRight,
   CircleDot,
+  Clock,
   FileCog,
   FileText,
   Layers3,
@@ -53,6 +54,21 @@ export function formatDateTime(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+// Дата последнего обновления для шапки проекта: «7 июня, 12:08» — без ведущих
+// нулей и сокращений с точкой, спокойным мета-стилем, как остальные подписи.
+function formatUpdatedAt(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const day = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(date);
+  const time = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return `${day}, ${time}`;
 }
 
 export function prettyLabel(input: string | null | undefined): string {
@@ -411,7 +427,16 @@ export function ProjectRail({
   );
 }
 
-export function WorkspaceTabs({ projectId }: { projectId: string }) {
+export function WorkspaceTabs({
+  projectId,
+  pendingDecisionsCount,
+}: {
+  projectId: string;
+  // Счётчик открытых решений — бейдж на вкладке «Решения». Заменяет прежнюю
+  // кнопку «Решения ждут: N», которая жила в шапке и была удалена вместе с
+  // блоком objective-чипов. Источник — App.tsx (headerCheckpointsQuery).
+  pendingDecisionsCount?: number;
+}) {
   // 5 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
   // root-level страницей `/settings` (LLM-провайдеры). Содержимое
   // прошлого таба (Состояние / Замечания / Технические детали) — это
@@ -422,7 +447,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Проект" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Решения" },
+    { to: `/projects/${projectId}/decisions`, label: "Решения", badge: pendingDecisionsCount },
     { to: `/projects/${projectId}/requisites`, label: "Реквизиты" },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
@@ -432,6 +457,11 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
       {tabs.map((tab) => (
         <NavLink key={tab.to} to={tab.to} className={({ isActive }) => cx("tabs__item", isActive && "tabs__item--active")}>
           {tab.label}
+          {tab.badge && tab.badge > 0 ? (
+            <span className="tabs__badge" title="Открытые решения ждут ответа">
+              {tab.badge}
+            </span>
+          ) : null}
         </NavLink>
       ))}
     </div>
@@ -442,12 +472,12 @@ export function ConnectionBadge({ status }: { status: RealtimeStatus }) {
   const tone = status === "connected" ? "success" : status === "degraded" ? "warning" : "muted";
   const label =
     status === "connected"
-      ? "Realtime активен"
+      ? "Backend подключен"
       : status === "connecting"
         ? "Подключение…"
         : status === "degraded"
-          ? "Realtime недоступен"
-          : "Realtime отключён";
+          ? "Backend недоступен"
+          : "Backend отключён";
   return (
     <div className="connection-badge">
       <StatusPill tone={tone}>
@@ -512,11 +542,6 @@ export function WorkspaceHeader({
   connectionStatus,
   runStatus,
   actions,
-  pendingCheckpointCount,
-  pendingCheckpointSessionId,
-  onOpenCheckpoints,
-  onActivateNextObjective,
-  activatingNextObjective,
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
@@ -524,16 +549,6 @@ export function WorkspaceHeader({
   // шапки вместо общего status_label проекта.
   runStatus?: ReactNode;
   actions?: ReactNode;
-  // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
-  // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
-  // (список) или сразу на /checkpoints/{id} если одна.
-  pendingCheckpointCount?: number;
-  pendingCheckpointSessionId?: string | null;
-  onOpenCheckpoints?: () => void;
-  // Цепочка objective'ов: когда текущий objective завершён и у него есть
-  // compatible_next_objectives, UI показывает кнопку перехода.
-  onActivateNextObjective?: (objectiveRef: string) => void;
-  activatingNextObjective?: boolean;
 }) {
   return (
     <header className="workspace-header">
@@ -541,7 +556,8 @@ export function WorkspaceHeader({
         <h1>{shell.name}</h1>
         {runStatus}
         <span className="workspace-header__updated">
-          Обновлено {formatDateTime(shell.updated_at)}
+          <Clock size={12} />
+          обновлено {formatUpdatedAt(shell.updated_at)}
         </span>
         <div className="workspace-header__topline-end">
           <ConnectionBadge status={connectionStatus} />

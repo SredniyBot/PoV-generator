@@ -363,6 +363,9 @@ code {
   gap: 12px;
 }
 .workspace-header__updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--font-size-meta);
   color: var(--text-tertiary);
   white-space: nowrap;
@@ -419,10 +422,6 @@ code {
 }
 .header-run__summary {
   min-width: 0;
-  max-width: 36ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-secondary);
   font-size: var(--font-size-meta);
 }
@@ -494,6 +493,9 @@ code {
 }
 
 .tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-secondary);
@@ -511,6 +513,22 @@ code {
   background: rgba(95, 167, 184, 0.14);
   border-color: rgba(120, 184, 201, 0.28);
   color: var(--text-primary);
+}
+
+/* Бейдж счётчика на вкладке (открытые решения): компактная пилюля-акцент. */
+.tabs__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
 }
 
 /* Под-навигация раздела «Решения» (Открытые / Реестр). Стилизована как
@@ -3307,46 +3325,6 @@ code {
 .workflow-run--completed { border-left-color: rgba(140, 196, 153, 0.6); }
 .workflow-run--failed { border-left-color: rgba(215, 131, 131, 0.6); }
 .workflow-run--cancelled { border-left-color: rgba(214, 173, 89, 0.6); }
-
-.workflow-run__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.workflow-run__title {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-size: 0.9rem;
-  color: var(--text-primary, #e8ecf3);
-  flex: 1 1 50%;
-  min-width: 0;
-}
-
-.workflow-run__summary {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-run__running {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.82rem;
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-
-.workflow-run__actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-}
 
 /* Прогресс-бар «X/Y шагов» удалён: у workflow нет фиксированной длины.
    Вместо него — счётчики выполненных задач + всегда видимый лог. */

@@ -599,24 +599,15 @@ function WorkspaceRoute({
       <WorkspaceHeader
         shell={shellQuery.data}
         connectionStatus={realtimeStatus}
-        pendingCheckpointCount={headerCheckpointsQuery.data?.pending_count}
-        pendingCheckpointSessionId={
-          headerCheckpointsQuery.data?.items.find((s) => s.status === "pending")?.session_id ?? null
-        }
-        onOpenCheckpoints={() => {
-          // Единый экран открытых решений (сессии скрыты от пользователя):
-          // отвечает на все pending-решения разом, поверх границ сессий.
-          // Живёт под-вкладкой «Открытые» раздела «Решения».
-          navigate(`/projects/${projectId}/decisions/pending`);
-        }}
-        onActivateNextObjective={commandMutations.activateNextObjective}
-        activatingNextObjective={commandMutations.busy}
         runStatus={<HeaderRunStatus projectId={projectId} />}
       />
       {/* Степпер этапов + живой прогон (тикер + лента) переехали в шапку
           вкладки «Проект» (ProjectOverviewV2.workflowSlot) — над вкладками
           их больше нет. */}
-      <WorkspaceTabs projectId={projectId} />
+      <WorkspaceTabs
+        projectId={projectId}
+        pendingDecisionsCount={headerCheckpointsQuery.data?.pending_count}
+      />
       <Routes>
         <Route
           path="overview"
@@ -756,11 +747,7 @@ function HeaderRunStatus({ projectId }: { projectId: string }) {
   return (
     <span className="header-run">
       <StatusPill tone={viz.tone}>{viz.label}</StatusPill>
-      {summary ? (
-        <span className="header-run__summary" title={summary}>
-          {summary}
-        </span>
-      ) : null}
+      {summary ? <span className="header-run__summary">{summary}</span> : null}
       {inProgress > 0 ? (
         <span className="header-run__count">
           <Loader2 size={12} className="spin" /> {inProgress} в работе
@@ -852,9 +839,6 @@ function RunActivitySection({
   if (!display) return null;
 
   const isActive = display.status === "pending" || display.status === "running";
-  // Честный статус прогона: причина остановки (нужны решения / ошибка / нет
-  // шагов / лимит) вместо «Завершено» и «workflow». Источник — workflowStatus.ts.
-  const runViz = runStatusVisual(display.status, display.stop_reason);
 
   // Сейчас в работе: leaf-задачи проекта со статусом in_progress. Список
   // расплющиваем из графа задач рекурсивно. Когда runner запустил задачу
@@ -890,23 +874,9 @@ function RunActivitySection({
 
   return (
     <div className={cx("workflow-run", `workflow-run--${display.status}`)}>
-      <div className="workflow-run__head">
-        <div className="workflow-run__title">
-          <StatusPill tone={runViz.tone}>{runViz.label}</StatusPill>
-          <span
-            className="workflow-run__summary"
-            title={cleanStepSummary(display.last_step_summary) || undefined}
-          >
-            {cleanStepSummary(display.last_step_summary) || "—"}
-          </span>
-          {inProgressTasks.length > 0 ? (
-            <span className="workflow-run__running">
-              <Loader2 size={13} className="spin" /> {inProgressTasks.length} в работе
-            </span>
-          ) : null}
-        </div>
-      </div>
-
+      {/* Заголовок прогона (статус + текущий шаг + «N в работе») переехал в
+          шапку проекта (HeaderRunStatus) — здесь не дублируем. Остаётся только
+          уникальное: живая лента шагов. */}
       {/* Единая лента времени: сверху — что идёт СЕЙЧАС (живой статус +
           секундомер), ниже — завершённые шаги (новые сверху). Один и тот же
           шаг проживает на глазах: «идёт» → «готово/ошибка». */}
