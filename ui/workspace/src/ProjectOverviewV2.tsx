@@ -199,11 +199,19 @@ export function ProjectOverviewV2({
           {/* Подробнее о проекте: домены + переход к входным артефактам. */}
           <div className="overview-about">
             <div className="overview-about__title">Подробнее о проекте</div>
-            <div className="overview-about__row">
+            <div className="overview-about__block">
               <span className="overview-about__label">Домены</span>
-              <span className="overview-about__value">
-                {domains.length > 0 ? domains.map(humanizePackRef).join(", ") : "—"}
-              </span>
+              {domains.length > 0 ? (
+                <div className="overview-about__chips">
+                  {domains.map((d) => (
+                    <span key={d} className="overview-about__chip">
+                      {humanizePackRef(d)}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="overview-about__value">—</span>
+              )}
             </div>
             {onOpenInputArtifacts ? (
               <button

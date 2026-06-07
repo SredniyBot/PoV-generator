@@ -301,12 +301,12 @@ code {
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 44%),
     var(--surface-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  padding: 24px 26px;
+  border-radius: var(--radius-lg);
+  padding: 16px 22px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 430px);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 22px;
+  gap: 18px;
   box-shadow: var(--shadow-soft);
 }
 
@@ -314,7 +314,7 @@ code {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .workspace-header__intro h1,
@@ -323,6 +323,13 @@ code {
   font-size: 32px;
   line-height: 1.08;
   letter-spacing: -0.04em;
+}
+
+/* В шапке проекта заголовок компактнее, чем на лендинге. */
+.workspace-header__intro h1 {
+  font-size: var(--font-size-display);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .workspace-header__intro p,
@@ -352,19 +359,12 @@ code {
   -webkit-line-clamp: 2;
 }
 
-.workspace-header__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .workspace-header__side {
-  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  align-items: stretch;
+  gap: 10px;
+  align-items: flex-end;
 }
 
 .connection-badge {
@@ -3287,7 +3287,7 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
 }
 
@@ -3316,11 +3316,6 @@ code {
   white-space: nowrap;
 }
 
-.workflow-run__stop {
-  font-size: 0.78rem;
-  color: var(--text-muted, rgba(255, 255, 255, 0.5));
-  white-space: nowrap;
-}
 
 .workflow-run__actions {
   display: flex;

@@ -7,12 +7,10 @@ import { activeRunRefetchInterval } from "./realtime";
 import {
   AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   ChevronRight,
   CircleDot,
   FileCog,
   FileText,
-  GitBranch,
   Layers3,
   LoaderCircle,
   MessageSquareWarning,
@@ -516,40 +514,6 @@ export function WorkspaceHeader({
         </div>
         <h1>{shell.name}</h1>
         <p className="workspace-header__request">{shell.business_request}</p>
-        <div className="workspace-header__meta">
-          {shell.objective_history && shell.objective_history.length > 0 ? (
-            <>
-              {shell.objective_history.map((ref) => (
-                <span key={ref} className="meta-chip meta-chip--muted" title="Завершённый objective">
-                  <CheckCircle2 size={14} />
-                  {ref}
-                </span>
-              ))}
-              <ChevronRight size={14} className="meta-chip__sep" />
-            </>
-          ) : null}
-          <span className="meta-chip">
-            <Waypoints size={14} />
-            {shell.objective_ref}
-          </span>
-          <span className="meta-chip meta-chip--accent">
-            <Layers3 size={14} />
-            Доменов: {shell.active_domain_packs.length}
-          </span>
-          {/* CTA «Перейти к следующему этапу» переехала в StageStatusBar
-              (степпер над вкладками) — здесь больше не дублируется. */}
-          {pendingCheckpointCount && pendingCheckpointCount > 0 ? (
-            <button
-              type="button"
-              className="meta-chip meta-chip--button meta-chip--danger"
-              onClick={onOpenCheckpoints}
-              title="Workflow приостановлен — нужны ваши решения перед сборкой артефакта"
-            >
-              <GitBranch size={14} />
-              Решения ждут: {pendingCheckpointCount}
-            </button>
-          ) : null}
-        </div>
       </div>
       <div className="workspace-header__side">
         <ConnectionBadge status={connectionStatus} />

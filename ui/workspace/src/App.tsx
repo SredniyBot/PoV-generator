@@ -781,14 +781,16 @@ function RunActivitySection({ projectId }: { projectId: string }) {
       <div className="workflow-run__head">
         <div className="workflow-run__title">
           <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
-          <span className="workflow-run__summary">{cleanStepSummary(display.last_step_summary) || "—"}</span>
+          <span
+            className="workflow-run__summary"
+            title={cleanStepSummary(display.last_step_summary) || undefined}
+          >
+            {cleanStepSummary(display.last_step_summary) || "—"}
+          </span>
           {inProgressTasks.length > 0 ? (
             <span className="workflow-run__running">
               <Loader2 size={13} className="spin" /> {inProgressTasks.length} в работе
             </span>
-          ) : null}
-          {display.stop_reason ? (
-            <span className="workflow-run__stop">{labelForStopReason(display.stop_reason)}</span>
           ) : null}
         </div>
       </div>
@@ -874,7 +876,10 @@ function RunActivitySection({ projectId }: { projectId: string }) {
 // сообщения, а не его порядковый номер.
 function cleanStepSummary(summary: string): string {
   if (!summary) return summary;
-  return summary.replace(/^Шаг\s*\d+\s*\/\s*\d+\s*:\s*/i, "");
+  return summary
+    .replace(/^Шаг\s*\d+\s*\/\s*\d+\s*:\s*/i, "")
+    // Статус «Прервано» уже виден в пилюле — не дублируем его в тексте сводки.
+    .replace(/^Прервано пользователем[:.]?\s*/i, "");
 }
 
 /**
@@ -959,18 +964,6 @@ function toneForRunStatus(status: string): "neutral" | "active" | "success" | "w
   }
 }
 
-function labelForStopReason(reason: string): string {
-  switch (reason) {
-    case "objective_completed": return "цель достигнута";
-    case "planner_blocked": return "планировщик заблокирован";
-    case "validation_failed": return "проверка не прошла";
-    case "max_steps_reached": return "лимит шагов";
-    case "execution_error": return "ошибка исполнения";
-    case "cancelled_by_user": return "прервано пользователем";
-    case "awaiting_checkpoint": return "ждёт ваших решений";
-    default: return reason;
-  }
-}
 
 // ---- L2 MethodologyPage --------------------------------------------------
 

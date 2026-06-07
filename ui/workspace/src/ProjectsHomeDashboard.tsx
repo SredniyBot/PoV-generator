@@ -191,9 +191,6 @@ function ProjectCard({ project, onClick }: ProjectCardProps) {
         )}
         <footer className="home-card__foot">
           <span className="home-card__updated">{updated}</span>
-          {project.has_blockers && (
-            <span className="home-card__alert">Заблокирован</span>
-          )}
         </footer>
       </button>
     </li>

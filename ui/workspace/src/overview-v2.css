@@ -48,10 +48,10 @@
   font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
 }
-.overview-about__row {
+.overview-about__block {
   display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-2);
   font-size: var(--font-size-body);
 }
 .overview-about__label {
@@ -59,7 +59,19 @@
 }
 .overview-about__value {
   color: var(--text-primary);
-  text-align: right;
+}
+.overview-about__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.overview-about__chip {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: var(--font-size-meta);
 }
 .overview-about__link {
   display: inline-flex;
