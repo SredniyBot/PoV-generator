@@ -37,6 +37,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, FileText, Layers, Split } fro
 import "@xyflow/react/dist/style.css";
 
 import type { FanOutMeta, TaskNodeView } from "./types";
+import { taskStatusVisual } from "./workflowStatus";
 
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 76;
@@ -175,24 +176,9 @@ function edgeColorForOrigin(origin: string): string {
   }
 }
 
-// Единый источник «статус → подпись + цвет». Им пользуются и обычные узлы, и
-// fan-out, и мини-карта — одна палитра вместо четырёх разрозненных.
-const STATUS_META: Record<string, { label: string; color: string }> = {
-  completed:                  { label: "Готово",        color: "rgba(140, 196, 153, 0.9)" },
-  in_progress:                { label: "В работе",      color: "rgba(120, 184, 201, 0.95)" },
-  ready:                      { label: "Готова",        color: "rgba(120, 184, 201, 0.95)" },
-  waiting_for_children:       { label: "В процессе",    color: "rgba(214, 173, 89, 0.9)" },
-  waiting_for_fan_out_source: { label: "Ждёт данные",   color: "rgba(214, 173, 89, 0.9)" },
-  failed:                     { label: "Ошибка",        color: "rgba(215, 131, 131, 0.95)" },
-  blocked:                    { label: "Заблокирована", color: "rgba(215, 131, 131, 0.7)" },
-  skipped:                    { label: "Пропущена",     color: "rgba(150, 150, 150, 0.55)" },
-  obsolete:                   { label: "Устарела",      color: "rgba(150, 150, 150, 0.55)" },
-  candidate:                  { label: "Запланирована", color: "rgba(150, 160, 180, 0.6)" },
-};
-
-function statusMeta(status: string): { label: string; color: string } {
-  return STATUS_META[status] ?? { label: status, color: "rgba(150, 160, 180, 0.6)" };
-}
+// Статус → подпись/цвет/тон берём из единого словаря (workflowStatus.ts).
+// Локального дубля STATUS_META больше нет — один источник на граф, ленту,
+// дорожку и пилюли.
 
 // fan-out-узлы выше (прогресс + переключатель), остальные — компактные.
 // Заголовок теперь показываем целиком, поэтому высоту оцениваем по числу строк
@@ -225,7 +211,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const actions = useContext(TaskGraphActionsCtx);
   const { showRetry, showArtifacts, showDecisions } = resolveActions(task);
   const hasActions = showRetry || showArtifacts || showDecisions;
-  const meta = statusMeta(task.status);
+  const meta = taskStatusVisual(task.status);
   const warnCount = task.blocking_clarification_count ?? 0;
   const isComposite = task.template_type === "composite";
   const childCount = data.childCount ?? 0;
@@ -248,7 +234,10 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
             {data.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </button>
         ) : null}
-        <span className="tg-dot" style={{ background: meta.color }} />
+        <span
+          className={"tg-dot" + (meta.pulse ? " tg-dot--pulse" : "")}
+          style={{ background: meta.color }}
+        />
         <span className="tg-node__status-label">{meta.label}</span>
         {warnCount > 0 ? (
           <span className="tg-node__warn" title={`Ждут решения: ${warnCount}`}>
@@ -308,7 +297,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
 function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
   const { task, onToggle, isCollapsed } = data;
   const meta: FanOutMeta | null | undefined = task.fan_out_meta;
-  const status = statusMeta(task.status);
+  const status = taskStatusVisual(task.status);
   const pct =
     meta && meta.total_instances > 0
       ? Math.round((meta.completed_instances / meta.total_instances) * 100)
@@ -318,7 +307,10 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
     <div className="tg-node tg-node--fanout" style={{ borderLeftColor: status.color }}>
       <Handle type="target" position={Position.Top} className="tg-handle" />
       <div className="tg-node__status">
-        <span className="tg-dot" style={{ background: status.color }} />
+        <span
+          className={"tg-dot" + (status.pulse ? " tg-dot--pulse" : "")}
+          style={{ background: status.color }}
+        />
         <span className="tg-node__status-label">{status.label}</span>
         <Split size={13} className="tg-node__type-icon" aria-label="fan-out" />
       </div>
@@ -557,5 +549,5 @@ export function TaskGraphCanvas(props: TaskGraphCanvasProps) {
 // ── MiniMap fill colors ────────────────────────────────────────────────────
 
 function statusFillColor(status: string): string {
-  return statusMeta(status).color;
+  return taskStatusVisual(status).color;
 }

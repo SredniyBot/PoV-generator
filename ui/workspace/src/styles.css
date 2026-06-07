@@ -3674,6 +3674,11 @@ code {
   border-radius: 50%;
   flex-shrink: 0;
 }
+/* Пульс у ВСЕХ задач in_progress (а не только у активной) — видно реальную
+   параллельность работы. Переиспользуем keyframe бегущей точки. */
+.tg-dot--pulse {
+  animation: tg-pulse-dot 1.6s ease-in-out infinite;
+}
 .tg-node__status-label {
   font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
