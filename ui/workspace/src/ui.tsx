@@ -396,7 +396,7 @@ export function WorkspaceTabs({ projectId }: { projectId: string }) {
   // v3.1: legacy «Вопросы» и «Журнал решений» удалены — Decision (v3.0
   // реестр) полностью покрывает оба сценария.
   const tabs = [
-    { to: `/projects/${projectId}/overview`, label: "Обзор" },
+    { to: `/projects/${projectId}/overview`, label: "Проект" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
     { to: `/projects/${projectId}/decisions`, label: "Решения" },
     { to: `/projects/${projectId}/requisites`, label: "Реквизиты" },
@@ -453,12 +453,39 @@ const CLARIFICATION_MODE_OPTIONS = {
   },
 } as const;
 
+// Селектор «Режим участия пользователя». Вынесен из шапки — теперь живёт в
+// правой колонке вкладки «Проект».
+export function ModeControl({
+  value,
+  onChange,
+  pending,
+}: {
+  value?: string;
+  onChange?: (mode: string) => void;
+  pending?: boolean;
+}) {
+  const selected = value && value in CLARIFICATION_MODE_OPTIONS ? value : "balanced";
+  const option = CLARIFICATION_MODE_OPTIONS[selected as keyof typeof CLARIFICATION_MODE_OPTIONS];
+  return (
+    <div className="mode-control">
+      <label className="field">
+        <span>Режим участия пользователя</span>
+        <select value={selected} onChange={(e) => onChange?.(e.target.value)} disabled={pending}>
+          {Object.entries(CLARIFICATION_MODE_OPTIONS).map(([v, o]) => (
+            <option key={v} value={v}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p>{option.description}</p>
+    </div>
+  );
+}
+
 export function WorkspaceHeader({
   shell,
   connectionStatus,
-  clarificationMode,
-  onClarificationModeChange,
-  modePending,
   actions,
   pendingCheckpointCount,
   pendingCheckpointSessionId,
@@ -468,9 +495,6 @@ export function WorkspaceHeader({
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
-  clarificationMode?: string;
-  onClarificationModeChange?: (mode: string) => void;
-  modePending?: boolean;
   actions?: ReactNode;
   // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
   // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
@@ -483,8 +507,6 @@ export function WorkspaceHeader({
   onActivateNextObjective?: (objectiveRef: string) => void;
   activatingNextObjective?: boolean;
 }) {
-  const selectedMode = clarificationMode && clarificationMode in CLARIFICATION_MODE_OPTIONS ? clarificationMode : "balanced";
-  const selectedModeOption = CLARIFICATION_MODE_OPTIONS[selectedMode as keyof typeof CLARIFICATION_MODE_OPTIONS];
   return (
     <header className="workspace-header">
       <div className="workspace-header__intro">
@@ -531,25 +553,6 @@ export function WorkspaceHeader({
       </div>
       <div className="workspace-header__side">
         <ConnectionBadge status={connectionStatus} />
-        {onClarificationModeChange ? (
-          <div className="mode-control">
-            <label className="field">
-              <span>Режим участия пользователя</span>
-              <select
-                value={selectedMode}
-                onChange={(event) => onClarificationModeChange(event.target.value)}
-                disabled={modePending}
-              >
-                {Object.entries(CLARIFICATION_MODE_OPTIONS).map(([value, option]) => (
-                  <option key={value} value={value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p>{selectedModeOption.description}</p>
-          </div>
-        ) : null}
         {actions}
       </div>
     </header>

@@ -29,6 +29,54 @@
   }
 }
 
+/* Левая колонка вкладки «Проект» — блок workflow (свой card-стиль). */
+.overview-mc__main {
+  min-width: 0;
+}
+
+/* «Подробнее о проекте» — небольшой блок в духе «Режима участия». */
+.overview-about {
+  display: grid;
+  gap: var(--space-3);
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.035);
+}
+.overview-about__title {
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+.overview-about__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--font-size-body);
+}
+.overview-about__label {
+  color: var(--text-secondary);
+}
+.overview-about__value {
+  color: var(--text-primary);
+  text-align: right;
+}
+.overview-about__link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: var(--font-size-body);
+}
+.overview-about__link:hover {
+  text-decoration: underline;
+}
+
 /* artifact panel ---------------------------------------------------- */
 
 .overview-mc__artifact {

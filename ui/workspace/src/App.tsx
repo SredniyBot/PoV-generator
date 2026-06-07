@@ -574,9 +574,6 @@ function WorkspaceRoute({
       <WorkspaceHeader
         shell={shellQuery.data}
         connectionStatus={realtimeStatus}
-        clarificationMode={headerStateQuery.data?.clarification_mode}
-        onClarificationModeChange={commandMutations.setClarificationMode}
-        modePending={commandMutations.busy}
         pendingCheckpointCount={headerCheckpointsQuery.data?.pending_count}
         pendingCheckpointSessionId={
           headerCheckpointsQuery.data?.items.find((s) => s.status === "pending")?.session_id ?? null
@@ -591,17 +588,9 @@ function WorkspaceRoute({
         activatingNextObjective={commandMutations.busy}
         actions={<CommandBar projectId={projectId} />}
       />
-      {/* Постоянный статус-слой над вкладками: степпер этапов + ошибки
-          активного этапа; живая активность прогона (тикер + лента) едет
-          внутри как RunActivitySection. */}
-      <StageStatusBar
-        projectId={projectId}
-        onActivateNextObjective={commandMutations.activateNextObjective}
-        activating={commandMutations.busy}
-        onRetryTask={commandMutations.retryTask}
-      >
-        <RunActivitySection projectId={projectId} />
-      </StageStatusBar>
+      {/* Степпер этапов + живой прогон (тикер + лента) переехали в шапку
+          вкладки «Проект» (ProjectOverviewV2.workflowSlot) — над вкладками
+          их больше нет. */}
       <WorkspaceTabs projectId={projectId} />
       <Routes>
         <Route
@@ -615,6 +604,21 @@ function WorkspaceRoute({
               }
               onContinue={commandMutations.runUntilBlocked}
               onRetryTask={commandMutations.retryTask}
+              clarificationMode={headerStateQuery.data?.clarification_mode}
+              onClarificationModeChange={commandMutations.setClarificationMode}
+              modePending={commandMutations.busy}
+              domainPacks={shellQuery.data?.active_domain_packs ?? []}
+              onOpenInputArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
+              workflowSlot={
+                <StageStatusBar
+                  projectId={projectId}
+                  onActivateNextObjective={commandMutations.activateNextObjective}
+                  activating={commandMutations.busy}
+                  onRetryTask={commandMutations.retryTask}
+                >
+                  <RunActivitySection projectId={projectId} />
+                </StageStatusBar>
+              }
             />
           }
         />
@@ -705,8 +709,7 @@ function RunActivitySection({ projectId }: { projectId: string }) {
     queryFn: () => api.getTaskGraph(projectId),
   });
   const [stickyRunId, setStickyRunId] = useState<string | null>(null);
-  // Лента шагов по умолчанию свёрнута — наружу торчит только живой тикер.
-  const [logCollapsed, setLogCollapsed] = useState(true);
+  // Лента шагов всегда открыта (по запросу) — сворачивания больше нет.
   const navigate = useNavigate();
 
   const active = activeQuery.data ?? null;
@@ -788,13 +791,6 @@ function RunActivitySection({ projectId }: { projectId: string }) {
             <span className="workflow-run__stop">{labelForStopReason(display.stop_reason)}</span>
           ) : null}
         </div>
-        <div className="workflow-run__actions">
-          {allSteps.length > 0 ? (
-            <Button tone="secondary" onClick={() => setLogCollapsed((v) => !v)}>
-              {logCollapsed ? "Лента шагов" : "Скрыть ленту"}
-            </Button>
-          ) : null}
-        </div>
       </div>
 
       {/* Живой тикер: что выполняется прямо сейчас + секундомер. Всегда виден. */}
@@ -813,7 +809,7 @@ function RunActivitySection({ projectId }: { projectId: string }) {
 
       {/* Лента завершённых шагов — в раскрытие (по умолчанию свёрнута).
           Счётчики ✗/⏸ здесь не показываем — их несёт степпер этапов. */}
-      {!logCollapsed && allSteps.length > 0 ? (
+      {allSteps.length > 0 ? (
         <ul className="workflow-run__steps">
           {allSteps.map(({ step, runId }, idx) => {
             const durationSec = step.finished_at && step.started_at
