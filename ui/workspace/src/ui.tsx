@@ -288,6 +288,30 @@ export function Drawer({
   );
 }
 
+type ProjectDotTone = "running" | "attention" | "done" | "paused" | "idle";
+
+// Состояние проекта одной точкой. has_blockers — самый надёжный сигнал «нужно
+// ваше решение»; остальное — эвристикой по status_label. running дополнительно
+// пульсирует. Полное состояние — в подсказке (title).
+function projectDotState(p: ProjectListItemView): {
+  tone: ProjectDotTone;
+  pulse: boolean;
+  label: string;
+} {
+  if (p.has_blockers) return { tone: "attention", pulse: false, label: "Ждёт вашего решения" };
+  const s = (p.status_label ?? "").toLowerCase();
+  if (/running|active|в работе|ид[её]т|работа/.test(s)) {
+    return { tone: "running", pulse: true, label: "Работает" };
+  }
+  if (/complete|done|готов|заверш/.test(s)) {
+    return { tone: "done", pulse: false, label: p.status_label || "Готово" };
+  }
+  if (/пауз|приостан|останов|cancel|отмен/.test(s)) {
+    return { tone: "paused", pulse: false, label: p.status_label || "Остановлен" };
+  }
+  return { tone: "idle", pulse: false, label: p.status_label || "—" };
+}
+
 export function ProjectRail({
   projects,
   selectedProjectId,
@@ -327,7 +351,9 @@ export function ProjectRail({
             icon={<Layers3 size={18} />}
           />
         ) : (
-          projects.map((project) => (
+          projects.map((project) => {
+            const dot = projectDotState(project);
+            return (
             // Кнопка удаления — сиблинг <Link>, а не потомок (button внутри
             // <a> невалиден по HTML5). Обёртка задаёт positioning-контекст.
             <div key={project.project_id} className="project-item-wrap">
@@ -335,19 +361,22 @@ export function ProjectRail({
                 className={cx(
                   "project-item",
                   selectedProjectId === project.project_id && "project-item--active",
-                  project.has_blockers && "project-item--blocked",
                 )}
                 to={`/projects/${project.project_id}/overview`}
               >
-                <div className="project-item__topline">
-                  <strong>{project.name}</strong>
-                  {project.has_blockers ? <AlertTriangle size={14} /> : null}
+                <div className="project-item__row">
+                  <span
+                    className={cx(
+                      "project-item__dot",
+                      `project-item__dot--${dot.tone}`,
+                      dot.pulse && "project-item__dot--pulse",
+                    )}
+                    title={dot.label}
+                    aria-label={dot.label}
+                  />
+                  <strong className="project-item__name">{project.name}</strong>
                 </div>
-                <div className="project-item__meta">
-                  <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
-                  <span>{formatDateTime(project.updated_at)}</span>
-                </div>
-                <p className="project-item__step">{project.current_step_title ?? "Шаг пока не выбран"}</p>
+                <span className="project-item__date">обновлено {formatDateTime(project.updated_at)}</span>
               </Link>
               <button
                 type="button"
@@ -371,7 +400,8 @@ export function ProjectRail({
                 )}
               </button>
             </div>
-          ))
+            );
+          })
         )}
       </nav>
       {/* «Настройки» — внизу рейла. Системные настройки (LLM-провайдеры,
