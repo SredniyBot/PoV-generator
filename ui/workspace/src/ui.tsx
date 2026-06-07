@@ -1,5 +1,5 @@
-import type { CSSProperties, PropsWithChildren, ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PropsWithChildren, ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 
 import { api as apiClient } from "./api";
@@ -34,7 +34,6 @@ import type {
   ProjectShellView,
   ProjectSituationView,
   ProjectStateView,
-  TaskNodeView,
   TimelineEntryView,
 } from "./types";
 import type { RealtimeStatus } from "./useProjectRealtime";
@@ -573,7 +572,6 @@ export function CommandBar({
   //                              блокеры уже показаны бейджем в шапке выше
   projectId: string;
 }) {
-  const queryClient = useQueryClient();
   const activeRunQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => apiClient.getActiveWorkflowRun(projectId),
@@ -581,13 +579,6 @@ export function CommandBar({
     // только пока run идёт, на простое off.
     refetchInterval: activeRunRefetchInterval,
   });
-  const pauseMutation = useMutation({
-    mutationFn: (runId: string) => apiClient.cancelWorkflow(projectId, runId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
-    },
-  });
-
   const activeRun = activeRunQuery.data ?? null;
   const isRunning =
     activeRun !== null && (activeRun.status === "running" || activeRun.status === "pending");
@@ -596,99 +587,13 @@ export function CommandBar({
     return null;
   }
 
-  const pausing = pauseMutation.isPending || Boolean(activeRun?.cancel_requested);
+  // Только индикатор статуса. Действие «Приостановить» живёт в карточке «Что
+  // сейчас нужно» на вкладке «Проект» — здесь не дублируем (раньше на «Проекте»
+  // было две кнопки «Приостановить»: тут и в CTA).
   return (
     <div className="command-bar command-bar--running">
       <span className="command-bar__pulse" aria-hidden />
       <span className="command-bar__status">Идёт работа</span>
-      <button
-        type="button"
-        className="command-bar__pause"
-        onClick={() => activeRun && pauseMutation.mutate(activeRun.run_id)}
-        disabled={pausing}
-      >
-        {pausing ? "Останавливаем…" : "Приостановить"}
-      </button>
-    </div>
-  );
-}
-
-export function TaskGraphTree({
-  nodes,
-  onOpenTask,
-  flash,
-}: {
-  nodes: TaskNodeView[];
-  onOpenTask: (task: TaskNodeView) => void;
-  flash?: boolean;
-}) {
-  return (
-    <SectionCard title="Карта зависимостей" subtitle="Это структура работ, а не порядок выполнения: система запускает любые допустимые задачи" className={cx("task-graph-card", flash && "live-flash")}>
-      <div className="task-graph-tree task-graph-tree--stacked">
-        {nodes.length === 0 ? (
-          <EmptyState title="Граф пока пуст" description="Он появится после создания или перепланирования проекта." />
-        ) : (
-          nodes.map((node) => (
-            <TaskGraphNode key={node.task_id} node={node} onOpenTask={onOpenTask} />
-          ))
-        )}
-      </div>
-    </SectionCard>
-  );
-}
-
-function TaskGraphNode({
-  node,
-  onOpenTask,
-}: {
-  node: TaskNodeView;
-  onOpenTask: (task: TaskNodeView) => void;
-}) {
-  const tone =
-    node.status === "completed"
-      ? "success"
-      : node.status === "failed"
-        ? "danger"
-        : node.blocking_clarification_count > 0
-          ? "warning"
-          : node.is_current || node.status === "ready"
-            ? "active"
-            : "muted";
-  return (
-    <div className="task-graph-node" style={{ "--task-depth": node.depth } as CSSProperties}>
-            <button
-              className={cx(
-                "task-node",
-                "task-node--row",
-                node.is_current && "task-node--current",
-                node.status === "failed" && "task-node--danger",
-                node.blocking_clarification_count > 0 && "task-node--warning",
-              )}
-              onClick={() => onOpenTask(node)}
-              type="button"
-            >
-              <div className={cx("task-node__marker", `task-node__marker--${tone}`)} />
-              <div className="task-node__content">
-          <span className="task-node__title">{node.title}</span>
-          {node.status_summary ? <p className="task-node__summary">{node.status_summary}</p> : null}
-              </div>
-              <div className="task-node__meta">
-          <StatusPill tone={tone}>{prettyLabel(node.status)}</StatusPill>
-          {node.blocking_clarification_count > 0 ? (
-            <StatusPill tone="warning">{node.blocking_clarification_count} уточн.</StatusPill>
-          ) : null}
-          <span>{prettyLabel(node.template_type)}</span>
-          <span>{prettyLabel(node.origin_kind)}</span>
-          {node.slot_id ? <span>{node.slot_id}</span> : null}
-              </div>
-            </button>
-      {node.children.length > 0 ? (
-        <div className="task-graph-node__children">
-          {node.children.map((child) => (
-            <TaskGraphNode key={child.task_id} node={child} onOpenTask={onOpenTask} />
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

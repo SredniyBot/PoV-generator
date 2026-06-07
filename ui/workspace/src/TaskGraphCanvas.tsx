@@ -187,7 +187,7 @@ function edgeColorForOrigin(origin: string): string {
 function nodeHeight(task: TaskNodeView): number {
   if (task.template_type === "fan_out") return 124;
   const lines = Math.max(1, Math.ceil((task.title?.length ?? 0) / 22));
-  const errorH = task.status === "failed" && task.status_summary ? 18 : 0;
+  const errorH = task.status === "failed" && (task.error_message || task.status_summary) ? 18 : 0;
   return Math.max(NODE_HEIGHT, 38 + lines * 17 + errorH);
 }
 
@@ -254,9 +254,12 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         )}
       </div>
       <div className="tg-node__title" title={task.title}>{task.title}</div>
-      {task.status === "failed" && task.status_summary ? (
-        <div className="tg-node__error" title={task.status_summary}>
-          {task.status_summary}
+      {task.status === "failed" && (task.error_message || task.status_summary) ? (
+        <div
+          className="tg-node__error"
+          title={task.error_message || task.status_summary || undefined}
+        >
+          {task.error_message || task.status_summary}
         </div>
       ) : null}
       {hasActions && actions ? (
@@ -328,8 +331,13 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
           </div>
         </div>
       ) : null}
-      {task.status === "failed" && task.error_message ? (
-        <div className="tg-node__error" title={task.error_message}>{task.error_message}</div>
+      {task.status === "failed" && (task.error_message || task.status_summary) ? (
+        <div
+          className="tg-node__error"
+          title={task.error_message || task.status_summary || undefined}
+        >
+          {task.error_message || task.status_summary}
+        </div>
       ) : null}
       {meta != null && meta.total_instances > 4 ? (
         <button
