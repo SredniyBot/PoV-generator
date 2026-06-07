@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import sqlite3
 import threading
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
@@ -48,6 +49,7 @@ from ..domain.project_knowledge import (
     apply_knowledge_patch,
 )
 from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, StateLayer
+from ..domain.rollback import StepCheckpoint
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
@@ -710,8 +712,8 @@ class SqliteRuntime:
     ) -> list[StateEvent]:
         """История событий изменения состояния, опционально по слою."""
         query = (
-            "select layer, version, patch_type, payload_json, actor, reason, created_at "
-            "from state_events"
+            "select id, layer, version, patch_type, payload_json, actor, reason, "
+            "created_at, task_id from state_events"
         )
         params: tuple = ()
         if layer is not None:
@@ -729,6 +731,8 @@ class SqliteRuntime:
                 actor=row["actor"],
                 reason=row["reason"],
                 created_at=row["created_at"],
+                task_id=row["task_id"],
+                seq=row["id"],
             )
             for row in rows
         ]
@@ -740,8 +744,12 @@ class SqliteRuntime:
         patch: KnowledgePatch,
         actor: str,
         reason: str,
+        task_id: str | None = None,
     ) -> ProjectKnowledge:
-        """Применить патч к слою знаний; обновить snapshot и записать событие."""
+        """Применить патч к слою знаний; обновить snapshot и записать событие.
+
+        ``task_id`` — шаг-источник патча (для ролбека). None — патч вне шага.
+        """
         knowledge = self.load_knowledge(workspace)
         next_knowledge = apply_knowledge_patch(knowledge, patch)
         manifest = self.load_manifest(workspace)
@@ -762,9 +770,9 @@ class SqliteRuntime:
                 """
                 insert into state_events(
                   project_id, layer, version, patch_type, payload_json,
-                  actor, reason, created_at
+                  actor, reason, created_at, task_id
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     manifest.project_id,
@@ -775,6 +783,7 @@ class SqliteRuntime:
                     actor,
                     reason,
                     next_knowledge.updated_at,
+                    task_id,
                 ),
             )
             connection.commit()
@@ -787,8 +796,12 @@ class SqliteRuntime:
         patch: ProcessPatch,
         actor: str,
         reason: str,
+        task_id: str | None = None,
     ) -> ProcessState:
-        """Применить патч к слою процесса; обновить snapshot и записать событие."""
+        """Применить патч к слою процесса; обновить snapshot и записать событие.
+
+        ``task_id`` — шаг-источник патча (для ролбека). None — патч вне шага.
+        """
         state = self.load_process_state(workspace)
         next_state = apply_process_patch(state, patch)
         manifest = self.load_manifest(workspace)
@@ -809,9 +822,9 @@ class SqliteRuntime:
                 """
                 insert into state_events(
                   project_id, layer, version, patch_type, payload_json,
-                  actor, reason, created_at
+                  actor, reason, created_at, task_id
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     manifest.project_id,
@@ -822,10 +835,105 @@ class SqliteRuntime:
                     actor,
                     reason,
                     next_state.updated_at,
+                    task_id,
                 ),
             )
             connection.commit()
         return next_state
+
+    # --- чекпоинты шага (ролбек) -------------------------------------------
+
+    @_serialized_write
+    def capture_step_checkpoint(self, workspace: Path, task_id: str) -> StepCheckpoint:
+        """Снять чекпоинт состояния ПЕРЕД выполнением шага (для ролбека).
+
+        Хранит блобы текущих снимков knowledge/process + их версии и
+        objective_ref. ``seq`` (autoincrement) задаёт устойчивый порядок.
+        """
+        manifest = self.load_manifest(workspace)
+        task = self.get_task(workspace, task_id)
+        checkpoint_id = str(uuid.uuid4())
+        created_at = utc_now_iso()
+        with self._connect(workspace) as connection:
+            krow = connection.execute(
+                "select state_json, version from knowledge_snapshots where project_id = ?",
+                (manifest.project_id,),
+            ).fetchone()
+            prow = connection.execute(
+                "select state_json, version from process_snapshots where project_id = ?",
+                (manifest.project_id,),
+            ).fetchone()
+            if krow is None or prow is None:
+                raise NotFoundError("Снимки состояния не найдены для чекпоинта шага.")
+            cursor = connection.execute(
+                """
+                insert into step_checkpoints(
+                  checkpoint_id, project_id, task_id, attempt,
+                  knowledge_json, knowledge_version, process_json, process_version,
+                  objective_ref, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    manifest.project_id,
+                    task_id,
+                    task.attempt,
+                    krow["state_json"],
+                    krow["version"],
+                    prow["state_json"],
+                    prow["version"],
+                    manifest.objective_ref,
+                    created_at,
+                ),
+            )
+            seq = int(cursor.lastrowid)
+            connection.commit()
+        return StepCheckpoint(
+            checkpoint_id=checkpoint_id,
+            project_id=manifest.project_id,
+            task_id=task_id,
+            attempt=task.attempt,
+            seq=seq,
+            knowledge_json=krow["state_json"],
+            knowledge_version=krow["version"],
+            process_json=prow["state_json"],
+            process_version=prow["version"],
+            objective_ref=manifest.objective_ref,
+            created_at=created_at,
+        )
+
+    def _row_to_step_checkpoint(self, row: sqlite3.Row) -> StepCheckpoint:
+        return StepCheckpoint(
+            checkpoint_id=row["checkpoint_id"],
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            attempt=row["attempt"],
+            seq=row["seq"],
+            knowledge_json=row["knowledge_json"],
+            knowledge_version=row["knowledge_version"],
+            process_json=row["process_json"],
+            process_version=row["process_version"],
+            objective_ref=row["objective_ref"],
+            created_at=row["created_at"],
+        )
+
+    def list_step_checkpoints(self, workspace: Path) -> list[StepCheckpoint]:
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                "select * from step_checkpoints order by seq"
+            ).fetchall()
+        return [self._row_to_step_checkpoint(row) for row in rows]
+
+    def load_latest_step_checkpoint(
+        self, workspace: Path, task_id: str
+    ) -> StepCheckpoint | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from step_checkpoints where task_id = ? order by seq desc limit 1",
+                (task_id,),
+            ).fetchone()
+        return self._row_to_step_checkpoint(row) if row is not None else None
 
     @_serialized_write
     def create_task(self, workspace: Path, task: TaskRecord) -> TaskRecord:
@@ -2425,8 +2533,32 @@ class SqliteRuntime:
               created_at text not null
             );
 
+            -- Чекпоинт состояния ПЕРЕД выполнением листового шага: блобы
+            -- knowledge/process + версии + objective_ref. База для ролбека —
+            -- реконструкция состояния реплеем переживших патчей поверх
+            -- чекпоинта самого раннего откаченного шага. ``seq`` (autoincrement)
+            -- задаёт устойчивый порядок.
+            create table if not exists step_checkpoints (
+              seq integer primary key autoincrement,
+              checkpoint_id text not null unique,
+              project_id text not null,
+              task_id text not null,
+              attempt integer not null,
+              knowledge_json text not null,
+              knowledge_version integer not null,
+              process_json text not null,
+              process_version integer not null,
+              objective_ref text not null,
+              created_at text not null
+            );
+            create index if not exists step_checkpoints_task_idx
+              on step_checkpoints(task_id);
+
             """
         )
+        # Ролбек: провенанс патча состояния — id шага, в рамках которого он
+        # применён (null для патчей вне шага). Старые БД мигрируются дефолтом.
+        self._ensure_column(connection, "state_events", "task_id", "text")
         self._ensure_column(
             connection,
             "validation_runs",

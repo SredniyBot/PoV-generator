@@ -150,6 +150,10 @@ class WorkflowService:
         reasons: tuple[str, ...],
         cancellation: CancellationToken | None = None,
     ) -> WorkflowStepResult:
+        # Ролбек: снимок состояния ПЕРЕД шагом — точка, к которой можно
+        # откатиться. Снимается на каждую попытку исполнения (latest = актуальный
+        # pre-state шага). Это до любых мутаций состояния шагом.
+        self._runtime.capture_step_checkpoint(workspace, task_id)
         self._planning_service.transition_task(workspace, task_id, "start")
         try:
             execution_bundle = self._execution_service.execute_task(
@@ -316,6 +320,7 @@ class WorkflowService:
                 UpsertPositionPatch(position=goal_position),
                 actor="workflow",
                 reason=f"goal extracted from {task.task_key}",
+                task_id=task_id,
             )
             applied.append("UpsertPositionPatch:project.goal")
 
@@ -326,6 +331,7 @@ class WorkflowService:
                     CloseGapPatch(gap_id=gap_id),
                     actor="workflow",
                     reason=f"gap closed by {task.task_key}",
+                    task_id=task_id,
                 )
                 applied.append(f"CloseGapPatch:{gap_id}")
 
@@ -344,6 +350,7 @@ class WorkflowService:
                 ),
                 actor="workflow",
                 reason=f"readiness raised by {task.task_key}",
+                task_id=task_id,
             )
             applied.append(f"UpsertReadinessPatch:{readiness_raise.dimension}")
 
