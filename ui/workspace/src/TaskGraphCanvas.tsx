@@ -38,7 +38,7 @@ import "@xyflow/react/dist/style.css";
 
 import type { FanOutMeta, TaskNodeView } from "./types";
 
-const NODE_WIDTH = 240;
+const NODE_WIDTH = 180;
 const NODE_HEIGHT = 76;
 
 // ── Callbacks context ──────────────────────────────────────────────────────
@@ -96,9 +96,9 @@ function buildLayout(
   const { collapsed, onToggle } = options;
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  // LR: глубина идёт по горизонтали (рангов мало), а широкий веер листьев
-  // выстраивается в высоту — граф получается узким и высоким, а не наоборот.
-  graph.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 90, marginx: 20, marginy: 20 });
+  // TB (сверху вниз) — горизонтальная раскладка по запросу. Компактность даём
+  // узкими узлами + плотным nodesep; широкие ветки можно свернуть на композите.
+  graph.setGraph({ rankdir: "TB", nodesep: 20, ranksep: 70, marginx: 20, marginy: 20 });
 
   for (const task of tasks) {
     graph.setNode(task.task_id, { width: NODE_WIDTH, height: nodeHeight(task) });
@@ -230,7 +230,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
       className={`tg-node${task.is_current ? " tg-node--current" : ""}`}
       style={{ borderLeftColor: meta.color }}
     >
-      <Handle type="target" position={Position.Left} className="tg-handle" />
+      <Handle type="target" position={Position.Top} className="tg-handle" />
       <div className="tg-node__status">
         {collapsible ? (
           <button
@@ -292,7 +292,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           )}
         </div>
       ) : null}
-      <Handle type="source" position={Position.Right} className="tg-handle" />
+      <Handle type="source" position={Position.Bottom} className="tg-handle" />
     </div>
   );
 }
@@ -310,7 +310,7 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
 
   return (
     <div className="tg-node tg-node--fanout" style={{ borderLeftColor: status.color }}>
-      <Handle type="target" position={Position.Left} className="tg-handle" />
+      <Handle type="target" position={Position.Top} className="tg-handle" />
       <div className="tg-node__status">
         <span className="tg-dot" style={{ background: status.color }} />
         <span className="tg-node__status-label">{status.label}</span>
@@ -341,7 +341,7 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
           {isCollapsed ? `Показать все ${meta.total_instances}` : "Свернуть"}
         </button>
       ) : null}
-      <Handle type="source" position={Position.Right} className="tg-handle" />
+      <Handle type="source" position={Position.Bottom} className="tg-handle" />
     </div>
   );
 }

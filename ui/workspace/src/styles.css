@@ -3560,7 +3560,7 @@ code {
 }
 
 .tg-node {
-  width: 240px;
+  width: 180px;
   min-height: 60px;
   background: var(--surface-primary, rgba(28, 32, 38, 0.95));
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3605,6 +3605,10 @@ code {
   flex-shrink: 0;
 }
 .tg-node__status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
 }
