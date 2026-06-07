@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-ArtifactFormat = Literal["json", "markdown", "text"]
+ArtifactFormat = Literal["json", "markdown", "text", "bundle"]
 """Формат хранимого содержимого артефакта."""
 
 LOW_CONFIDENCE_THRESHOLD = 0.45

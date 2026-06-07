@@ -4,7 +4,7 @@ import functools
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +21,7 @@ from ..domain.artifacts import (
     ContextManifest,
 )
 from ..domain.attachments import AttachmentRecord
+from ..domain.bundles import BundleFile, BundleManifest, ContentKind, build_manifest
 from ..domain.checkpoints import CheckpointSession, CheckpointStatus
 from ..domain.decisions import (
     Decision,
@@ -201,6 +202,19 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         user_verified=user_verified,
         user_verified_at=user_verified_at,
     )
+
+
+def _safe_bundle_path(base: Path, relative: str) -> Path:
+    """Безопасно соединить base с относительным путём файла бандла.
+
+    Защита от path traversal: результат обязан остаться внутри ``base``
+    (агент/данные не должны писать/читать вне каталога артефакта).
+    """
+    base_resolved = base.resolve()
+    candidate = (base / relative.replace("\\", "/")).resolve()
+    if candidate != base_resolved and base_resolved not in candidate.parents:
+        raise NotFoundError(f"Недопустимый путь в бандле: {relative}")
+    return candidate
 
 
 def _position_to_dict(position: Position) -> dict[str, object]:
@@ -1316,6 +1330,72 @@ class SqliteRuntime:
             )
             connection.commit()
         return artifact
+
+    # --- файловые артефакты-бандлы (Ф5) -------------------------------------
+
+    def store_bundle_artifact(
+        self,
+        workspace: Path,
+        *,
+        artifact: ArtifactRecord,
+        files: Mapping[str, bytes],
+        bundle_kind: str | None = None,
+        entry_point: str | None = None,
+        kind_overrides: Mapping[str, ContentKind] | None = None,
+    ) -> tuple[ArtifactRecord, BundleManifest]:
+        """Сохранить файловый бандл: файлы на диск + манифест в БД.
+
+        Разнородные выходы (код/документы/двоичные/БД/архив/образ) хранятся
+        единообразно: файлы под ``artifacts/<id>/``, а в строку артефакта
+        (``artifact_format="bundle"``) кладётся манифест (список файлов + вид).
+        SQLite блобами не раздуваем. Файлы пишутся ДО строки — читатель строки
+        всегда видит готовый бандл.
+        """
+        manifest = build_manifest(
+            files, bundle_kind=bundle_kind, entry_point=entry_point, kind_overrides=kind_overrides
+        )
+        base = workspace / "artifacts" / artifact.artifact_id
+        for relative, data in files.items():
+            target = _safe_bundle_path(base, relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        # Манифест становится «содержимым» артефакта — переиспользуем общий
+        # путь записи строки/контента (store_artifact сериализован per-workspace).
+        record = self.store_artifact(
+            workspace,
+            artifact=replace(artifact, artifact_format="bundle"),
+            content=json_dumps(to_primitive(manifest)),
+        )
+        return record, manifest
+
+    def load_bundle_manifest(self, workspace: Path, artifact_id: str) -> BundleManifest:
+        """Прочитать манифест бандла из строки артефакта."""
+        raw = self.load_artifact_content(workspace, artifact_id)
+        data = json_loads(raw)
+        files = tuple(
+            BundleFile(
+                path=item["path"],
+                size_bytes=int(item["size_bytes"]),
+                sha256=item["sha256"],
+                content_kind=item["content_kind"],
+            )
+            for item in data.get("files", [])
+        )
+        return BundleManifest(
+            bundle_kind=data["bundle_kind"],
+            total_files=int(data["total_files"]),
+            total_bytes=int(data["total_bytes"]),
+            files=files,
+            entry_point=data.get("entry_point"),
+        )
+
+    def load_bundle_file(self, workspace: Path, artifact_id: str, path: str) -> bytes:
+        """Прочитать один файл бандла (с защитой от path traversal)."""
+        base = workspace / "artifacts" / artifact_id
+        target = _safe_bundle_path(base, path)
+        if not target.exists() or not target.is_file():
+            raise NotFoundError(f"Файл бандла не найден: {path}")
+        return target.read_bytes()
 
     # --- attachments (входные файлы) ----------------------------------------
 
