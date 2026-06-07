@@ -140,12 +140,17 @@ def test_interpreter_receives_full_source(tmp_path: Path) -> None:
         content=big_text.encode("utf-8"),
         extract_in_background=False,
     )
-    # Лист-интерпретатор, объявивший requires.inputs: [attachments].
+    # Лист-интерпретатор, объявивший requires.inputs: [attachments] и НЕ
+    # требующий апстрим-артефактов: иначе build_for_task справедливо упадёт на
+    # отсутствии обязательного входа. Без второго условия выбор leaf'а
+    # недетерминирован (несколько шаблонов потребляют attachments; порядок
+    # list_tasks при равных created_at — по uuid), и тест флакал.
     leaf = next(
         t
         for t in runtime.list_tasks(workspace)
         if t.template_type == "leaf"
         and "attachments" in snapshot.resolve_template(t.template_ref).inputs.raw_inputs
+        and not snapshot.resolve_template(t.template_ref).inputs.required_artifact_roles
     )
     result = ContextService(runtime).build_for_task(
         workspace, snapshot, leaf.task_id, model_context_window=200_000

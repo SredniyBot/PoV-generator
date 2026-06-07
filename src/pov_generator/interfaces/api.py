@@ -20,6 +20,7 @@ from ..application.parallel_scheduling import (
 )
 from ..application.pdf_export import render_artifact_pdf, render_decisions_pdf
 from ..application.planning_service import PlanningService
+from ..application.project_lock import ensure_project_unlocked
 from ..application.project_registry import ProjectRegistryResolver
 from ..application.project_service import ProjectService
 from ..application.provider_settings_service import (
@@ -27,6 +28,8 @@ from ..application.provider_settings_service import (
     ProviderSettingsService,
 )
 from ..application.registry_service import RegistryService
+from ..application.rollback_coordinator import RollbackCoordinator
+from ..application.rollback_service import RollbackService
 from ..application.validation_service import ValidationService
 from ..application.workflow_runner_service import WorkflowRunnerService
 from ..application.workflow_service import WorkflowService
@@ -204,6 +207,12 @@ def create_app(
         planning_service,
         concurrency_resolver=_resolve_max_concurrency,
         registry_resolver=registry_resolver,
+    )
+    # Ролбек шага: чистый движок (RollbackService) + координатор
+    # конкуррентности (замок проекта + авто-отмена активного прогона).
+    rollback_service = RollbackService(runtime)
+    rollback_coordinator = RollbackCoordinator(
+        runtime, workflow_runner_service, rollback_service
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     attachment_service = AttachmentService(runtime)
@@ -810,6 +819,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail=f"answer без поля {exc}")
 
         workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        # Во время отката проект заморожен — мутации отклоняются (409).
+        ensure_project_unlocked(runtime, workspace)
         checkpoint_service.submit_answers(
             workspace, session_id=session_id, answers=tuple(answers)
         )
@@ -886,6 +897,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail=f"answer без поля {exc}")
 
         workspace = app.state.query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        # Во время отката проект заморожен — мутации отклоняются (409).
+        ensure_project_unlocked(runtime, workspace)
         checkpoint_service.submit_decision_answers(
             workspace, project_id=project_id, answers=tuple(answers)
         )
@@ -1219,6 +1232,44 @@ def create_app(
                 model=_optional_str(payload, "model"),
             )
         )
+
+    @app.get("/api/projects/{project_id}/rollback/preview")
+    def rollback_preview(project_id: str, target_task_id: str) -> Any:
+        """Превью отката: какие шаги инвалидируются и какие артефакты уйдут в архив.
+
+        Чистое чтение — состояние проекта не меняется. Используется UI для
+        диалога подтверждения «что я потеряю».
+        """
+        return to_primitive(query_service.rollback_preview(project_id, target_task_id))
+
+    @app.get("/api/projects/{project_id}/rollback/history")
+    def rollback_history(project_id: str) -> Any:
+        """История выполненных откатов проекта (аудит, свежие сверху)."""
+        return to_primitive(query_service.rollback_history(project_id))
+
+    @app.post("/api/projects/{project_id}/commands/rollback")
+    def rollback_command(
+        project_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        """Откатить проект к состоянию ДО выбранного шага.
+
+        Координатор берёт эксклюзивный замок проекта, форсированно гасит
+        активный прогон и дожидается его оседания, выполняет откат и снимает
+        замок (даже при ошибке). Пока идёт откат, конкурентные мутации
+        проекта отклоняются (409).
+        """
+        target_task_id = _required_str(payload, "target_task_id")
+        reason = _optional_str(payload, "reason") or ""
+        workspace_ref = catalog.resolve_workspace(project_id)
+        snapshot = registry_resolver.snapshot_for(workspace_ref.workspace)
+        result = rollback_coordinator.rollback_step(
+            workspace_ref.workspace,
+            snapshot,
+            project_id,
+            target_task_id,
+            reason=reason,
+        )
+        return to_primitive(result)
 
     @app.post("/api/projects/{project_id}/commands/set-goal")
     def set_goal(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:

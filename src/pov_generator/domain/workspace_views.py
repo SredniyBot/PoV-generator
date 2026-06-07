@@ -708,3 +708,66 @@ class ProjectFailurePinsView:
     artifact_id: str | None  # None = по всему проекту
     pins: tuple[FailurePinView, ...]
     total_count: int
+
+
+# ---------------------------------------------------------------------------
+# Ролбек шага — превью инвалидации и история выполненных откатов.
+#
+# Превью отвечает на вопрос «что я потеряю, откатив этот шаг»: множество
+# зависимых шагов (целевой + транзитивно зависящие) и артефакты, которые
+# будут заархивированы. История — аудит выполненных откатов для вкладки.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RollbackStepView:
+    """Один шаг, который будет инвалидирован откатом."""
+
+    task_id: str
+    title: str
+    template_ref: str
+    status: str
+    is_target: bool  # сам выбранный шаг (vs зависящий от него)
+
+
+@dataclass(frozen=True)
+class RollbackArtifactView:
+    """Артефакт, который будет заархивирован откатом."""
+
+    artifact_id: str
+    artifact_role: str
+    title: str
+    created_by_task_id: str | None
+
+
+@dataclass(frozen=True)
+class RollbackPreviewView:
+    """Превью отката: что будет инвалидировано/заархивировано (до подтверждения)."""
+
+    project_id: str
+    target_task_id: str
+    target_title: str
+    reverted_steps: tuple[RollbackStepView, ...]
+    archived_artifacts: tuple[RollbackArtifactView, ...]
+
+
+@dataclass(frozen=True)
+class RollbackHistoryItemView:
+    """Один выполненный откат (запись аудита)."""
+
+    rollback_id: str
+    target_task_id: str
+    target_title: str
+    reverted_count: int
+    archived_artifact_count: int
+    actor: str
+    reason: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ProjectRollbackHistoryView:
+    """История откатов проекта (свежие сверху)."""
+
+    project_id: str
+    items: tuple[RollbackHistoryItemView, ...]

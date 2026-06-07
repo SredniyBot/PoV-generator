@@ -42,6 +42,7 @@ from ..domain.workspace_views import (
     ProjectOverviewView,
     ProjectRequisitesView,
     ProjectReviewView,
+    ProjectRollbackHistoryView,
     ProjectShellView,
     ProjectSituationView,
     ProjectStagesView,
@@ -50,6 +51,10 @@ from ..domain.workspace_views import (
     ProjectTimelineView,
     RequisiteItemView,
     ReviewIssueView,
+    RollbackArtifactView,
+    RollbackHistoryItemView,
+    RollbackPreviewView,
+    RollbackStepView,
     SituationBlockerView,
     StageFailingTaskView,
     StagePendingDecisionView,
@@ -61,6 +66,7 @@ from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .planning_service import PlanningService
 from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
+from .rollback_graph import collect_step_footprints, compute_rollback_set
 from .workspace_catalog import WorkspaceCatalog, WorkspaceRef
 
 logger = logging.getLogger(__name__)
@@ -1450,6 +1456,89 @@ class WorkspaceQueryService:
         if not token_parts:
             raise ConflictError(f"Не удалось вычислить realtime token для проекта '{project_id}'.")
         return sha256("|".join(token_parts).encode("utf-8")).hexdigest()
+
+    # --- Ролбек: превью инвалидации и история -------------------------------
+
+    def rollback_preview(self, project_id: str, target_task_id: str) -> RollbackPreviewView:
+        """Что будет инвалидировано/заархивировано при откате выбранного шага.
+
+        Чистое чтение: вычисляем множество зависимых шагов (целевой +
+        транзитивно зависящие) теми же доменными примитивами, что и сам
+        откат (DRY), и обогащаем названиями задач и списком артефактов,
+        которые уйдут в архив. Состояние проекта не меняется.
+        """
+        context = self._load_context(project_id)
+        workspace = context.workspace
+        footprints = collect_step_footprints(self._runtime, workspace, context.snapshot)
+        reverted = compute_rollback_set(target_task_id, footprints)
+
+        tasks_by_id = {task.task_id: task for task in self._runtime.list_tasks(workspace)}
+        target = tasks_by_id.get(target_task_id)
+
+        reverted_steps = tuple(
+            sorted(
+                (
+                    RollbackStepView(
+                        task_id=task_id,
+                        title=task.title if task is not None else task_id,
+                        template_ref=task.template_ref if task is not None else "",
+                        status=task.status if task is not None else "",
+                        is_target=task_id == target_task_id,
+                    )
+                    for task_id, task in (
+                        (tid, tasks_by_id.get(tid)) for tid in reverted
+                    )
+                ),
+                # Целевой шаг первым, затем по названию для стабильности.
+                key=lambda step: (not step.is_target, step.title, step.task_id),
+            )
+        )
+
+        archived_artifacts = tuple(
+            RollbackArtifactView(
+                artifact_id=artifact.artifact_id,
+                artifact_role=artifact.artifact_role,
+                title=artifact.title,
+                created_by_task_id=artifact.created_by_task_id,
+            )
+            for artifact in self._runtime.list_artifacts(workspace)
+            if artifact.created_by_task_id in reverted
+        )
+
+        return RollbackPreviewView(
+            project_id=context.manifest.project_id,
+            target_task_id=target_task_id,
+            target_title=target.title if target is not None else target_task_id,
+            reverted_steps=reverted_steps,
+            archived_artifacts=archived_artifacts,
+        )
+
+    def rollback_history(self, project_id: str) -> ProjectRollbackHistoryView:
+        """История выполненных откатов проекта (свежие сверху)."""
+        context = self._load_context(project_id)
+        tasks_by_id = {
+            task.task_id: task for task in self._runtime.list_tasks(context.workspace)
+        }
+        items = tuple(
+            RollbackHistoryItemView(
+                rollback_id=record.rollback_id,
+                target_task_id=record.target_task_id,
+                target_title=(
+                    tasks_by_id[record.target_task_id].title
+                    if record.target_task_id in tasks_by_id
+                    else record.target_task_id
+                ),
+                reverted_count=len(record.reverted_task_ids),
+                archived_artifact_count=len(record.archived_artifact_ids),
+                actor=record.actor,
+                reason=record.reason,
+                created_at=record.created_at,
+            )
+            for record in self._runtime.list_rollbacks(context.workspace)
+        )
+        return ProjectRollbackHistoryView(
+            project_id=context.manifest.project_id, items=items
+        )
 
     def _load_context(self, project_id: str) -> ProjectContext:
         return self._load_context_by_ref(self._catalog.resolve_workspace(project_id))

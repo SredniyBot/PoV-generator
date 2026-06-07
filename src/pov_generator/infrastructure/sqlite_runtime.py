@@ -1100,6 +1100,27 @@ class SqliteRuntime:
             connection.commit()
         return record
 
+    def list_rollbacks(self, workspace: Path) -> list[RollbackRecord]:
+        """История выполненных откатов (свежие сверху)."""
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                "select * from rollbacks order by created_at desc, rollback_id desc"
+            ).fetchall()
+        return [
+            RollbackRecord(
+                rollback_id=row["rollback_id"],
+                project_id=row["project_id"],
+                target_task_id=row["target_task_id"],
+                target_seq=row["target_seq"],
+                reverted_task_ids=tuple(json_loads(row["reverted_task_ids_json"])),
+                archived_artifact_ids=tuple(json_loads(row["archived_artifact_ids_json"])),
+                actor=row["actor"],
+                reason=row["reason"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     @_serialized_write
     def create_task(self, workspace: Path, task: TaskRecord) -> TaskRecord:
         with self._connect(workspace) as connection:
