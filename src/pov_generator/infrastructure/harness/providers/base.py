@@ -63,7 +63,12 @@ class SandboxHarnessProvider:
 
     def run(self, spec: HarnessRunSpec) -> HarnessRunResult:
         handle = self._sandbox.provision(
-            SandboxSpec(image=self._image, limits=self._resource_limits, workdir="/work")
+            SandboxSpec(
+                image=self._image,
+                limits=self._resource_limits,
+                workdir="/work",
+                volume=spec.volume,
+            )
         )
         logs: list[str] = []
         try:

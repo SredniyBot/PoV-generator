@@ -1,0 +1,37 @@
+kind: task_template
+id: implementation.realization_index
+version: 1.0.0
+title: Сводка реализации
+type: leaf
+status: active
+domain: implementation
+executor: llm
+methodology: minimal
+merge:
+  strategy: synthetic
+  conflict_policy: union
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+    optional:
+      - implementation.component_build_spec@1.0.0
+      - common.feasibility_assessment@1.0.0
+produces:
+  artifact: implementation.realization_index@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 32000
+planning:
+  priority: 100
+summary: |
+  Собери сводный манифест реализации из покомпонентных спек сборки и модели
+  компонентов. Поля артефакта:
+  • title — заголовок;
+  • summary — короткий абзац: что реализовано, что под условием, что вне рамок;
+  • components — на каждый компонент: component (имя), status (реализован / при
+    условии / не покрыт), files_summary (что вышло), gates_summary (проверки),
+    notes (заметки);
+  • open_questions — нерешённое.
+  Не выдумывай компоненты, которых нет в модели/спеках.

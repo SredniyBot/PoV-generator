@@ -1,0 +1,10 @@
+kind: artifact_contract
+id: implementation.realization_index
+version: 1.0.0
+title: Сводка реализации
+# Структурная схема — в application/artifact_contracts.py. Сводный манифест
+# реализованных компонентов: что собрано, статус, заметки.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

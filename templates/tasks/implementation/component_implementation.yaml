@@ -1,0 +1,45 @@
+kind: task_template
+id: implementation.component_implementation
+version: 1.0.0
+title: Реализация компонента агентом
+type: leaf
+status: active
+domain: implementation
+# Ф8: узел-агент (harness) реализует ОДИН компонент по его спеке сборки и
+# отдаёт исходный код файловым бандлом. Гейты «готово» (DoD) проверяют результат
+# в песочнице. На stub-рантайме — детерминированная фикстура-каталог.
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.component_build_spec@1.0.0
+      - architecture.component_model@1.0.0
+    optional:
+      - common.feasibility_assessment@1.0.0
+      - common.normalized_request@1.0.0
+produces:
+  artifact: implementation.component_implementation@1.0.0
+# Гейт готовности: минимальная проверка наличия структуры проекта. Реальные
+# адаптеры (Ф7) прогонят его в песочнице; провал = узел не выполнен.
+harness_gates:
+  - name: smoke
+    command: "test -d src || test -f README.md"
+context:
+  include: [artifact.*]
+  max_tokens: 24000
+planning:
+  priority: 400
+summary: |
+  Реализуй ОДИН компонент системы по его спеке сборки
+  (implementation.component_build_spec) и модели компонентов.
+
+  Какой именно компонент — в контексте под заголовком «Целевой элемент (фокус
+  задачи)». Работай ТОЛЬКО по нему. Контракты соседей бери из модели
+  компонентов, но реализуй только целевой.
+
+  Положи исходный код компонента файлами в рабочий каталог (структура на твоё
+  усмотрение в рамках tech из спеки): код, минимальный тест, README. Не выходи
+  за рамки спеки; чего не хватает — отметь в README, не выдумывай.

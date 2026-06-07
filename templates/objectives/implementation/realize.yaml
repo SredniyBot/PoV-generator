@@ -1,0 +1,14 @@
+kind: objective
+id: implementation.realize
+version: 1.0.0
+title: Реализовать систему агентами по плану сборки
+root: implementation.realize_system@1.0.0
+default_methodology_pack: process.lean_jtbd@1.0.0
+# Ф8: цикл «спека → реализация». После плана сборки (implementation.build_plan)
+# узлы-агенты реализуют компоненты по покомпонентным спекам — каждый в песочнице,
+# с гейтами готовности. Артефакты прошлых objective'ов (component_model,
+# component_build_spec) живут в том же workspace.
+compatible_next_objectives: []
+done_when:
+  artifacts:
+    - implementation.realization_index@1.0.0

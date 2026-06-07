@@ -1,0 +1,10 @@
+kind: artifact_contract
+id: implementation.component_implementation
+version: 1.0.0
+title: Реализация компонента (код)
+# Файловый выход узла-агента: исходный код компонента (бандл). Неструктурный —
+# проверяется не JSON-схемой, а гейтами сборки/тестов (DoD) в песочнице.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

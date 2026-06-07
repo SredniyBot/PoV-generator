@@ -42,12 +42,19 @@ class ResourceLimits:
 
 @dataclass(frozen=True)
 class SandboxSpec:
-    """Параметры поднятия песочницы."""
+    """Параметры поднятия песочницы.
+
+    ``volume`` (Ф8): ключ общего тома сборочной группы. Несколько песочниц с
+    одним ``volume`` видят общий рабочий каталог — это «B-lite общий том» для
+    fan-out реализации компонентов одной группы. None → изолированный per-node
+    каталог (значение по умолчанию, безопаснее).
+    """
 
     image: str
     limits: ResourceLimits = field(default_factory=ResourceLimits)
     workdir: str = "/work"
     env: Mapping[str, str] = field(default_factory=dict)
+    volume: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,7 +115,10 @@ class StubSandboxRuntime:
         exec_handler: Callable[["StubSandboxRuntime", SandboxHandle, list[str]], ExecResult]
         | None = None,
     ) -> None:
+        # handle.id → ссылка на словарь-ФС (общий для группы тома или приватный).
         self._fs: dict[str, dict[str, bytes]] = {}
+        # ключ тома → общий словарь-ФС (Ф8: общий том сборочной группы).
+        self._volumes: dict[str, dict[str, bytes]] = {}
         self._specs: dict[str, SandboxSpec] = {}
         self._alive: set[str] = set()
         self._counter = 0
@@ -119,7 +129,13 @@ class StubSandboxRuntime:
     def provision(self, spec: SandboxSpec) -> SandboxHandle:
         self._counter += 1
         handle_id = f"stub-{self._counter}"
-        self._fs[handle_id] = {}
+        # Общий том группы: все песочницы с одним volume делят один словарь-ФС.
+        # Без volume — приватный per-node каталог.
+        if spec.volume is not None:
+            store = self._volumes.setdefault(spec.volume, {})
+        else:
+            store = {}
+        self._fs[handle_id] = store
         self._specs[handle_id] = spec
         self._alive.add(handle_id)
         return SandboxHandle(id=handle_id, workdir=spec.workdir, native=None)
@@ -246,6 +262,13 @@ class DockerSandboxRuntime:
             kwargs["mem_limit"] = f"{limits.memory_mb}m"
         if limits.pids is not None:
             kwargs["pids_limit"] = limits.pids
+        # Ф8: общий том сборочной группы. Именованный docker-том монтируется в
+        # рабочий каталог; контейнеры одной группы (один volume) делят файлы.
+        # Том переживает снос контейнера (ephemeral — только контейнер).
+        if spec.volume is not None:
+            kwargs["volumes"] = {
+                f"povgen-grp-{spec.volume}": {"bind": spec.workdir, "mode": "rw"}
+            }
         try:
             container = client.containers.run(**kwargs)
         except Exception as exc:  # noqa: BLE001

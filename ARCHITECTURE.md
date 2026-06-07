@@ -235,11 +235,23 @@ knowledge/process); пишем новый снимок; аннулируем п�
 2. Зарегистрировать в `execution_service.execute_task` (switch по `active_provider`).
 3. (Опц.) Branch в `clarification_service._build_draft` для CE11.
 
+### Новый harness-адаптер (агент-исполнитель)
+
+1. `infrastructure/harness/providers/<name>.py` — подкласс `SandboxHarnessProvider`;
+   переопредели `_build_command` (как запустить агент-CLI), при нужде `_prepare`
+   (напр. git baseline) и `_harvest` (сбор результата: по соглашению или diff).
+2. Зарегистрируй в `infrastructure/harness/registry.py` (`_ADAPTER_BUILDERS` +
+   `ADAPTER_CAPABILITIES`).
+3. Выбор адаптера — из настроек (`/machine-room`) или env `POV_HARNESS_PROVIDER`;
+   ничего в шаблонах задач менять не нужно (`executor: harness` провайдер-агностичен).
+
 ### «Откуда этот вывод?»
 
 UI: задача → drawer → панель «Рассуждение» → «Откуда это» →
 `ProvenanceViewer` показывает стадии, сработавшие правила, кандидатов,
-execution_run, provider, model, context_manifest.
+execution_run, provider, model, context_manifest. Для узлов-агентов
+(`provider = harness:*`) рядом — `HarnessProvenanceViewer`: адаптер, brief,
+транскрипт, результаты гейтов.
 
 ---
 
@@ -256,7 +268,39 @@ execution_run, provider, model, context_manifest.
 
 ---
 
-## 9. Roadmap
+## 9. Harness-исполнители (второй бэкенд исполнения)
+
+Узел задачи с `executor: harness` исполняется автономным агентом в песочнице —
+второй бэкенд за тем же контрактом артефакта, что LLM. Полный дизайн —
+`docs/plans/2026-06-07-harness-runtime.md`.
+
+**Слои** (`infrastructure/harness/`, зеркало `infrastructure/llm/`):
+- `protocol.py` — контракт `HarnessProvider` (`run(spec) -> result`), `HarnessGate`/`GateResult`.
+- `sandbox.py` — `SandboxRuntime` (Docker / in-memory stub); контейнер ephemeral,
+  egress deny-by-default, cgroup-лимиты; `SandboxSpec.volume` — общий том группы.
+- `providers/base.py` — `SandboxHarnessProvider`: общий жизненный цикл
+  (провижн → посев brief+входов → `_prepare` → команда → гейты → сбор → teardown).
+  Адаптеры (`claude_code`, `aider`, `command`) — тонкие специализации.
+- `registry.py` — резолв адаптера из `HarnessConnection` (настройки/env), матрица
+  возможностей; `gates.py` — прогон DoD-гейтов; `slots.py`/`budget.py`/`capacity.py`
+  — класс конкуррентности и governance-лимиты.
+
+**Цикл «спека → реализация» (Ф8)** — `objective implementation.realize`:
+`component_model` → веер по компонентам → harness-узлы `component_implementation`
+(код-бандл + гейты build/test) → `realization_index` (сводный манифест). Узлы
+одной группы делят общий том (`volume = parent_task_id` у код-узлов).
+
+**Наблюдаемость** — страница `/machine-room` (Docker/ёмкость/слоты/бюджет +
+онбординг + выбор адаптера); провенанс прогона (brief/транскрипт/гейты) —
+в `ArtifactMetadata.harness_trace` и drill-down карточки артефакта.
+
+**Инварианты**: секреты (креды модели) не хранятся — подаются в песочницу
+эфемерно; деньги/время — внутренние лимиты прогона, не оценки заказчику; без
+Docker всё деградирует на `stub` (CI зелёный без Docker).
+
+---
+
+## 10. Roadmap
 
 В порядке убывания важности:
 

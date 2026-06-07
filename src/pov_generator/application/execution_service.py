@@ -478,6 +478,11 @@ class ExecutionService:
             # идёт общим downstream (как LLM/stub); файловый бандл — отдельным
             # путём (store_bundle_artifact), к нему json-downstream неприменим.
             bundle_output = template.harness_output == "bundle"
+            # Ф8: код-узлы одной сборочной группы (дети одного fan-out) делят
+            # общий том — ключом берём родителя. Структурные узлы изолированы.
+            build_group = (
+                task.parent_task_id if (bundle_output and task.parent_task_id) else None
+            )
             outcome = self._harness.produce_artifact(
                 artifact_role=artifact_role,
                 system_prompt=system_prompt,
@@ -485,6 +490,7 @@ class ExecutionService:
                 output_kind="bundle" if bundle_output else "structured",
                 model_hint=model or None,
                 gates=template.harness_gates,
+                build_group=build_group,
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model

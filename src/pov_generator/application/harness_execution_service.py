@@ -193,6 +193,7 @@ class HarnessExecutionService:
         output_kind: str = "structured",
         model_hint: str | None = None,
         gates: tuple[HarnessGateSpec, ...] = (),
+        build_group: str | None = None,
     ) -> HarnessOutcome:
         """Запустить дефолтный harness и собрать выход роли.
 
@@ -219,6 +220,7 @@ class HarnessExecutionService:
                 HarnessGate(name=g.name, command=g.command, timeout_s=g.timeout_s)
                 for g in gates
             ),
+            volume=build_group,
         )
         provider = self._registry.resolve_default()
         # Класс конкуррентности: занимаем слот на время прогона (бэкпрешер —

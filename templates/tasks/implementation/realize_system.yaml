@@ -1,0 +1,14 @@
+kind: task_template
+id: implementation.realize_system
+version: 1.0.0
+title: Реализовать систему по спекам
+type: composite
+status: active
+domain: implementation
+children:
+  # Ф8: веер по компонентам — на каждый компонент узел-агент (harness) даёт
+  # код-бандл. Затем сводный манифест реализации.
+  - id: component_implementation_fanout
+    task: implementation.component_implementation_fanout@1.0.0
+  - id: realization_index
+    task: implementation.realization_index@1.0.0

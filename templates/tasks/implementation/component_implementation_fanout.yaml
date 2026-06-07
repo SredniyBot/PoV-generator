@@ -1,0 +1,18 @@
+kind: task_template
+id: implementation.component_implementation_fanout
+version: 1.0.0
+title: Реализация компонентов (веер)
+type: fan_out
+status: active
+domain: implementation
+executor: stub
+# Ось веера — компонент: на каждый компонент модели создаётся узел реализации
+# (harness). Источник — architecture.component_model из прошлого objective
+# (артефакты живут в том же workspace). Каждый ребёнок получает «свой» компонент
+# как фокус (context_service инъектирует элемент по origin_ref).
+fan_out_spec:
+  artifact_role: component_model
+  array_path: components
+  key_field: id
+  label_field: name
+children_template_ref: implementation.component_implementation@1.0.0

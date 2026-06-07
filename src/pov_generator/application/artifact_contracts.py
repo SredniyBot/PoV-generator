@@ -1315,6 +1315,28 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "summary": {"type": "string"},
             },
         ),
+        "realization_index": _analysis_object(
+            ["title", "summary"],
+            {
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "component": {"type": "string"},
+                            "status": {"type": "string"},
+                            "files_summary": {"type": "string"},
+                            "gates_summary": {"type": "string"},
+                            "notes": {"type": "string"},
+                        },
+                    },
+                },
+                "open_questions": _string_array_schema(),
+            },
+        ),
         "deployment_topology": _analysis_object(
             ["environments", "network_zones", "components"],
             {
@@ -1966,6 +1988,8 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         # Harness-демо (executor: harness) — неструктурный демонстрационный выход.
         "demo_output": {"type": "object", "additionalProperties": True},
         "demo_bundle": {"type": "object", "additionalProperties": True},
+        # Ф8: реализация компонента агентом — файловый бандл (код), неструктурный.
+        "component_implementation": {"type": "object", "additionalProperties": True},
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")
@@ -3385,6 +3409,36 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines.extend(f"- {item}" for item in risks)
         if payload.get("summary"):
             lines.append("\n" + payload["summary"])
+        return "\n".join(lines)
+
+    if artifact_role == "realization_index":
+        lines = [f"# {payload.get('title') or 'Сводка реализации'}"]
+        if payload.get("summary"):
+            lines.append(payload["summary"])
+        components = payload.get("components") or []
+        if components:
+            lines.append("\n## Компоненты")
+            lines.append("\n| Компонент | Статус | Файлы | Проверки |")
+            lines.append("|-----------|--------|-------|----------|")
+            for comp in components:
+                if not isinstance(comp, dict):
+                    continue
+                lines.append(
+                    f"| {comp.get('component', '—')} | {comp.get('status', '—')} | "
+                    f"{comp.get('files_summary', '—')} | {comp.get('gates_summary', '—')} |"
+                )
+            notes = [
+                (comp.get("component", "—"), comp.get("notes"))
+                for comp in components
+                if isinstance(comp, dict) and comp.get("notes")
+            ]
+            if notes:
+                lines.append("\n## Заметки")
+                lines.extend(f"- **{name}**: {note}" for name, note in notes)
+        open_q = payload.get("open_questions") or []
+        if open_q:
+            lines.append("\n## Открытые вопросы\n")
+            lines.extend(f"- {item}" for item in open_q)
         return "\n".join(lines)
 
     if artifact_role == "privacy_impact_assessment":

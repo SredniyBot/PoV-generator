@@ -568,4 +568,19 @@ Governance денег/времени показываем как **внутре�
   только для harness-артефактов.
 - api.ts/types.ts: status/runtime/adapters/connection/prepare/self-test/trace.
   npm run build (tsc strict + vite) зелёный.
-- Осталось: Ф8 (цикл спека→реализация, fan-out, общий том) + T3 (чистка).
+Реализовано (2026-06-08, Ф8 — цикл спека→реализация):
+- Ф8a — общий том сборочной группы: `SandboxSpec.volume`; `StubSandboxRuntime`
+  делит словарь-ФС по ключу тома (том переживает снос контейнера),
+  `DockerSandboxRuntime` монтирует именованный том `povgen-grp-<volume>`.
+  Проброс `produce_artifact(build_group) → HarnessRunSpec.volume → SandboxSpec`;
+  `execute_task` берёт ключом группы родителя fan-out для код-узлов.
+- Ф8b — слой реализации: harness-лист `implementation.component_implementation`
+  (bundle + гейт), веер по компонентам `component_implementation_fanout`, синтез
+  `realization_index`, композит `realize_system`, objective `implementation.realize`.
+  Контракты + схемы (artifact_contracts) + рендер + фикстуры (harness-каталог +
+  stub-json). Раздел в ARCHITECTURE.md (§9) + cookbook «Новый harness-адаптер».
+- T3 (чистка мёртвых шаблонов): РЕШЕНО НЕ удалять — ролевые *_build_spec
+  намеренно сохранены для закреплённых графом прошлых проектов (документировано
+  в composite); удаление сломало бы pinned-graph и test_implementation_layer2.
+- Осталось (за горизонтом): сквозной прогон спека→реализация на реальном
+  Docker-адаптере; матчинг «фокус-компонент → его спека» в контексте узла.
