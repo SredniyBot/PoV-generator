@@ -68,6 +68,9 @@ export const api = {
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),
+  // Архив проекта: артефакты, заархивированные откатом + заменённые новой версией.
+  getArchivedArtifacts: (projectId: string) =>
+    request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts/archive`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
   artifactPdfUrl: (projectId: string, artifactId: string) =>

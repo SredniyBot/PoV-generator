@@ -1944,44 +1944,95 @@ code {
 .artifact-list__item {
   width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  background: rgba(31, 35, 40, 0.92);
-  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  padding: 9px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   text-align: left;
   min-width: 0;
 }
 
-/* Title-блок занимает всё доступное пространство и обрезается с ellipsis,
-   а meta (дата/иконка) фиксированной ширины — не «съезжает» при сжатии
-   колонки. Это решает прыжок layout'а при клике на артефакт, когда
-   `.artifacts-layout--focused` уменьшает левую колонку. */
+/* Название показывается ЦЕЛИКОМ (без обрезки троеточием) — при нехватке
+   ширины переносится. meta (дата/иконка) фиксированной ширины — не «съезжает». */
 .artifact-list__title {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .artifact-list__title strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: var(--font-weight-medium);
+  word-break: break-word;
 }
 
-.artifact-list__title p {
-  margin: 4px 0 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Метка происхождения в архиве/версиях (откат / прошлая версия). */
+.artifact-list__tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 11px;
   white-space: nowrap;
 }
 
 .artifact-list__item--active {
-  border-color: rgba(120, 184, 201, 0.28);
-  background: rgba(31, 41, 46, 0.96);
+  border-color: var(--border-accent);
+  background: var(--surface-tertiary);
+}
+
+/* Подраздел списка артефактов (Текущие / Архив). */
+.artifacts-subnav {
+  margin-bottom: var(--space-3);
+}
+
+/* Список предыдущих версий артефакта в подвкладке. */
+.artifact-versions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.artifact-versions__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing);
+}
+.artifact-versions__item:hover {
+  border-color: var(--border-accent);
+}
+.artifact-versions__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  word-break: break-word;
+}
+.artifact-versions__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+  font-variant-numeric: tabular-nums;
 }
 
 .artifact-list__meta {

@@ -1897,9 +1897,17 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   // Выбранный входной файл для просмотра справа. Локальное состояние (не URL):
   // взаимоисключающе с выбранным артефактом — открытие одного снимает другое.
   const [selectedAttachment, setSelectedAttachment] = useState<AttachmentView | null>(null);
+  // Подраздел списка: текущие артефакты / архив (заархивированные откатом +
+  // заменённые новой версией).
+  const [tab, setTab] = useState<"current" | "archive">("current");
   const artifactsQuery = useQuery({
     queryKey: projectionKey(projectId, "artifacts"),
     queryFn: () => api.getArtifacts(projectId),
+  });
+  const archivedQuery = useQuery({
+    queryKey: [projectId, "artifacts-archive"],
+    queryFn: () => api.getArchivedArtifacts(projectId),
+    enabled: tab === "archive",
   });
   const artifactDetailQuery = useQuery({
     queryKey: [projectId, "artifact-detail", artifactId],
@@ -1923,13 +1931,48 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     .filter((a) => a.artifact_role !== "input.request")
     .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
 
+  // Элемент списка артефактов: только русское название + дата/время (без
+  // английской роли). Для архива — метка происхождения.
+  const renderArtifactItem = (artifact: ArtifactSummaryView) => (
+    <button
+      key={artifact.artifact_id}
+      type="button"
+      className={cx(
+        "artifact-list__item",
+        !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active",
+      )}
+      onClick={() => {
+        setSelectedAttachment(null);
+        navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`);
+      }}
+    >
+      <div className="artifact-list__title">
+        <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
+        {artifact.is_low_confidence ? (
+          <span className="artifact-lowconf-badge">
+            <AlertTriangle size={11} /> система не уверена
+          </span>
+        ) : null}
+        {artifact.archived ? (
+          <span className="artifact-list__tag">архив (откат)</span>
+        ) : artifact.is_superseded ? (
+          <span className="artifact-list__tag">прошлая версия</span>
+        ) : null}
+      </div>
+      <div className="artifact-list__meta">
+        <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
+        <span className="artifact-list__time">{formatTimeOnly(artifact.created_at)}</span>
+        <ChevronRight size={14} />
+      </div>
+    </button>
+  );
+
   return (
     <div className="artifacts-page">
       <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
       <div className="artifacts-column">
       <SectionCard
         title="Артефакты проекта"
-        subtitle="Документы и промежуточные результаты workflow"
         actions={
           artifacts.length > 0 ? (
             <a
@@ -1944,37 +1987,37 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
           ) : undefined
         }
       >
-        {artifacts.length === 0 ? (
-          <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
+        <div className="segmented artifacts-subnav">
+          <button
+            type="button"
+            className={cx("segmented__item", tab === "current" && "segmented__item--active")}
+            onClick={() => setTab("current")}
+          >
+            Текущие
+          </button>
+          <button
+            type="button"
+            className={cx("segmented__item", tab === "archive" && "segmented__item--active")}
+            onClick={() => setTab("archive")}
+          >
+            Архив
+          </button>
+        </div>
+        {tab === "current" ? (
+          artifacts.length === 0 ? (
+            <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
+          ) : (
+            <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
+          )
+        ) : archivedQuery.isLoading ? (
+          <p className="muted">Загрузка архива…</p>
+        ) : (archivedQuery.data ?? []).length === 0 ? (
+          <EmptyState
+            title="Архив пуст"
+            description="Сюда попадают артефакты, заархивированные откатом или заменённые более новой версией."
+          />
         ) : (
-          <div className="artifact-list">
-            {artifacts.map((artifact) => (
-              <button
-                key={artifact.artifact_id}
-                type="button"
-                className={cx("artifact-list__item", !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active")}
-                onClick={() => {
-                  setSelectedAttachment(null);
-                  navigate(`/projects/${projectId}/artifacts/${artifact.artifact_id}`);
-                }}
-              >
-                <div className="artifact-list__title">
-                  <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
-                  <p>{prettyLabel(artifact.artifact_role)}</p>
-                  {artifact.is_low_confidence ? (
-                    <span className="artifact-lowconf-badge">
-                      <AlertTriangle size={11} /> система не уверена
-                    </span>
-                  ) : null}
-                </div>
-                <div className="artifact-list__meta">
-                  <span className="artifact-list__date">{formatDateOnly(artifact.created_at)}</span>
-                  <span className="artifact-list__time">{formatTimeOnly(artifact.created_at)}</span>
-                  <ChevronRight size={14} />
-                </div>
-              </button>
-            ))}
-          </div>
+          <div className="artifact-list">{(archivedQuery.data ?? []).map(renderArtifactItem)}</div>
         )}
       </SectionCard>
       <AttachmentsCard
@@ -2204,7 +2247,8 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
 }
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
-  const [mode, setMode] = useState<"doc" | "json" | "reasoning" | "validations" | "decisions">("doc");
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<"doc" | "reasoning" | "validations" | "decisions" | "versions">("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   // За один разбор: рендерим markdown → HTML, проставляем стабильные id на
   // заголовки и собираем кликабельное оглавление. DOMParser — нативный, без
@@ -2317,9 +2361,6 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             Рассуждение
           </button>
         ) : null}
-        <button className={cx("segmented__item", mode === "json" && "segmented__item--active")} onClick={() => setMode("json")} type="button">
-          JSON
-        </button>
         <button
           className={cx("segmented__item", mode === "validations" && "segmented__item--active")}
           onClick={() => setMode("validations")}
@@ -2327,6 +2368,18 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         >
           Проверки
         </button>
+        {/* Прошлые версии артефакта (прошлые запуски / неудачные / заменённые,
+            включая заархивированные откатом). Вкладка появляется только если
+            такие версии есть. */}
+        {(detail.previous_versions?.length ?? 0) > 0 ? (
+          <button
+            className={cx("segmented__item", mode === "versions" && "segmented__item--active")}
+            onClick={() => setMode("versions")}
+            type="button"
+          >
+            Предыдущие версии ({detail.previous_versions?.length ?? 0})
+          </button>
+        ) : null}
         {/* v3.0: Решения, принятые при сборке этого артефакта. Вкладка
             показывается всегда (даже если 0), чтобы пользователь видел
             наличие концепта; счётчик подсказывает наполненность. */}
@@ -2588,7 +2641,35 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       {mode === "reasoning" && detail.created_by_task_id ? (
         <ReasoningPanel projectId={projectId} taskId={detail.created_by_task_id} />
       ) : null}
-      {mode === "json" ? <pre className="code-block">{detail.json_content}</pre> : null}
+      {mode === "versions" ? (
+        <div className="artifact-versions">
+          {(detail.previous_versions ?? [])
+            .slice()
+            .reverse()
+            .map((version) => (
+              <button
+                key={version.artifact_id}
+                type="button"
+                className="artifact-versions__item"
+                onClick={() => navigate(`/projects/${projectId}/artifacts/${version.artifact_id}`)}
+                title="Открыть эту версию"
+              >
+                <span className="artifact-versions__title">
+                  {stripRoleSuffix(version.title, version.artifact_role)}
+                  {version.archived ? (
+                    <span className="artifact-list__tag">архив (откат)</span>
+                  ) : (
+                    <span className="artifact-list__tag">прошлая версия</span>
+                  )}
+                </span>
+                <span className="artifact-versions__meta">
+                  {formatDateOnly(version.created_at)} {formatTimeOnly(version.created_at)}
+                  <ChevronRight size={14} />
+                </span>
+              </button>
+            ))}
+        </div>
+      ) : null}
       {mode === "validations" ? (
         <div className="validation-list">
           {detail.validations.length === 0 ? (

@@ -199,6 +199,10 @@ class ArtifactRecord:
     # Аудит-метка, мутируется на месте, содержимое артефакта не меняет.
     signed_off: bool = False
     signed_off_at: str | None = None
+    # Архивная метка отката: NULL = активный артефакт; иначе id отката, который
+    # его заархивировал (артефакт не удаляется). Отличает «архив» (откат) от
+    # «прошлой версии» (is_superseded при retry).
+    rolled_back_by: str | None = None
 
     @property
     def is_low_confidence(self) -> bool:

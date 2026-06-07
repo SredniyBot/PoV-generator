@@ -633,21 +633,49 @@ class WorkspaceQueryService:
             details_included=include_details,
         )
 
+    def _artifact_summary(self, workspace: Path, artifact, *, archived: bool) -> ArtifactSummaryView:
+        return ArtifactSummaryView(
+            artifact_id=artifact.artifact_id,
+            artifact_role=artifact.artifact_role,
+            title=artifact.title,
+            created_at=artifact.created_at,
+            created_by_task_id=artifact.created_by_task_id,
+            has_markdown=(workspace / artifact.storage_path.replace(".json", ".md")).exists(),
+            overall_confidence=artifact.metadata.overall_confidence,
+            is_low_confidence=artifact.is_low_confidence,
+            user_verified=artifact.user_verified,
+            archived=archived,
+            is_superseded=artifact.is_superseded,
+        )
+
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
+        """Текущие артефакты проекта. Заархивированные откатом исключены на
+        уровне runtime; заменённые более новой версией (is_superseded) скрыты
+        здесь — они доступны в «Архиве» и в подвкладке «Предыдущие версии»."""
         context = self._load_context(project_id)
         return tuple(
-            ArtifactSummaryView(
-                artifact_id=artifact.artifact_id,
-                artifact_role=artifact.artifact_role,
-                title=artifact.title,
-                created_at=artifact.created_at,
-                created_by_task_id=artifact.created_by_task_id,
-                has_markdown=(context.workspace / artifact.storage_path.replace(".json", ".md")).exists(),
-                overall_confidence=artifact.metadata.overall_confidence,
-                is_low_confidence=artifact.is_low_confidence,
-                user_verified=artifact.user_verified,
-            )
+            self._artifact_summary(context.workspace, artifact, archived=False)
             for artifact in self._runtime.list_artifacts(context.workspace)
+            if not artifact.is_superseded
+        )
+
+    def project_archived_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
+        """Архив проекта: артефакты, заархивированные откатом (rolled_back_by),
+        и заменённые более новой версией (is_superseded). Новые сверху."""
+        context = self._load_context(project_id)
+        archived = [
+            artifact
+            for artifact in self._runtime.list_artifacts(
+                context.workspace, include_rolled_back=True
+            )
+            if artifact.rolled_back_by is not None or artifact.is_superseded
+        ]
+        archived.sort(key=lambda a: a.created_at or "", reverse=True)
+        return tuple(
+            self._artifact_summary(
+                context.workspace, artifact, archived=artifact.rolled_back_by is not None
+            )
+            for artifact in archived
         )
 
     def project_attachments(self, project_id: str) -> tuple[AttachmentView, ...]:
@@ -675,6 +703,7 @@ class WorkspaceQueryService:
         usage = None
         if artifact.created_by_task_id is not None:
             usage = self._runtime.llm_usage_for_task(context.workspace, artifact.created_by_task_id)
+        previous_versions = self._artifact_previous_versions(context.workspace, artifact)
         return ArtifactDetailView(
             artifact_id=artifact.artifact_id,
             artifact_role=artifact.artifact_role,
@@ -709,6 +738,41 @@ class WorkspaceQueryService:
             usage_total_tokens=usage.total_tokens if usage else None,
             usage_source=("estimated" if usage and usage.has_estimated else "actual") if usage else None,
             usage_call_count=usage.call_count if usage else 0,
+            previous_versions=previous_versions,
+        )
+
+    def _artifact_previous_versions(
+        self, workspace: Path, artifact
+    ) -> tuple[ArtifactVersionItemView, ...]:
+        """Прошлые версии того же артефакта (та же роль, primary, созданы
+        раньше) — включая заархивированные откатом. От старой к новой."""
+        if artifact.artifact_kind != "primary":
+            return ()
+        same_role = self._runtime.list_artifacts(
+            workspace, artifact_role=artifact.artifact_role, include_rolled_back=True
+        )
+        older = [
+            a
+            for a in same_role
+            if a.artifact_kind == "primary"
+            and a.artifact_id != artifact.artifact_id
+            and (a.created_at or "") < (artifact.created_at or "")
+        ]
+        older.sort(key=lambda a: a.created_at or "")
+        return tuple(
+            ArtifactVersionItemView(
+                artifact_id=a.artifact_id,
+                artifact_role=a.artifact_role,
+                title=a.title,
+                label=self._format_version_label(idx, a.created_at),
+                is_current=False,
+                created_at=a.created_at,
+                created_by_task_id=a.created_by_task_id,
+                parent_artifact_id=a.relations.parent_artifact_id,
+                description=a.description,
+                archived=a.rolled_back_by is not None,
+            )
+            for idx, a in enumerate(older)
         )
 
     def project_review(self, project_id: str) -> ProjectReviewView:

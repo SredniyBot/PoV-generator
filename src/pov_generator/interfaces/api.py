@@ -938,6 +938,13 @@ def create_app(
     def project_artifacts(project_id: str) -> Any:
         return to_primitive(query_service.project_artifacts(project_id))
 
+    # Литеральный маршрут — ДО /{artifact_id}, иначе "archive" попадёт в него.
+    @app.get("/api/projects/{project_id}/artifacts/archive")
+    def project_archived_artifacts(project_id: str) -> Any:
+        """Архив проекта: артефакты, заархивированные откатом, и заменённые
+        более новой версией. Подраздел «Архив» во вкладке артефактов."""
+        return to_primitive(query_service.project_archived_artifacts(project_id))
+
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}")
     def project_artifact_detail(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))

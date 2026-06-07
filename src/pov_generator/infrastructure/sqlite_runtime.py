@@ -427,6 +427,10 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         signed_off_at_value = row["signed_off_at"]
     except (KeyError, IndexError):
         signed_off_at_value = None
+    try:
+        rolled_back_by_value = row["rolled_back_by"]
+    except (KeyError, IndexError):
+        rolled_back_by_value = None
     metadata = _artifact_metadata_from_payload(json_loads(row["metadata_json"]))
     relations = _artifact_relations_from_row(row)
     return ArtifactRecord(
@@ -447,6 +451,7 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
         user_verified_at=user_verified_at_value,
         signed_off=signed_off_value,
         signed_off_at=signed_off_at_value,
+        rolled_back_by=rolled_back_by_value,
     )
 
 

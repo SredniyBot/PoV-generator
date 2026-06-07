@@ -93,6 +93,33 @@ def test_rollback_command_then_history(tmp_path: Path) -> None:
     assert item["reverted_count"] >= 1
 
 
+def test_archive_endpoint_lists_rolled_back_and_excludes_current(tmp_path: Path) -> None:
+    client, project_id, _ws, target = _bootstrap(tmp_path)
+
+    # До отката архив пуст, но маршрут резолвится (не перехватывается /{id}).
+    pre = client.get(f"/api/projects/{project_id}/artifacts/archive")
+    assert pre.status_code == 200
+    assert pre.json() == []
+
+    resp = client.post(
+        f"/api/projects/{project_id}/commands/rollback",
+        json={"target_task_id": target, "reason": "t"},
+    )
+    assert resp.status_code == 200
+    archived_ids = set(resp.json()["archived_artifact_ids"])
+    assert archived_ids, "откат самого раннего шага должен что-то заархивировать"
+
+    archive = client.get(f"/api/projects/{project_id}/artifacts/archive").json()
+    archive_ids = {a["artifact_id"] for a in archive}
+    assert archived_ids <= archive_ids
+    assert all(a["archived"] for a in archive if a["artifact_id"] in archived_ids)
+
+    # В текущем списке заархивированных артефактов нет.
+    current = client.get(f"/api/projects/{project_id}/artifacts").json()
+    current_ids = {a["artifact_id"] for a in current}
+    assert not (archived_ids & current_ids)
+
+
 def test_rollback_command_unknown_target_returns_409(tmp_path: Path) -> None:
     client, project_id, _ws, _target = _bootstrap(tmp_path)
     resp = client.post(

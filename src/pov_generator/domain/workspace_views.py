@@ -312,6 +312,10 @@ class ArtifactSummaryView:
     overall_confidence: float | None = None
     is_low_confidence: bool = False
     user_verified: bool = False
+    # Архив: артефакт заархивирован откатом (archived) или заменён более новой
+    # версией (is_superseded). В основном списке не показываются — только в «Архиве».
+    archived: bool = False
+    is_superseded: bool = False
 
 
 @dataclass(frozen=True)
@@ -381,6 +385,10 @@ class ArtifactDetailView:
     # "actual" | "estimated" | None. estimated → UI помечает «оценка».
     usage_source: str | None = None
     usage_call_count: int = 0
+    # Прошлые версии того же артефакта (с предыдущих запусков / неудачные /
+    # заменённые), включая заархивированные откатом. От старой к новой, без
+    # самой текущей. UI показывает их в подвкладке «Предыдущие версии (N)».
+    previous_versions: tuple["ArtifactVersionItemView", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -687,6 +695,8 @@ class ArtifactVersionItemView:
     created_by_task_id: str | None
     parent_artifact_id: str | None
     description: str
+    # Версия заархивирована откатом (а не просто заменена более новой).
+    archived: bool = False
 
 
 @dataclass(frozen=True)

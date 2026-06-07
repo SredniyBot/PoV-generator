@@ -175,6 +175,9 @@ export interface ArtifactSummaryView {
   overall_confidence: number | null;
   is_low_confidence: boolean;
   user_verified: boolean;
+  /** Архив: заархивирован откатом / заменён более новой версией. */
+  archived?: boolean;
+  is_superseded?: boolean;
 }
 
 export interface ArtifactValidationView {
@@ -229,6 +232,9 @@ export interface ArtifactDetailView {
   usage_total_tokens: number | null;
   usage_source: "actual" | "estimated" | null;
   usage_call_count: number;
+  /** Прошлые версии того же артефакта (включая заархивированные), от старой
+   *  к новой, без текущей. Для подвкладки «Предыдущие версии (N)». */
+  previous_versions?: ArtifactVersionItemView[];
 }
 
 export interface ReviewIssueView {
@@ -664,6 +670,8 @@ export interface ArtifactVersionItemView {
   created_by_task_id: string | null;
   parent_artifact_id: string | null;
   description: string;
+  /** Версия заархивирована откатом (а не просто заменена новой). */
+  archived?: boolean;
 }
 
 export interface ProjectArtifactVersionsView {
