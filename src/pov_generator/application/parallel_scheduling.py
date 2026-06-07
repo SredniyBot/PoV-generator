@@ -16,13 +16,13 @@ from dataclasses import dataclass
 #
 # Разные провайдеры по-разному переносят параллельные вызовы:
 #   - claude_subscription — локальный CLI: каждый вызов спавнит процесс, есть
-#     контеншн сессий подписки и rate-limit → держим низко.
+#     контеншн сессий подписки и rate-limit → держим умеренно (3).
 #   - claude_sdk / openrouter — прямой API: параллелятся хорошо.
 #   - stub — без сети, можно агрессивно.
 # provider=None означает резолв по purpose в рантайме (может оказаться чем
 # угодно) → берём умеренный безопасный дефолт.
 _PROVIDER_MAX_CONCURRENCY: dict[str, int] = {
-    "claude_subscription": 2,
+    "claude_subscription": 3,
     "claude_sdk": 5,
     "openrouter": 5,
     "stub": 8,

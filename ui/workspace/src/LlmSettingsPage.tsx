@@ -333,7 +333,7 @@ function ProvidersTab() {
 
 const AUTO_CONCURRENCY: Record<string, number> = {
   anthropic: 5,
-  claude_cli: 2,
+  claude_cli: 3,
   openrouter: 5,
 };
 
