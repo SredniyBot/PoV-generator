@@ -3447,6 +3447,115 @@ code {
   animation: workflow-pulse 1.6s ease-in-out infinite;
 }
 
+/* ── Единая лента активности: идёт сейчас + завершённые шаги ──────────── */
+.workflow-run__timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.workflow-run__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 0.82rem;
+}
+.workflow-run__row--live {
+  background: rgba(120, 184, 201, 0.06);
+}
+.workflow-run__row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-disabled, #5a6470);
+}
+.workflow-run__row-dot--success { background: rgba(140, 196, 153, 0.9); }
+.workflow-run__row-dot--danger  { background: rgba(215, 131, 131, 0.95); }
+.workflow-run__row-dot--warning { background: rgba(214, 173, 89, 0.9); }
+.workflow-run__row-dot--active  { background: rgba(120, 184, 201, 0.95); }
+.workflow-run__row-dot--neutral { background: var(--text-disabled, #5a6470); }
+.workflow-run__row-dot--live {
+  background: rgba(120, 184, 201, 0.95);
+  animation: tg-pulse-dot 1.6s ease-in-out infinite;
+}
+.workflow-run__row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #e8ecf3);
+  font: inherit;
+}
+.workflow-run__row-title--link {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.workflow-run__row-title--link:hover {
+  color: var(--accent, #78b8c9);
+  text-decoration: underline;
+}
+.workflow-run__row-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill, 999px);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-disabled, #5a6470);
+  font-size: 0.68rem;
+}
+.workflow-run__row-status {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--text-secondary, #9aa4b2);
+}
+.workflow-run__row-status--success { color: rgba(140, 196, 153, 0.9); }
+.workflow-run__row-status--danger  { color: rgba(215, 131, 131, 0.9); }
+.workflow-run__row-status--warning { color: rgba(214, 173, 89, 0.95); }
+.workflow-run__row-status--active  { color: rgba(120, 184, 201, 0.95); }
+.workflow-run__row-duration {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--text-disabled, #5a6470);
+  font-variant-numeric: tabular-nums;
+}
+.workflow-run__row-retry {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
+}
+.workflow-run__row-retry:hover {
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.14));
+  color: var(--text-primary, #e8ecf3);
+}
+.workflow-run__row-error {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: rgba(215, 131, 131, 0.85);
+}
+
 /* Блок «сейчас в работе» — задачи проекта со status=in_progress. */
 .workflow-run__inprogress {
   list-style: none;

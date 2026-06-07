@@ -97,6 +97,7 @@ import {
   prettyLabel,
 } from "./ui";
 import { StageStatusBar } from "./StageStatusBar";
+import { runStatusVisual, stepStatusVisual } from "./workflowStatus";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
   "shell",
@@ -633,7 +634,10 @@ function WorkspaceRoute({
                   activating={commandMutations.busy}
                   onRetryTask={commandMutations.retryTask}
                 >
-                  <RunActivitySection projectId={projectId} />
+                  <RunActivitySection
+                    projectId={projectId}
+                    onRetryTask={commandMutations.retryTask}
+                  />
                 </StageStatusBar>
               }
             />
@@ -698,10 +702,17 @@ function SettingsTabRedirect({ projectId }: { projectId: string }) {
 }
 
 
-// RunActivitySection — живая активность прогона внутри StageStatusBar:
-// тикер «что идёт сейчас + таймер» (всегда виден во время run'а) + лента
-// завершённых шагов в раскрытие. Счётчики ✗/⏸ убраны — их несёт степпер.
-function RunActivitySection({ projectId }: { projectId: string }) {
+// RunActivitySection — живая активность прогона внутри StageStatusBar: честный
+// статус прогона + ЕДИНАЯ лента времени (сверху — что идёт сейчас с
+// секундомером, ниже — завершённые шаги). Один и тот же шаг проживает на
+// глазах: «идёт» → «готово/ошибка». Упавший шаг чинится прямо в ленте.
+function RunActivitySection({
+  projectId,
+  onRetryTask,
+}: {
+  projectId: string;
+  onRetryTask?: (taskId: string) => void;
+}) {
   const activeQuery = useQuery({
     queryKey: [projectId, "workflow-run-active"],
     queryFn: () => api.getActiveWorkflowRun(projectId),
@@ -743,9 +754,11 @@ function RunActivitySection({ projectId }: { projectId: string }) {
     const steps = recent.flatMap((run) =>
       run.steps.map((s) => ({ step: s, runId: run.run_id })),
     );
+    // Новые сверху: в живой ленте только что завершённый шаг встаёт сразу под
+    // блоком «идёт сейчас» — естественный поток активности.
     steps.sort(
       (a, b) =>
-        new Date(a.step.started_at).getTime() - new Date(b.step.started_at).getTime(),
+        new Date(b.step.started_at).getTime() - new Date(a.step.started_at).getTime(),
     );
     return steps;
   }, [recent]);
@@ -771,8 +784,9 @@ function RunActivitySection({ projectId }: { projectId: string }) {
   if (!display) return null;
 
   const isActive = display.status === "pending" || display.status === "running";
-  const statusLabel = labelForRunStatus(display.status);
-  const statusTone = toneForRunStatus(display.status);
+  // Честный статус прогона: причина остановки (нужны решения / ошибка / нет
+  // шагов / лимит) вместо «Завершено» и «workflow». Источник — workflowStatus.ts.
+  const runViz = runStatusVisual(display.status, display.stop_reason);
 
   // Сейчас в работе: leaf-задачи проекта со статусом in_progress. Список
   // расплющиваем из графа задач рекурсивно. Когда runner запустил задачу
@@ -793,11 +807,24 @@ function RunActivitySection({ projectId }: { projectId: string }) {
     return out;
   })();
 
+  // Прошлые попытки задачи (та же задача встречается в ленте несколько раз —
+  // после retry). Помечаем все, кроме самой свежей (лента — новые сверху).
+  const prevAttemptKeys = (() => {
+    const seen = new Set<string>();
+    const keys = new Set<string>();
+    for (const { step, runId } of allSteps) {
+      if (!step.task_id) continue;
+      if (seen.has(step.task_id)) keys.add(`${runId}-${step.sequence}`);
+      else seen.add(step.task_id);
+    }
+    return keys;
+  })();
+
   return (
     <div className={cx("workflow-run", `workflow-run--${display.status}`)}>
       <div className="workflow-run__head">
         <div className="workflow-run__title">
-          <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
+          <StatusPill tone={runViz.tone}>{runViz.label}</StatusPill>
           <span
             className="workflow-run__summary"
             title={cleanStepSummary(display.last_step_summary) || undefined}
@@ -812,46 +839,40 @@ function RunActivitySection({ projectId }: { projectId: string }) {
         </div>
       </div>
 
-      {/* Живой тикер: что выполняется прямо сейчас + секундомер. Всегда виден. */}
-      {inProgressTasks.length > 0 ? (
-        <ul className="workflow-run__inprogress">
+      {/* Единая лента времени: сверху — что идёт СЕЙЧАС (живой статус +
+          секундомер), ниже — завершённые шаги (новые сверху). Один и тот же
+          шаг проживает на глазах: «идёт» → «готово/ошибка». */}
+      {inProgressTasks.length > 0 || allSteps.length > 0 ? (
+        <ul className="workflow-run__timeline">
           {inProgressTasks.map((t) => (
-            <li key={t.task_id} className="workflow-run__inprogress-item">
-              <span className="workflow-run__inprogress-dot" />
-              <span className="workflow-run__inprogress-title">{t.title}</span>
+            <li key={`live-${t.task_id}`} className="workflow-run__row workflow-run__row--live">
+              <span className="workflow-run__row-dot workflow-run__row-dot--live" />
+              <span className="workflow-run__row-title">{t.title}</span>
+              <span className="workflow-run__row-status workflow-run__row-status--active">идёт</span>
               <InProgressTimer startedAtIso={t.updated_at} />
-              <span className="workflow-run__inprogress-template">{t.template_ref}</span>
             </li>
           ))}
-        </ul>
-      ) : null}
-
-      {/* Лента завершённых шагов — в раскрытие (по умолчанию свёрнута).
-          Счётчики ✗/⏸ здесь не показываем — их несёт степпер этапов. */}
-      {allSteps.length > 0 ? (
-        <ul className="workflow-run__steps">
-          {allSteps.map(({ step, runId }, idx) => {
+          {allSteps.map(({ step, runId }) => {
             const durationSec = step.finished_at && step.started_at
               ? Math.max(0, Math.round(
                   (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
                 ))
               : null;
-            const statusKey = step.validation_status ?? step.planning_outcome;
+            const viz = stepStatusVisual(step.validation_status, step.planning_outcome);
             const name =
               (step.task_id ? titleById.get(step.task_id) : null) ||
               step.task_key ||
               step.selected_step_id ||
               "(неизвестная задача)";
+            const isFailed = step.validation_status === "failed";
+            const isPrevAttempt = prevAttemptKeys.has(`${runId}-${step.sequence}`);
             return (
-              <li
-                key={`${runId}-${step.sequence}`}
-                className={cx("workflow-run__step", `workflow-run__step--${statusKey}`)}
-              >
-                <span className="workflow-run__step-seq">#{idx + 1}</span>
+              <li key={`${runId}-${step.sequence}`} className="workflow-run__row">
+                <span className={`workflow-run__row-dot workflow-run__row-dot--${viz.tone}`} />
                 {step.task_id ? (
                   <button
                     type="button"
-                    className="workflow-run__step-title workflow-run__step-title--link"
+                    className="workflow-run__row-title workflow-run__row-title--link"
                     title="Показать на графе задач"
                     onClick={() =>
                       navigate(`/projects/${projectId}/task-graph?focus=${step.task_id}`)
@@ -860,20 +881,30 @@ function RunActivitySection({ projectId }: { projectId: string }) {
                     {name}
                   </button>
                 ) : (
-                  <span className="workflow-run__step-title">{name}</span>
+                  <span className="workflow-run__row-title">{name}</span>
                 )}
-                <span
-                  className={cx("workflow-run__step-status", `workflow-run__step-status--${statusKey}`)}
-                >
-                  {labelForStepStatus(step.validation_status, step.planning_outcome)}
+                {isPrevAttempt ? (
+                  <span className="workflow-run__row-tag">прошлая попытка</span>
+                ) : null}
+                <span className={`workflow-run__row-status workflow-run__row-status--${viz.tone}`}>
+                  {viz.label}
                 </span>
                 {durationSec !== null ? (
-                  <span className="workflow-run__step-duration">{formatElapsedHMS(durationSec)}</span>
+                  <span className="workflow-run__row-duration">{formatElapsedHMS(durationSec)}</span>
+                ) : null}
+                {isFailed && step.task_id && onRetryTask ? (
+                  <button
+                    type="button"
+                    className="workflow-run__row-retry"
+                    onClick={() => onRetryTask(step.task_id!)}
+                  >
+                    Повторить
+                  </button>
                 ) : null}
                 {step.error_message ? (
-                  <span className="workflow-run__step-error" title={step.error_message}>
-                    {step.error_message.length > 100
-                      ? step.error_message.slice(0, 100) + "…"
+                  <span className="workflow-run__row-error" title={step.error_message}>
+                    {step.error_message.length > 120
+                      ? step.error_message.slice(0, 120) + "…"
                       : step.error_message}
                   </span>
                 ) : null}
@@ -881,7 +912,7 @@ function RunActivitySection({ projectId }: { projectId: string }) {
             );
           })}
         </ul>
-      ) : isActive && inProgressTasks.length === 0 ? (
+      ) : isActive ? (
         <div className="workflow-run__empty">Ожидаем первый шаг…</div>
       ) : null}
     </div>
@@ -944,41 +975,6 @@ function InProgressTimer({ startedAtIso }: { startedAtIso: string }) {
       {formatElapsedHMS(elapsedSec)}
     </span>
   );
-}
-
-function labelForStepStatus(
-  validationStatus: string | null,
-  planningOutcome: string,
-): string {
-  if (validationStatus === "passed") return "успех";
-  if (validationStatus === "failed") return "ошибка валидации";
-  if (validationStatus === "paused_for_checkpoint") return "ждёт решений";
-  if (planningOutcome === "selected" || planningOutcome === "retried") return "идёт";
-  if (planningOutcome === "objective_completed") return "цель достигнута";
-  if (planningOutcome === "blocked") return "заблокирована";
-  return planningOutcome;
-}
-
-function labelForRunStatus(status: string): string {
-  switch (status) {
-    case "pending": return "Подготовка";
-    case "running": return "workflow";
-    case "completed": return "Завершено";
-    case "failed": return "Ошибка";
-    case "cancelled": return "Прервано";
-    default: return prettyLabel(status);
-  }
-}
-
-function toneForRunStatus(status: string): "neutral" | "active" | "success" | "warning" | "danger" | "muted" {
-  switch (status) {
-    case "pending":
-    case "running": return "active";
-    case "completed": return "success";
-    case "failed": return "danger";
-    case "cancelled": return "warning";
-    default: return "neutral";
-  }
 }
 
 
