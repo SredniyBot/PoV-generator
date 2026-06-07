@@ -195,8 +195,14 @@ function statusMeta(status: string): { label: string; color: string } {
 }
 
 // fan-out-узлы выше (прогресс + переключатель), остальные — компактные.
+// Заголовок теперь показываем целиком, поэтому высоту оцениваем по числу строк
+// (~22 символа на строку при ширине 180) — чтобы dagre зарезервировал место и
+// узлы не налезали друг на друга.
 function nodeHeight(task: TaskNodeView): number {
-  return task.template_type === "fan_out" ? 124 : NODE_HEIGHT;
+  if (task.template_type === "fan_out") return 124;
+  const lines = Math.max(1, Math.ceil((task.title?.length ?? 0) / 22));
+  const errorH = task.status === "failed" && task.status_summary ? 18 : 0;
+  return Math.max(NODE_HEIGHT, 38 + lines * 17 + errorH);
 }
 
 /** Условия рендеринга кнопок действий вынесены из JSX. */

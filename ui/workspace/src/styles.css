@@ -3493,12 +3493,24 @@ code {
 }
 
 .workflow-run__step-title {
+  min-width: 0;
   color: var(--text-primary, #e8ecf3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: inherit;
   font-size: 0.8rem;
+}
+.workflow-run__step-title--link {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.workflow-run__step-title--link:hover {
+  color: var(--accent, #78b8c9);
+  text-decoration: underline;
 }
 
 .workflow-run__step-status {
@@ -3605,10 +3617,6 @@ code {
   flex-shrink: 0;
 }
 .tg-node__status-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 0.7rem;
   color: var(--text-secondary, #9aa4b2);
 }
@@ -3642,10 +3650,7 @@ code {
   font-weight: 600;
   color: var(--text-primary, #e8ecf3);
   line-height: 1.25;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .tg-node__warn {

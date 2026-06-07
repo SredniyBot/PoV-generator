@@ -690,7 +690,9 @@ function RunActivitySection({ projectId }: { projectId: string }) {
   });
   const recentQuery = useQuery({
     queryKey: [projectId, "workflow-runs"],
-    queryFn: () => api.listWorkflowRuns(projectId, 5),
+    // Берём всю историю прогонов: лента шагов должна восстанавливаться с начала
+    // проекта, а не показывать только последний прогон после перезагрузки.
+    queryFn: () => api.listWorkflowRuns(projectId, 100),
     // Без поллинга: список инвалидируется WS-пушем при изменении ранов.
   });
   // Граф задач — нужен, чтобы показать «сейчас выполняется» (status=in_progress).
@@ -705,6 +707,7 @@ function RunActivitySection({ projectId }: { projectId: string }) {
   const [stickyRunId, setStickyRunId] = useState<string | null>(null);
   // Лента шагов по умолчанию свёрнута — наружу торчит только живой тикер.
   const [logCollapsed, setLogCollapsed] = useState(true);
+  const navigate = useNavigate();
 
   const active = activeQuery.data ?? null;
   // Когда run заканчивается, active становится null — но мы хотим
@@ -712,6 +715,32 @@ function RunActivitySection({ projectId }: { projectId: string }) {
   const recent = recentQuery.data ?? [];
   const sticky = stickyRunId ? recent.find((r) => r.run_id === stickyRunId) ?? null : null;
   const display = active ?? sticky ?? recent[0] ?? null;
+
+  // Полная лента: шаги ВСЕХ прогонов проекта, упорядоченные по времени (с начала
+  // проекта). Раньше показывались шаги лишь одного прогона (display.steps),
+  // из-за чего после перезагрузки лента «теряла» всё, кроме последнего прогона.
+  const allSteps = useMemo(() => {
+    const steps = recent.flatMap((run) =>
+      run.steps.map((s) => ({ step: s, runId: run.run_id })),
+    );
+    steps.sort(
+      (a, b) =>
+        new Date(a.step.started_at).getTime() - new Date(b.step.started_at).getTime(),
+    );
+    return steps;
+  }, [recent]);
+  // task_id → человеческое имя задачи (в ленте показываем имя, а не id).
+  const titleById = useMemo(() => {
+    const map = new Map<string, string>();
+    const walk = (nodes: TaskNodeView[]) => {
+      for (const n of nodes) {
+        map.set(n.task_id, n.title);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    if (taskGraphQuery.data) walk(taskGraphQuery.data.nodes);
+    return map;
+  }, [taskGraphQuery.data]);
 
   // Если новый active появился — запомнить его run_id как sticky
   // (чтобы после завершения он не пропадал моментально).
@@ -760,7 +789,7 @@ function RunActivitySection({ projectId }: { projectId: string }) {
           ) : null}
         </div>
         <div className="workflow-run__actions">
-          {display.steps.length > 0 ? (
+          {allSteps.length > 0 ? (
             <Button tone="secondary" onClick={() => setLogCollapsed((v) => !v)}>
               {logCollapsed ? "Лента шагов" : "Скрыть ленту"}
             </Button>
@@ -784,24 +813,40 @@ function RunActivitySection({ projectId }: { projectId: string }) {
 
       {/* Лента завершённых шагов — в раскрытие (по умолчанию свёрнута).
           Счётчики ✗/⏸ здесь не показываем — их несёт степпер этапов. */}
-      {!logCollapsed && display.steps.length > 0 ? (
+      {!logCollapsed && allSteps.length > 0 ? (
         <ul className="workflow-run__steps">
-          {display.steps.slice().reverse().map((step) => {
+          {allSteps.map(({ step, runId }, idx) => {
             const durationSec = step.finished_at && step.started_at
               ? Math.max(0, Math.round(
                   (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
                 ))
               : null;
             const statusKey = step.validation_status ?? step.planning_outcome;
+            const name =
+              (step.task_id ? titleById.get(step.task_id) : null) ||
+              step.task_key ||
+              step.selected_step_id ||
+              "(неизвестная задача)";
             return (
               <li
-                key={step.sequence}
+                key={`${runId}-${step.sequence}`}
                 className={cx("workflow-run__step", `workflow-run__step--${statusKey}`)}
               >
-                <span className="workflow-run__step-seq">#{step.sequence}</span>
-                <span className="workflow-run__step-title">
-                  {step.selected_step_id || step.task_key || "(неизвестная задача)"}
-                </span>
+                <span className="workflow-run__step-seq">#{idx + 1}</span>
+                {step.task_id ? (
+                  <button
+                    type="button"
+                    className="workflow-run__step-title workflow-run__step-title--link"
+                    title="Показать на графе задач"
+                    onClick={() =>
+                      navigate(`/projects/${projectId}/task-graph?focus=${step.task_id}`)
+                    }
+                  >
+                    {name}
+                  </button>
+                ) : (
+                  <span className="workflow-run__step-title">{name}</span>
+                )}
                 <span
                   className={cx("workflow-run__step-status", `workflow-run__step-status--${statusKey}`)}
                 >
