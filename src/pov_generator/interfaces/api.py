@@ -15,6 +15,7 @@ from ..application.decision_extraction_service import DecisionExtractionService
 from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
+from ..application.harness_onboarding_service import HarnessOnboardingService
 from ..application.parallel_scheduling import (
     max_concurrency_for as default_max_concurrency_for,
 )
@@ -45,6 +46,8 @@ from ..infrastructure.filesystem_registry import (
     CachingRegistryLoader,
     FilesystemRegistryLoader,
 )
+from ..infrastructure.harness import DockerSandboxRuntime
+from ..infrastructure.harness.images import DockerImagePreparer
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -229,6 +232,12 @@ def create_app(
         domain_pack_selection_service,
         checkpoint_service,
     )
+    # Онбординг harness-агентов (Ф4): Docker-песочница + подготовка образов.
+    # Мягко деградируют без Docker (статус «недоступен»); импорт docker — ленивый.
+    harness_onboarding = HarnessOnboardingService(
+        DockerSandboxRuntime(),
+        DockerImagePreparer(),
+    )
 
     app.state.query_service = query_service
     app.state.command_service = command_service
@@ -309,6 +318,30 @@ def create_app(
     @app.exception_handler(PovGeneratorError)
     async def pov_error_handler(_, exc: PovGeneratorError):
         return JSONResponse(status_code=409, content={"error": str(exc)})
+
+    # ----- Harness-агенты: онбординг/готовность (Ф4) -----------------------
+    #
+    # Видимая подготовка вместо «тихих» долгих операций: готовность Docker,
+    # скачивание образа с прогрессом (фоново), самопроверка цепочки, рекомендации
+    # по мощности. Без Docker всё мягко деградирует (status.ready=false).
+
+    @app.get("/api/harness/status")
+    def harness_status() -> Any:
+        return to_primitive(harness_onboarding.readiness())
+
+    @app.post("/api/harness/prepare")
+    def harness_prepare(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        image = _optional_str(payload, "image")
+        harness_onboarding.start_prepare(image)
+        return {
+            "status": "accepted",
+            "pull": to_primitive(harness_onboarding.pull_progress(image)),
+        }
+
+    @app.post("/api/harness/self-test")
+    def harness_self_test(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        image = _optional_str(payload, "image")
+        return to_primitive(harness_onboarding.self_test(image=image))
 
     @app.get("/api/health")
     def health() -> dict[str, object]:
