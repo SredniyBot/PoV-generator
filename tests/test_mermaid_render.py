@@ -260,3 +260,79 @@ def test_build_command_wraps_cmd_on_windows(monkeypatch: pytest.MonkeyPatch) -> 
     assert mermaid_render._build_command("/usr/bin/mmdc", ["-i", "a"]) == [
         "/usr/bin/mmdc", "-i", "a",
     ]
+
+
+# --- SVG-путь (вектор для PDF) ----------------------------------------------
+
+
+def _make_fake_run_svg(svg_text: str, *, returncode: int = 0):
+    """Фейковый ``subprocess.run``, пишущий SVG в путь из ``-o``."""
+
+    def fake_run(cmd, *args, **kwargs):
+        if returncode == 0:
+            for i, token in enumerate(cmd):
+                if token == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text(svg_text, encoding="utf-8")
+                    break
+        return SimpleNamespace(returncode=returncode, stdout=b"", stderr=b"")
+
+    return fake_run
+
+
+# Минимальный валидный SVG с НУЛЕВЫМ dash (его reportlab не переваривает —
+# поэтому санитизация обязательна) и настоящим <text> (без foreignObject).
+_OK_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+    '<rect x="1" y="1" width="38" height="18" fill="none" stroke="black" '
+    'stroke-dasharray="0"/>'
+    '<text x="5" y="14">Ok</text></svg>'
+)
+
+
+def test_sanitize_svg_removes_zero_dash_keeps_real_dash() -> None:
+    assert "stroke-dasharray" not in mermaid_render._sanitize_svg('a stroke-dasharray="0" b')
+    assert "stroke-dasharray" not in mermaid_render._sanitize_svg("a stroke-dasharray:0; b")
+    # реальный пунктир (есть ненулевая цифра) — сохраняем
+    kept = mermaid_render._sanitize_svg('a stroke-dasharray="3, 3" b')
+    assert 'stroke-dasharray="3, 3"' in kept
+
+
+def test_render_svg_success_sanitizes_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", _make_fake_run_svg(_OK_SVG))
+    out = mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B")
+    assert out is not None
+    # нулевой dash убран (иначе svglib/reportlab упал бы), <text> на месте
+    assert "stroke-dasharray" not in out
+    assert "<text" in out
+
+
+def test_render_svg_none_when_not_convertible(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Невалидный/непарсимый SVG → svglib не сконвертирует → None (fallback на PNG).
+    monkeypatch.setattr(subprocess, "run", _make_fake_run_svg("не svg вовсе"))
+    assert mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B") is None
+
+
+def test_render_svg_disabled_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POV_MERMAID_DISABLED", "1")
+
+    def boom(*a, **k):  # subprocess не должен вызываться
+        raise AssertionError("subprocess.run не должен вызываться при DISABLED")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B") is None
+
+
+def test_render_svg_caches_by_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def counting(cmd, *args, **kwargs):
+        calls["n"] += 1
+        for i, token in enumerate(cmd):
+            if token == "-o" and i + 1 < len(cmd):
+                Path(cmd[i + 1]).write_text(_OK_SVG, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", counting)
+    mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B")
+    mermaid_render.render_mermaid_to_svg("flowchart LR\nA --> B")
+    assert calls["n"] == 1

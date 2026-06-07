@@ -20,8 +20,11 @@ Env-настройки:
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,11 +36,22 @@ logger = logging.getLogger(__name__)
 
 _MAX_CACHE_ENTRIES = 256
 _DEFAULT_TIMEOUT_SECONDS = 30
-# Кеш по хэшу исходника — один сгенерированный PNG для одинаковых
+# Кеш по хэшу исходника — один сгенерированный результат для одинаковых
 # диаграмм. Хранится в памяти процесса; для нашего use-case (несколько
 # диаграмм на документ, повторные скачивания того же артефакта) этого
 # достаточно. Очищается через ``clear_cache`` в тестах.
 _png_cache: dict[str, bytes] = {}
+_svg_cache: dict[str, str] = {}
+
+# Mermaid с htmlLabels:false рендерит подписи как настоящий SVG <text>
+# (а не foreignObject c HTML) — только такой SVG умеет конвертировать svglib,
+# на котором держится SVG-поддержка xhtml2pdf. Иначе подписи пропадут.
+_SVG_MERMAID_CONFIG = {"htmlLabels": False, "flowchart": {"htmlLabels": False}}
+
+# Нулевой stroke-dasharray (например, у маркеров стрелок Mermaid) роняет
+# reportlab («dash cycle should be larger than zero»). Убираем только полностью
+# нулевые массивы; реальные пунктиры (есть ненулевая цифра) сохраняем.
+_DASH_RE = re.compile(r"""stroke-dasharray\s*([:=])\s*(["']?)([^;"'>]*)\2""")
 
 
 def _is_disabled() -> bool:
@@ -112,15 +126,48 @@ def _timeout_seconds() -> int:
 
 
 def clear_cache() -> None:
-    """Очистить PNG-кеш. Используется в тестах."""
+    """Очистить кеши (PNG и SVG). Используется в тестах."""
     _png_cache.clear()
+    _svg_cache.clear()
+
+
+def render_mermaid_to_svg(source: str) -> str | None:
+    """Сгенерировать **векторный** SVG из Mermaid-исходника через ``mmdc``.
+
+    Это предпочтительный формат для PDF (чёткость в печати, масштабируемость).
+    Шаги: mmdc с ``htmlLabels:false`` → санитизация нулевого dash → проверка,
+    что svglib/reportlab конвертирует SVG без ошибок. Если на любом шаге
+    неудача — возвращаем ``None``, и вызывающий код падает на PNG (а затем на
+    code-block). Так PDF никогда не ломается на «неудобной» диаграмме.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return None
+    if _is_disabled():
+        return None
+
+    cache_key = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    cached = _svg_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    raw = _run_mmdc(source, suffix=".svg", extra_args=[], config=_SVG_MERMAID_CONFIG)
+    if raw is None:
+        return None
+    svg = _sanitize_svg(raw.decode("utf-8", errors="replace"))
+    if not _svg_converts_cleanly(svg):
+        logger.info("Mermaid SVG не конвертируется чисто (svglib/reportlab); fallback на PNG.")
+        return None
+
+    _cache_put(_svg_cache, cache_key, svg)
+    return svg
 
 
 def render_mermaid_to_png(source: str) -> bytes | None:
     """Сгенерировать PNG из Mermaid-исходника через ``mmdc``.
 
     Возвращает байты PNG или ``None``, если рендер недоступен / упал.
-    Кеширует успешные результаты по SHA-256 от исходника.
+    Кеширует успешные результаты по SHA-256 от исходника. Используется как
+    надёжный запасной вариант, когда SVG недоступен.
     """
     if not isinstance(source, str) or not source.strip():
         return None
@@ -132,23 +179,72 @@ def render_mermaid_to_png(source: str) -> bytes | None:
     if cached is not None:
         return cached
 
-    png = _invoke_mmdc(source)
+    # 2x масштаб — нормальная плотность для печати без размытия.
+    png = _run_mmdc(source, suffix=".png", extra_args=["-s", "2"])
     if png is None:
         return None
 
-    if len(_png_cache) >= _MAX_CACHE_ENTRIES:
-        # Грубое выселение: убираем произвольный первый элемент. Простой
-        # FIFO достаточен — диаграммы дёшево перегенерить при кеш-промахе.
-        try:
-            first_key = next(iter(_png_cache))
-            _png_cache.pop(first_key, None)
-        except StopIteration:
-            pass
-    _png_cache[cache_key] = png
+    _cache_put(_png_cache, cache_key, png)
     return png
 
 
-def _invoke_mmdc(source: str) -> bytes | None:
+def _cache_put(cache: dict, key: str, value) -> None:
+    """Положить в кеш с грубым FIFO-выселением (диаграммы дёшево перегенерить)."""
+    if len(cache) >= _MAX_CACHE_ENTRIES:
+        try:
+            cache.pop(next(iter(cache)), None)
+        except StopIteration:
+            pass
+    cache[key] = value
+
+
+def _sanitize_svg(svg: str) -> str:
+    """Убрать полностью нулевые ``stroke-dasharray`` (роняют reportlab).
+
+    Реальные пунктиры (есть ненулевая цифра) не трогаем.
+    """
+    def _repl(match: re.Match[str]) -> str:
+        value = match.group(3)
+        return match.group(0) if re.search(r"[1-9]", value) else ""
+
+    return _DASH_RE.sub(_repl, svg)
+
+
+def _svg_converts_cleanly(svg: str) -> bool:
+    """Проверить, что SVG конвертируется svglib→reportlab без ошибок.
+
+    Это гарантия, что встроенный в PDF SVG не уронит xhtml2pdf (который
+    использует тот же svglib). Любая проблема (нет svglib, кривой SVG,
+    несовместимая фигура) → False → fallback на PNG.
+    """
+    try:
+        from reportlab.graphics import renderPDF
+        from svglib.svglib import svg2rlg
+    except Exception:
+        return False
+    try:
+        drawing = svg2rlg(io.StringIO(svg))
+        if drawing is None:
+            return False
+        renderPDF.drawToString(drawing)
+        return True
+    except Exception:
+        return False
+
+
+def _run_mmdc(
+    source: str,
+    *,
+    suffix: str,
+    extra_args: list[str],
+    config: dict | None = None,
+) -> bytes | None:
+    """Запустить ``mmdc`` и вернуть байты результата (PNG/SVG) или ``None``.
+
+    Общий subprocess-каркас для PNG и SVG: резолв бинаря, временные файлы,
+    прозрачный фон, опциональный mermaid-config (``-c``), защита от таймаута/
+    отсутствия бинаря. Любая неудача → ``None`` (graceful degradation).
+    """
     binary = _resolve_binary()
     if binary is None:
         logger.info(
@@ -159,20 +255,16 @@ def _invoke_mmdc(source: str) -> bytes | None:
         return None
     timeout = _timeout_seconds()
     with tempfile.TemporaryDirectory(prefix="povgen-mmdc-") as tmp_dir:
-        input_path = Path(tmp_dir) / "diagram.mmd"
-        output_path = Path(tmp_dir) / "diagram.png"
+        tmp = Path(tmp_dir)
+        input_path = tmp / "diagram.mmd"
+        output_path = tmp / f"diagram{suffix}"
         input_path.write_text(source, encoding="utf-8")
-        cmd = _build_command(
-            binary,
-            [
-                "-i", str(input_path),
-                "-o", str(output_path),
-                # Прозрачный фон чтобы PNG ложился на любую страницу PDF.
-                "-b", "transparent",
-                # 2x масштаб — нормальная плотность для печати без размытия.
-                "-s", "2",
-            ],
-        )
+        args = ["-i", str(input_path), "-o", str(output_path), "-b", "transparent", *extra_args]
+        if config is not None:
+            config_path = tmp / "mermaid-config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            args += ["-c", str(config_path)]
+        cmd = _build_command(binary, args)
         try:
             result = subprocess.run(  # noqa: S603 — bin path резолвится через which
                 cmd,
@@ -188,9 +280,7 @@ def _invoke_mmdc(source: str) -> bytes | None:
             )
             return None
         except subprocess.TimeoutExpired:
-            logger.warning(
-                "mermaid-cli превысил таймаут %ds; диаграмма пропущена.", timeout
-            )
+            logger.warning("mermaid-cli превысил таймаут %ds; диаграмма пропущена.", timeout)
             return None
         except OSError as exc:
             logger.warning("mermaid-cli не запустился: %s", exc)
@@ -198,13 +288,9 @@ def _invoke_mmdc(source: str) -> bytes | None:
 
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            logger.warning(
-                "mermaid-cli вернул код %s: %s",
-                result.returncode,
-                stderr[:500],
-            )
+            logger.warning("mermaid-cli вернул код %s: %s", result.returncode, stderr[:500])
             return None
         if not output_path.exists():
-            logger.warning("mermaid-cli отработал, но PNG не создан.")
+            logger.warning("mermaid-cli отработал, но файл %s не создан.", suffix)
             return None
         return output_path.read_bytes()

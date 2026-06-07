@@ -218,7 +218,7 @@ execution_run, provider, model, context_manifest.
 4. **Цепочки objective** (ТЗ → архитектура → реализация). Сегодня один проект = один objective.
 5. **Multi-objective `ProjectManifest`** — пока `objective_ref` singular; чтобы в одном workspace получить и ТЗ, и архитектуру, нужны два workspace'а.
 6. **Архитектурный реестр рисков** — `common.project_risk_register` ещё требует артефактов ТЗ-потока (`normalized_request`, `solution_option_inventory`, `constraint_inventory`), поэтому помечен `required: false` в архитектурном композите; без ТЗ документ опускает секцию Risks. Решение — тонкая обёртка `architecture.*` с другими `requires`. (Развёртывание уже решено: `architecture.deployment_map` зависит только от `component_model`.)
-7. **Server-side Mermaid → SVG для PDF** — UI рендерит диаграммы через mermaid.js, в PDF (xhtml2pdf) они остаются как fenced code-блоки.
+7. ~~Server-side Mermaid → SVG для PDF~~ — **сделано**: `mermaid_render` рендерит диаграммы через `mmdc` и встраивает в PDF вектором (SVG через svglib, с санитизацией нулевого dash и проверкой конвертируемости) с автоматическим фоллбеком на PNG, затем на code-block. Подробности — в `CLAUDE.md`.
 8. **Schema-driven рендеринг markdown** — сегодня `render_markdown` в `application/artifact_contracts.py` это hand-coded switch по `artifact_role`. Новый артефакт = новая ветка в Python.
 9. **Cost tracking** токенов и денег в `ExecutionResult`.
 

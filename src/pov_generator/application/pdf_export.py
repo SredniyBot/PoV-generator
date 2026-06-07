@@ -42,7 +42,7 @@ from xhtml2pdf import default as _xhtml2pdf_default
 from xhtml2pdf import pisa
 
 from ..common.errors import PovGeneratorError
-from .mermaid_render import render_mermaid_to_png
+from .mermaid_render import render_mermaid_to_png, render_mermaid_to_svg
 
 logger = logging.getLogger(__name__)
 
@@ -458,29 +458,36 @@ _MERMAID_FENCED_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 
 
 def _replace_mermaid_blocks_with_images(markdown_text: str) -> str:
-    """Найти ```mermaid``` блоки и заменить на inline-img c data-URI PNG.
+    """Найти ```mermaid``` блоки и заменить на inline-img c data-URI.
 
-    На каждый блок дёргаем ``render_mermaid_to_png`` (subprocess к ``mmdc``).
-    Если рендер вернул ``None`` (mmdc не установлен / упал / отключён через
-    ``POV_MERMAID_DISABLED``) — оставляем исходный markdown-блок как есть,
-    чтобы в PDF попал хотя бы preformatted-исходник.
+    Приоритет форматов: **SVG** (вектор, чёткость в печати) → **PNG** (растровый
+    запасной) → исходный ```mermaid``` блок (preformatted), если рендер
+    недоступен/отключён. SVG отдаётся только если он гарантированно
+    конвертируется (см. ``render_mermaid_to_svg``), поэтому PDF не падает.
     """
     if "```mermaid" not in markdown_text:
         return markdown_text
+
+    def _wrap(data_uri: str) -> str:
+        return (
+            '\n<div class="mermaid-pdf">'
+            f'<img src="{data_uri}" alt="Mermaid diagram" />'
+            "</div>\n"
+        )
 
     def _replace(match: re.Match[str]) -> str:
         source = match.group(1).strip("\n")
         if not source.strip():
             return match.group(0)
+        svg = render_mermaid_to_svg(source)
+        if svg is not None:
+            encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+            return _wrap(f"data:image/svg+xml;base64,{encoded}")
         png_bytes = render_mermaid_to_png(source)
-        if png_bytes is None:
-            return match.group(0)
-        encoded = base64.b64encode(png_bytes).decode("ascii")
-        return (
-            '\n<div class="mermaid-pdf">'
-            f'<img src="data:image/png;base64,{encoded}" alt="Mermaid diagram" />'
-            "</div>\n"
-        )
+        if png_bytes is not None:
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            return _wrap(f"data:image/png;base64,{encoded}")
+        return match.group(0)
 
     return _MERMAID_FENCED_RE.sub(_replace, markdown_text)
 

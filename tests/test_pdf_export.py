@@ -301,6 +301,8 @@ def test_replace_mermaid_blocks_inserts_data_uri_image_on_success(
 ) -> None:
     """При успешном рендере ```mermaid``` блок становится <img> с data-URI."""
     mermaid_render.clear_cache()
+    # Этот тест про PNG-ветку — SVG отключаем, чтобы дойти до неё.
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_svg", lambda _src: None)
     monkeypatch.setattr(
         pdf_export,
         "render_mermaid_to_png",
@@ -319,12 +321,32 @@ def test_replace_mermaid_blocks_inserts_data_uri_image_on_success(
 def test_replace_mermaid_blocks_falls_back_on_render_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Если render_mermaid_to_png возвращает None — оставляем code-block."""
+    """Если оба рендера (SVG и PNG) вернули None — оставляем code-block."""
     mermaid_render.clear_cache()
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_svg", lambda _src: None)
     monkeypatch.setattr(pdf_export, "render_mermaid_to_png", lambda _src: None)
     md = "```mermaid\nflowchart LR\nA --> B\n```"
     out = _replace_mermaid_blocks_with_images(md)
     assert out == md
+
+
+def test_replace_mermaid_blocks_prefers_svg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SVG имеет приоритет над PNG (вектор для PDF). PNG не дёргается."""
+    mermaid_render.clear_cache()
+    monkeypatch.setattr(
+        pdf_export, "render_mermaid_to_svg", lambda _src: "<svg>vector</svg>"
+    )
+
+    def _png_must_not_be_called(_src):
+        raise AssertionError("PNG не должен вызываться, когда есть SVG")
+
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_png", _png_must_not_be_called)
+    md = "```mermaid\nflowchart LR\nA --> B\n```"
+    out = _replace_mermaid_blocks_with_images(md)
+    assert '<img src="data:image/svg+xml;base64,' in out
+    assert "```mermaid" not in out
 
 
 def test_replace_mermaid_blocks_handles_multiple_blocks(
@@ -337,6 +359,7 @@ def test_replace_mermaid_blocks_handles_multiple_blocks(
         counter["i"] += 1
         return f"PNG-{counter['i']}".encode()
 
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_svg", lambda _src: None)
     monkeypatch.setattr(pdf_export, "render_mermaid_to_png", fake_render)
     md = (
         "```mermaid\nflowchart LR\nA --> B\n```\n\n"
@@ -361,6 +384,7 @@ def test_render_artifact_pdf_embeds_mermaid_image_when_render_succeeds(
     Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(buf, format="PNG")
     one_pixel_png = buf.getvalue()
 
+    monkeypatch.setattr(pdf_export, "render_mermaid_to_svg", lambda _src: None)
     monkeypatch.setattr(pdf_export, "render_mermaid_to_png", lambda _src: one_pixel_png)
     md = "# Doc\n\n```mermaid\nflowchart LR\nA --> B\n```\n"
 
