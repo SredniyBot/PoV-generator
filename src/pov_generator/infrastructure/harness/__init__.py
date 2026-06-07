@@ -17,6 +17,9 @@ from .protocol import (
     HarvestedArtifact,
     RunLimits,
 )
+from .providers.aider import AiderHarnessProvider
+from .providers.base import SandboxHarnessProvider
+from .providers.command import CommandHarnessProvider
 from .registry import HarnessProviderRegistry
 from .sandbox import (
     DockerSandboxRuntime,
@@ -30,9 +33,11 @@ from .sandbox import (
 from .slots import HarnessSlotPool, SlotStatus
 
 __all__ = [
+    "AiderHarnessProvider",
     "BudgetExceeded",
     "BudgetTotals",
     "BudgetTracker",
+    "CommandHarnessProvider",
     "DockerSandboxRuntime",
     "ExecResult",
     "ExpectedArtifact",
@@ -48,6 +53,7 @@ __all__ = [
     "ResourceLimits",
     "RunLimits",
     "SandboxHandle",
+    "SandboxHarnessProvider",
     "SandboxRuntime",
     "SandboxSpec",
     "SlotStatus",

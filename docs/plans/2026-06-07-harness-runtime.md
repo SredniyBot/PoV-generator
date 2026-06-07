@@ -520,3 +520,19 @@ Governance денег/времени показываем как **внутре�
   провайдер не дал данных).
 - Осталось по Ф6: per-run дерево файлов/дифф (частично — бандл уже хранит
   файлы+манифест) и UI (панель «машинное отделение» + drill-down провенанса).
+
+Реализовано (2026-06-08, Ф7a — реальные адаптеры, общая обвязка + Aider):
+- `SandboxHarnessProvider` (providers/base.py) — общая обвязка прогона:
+  провижн → посев (brief+входы) → `_prepare` (опц.) → команда → гейты → сбор →
+  teardown. Адаптеры переопределяют только `_build_command`/`_prepare`/`_harvest`.
+- `CommandHarnessProvider` переведён на базу (сбор-по-соглашению), поведение и
+  тесты сохранены.
+- `AiderHarnessProvider` (providers/aider.py) — git-нативный «редактор»:
+  `_prepare` ставит базовую ревизию (git init + tag povgen-base), команда —
+  `aider --yes --message-file ... [--model ...]`, сбор — **diff-harvest**
+  (`git diff --cached --name-only <base>` → изменённые файлы как бандл).
+- Тесты на `StubSandboxRuntime` (эмуляция git+aider): diff-harvest, состав
+  команды (brief+model), «нет изменений» → failed, провал гейта блокирует сбор.
+  Реальный Docker — за POV_HARNESS_DOCKER_TEST.
+- Дальше Ф7b: адаптер Claude Code (сбор-по-соглашению, дефолт), Ф7c: резолв
+  адаптера из настроек (образ/модель/подключение) + матрица возможностей.
