@@ -82,7 +82,6 @@ import type {
 import { useProjectRealtime } from "./useProjectRealtime";
 import {
   Button,
-  CommandBar,
   Drawer,
   EmptyState,
   LoadingPanel,
@@ -468,6 +467,14 @@ function WorkspaceRoute({
     queryFn: () => api.getState(projectId),
     enabled: Boolean(projectId),
   });
+  // Артефакты — чтобы ссылка «Входные артефакты» вела на входной артефакт
+  // (роль input.request), а не просто в раздел. Ключ совпадает с разделом
+  // артефактов → общий кэш.
+  const artifactsQuery = useQuery({
+    queryKey: projectionKey(projectId, "artifacts"),
+    queryFn: () => api.getArtifacts(projectId),
+    enabled: Boolean(projectId),
+  });
 
   const commandRequest = async (promiseFactory: () => Promise<CommandResultView>) => {
     setCommandBusy(true);
@@ -604,7 +611,7 @@ function WorkspaceRoute({
         }}
         onActivateNextObjective={commandMutations.activateNextObjective}
         activatingNextObjective={commandMutations.busy}
-        actions={<CommandBar projectId={projectId} />}
+        runStatus={<HeaderRunStatus projectId={projectId} />}
       />
       {/* Степпер этапов + живой прогон (тикер + лента) переехали в шапку
           вкладки «Проект» (ProjectOverviewV2.workflowSlot) — над вкладками
@@ -626,7 +633,16 @@ function WorkspaceRoute({
               onClarificationModeChange={commandMutations.setClarificationMode}
               modePending={commandMutations.busy}
               domainPacks={shellQuery.data?.active_domain_packs ?? []}
-              onOpenInputArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
+              onOpenInputArtifacts={() => {
+                const input = (artifactsQuery.data ?? []).find(
+                  (a) => a.artifact_role === "input.request",
+                );
+                navigate(
+                  input
+                    ? `/projects/${projectId}/artifacts/${input.artifact_id}`
+                    : `/projects/${projectId}/artifacts`,
+                );
+              }}
               workflowSlot={
                 <StageStatusBar
                   projectId={projectId}
@@ -701,6 +717,58 @@ function SettingsTabRedirect({ projectId }: { projectId: string }) {
   return <Navigate to={`/projects/${projectId}/overview`} replace />;
 }
 
+
+// HeaderRunStatus — компактный статус прогона в шапке проекта (виден на всех
+// вкладках): пилюля честного статуса + текущий шаг + «N в работе». Заменяет
+// прежний status_label проекта и чип CommandBar. Тяжёлый workflow-блок
+// (дорожка этапов + живая лента) остаётся во вкладке «Проект».
+function HeaderRunStatus({ projectId }: { projectId: string }) {
+  const activeQuery = useQuery({
+    queryKey: [projectId, "workflow-run-active"],
+    queryFn: () => api.getActiveWorkflowRun(projectId),
+    refetchInterval: activeRunRefetchInterval,
+  });
+  const recentQuery = useQuery({
+    queryKey: [projectId, "workflow-runs"],
+    queryFn: () => api.listWorkflowRuns(projectId, 100),
+  });
+  const active = activeQuery.data ?? null;
+  const display = active ?? recentQuery.data?.[0] ?? null;
+  // Граф нужен только для счётчика «N в работе» и только во время прогона.
+  const taskGraphQuery = useQuery({
+    queryKey: projectionKey(projectId, "task_graph"),
+    queryFn: () => api.getTaskGraph(projectId),
+    enabled: Boolean(active),
+  });
+  if (!display) return null;
+  const viz = runStatusVisual(display.status, display.stop_reason);
+  const summary = cleanStepSummary(display.last_step_summary);
+  let inProgress = 0;
+  if (active && taskGraphQuery.data) {
+    const walk = (nodes: TaskNodeView[]) => {
+      for (const n of nodes) {
+        if (n.status === "in_progress") inProgress += 1;
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    walk(taskGraphQuery.data.nodes);
+  }
+  return (
+    <span className="header-run">
+      <StatusPill tone={viz.tone}>{viz.label}</StatusPill>
+      {summary ? (
+        <span className="header-run__summary" title={summary}>
+          {summary}
+        </span>
+      ) : null}
+      {inProgress > 0 ? (
+        <span className="header-run__count">
+          <Loader2 size={12} className="spin" /> {inProgress} в работе
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 // RunActivitySection — живая активность прогона внутри StageStatusBar: честный
 // статус прогона + ЕДИНАЯ лента времени (сверху — что идёт сейчас с

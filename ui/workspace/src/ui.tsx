@@ -1,9 +1,6 @@
 import type { PropsWithChildren, ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 
-import { api as apiClient } from "./api";
-import { activeRunRefetchInterval } from "./realtime";
 import {
   AlertTriangle,
   ArrowRight,
@@ -513,6 +510,7 @@ export function ModeControl({
 export function WorkspaceHeader({
   shell,
   connectionStatus,
+  runStatus,
   actions,
   pendingCheckpointCount,
   pendingCheckpointSessionId,
@@ -522,6 +520,9 @@ export function WorkspaceHeader({
 }: {
   shell: ProjectShellView;
   connectionStatus: RealtimeStatus;
+  // Компактный статус прогона (пилюля + текущий шаг + N в работе) — в строке
+  // шапки вместо общего status_label проекта.
+  runStatus?: ReactNode;
   actions?: ReactNode;
   // v3.0: pending checkpoint-сессии (см. /api/projects/{id}/checkpoints).
   // Если > 0 — показываем красный бэйдж; клик ведёт на /checkpoints
@@ -538,9 +539,7 @@ export function WorkspaceHeader({
     <header className="workspace-header">
       <div className="workspace-header__topline">
         <h1>{shell.name}</h1>
-        <StatusPill tone={shell.status_label === "Готово" ? "success" : "active"}>
-          {shell.status_label}
-        </StatusPill>
+        {runStatus}
         <span className="workspace-header__updated">
           Обновлено {formatDateTime(shell.updated_at)}
         </span>
@@ -549,52 +548,7 @@ export function WorkspaceHeader({
           {actions}
         </div>
       </div>
-      <p className="workspace-header__request">{shell.business_request}</p>
     </header>
-  );
-}
-
-export function CommandBar({
-  projectId,
-}: {
-  // L6-10: глобальная шапка = слой СТАТУСА, а не команд.
-  //
-  // Старое поведение (вечная кнопка «Продолжить» на каждой вкладке) давало
-  // ложный сигнал «проект простаивает» и могла предлагать запуск даже когда
-  // нужно сперва ответить на вопросы. См. USERS_AND_JTBD §5B C1 (trust
-  // calibration): UI должен честно отражать состояние, а не подталкивать к
-  // действию когда оно невозможно.
-  //
-  // Теперь шапка показывает один компактный индикатор:
-  //   - "Идёт работа"           + "Приостановить" (единственная глобальная команда)
-  //   - "Готово"                 (статус, без действия)
-  //   - ""                       (idle/блокеры) — команды живут в Обзоре,
-  //                              блокеры уже показаны бейджем в шапке выше
-  projectId: string;
-}) {
-  const activeRunQuery = useQuery({
-    queryKey: [projectId, "workflow-run-active"],
-    queryFn: () => apiClient.getActiveWorkflowRun(projectId),
-    // Прогресс инвалидируется WS-пушем (workflow_runs); полл — страховка
-    // только пока run идёт, на простое off.
-    refetchInterval: activeRunRefetchInterval,
-  });
-  const activeRun = activeRunQuery.data ?? null;
-  const isRunning =
-    activeRun !== null && (activeRun.status === "running" || activeRun.status === "pending");
-
-  if (!isRunning) {
-    return null;
-  }
-
-  // Только индикатор статуса. Действие «Приостановить» живёт в карточке «Что
-  // сейчас нужно» на вкладке «Проект» — здесь не дублируем (раньше на «Проекте»
-  // было две кнопки «Приостановить»: тут и в CTA).
-  return (
-    <div className="command-bar command-bar--running">
-      <span className="command-bar__pulse" aria-hidden />
-      <span className="command-bar__status">Идёт работа</span>
-    </div>
   );
 }
 

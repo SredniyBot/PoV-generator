@@ -25,8 +25,12 @@ LOW_CONFIDENCE_THRESHOLD = 0.45
 механизму низкоуверенных решений). Единый источник правды: используется и
 доменной моделью (`ArtifactRecord.is_low_confidence`), и валидацией."""
 
-ArtifactKind = Literal["primary", "synthesized", "derived"]
+ArtifactKind = Literal["primary", "synthesized", "derived", "input"]
 """Класс артефакта.
+
+``input`` — исходные входные данные проекта (например, текстовый запрос при
+создании), а не результат задачи. Не участвует в primary-фильтрах
+(skeleton/ключевые артефакты), просто доступен для просмотра.
 
 - ``primary`` — результат leaf-задачи по контракту ``produces.artifact``.
 - ``synthesized`` — синтезированный артефакт композитной задачи (объединение

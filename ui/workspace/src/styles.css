@@ -410,14 +410,29 @@ code {
   max-width: 78ch;
 }
 
-.workspace-header__request {
-  margin: 0;
-  color: var(--text-secondary);
-  display: -webkit-box;
-  max-width: 86ch;
+/* Статус прогона в строке шапки (HeaderRunStatus): пилюля + текущий шаг + N. */
+.header-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.header-run__summary {
+  min-width: 0;
+  max-width: 36ch;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
+.header-run__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-size: var(--font-size-meta);
+  white-space: nowrap;
 }
 
 .workspace-header__side {
@@ -552,40 +567,6 @@ code {
   line-height: 1;
 }
 
-.command-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.035);
-}
-
-.command-bar__context {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.command-bar__context strong {
-  font-size: 13px;
-  letter-spacing: 0.01em;
-}
-
-.command-bar__context p {
-  margin: 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-}
-
-.command-bar__controls {
-  display: grid;
-  grid-template-columns: minmax(132px, 164px) minmax(0, 1fr);
-  gap: 12px;
-}
-
-.command-bar__actions,
 .inline-actions,
 .entity-card__actions,
 .modal__footer {
@@ -593,16 +574,6 @@ code {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.command-bar__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.command-bar__button {
-  width: 100%;
-  min-width: 0;
 }
 
 .field {
@@ -2883,15 +2854,6 @@ code {
   .task-node__meta {
     max-width: none;
     justify-content: flex-start;
-  }
-
-  .command-bar {
-    padding: 14px;
-  }
-
-  .command-bar__controls,
-  .command-bar__actions {
-    grid-template-columns: 1fr;
   }
 
   .tabs {
