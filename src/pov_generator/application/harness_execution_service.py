@@ -18,9 +18,15 @@ from typing import Any
 
 from ..common.errors import ConflictError
 from ..infrastructure.harness import (
+    BudgetTotals,
+    BudgetTracker,
     ExpectedArtifact,
     HarnessProviderRegistry,
     HarnessRunSpec,
+    HarnessSlotPool,
+    RunLimits,
+    SlotStatus,
+    detect_host_capacity,
 )
 from ..infrastructure.llm.protocol import LLMUsage
 
@@ -67,13 +73,41 @@ def render_harness_brief(
 
 
 class HarnessExecutionService:
-    """Производит payload артефакта узла через harness-провайдера."""
+    """Производит payload артефакта узла через harness-провайдера.
 
-    def __init__(self, registry: HarnessProviderRegistry | None = None) -> None:
+    Ф3: прогон проходит через класс конкуррентности (пул слотов — отдельный
+    маленький потолок на параллельные контейнеры, авто-калибровка по ёмкости
+    хоста) и под бюджетом (RunLimits → spec; кумулятивный учёт + governance).
+    """
+
+    def __init__(
+        self,
+        registry: HarnessProviderRegistry | None = None,
+        *,
+        slots: HarnessSlotPool | None = None,
+        budget_limits: RunLimits | None = None,
+        budget_tracker: BudgetTracker | None = None,
+        slot_acquire_timeout: float | None = None,
+    ) -> None:
         self._registry = registry or HarnessProviderRegistry()
+        capacity = detect_host_capacity()
+        # Отдельный класс конкуррентности harness (контейнеры тяжёлые).
+        self._slots = slots or HarnessSlotPool(capacity.max_concurrent)
+        # Бюджет прогона (wall_clock enforce'ит песочница; остальное — учёт).
+        self._budget_limits = budget_limits or capacity.default_budget
+        self._budget = budget_tracker or BudgetTracker()
+        self._slot_acquire_timeout = slot_acquire_timeout
 
     def default_provider_name(self) -> str:
         return self._registry.default_provider_name()
+
+    def slot_status(self) -> SlotStatus:
+        """Занятость пула слотов — для панели «машинное отделение» (Ф6)."""
+        return self._slots.status()
+
+    def budget_totals(self) -> BudgetTotals:
+        """Накопленный расход harness-прогонов — для панели/аудита."""
+        return self._budget.totals()
 
     def produce_artifact_payload(
         self,
@@ -88,6 +122,8 @@ class HarnessExecutionService:
         Ф1: один ожидаемый артефакт (структурный JSON), harvest-by-convention.
         Файловые бандлы и несколько артефактов — следующие фазы.
         """
+        # Governance: кумулятивный бюджет исчерпан → не запускаем (fail-loudly).
+        self._budget.ensure_within_budget()
         expected = (ExpectedArtifact(role=artifact_role, fmt="json"),)
         brief = render_harness_brief(
             artifact_role=artifact_role,
@@ -99,9 +135,15 @@ class HarnessExecutionService:
             brief=brief,
             expected_artifacts=expected,
             model_hint=model_hint,
+            limits=self._budget_limits,
         )
         provider = self._registry.resolve_default()
-        result = provider.run(spec)
+        # Класс конкуррентности: занимаем слот на время прогона (бэкпрешер —
+        # лишние harness-узлы ждут очереди, а не штурмуют хост).
+        with self._slots.slot(timeout=self._slot_acquire_timeout):
+            result = provider.run(spec)
+        # Учёт расхода (даже неуспешного прогона) — для панели и governance.
+        self._budget.record(result.usage)
         if result.status != "completed":
             raise ConflictError(
                 f"harness '{provider.name}' не завершил узел "
