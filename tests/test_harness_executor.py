@@ -20,8 +20,11 @@ from pov_generator.application.harness_execution_service import (
     HarnessExecutionService,
     render_harness_brief,
 )
+from pov_generator.application.planning_service import PlanningService
 from pov_generator.application.project_service import ProjectService
 from pov_generator.application.registry_service import RegistryService
+from pov_generator.application.workspace_catalog import WorkspaceCatalog
+from pov_generator.application.workspace_query_service import WorkspaceQueryService
 from pov_generator.common.errors import ConflictError
 from pov_generator.common.serialization import utc_now_iso
 from pov_generator.domain.registry import ObjectRef
@@ -184,6 +187,14 @@ def test_execute_task_routes_harness_node_to_harness_backend(tmp_path: Path) -> 
     payload = json.loads(runtime.load_artifact_content(workspace, artifact.artifact_id))
     assert payload["produced_by"] == "stub-harness"
 
+    # Ф6: провенанс прогона (L3/L4) сохранён в метаданных и пережил round-trip.
+    trace = artifact.metadata.harness_trace
+    assert trace["provider"] == "harness:stub"
+    assert trace["output_kind"] == "structured"
+    assert trace["brief"]
+    assert "gates" in trace  # stub гейты не исполняет → пустой список
+    assert trace["gates"] == []
+
     # Учёт токенов: estimated-usage записан (downstream одинаков для всех бэкендов).
     usage = runtime.llm_usage_for_task(workspace, task.task_id)
     assert usage is not None
@@ -214,3 +225,31 @@ def test_execute_task_harness_bundle_output_persists_files(tmp_path: Path) -> No
     # Код классифицирован как код.
     kinds = {f.path: f.content_kind for f in manifest.files}
     assert kinds["src/main.py"] == "code"
+
+    # Ф6: провенанс одинаков и для файлового выхода (output_kind=bundle).
+    trace = artifact.metadata.harness_trace
+    assert trace["provider"] == "harness:stub"
+    assert trace["output_kind"] == "bundle"
+    assert trace["brief"]
+
+
+def test_harness_trace_query_exposes_provenance(tmp_path: Path) -> None:
+    runtime, execution_service, snapshot, workspace, project_id = _bootstrap_execution(tmp_path)
+    task = _harness_leaf_task(project_id, OBJECTIVE_REF)
+    runtime.create_task(workspace, task)
+    execution_service.execute_task(workspace, snapshot, task.task_id)
+
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    registry_service = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates"))
+    query_service = WorkspaceQueryService(
+        catalog, registry_service, runtime, PlanningService(runtime)
+    )
+
+    result = query_service.task_harness_trace(project_id, task.task_id)
+    assert result["trace"] is not None
+    assert result["trace"]["provider"] == "harness:stub"
+    assert result["primary_artifact_id"]
+
+    # Не-harness задача (которой нет провенанса) → trace=None, без падения.
+    empty = query_service.task_harness_trace(project_id, "no-such-task")
+    assert empty["trace"] is None

@@ -88,6 +88,11 @@ class ArtifactMetadata:
     метаинформация primary артефакта.
     """
 
+    harness_trace: dict[str, object] = field(default_factory=dict)
+    """Провенанс прогона узла-агента (Ф6): адаптер, brief, транскрипт, гейты,
+    расход. Пусто для не-harness артефактов. Тем же паттерном, что
+    methodology_trace — отдаётся drill-down'ом наблюдаемости."""
+
     # --- confidence ---------------------------------------------------------
 
     overall_confidence: float | None = None

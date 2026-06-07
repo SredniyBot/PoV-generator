@@ -1244,6 +1244,12 @@ def create_app(
     def task_methodology_trace(project_id: str, task_id: str) -> Any:
         return to_primitive(query_service.task_methodology_trace(project_id, task_id))
 
+    @app.get("/api/projects/{project_id}/tasks/{task_id}/harness-trace")
+    def task_harness_trace(project_id: str, task_id: str) -> Any:
+        # Ф6: провенанс прогона узла-агента (адаптер/brief/транскрипт/гейты/
+        # расход) — тем же паттерном, что methodology-trace.
+        return to_primitive(query_service.task_harness_trace(project_id, task_id))
+
     # ------ L6 design extensions ------------------------------------------
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/skeleton")
     def project_artifact_skeleton(project_id: str, artifact_id: str) -> Any:

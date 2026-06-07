@@ -471,6 +471,8 @@ class ExecutionService:
         # Учёт токенов: usages всех LLM-вызовов задачи, заполняется ниже
         # (для stub — оценка по длине; для structural-merge — пусто, n/a).
         llm_usages: list[tuple[str | None, LLMUsage | None]] = []
+        # Ф6: провенанс прогона узла-агента (L3/L4). Пусто для не-harness путей.
+        harness_trace_payload: dict[str, object] = {}
         if is_harness:
             # Второй бэкенд: выход узла даёт harness-агент. Структурный JSON
             # идёт общим downstream (как LLM/stub); файловый бандл — отдельным
@@ -486,6 +488,7 @@ class ExecutionService:
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model
+            harness_trace_payload = outcome.trace_payload()
             if bundle_output:
                 if cancellation is not None:
                     cancellation.raise_if_cancelled()
@@ -722,6 +725,7 @@ class ExecutionService:
                 merge_strategy=(template.merge.strategy if template.merge else None),
                 reasoning=reasoning_payload,
                 methodology_trace=methodology_trace_payload,
+                harness_trace=harness_trace_payload,
                 used_position_ids=context_manifest.used_position_ids,
                 # Уверенность вынесена из тела артефакта в метаданные.
                 # Берём из payload['confidence'] для backward-compat (LLM
@@ -926,6 +930,9 @@ class ExecutionService:
                 model=active_model,
                 complexity=complexity_value,
                 execution_run_id=execution_run_id,
+                # Ф6: тот же провенанс прогона (brief/транскрипт/гейты/расход),
+                # что у структурного выхода — наглядность не зависит от формата.
+                harness_trace=outcome.trace_payload(),
                 token_usage={"primary_generation": self._usage_to_token_dict(usage)},
             ),
         )

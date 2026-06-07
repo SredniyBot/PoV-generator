@@ -506,3 +506,17 @@ Governance денег/времени показываем как **внутре�
 - Деньги/время — внутренние governance-лимиты, не оценки заказчику.
 - Осталось по Ф6: per-node провенанс L3/L4 (транскрипт/brief/гейты/usage),
   per-run результат (дерево файлов/дифф), и UI (панель + drill-down).
+
+Реализовано (2026-06-08, Ф6b — провенанс прогона узла-агента L3/L4):
+- `HarnessOutcome.gates` (результаты гейтов доходят до сервиса) +
+  `HarnessOutcome.trace_payload()` — самодостаточная сводка «как получен
+  артефакт»: адаптер, model, output_kind, brief, транскрипт, гейты, расход.
+- Новое поле `ArtifactMetadata.harness_trace` (зеркало `methodology_trace`):
+  round-trip в `sqlite_runtime` (known/from/to payload). Заполняется в
+  `execute_task` для обоих выходов — структурного и файлового бандла.
+- `WorkspaceQueryService.task_harness_trace` + `GET /api/projects/{id}/tasks/
+  {task_id}/harness-trace` (тем же паттерном, что methodology-trace).
+- Stub гейты не исполняет → `gates=[]`; usage не выдумываем (None, если
+  провайдер не дал данных).
+- Осталось по Ф6: per-run дерево файлов/дифф (частично — бандл уже хранит
+  файлы+манифест) и UI (панель «машинное отделение» + drill-down провенанса).

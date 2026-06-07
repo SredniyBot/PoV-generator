@@ -19,6 +19,7 @@ from pov_generator.domain.registry import HarnessGateSpec
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.harness import (
     ExpectedArtifact,
+    GateResult,
     HarnessGate,
     HarnessProviderRegistry,
     HarnessRunResult,
@@ -196,6 +197,51 @@ def test_produce_artifact_converts_and_forwards_gates() -> None:
     gate = provider.spec.gates[0]
     assert isinstance(gate, HarnessGate)
     assert (gate.name, gate.command, gate.timeout_s) == ("tests", "pytest -q", 120)
+
+
+# --- провенанс прогона (Ф6): результаты гейтов доходят до trace --------------
+
+
+class _GatedProvider:
+    name = "gated"
+    model = "agent-x"
+
+    def run(self, spec: HarnessRunSpec) -> HarnessRunResult:
+        role = spec.expected_artifacts[0].role
+        return HarnessRunResult(
+            status="completed",
+            artifacts=(HarvestedArtifact(role=role, payload={"ok": True}, fmt="json"),),
+            transcript="лог агента",
+            gates=(GateResult(name="tests", passed=True, exit_code=0, log="2 passed"),),
+        )
+
+
+class _GatedRegistry(HarnessProviderRegistry):
+    def default_provider_name(self) -> str:
+        return "gated"
+
+    def resolve_default(self) -> _GatedProvider:  # type: ignore[override]
+        return _GatedProvider()
+
+
+def test_outcome_trace_payload_carries_gates_and_transcript() -> None:
+    service = HarnessExecutionService(_GatedRegistry())
+    outcome = service.produce_artifact(
+        artifact_role="demo",
+        system_prompt="SYS",
+        user_prompt="USR",
+        gates=(HarnessGateSpec(name="tests", command="pytest"),),
+    )
+    trace = outcome.trace_payload()
+
+    assert trace["provider"] == "harness:gated"
+    assert trace["output_kind"] == "structured"
+    assert trace["transcript"] == "лог агента"
+    assert trace["gates"] == [
+        {"name": "tests", "passed": True, "exit_code": 0, "log": "2 passed"}
+    ]
+    # usage не задан провайдером → None (не выдумываем расход).
+    assert trace["usage"] is None
 
 
 # --- Парсинг harness_gates из YAML-шаблона ----------------------------------

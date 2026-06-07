@@ -22,6 +22,7 @@ from ..infrastructure.harness import (
     BudgetTotals,
     BudgetTracker,
     ExpectedArtifact,
+    GateResult,
     HarnessGate,
     HarnessProviderRegistry,
     HarnessRunSpec,
@@ -45,10 +46,46 @@ class HarnessOutcome:
     payload: dict[str, Any] | None = None       # структурный выход (Ф1)
     files: dict[str, bytes] | None = None         # файловый бандл (Ф5)
     bundle_kind: str | None = None
+    gates: tuple[GateResult, ...] = ()           # результаты гейтов «готово» (Ф5c)
 
     @property
     def is_bundle(self) -> bool:
         return self.files is not None
+
+    def trace_payload(self) -> dict[str, Any]:
+        """Провенанс прогона (L3/L4) — тем же паттерном, что methodology_trace.
+
+        Самодостаточная «как получен артефакт» сводка узла-агента: адаптер,
+        постановка (brief), транскрипт, результаты гейтов и расход. Ложится в
+        ``ArtifactMetadata.harness_trace`` и отдаётся drill-down'ом (Ф6).
+        """
+        usage = (
+            {
+                "input_tokens": self.usage.input_tokens,
+                "output_tokens": self.usage.output_tokens,
+                "total_tokens": self.usage.input_tokens + self.usage.output_tokens,
+                "cost_usd": self.usage.cost_usd,
+            }
+            if self.usage is not None
+            else None
+        )
+        return {
+            "provider": self.provider_name,
+            "model": self.model,
+            "output_kind": "bundle" if self.is_bundle else "structured",
+            "brief": self.brief,
+            "transcript": self.transcript,
+            "gates": [
+                {
+                    "name": g.name,
+                    "passed": g.passed,
+                    "exit_code": g.exit_code,
+                    "log": g.log,
+                }
+                for g in self.gates
+            ],
+            "usage": usage,
+        }
 
 
 @dataclass(frozen=True)
@@ -206,6 +243,7 @@ class HarnessExecutionService:
             "transcript": result.transcript,
             "usage": result.usage,
             "brief": brief,
+            "gates": result.gates,
         }
         if output_kind == "bundle":
             if not harvested.files:

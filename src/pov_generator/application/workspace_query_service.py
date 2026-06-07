@@ -2352,6 +2352,35 @@ class WorkspaceQueryService:
             "execution": execution_summary,
         }
 
+    def task_harness_trace(self, project_id: str, task_id: str) -> dict:
+        """Провенанс прогона узла-агента (Ф6) — зеркало task_methodology_trace.
+
+        Для harness-узлов «как получен артефакт» живёт в
+        ``ArtifactMetadata.harness_trace`` primary артефакта: адаптер, brief,
+        транскрипт, результаты гейтов, расход. Для не-harness задач — пусто.
+        """
+        context = self._load_context(project_id)
+        primary_artifact = None
+        for artifact in self._runtime.list_artifacts(context.workspace):
+            if (
+                artifact.created_by_task_id == task_id
+                and artifact.artifact_kind == "primary"
+                and not artifact.is_superseded
+            ):
+                primary_artifact = artifact
+                break
+        if primary_artifact is None or not primary_artifact.metadata.harness_trace:
+            return {
+                "task_id": task_id,
+                "trace": None,
+                "message": "Для задачи нет провенанса harness-прогона (узел исполнял не агент).",
+            }
+        return {
+            "task_id": task_id,
+            "trace": dict(primary_artifact.metadata.harness_trace),
+            "primary_artifact_id": primary_artifact.artifact_id,
+        }
+
 
 def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
     """Достаёт требуемые входные данные из артефакта реализуемости.

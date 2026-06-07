@@ -326,6 +326,7 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         "merge_strategy",
         "reasoning",
         "methodology_trace",
+        "harness_trace",
         "overall_confidence",
         "field_confidence",
         "used_position_ids",
@@ -355,6 +356,7 @@ def _artifact_metadata_from_payload(payload: dict | None) -> ArtifactMetadata:
         merge_strategy=payload.get("merge_strategy"),
         reasoning=dict(payload.get("reasoning") or {}),
         methodology_trace=dict(payload.get("methodology_trace") or {}),
+        harness_trace=dict(payload.get("harness_trace") or {}),
         overall_confidence=payload.get("overall_confidence"),
         field_confidence=dict(payload.get("field_confidence") or {}),
         used_position_ids=tuple(payload.get("used_position_ids") or ()),
@@ -384,6 +386,8 @@ def _artifact_metadata_to_payload(metadata: ArtifactMetadata) -> dict[str, objec
         payload["reasoning"] = dict(metadata.reasoning)
     if metadata.methodology_trace:
         payload["methodology_trace"] = dict(metadata.methodology_trace)
+    if metadata.harness_trace:
+        payload["harness_trace"] = dict(metadata.harness_trace)
     if metadata.overall_confidence is not None:
         payload["overall_confidence"] = metadata.overall_confidence
     if metadata.field_confidence:
