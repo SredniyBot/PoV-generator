@@ -14,7 +14,7 @@ requires:
   state: [business_request]
   artifacts:
     required:
-      - architecture.component_decomposition@1.0.0
+      - architecture.component_model@1.0.0
     optional:
       - implementation.backend_build_spec@1.0.0
       - implementation.ui_build_spec@1.0.0

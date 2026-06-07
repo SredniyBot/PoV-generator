@@ -553,6 +553,9 @@ class ProjectStagesView:
     stages: tuple[StageView, ...]  # history(done) → active → forward-walk(locked)
     next_objective_refs: tuple[str, ...]  # compatible_next активного этапа
     objective_complete: bool  # активный этап завершён → можно «Перейти»
+    # Ф5: непредоставленные блокирующие реквизиты — UI гасит переход на
+    # реализацию и показывает, чего не хватает. Пусто → переход не держится.
+    blocked_by_requisites: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +574,12 @@ class RequisiteItemView:
 
     title: str        # что нужно предоставить
     needed_for: str   # для какой части/требования это нужно
-    status: str       # "requested" (фаза 1) | "provided" (будущая фаза)
+    status: str       # "requested" | "provided"
+    # Ф5: многоисточниковая агрегация (реализуемость + архитектура).
+    key: str = ""     # устойчивый ключ провижена (если пуст — берётся title)
+    kind: str = "other"          # credential|dataset|file|setting|interface_format|sample|other
+    blocking: bool = False       # блокирует переход на реализацию
+    stage: str = "realizability" # источник: realizability | architecture
 
 
 @dataclass(frozen=True)

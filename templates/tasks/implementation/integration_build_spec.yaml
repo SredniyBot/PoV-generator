@@ -12,7 +12,7 @@ requires:
   state: [business_request]
   artifacts:
     required:
-      - architecture.component_decomposition@1.0.0
+      - architecture.component_model@1.0.0
     optional:
       - common.feasibility_assessment@1.0.0
       - architecture.interaction_view@1.0.0
@@ -26,7 +26,7 @@ planning:
   priority: 300
 summary: |
   Ты — integration-агент сборки. Из feasibility возьми части, где covered_by
-  == capability.integration, и интеграционные компоненты из component_decomposition.
+  == capability.integration, и интеграционные компоненты из component_model.
   По каждой назначенной части выдай спеку сборки (name / purpose / tech /
   interfaces / data / dependencies / test_approach). Заполни assigned_parts.
   Части без предоставленного доступа к контуру (твой cannot_do) — в

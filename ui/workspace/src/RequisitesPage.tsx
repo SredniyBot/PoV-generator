@@ -15,6 +15,15 @@ import { api } from "./api";
 import type { RequisiteItemView } from "./types";
 import { EmptyState, LoadingPanel, SectionCard, StatusPill } from "./ui";
 
+const KIND_LABELS: Record<string, string> = {
+  credential: "доступ/креды",
+  dataset: "набор данных",
+  file: "файл/таблица",
+  setting: "настройка",
+  interface_format: "формат интерфейса",
+  sample: "образец",
+};
+
 function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemView[]][] {
   const groups = new Map<string, RequisiteItemView[]>();
   for (const item of items) {
@@ -37,9 +46,16 @@ function RequisiteRow({
 }) {
   const [note, setNote] = useState("");
   const provided = item.status === "provided";
+  const kindLabel = item.kind ? KIND_LABELS[item.kind] : undefined;
   return (
     <li className="requisites__item">
-      <span className="requisites__item-title">{item.title}</span>
+      <span className="requisites__item-title">
+        {item.title}
+        {kindLabel ? <span className="requisites__item-kind"> · {kindLabel}</span> : null}
+        {item.blocking ? (
+          <span className="requisites__item-blocking"> · обязателен для перехода</span>
+        ) : null}
+      </span>
       {provided ? (
         <StatusPill tone="success">Получено</StatusPill>
       ) : (
@@ -115,7 +131,7 @@ function RequisitesSection({ projectId }: { projectId: string }) {
                   key={`${neededFor}:${item.title}`}
                   item={item}
                   pending={provide.isPending}
-                  onProvide={(note) => provide.mutate({ key: item.title, note })}
+                  onProvide={(note) => provide.mutate({ key: item.key || item.title, note })}
                 />
               ))}
             </ul>

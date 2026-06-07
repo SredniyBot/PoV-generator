@@ -12,7 +12,7 @@ requires:
   state: [business_request]
   artifacts:
     required:
-      - architecture.component_decomposition@1.0.0
+      - architecture.component_model@1.0.0
     optional:
       - common.feasibility_assessment@1.0.0
       - architecture.interaction_view@1.0.0
@@ -27,7 +27,7 @@ planning:
 summary: |
   Ты — data-агент сборки. Из feasibility возьми части, где covered_by ==
   capability.data, и data-компоненты (конвейеры, витрины) из
-  component_decomposition. По каждой назначенной части выдай спеку сборки
+  component_model. По каждой назначенной части выдай спеку сборки
   (name / purpose / tech / interfaces / data / dependencies / test_approach).
   Заполни assigned_parts. То, что в твой cannot_do, — в out_of_scope.
   Нерешённое — в open_questions. Если ничего не назначено — components пустой,

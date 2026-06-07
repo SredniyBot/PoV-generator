@@ -12,9 +12,8 @@ requires:
   artifacts:
     required:
       - architecture.system_context_definition@1.0.0
-      - architecture.component_decomposition@1.0.0
+      - architecture.component_model@1.0.0
     optional:
-      - common.deployment_topology@1.0.0
       - integration.integration_operating_model@1.0.0
 produces:
   artifact: architecture.interaction_view@1.0.0
@@ -32,7 +31,8 @@ summary: |
   внешними участниками. Это раздел про то, КАК работает система в
   динамике: какие сценарии происходят, кто кого вызывает, что передаётся.
   Опирайся на system_context_definition (внешние системы) и
-  component_decomposition (внутренние компоненты).
+  component_model (компоненты — ссылайся на их id). Участники потоков —
+  ТОЛЬКО объявленные id компонентов из component_model и акторы из контекста.
 
   Структура:
 
@@ -87,9 +87,8 @@ summary: |
     ```
 
     Вариант 2 — `kind: "flowchart"` (для разветвлённых процессов с
-    условиями): структура та же, что у component_decomposition.component_diagram —
-    `direction`, `nodes` (с опциональным `shape`, включая `rhombus` для
-    условий), `edges` (с опциональным `label` и `kind` ∈ solid/dotted/thick).
+    условиями): `direction`, `nodes` (с опциональным `shape`, включая `rhombus`
+    для условий), `edges` (с опциональным `label` и `kind` ∈ solid/dotted/thick).
 
   ▸ DATA_CONTRACTS (опционально) — формат данных, которыми обмениваются
     компоненты. Для каждой пары:
@@ -103,7 +102,7 @@ summary: |
 
   Правила:
   • Не выдумывай флоу, которых не следует из контекста или компонентов.
-  • Используй те же имена участников/узлов, что в component_decomposition
+  • Используй те же id участников/узлов, что в component_model
     (`id` совпадает).
   • `id` — короткий ASCII; любые подписи (в т.ч. `&`, `<`, `>` и кириллица) —
     в `label` или `messages[].label`, экранирование делается рендерером.

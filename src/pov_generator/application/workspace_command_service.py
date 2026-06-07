@@ -17,6 +17,7 @@ from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 from .workspace_catalog import WorkspaceCatalog
+from .workspace_query_service import blocking_requisites_unprovided
 
 GRAPH_PROJECTIONS = ("task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state", "debug")
 
@@ -252,6 +253,18 @@ class WorkspaceCommandService:
         snapshot = self._validated_snapshot()
         new_ref_obj = ObjectRef.parse(new_objective_ref)
         new_spec = snapshot.resolve_objective(new_ref_obj)
+        # Ф5: шлюз перехода на реализацию — блокирующие реквизиты должны быть
+        # предоставлены. Гасим только переход в objective реализации; остальные
+        # переходы (например, ТЗ → архитектура) реквизитами не держатся.
+        if new_ref_obj.identifier.startswith("implementation"):
+            missing = blocking_requisites_unprovided(
+                self._project_service.runtime, workspace_ref.workspace
+            )
+            if missing:
+                raise ConflictError(
+                    "Нельзя перейти к реализации: не предоставлены обязательные "
+                    "реквизиты — " + "; ".join(missing) + ". Заполните их во вкладке «Реквизиты»."
+                )
         methodology_ref = (
             new_spec.default_methodology_pack_ref.as_string()
             if new_spec.default_methodology_pack_ref is not None

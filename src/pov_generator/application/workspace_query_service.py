@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -631,40 +631,19 @@ class WorkspaceQueryService:
     def project_requisites(self, project_id: str) -> ProjectRequisitesView:
         """Реквизиты — требуемые от пользователя входные данные.
 
-        Фаза 1: выводим из предусловий (prerequisites) последнего артефакта
-        реализуемости. Разбор изолирован в :func:`_extract_requisites` —
-        когда артефакт станет структурным, меняется только она.
+        Ф5: агрегируем из двух источников — предусловий артефакта
+        реализуемости и поля ``requisites`` модели компонентов (архитектура).
+        Факт предоставления (requisite_provisions) накладывается сверху. Вся
+        логика — в :func:`gather_requisites` (используется и шлюзом перехода).
         """
         context = self._load_context(project_id)
-        artifact = self._runtime.latest_artifact_by_role(
-            context.workspace, "feasibility_assessment"
-        )
-        if artifact is None:
-            return ProjectRequisitesView(
-                project_id=context.manifest.project_id,
-                status="missing",
-                items=(),
-                source_artifact_id=None,
-                updated_at=None,
-            )
-        payload = json.loads(
-            self._runtime.load_artifact_content(context.workspace, artifact.artifact_id)
-        )
-        # Ф4: накладываем факт предоставления — отмеченный пользователем пункт
-        # показывается как «получено» (ключ реквизита — его текст).
-        provided = self._runtime.list_requisite_provisions(context.workspace)
-        items = tuple(
-            RequisiteItemView(title=item.title, needed_for=item.needed_for, status="provided")
-            if item.title in provided
-            else item
-            for item in _extract_requisites(payload)
-        )
+        items, source_id, updated = gather_requisites(self._runtime, context.workspace)
         return ProjectRequisitesView(
             project_id=context.manifest.project_id,
-            status="ready",
+            status="ready" if source_id is not None else "missing",
             items=items,
-            source_artifact_id=artifact.artifact_id,
-            updated_at=artifact.created_at,
+            source_artifact_id=source_id,
+            updated_at=updated,
         )
 
     def project_capability_gaps(self, project_id: str) -> ProjectGapsView:
@@ -1002,6 +981,11 @@ class WorkspaceQueryService:
                 ref.as_string() for ref in active_spec.compatible_next_objectives
             ),
             objective_complete=self._objective_done(context),
+            # Ф5: непредоставленные блокирующие реквизиты держат переход на
+            # реализацию (UI гасит кнопку и показывает, чего не хватает).
+            blocked_by_requisites=blocking_requisites_unprovided(
+                self._runtime, context.workspace
+            ),
         )
 
     def _stage_failing_task(self, task: TaskRecord, *, retryable: bool) -> StageFailingTaskView:
@@ -2073,9 +2057,115 @@ def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
                 continue
             seen.add(dedup_key)
             items.append(
-                RequisiteItemView(title=title, needed_for=needed_for, status="requested")
+                RequisiteItemView(
+                    title=title,
+                    needed_for=needed_for,
+                    status="requested",
+                    key=title,  # реализуемость: ключ = текст (как и прежде)
+                    kind="other",
+                    blocking=False,
+                    stage="realizability",
+                )
             )
     return tuple(items)
+
+
+def _extract_component_model_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
+    """Реквизиты из модели компонентов (архитектура, Ф5).
+
+    Источник — поле ``requisites`` у каждого компонента. Ключ провижена —
+    устойчивый составной (``architecture:<component>:<requisite>``), чтобы
+    отметка «предоставлено» не слетала при переформулировке заголовка ИИ.
+    Защитный разбор: кривые элементы пропускаются.
+    """
+    components = payload.get("components")
+    rows = components if isinstance(components, list) else []
+    items: list[RequisiteItemView] = []
+    for comp in rows:
+        if not isinstance(comp, dict):
+            continue
+        needed_for = str(comp.get("name") or comp.get("id") or "").strip() or "компонент"
+        cid = str(comp.get("id") or "")
+        requisites = comp.get("requisites")
+        if not isinstance(requisites, list):
+            continue
+        for req in requisites:
+            if not isinstance(req, dict):
+                continue
+            title = str(req.get("title") or "").strip()
+            if not title:
+                continue
+            rid = str(req.get("id") or title)
+            items.append(
+                RequisiteItemView(
+                    title=title,
+                    needed_for=needed_for,
+                    status="requested",
+                    key=f"architecture:{cid}:{rid}",
+                    kind=str(req.get("kind") or "other"),
+                    blocking=bool(req.get("blocking")),
+                    stage="architecture",
+                )
+            )
+    return tuple(items)
+
+
+def gather_requisites(
+    runtime: SqliteRuntime, workspace: Path
+) -> tuple[tuple[RequisiteItemView, ...], str | None, str | None]:
+    """Собрать реквизиты из всех источников + наложить факт предоставления (Ф5).
+
+    Источники: предусловия артефакта реализуемости и поле ``requisites`` модели
+    компонентов. Дедуп по нормализованному заголовку (блокирующий флаг —
+    логическое ИЛИ). Возвращает (items, source_artifact_id, updated_at).
+    """
+    raw: list[RequisiteItemView] = []
+    source_id: str | None = None
+    updated: str | None = None
+
+    for role, extractor in (
+        ("feasibility_assessment", _extract_requisites),
+        ("component_model", _extract_component_model_requisites),
+    ):
+        artifact = runtime.latest_artifact_by_role(workspace, role)
+        if artifact is None:
+            continue
+        try:
+            payload = json.loads(runtime.load_artifact_content(workspace, artifact.artifact_id))
+        except (json.JSONDecodeError, OSError):
+            continue
+        raw.extend(extractor(payload))
+        if source_id is None:
+            source_id = artifact.artifact_id
+            updated = artifact.created_at
+
+    # Дедуп по нормализованному заголовку; блокирующий флаг агрегируем по ИЛИ.
+    deduped: list[RequisiteItemView] = []
+    index_by_norm: dict[str, int] = {}
+    for item in raw:
+        norm = item.title.strip().casefold()
+        if norm in index_by_norm:
+            idx = index_by_norm[norm]
+            if item.blocking and not deduped[idx].blocking:
+                deduped[idx] = replace(deduped[idx], blocking=True)
+            continue
+        index_by_norm[norm] = len(deduped)
+        deduped.append(item)
+
+    provided = runtime.list_requisite_provisions(workspace)
+    items = tuple(
+        replace(item, status="provided")
+        if ((item.key or item.title) in provided or item.title in provided)
+        else item
+        for item in deduped
+    )
+    return items, source_id, updated
+
+
+def blocking_requisites_unprovided(runtime: SqliteRuntime, workspace: Path) -> tuple[str, ...]:
+    """Заголовки непредоставленных блокирующих реквизитов (для шлюза перехода)."""
+    items, _, _ = gather_requisites(runtime, workspace)
+    return tuple(item.title for item in items if item.blocking and item.status != "provided")
 
 
 def _extract_gaps(payload: dict) -> tuple[CapabilityGapView, ...]:

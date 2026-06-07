@@ -62,6 +62,12 @@ class ProjectService:
     def __init__(self, runtime: SqliteRuntime) -> None:
         self._runtime = runtime
 
+    @property
+    def runtime(self) -> SqliteRuntime:
+        """Доступ к runtime для оркестраторов (command_service): единый
+        экземпляр БД, чтобы не плодить ещё одну зависимость в их конструкторах."""
+        return self._runtime
+
     # --- инициализация ------------------------------------------------------
 
     def init_project(

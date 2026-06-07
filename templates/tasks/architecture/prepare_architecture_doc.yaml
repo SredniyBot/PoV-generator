@@ -8,26 +8,32 @@ domain: architecture
 children:
   - id: system_context_definition
     task: architecture.system_context_definition@1.0.0
-  - id: component_decomposition
-    task: architecture.component_decomposition@1.0.0
+  - id: component_model
+    task: architecture.component_model@1.0.0
   - id: interaction_view
     task: architecture.interaction_view@1.0.0
-  - id: deployment_topology
-    task: common.deployment_topology@1.0.0
+  - id: deployment_map
+    task: architecture.deployment_map@1.0.0
     required: false
   - id: project_risk_register
     task: common.project_risk_register@1.0.0
     required: false
   - id: design_synthesis
     task: architecture.design_synthesis@1.0.0
-# deployment_topology и project_risk_register помечены required: false —
-# они требуют артефактов ТЗ-потока (normalized_request,
-# solution_option_inventory, constraint_inventory). Если ТЗ-цепочка
-# отрабатывала в этом workspace ранее (через activate_next_objective),
-# они выполняются и обогащают финальный документ. Если же architecture
-# запущена «с нуля» от business_request без ТЗ — задачи останутся
-# заблокированными по входам, и design_synthesis соберёт документ без
-# секций Deployment / Risks (это согласовано — см. design_synthesis.yaml).
+# Порядок генерации (по priority, design_synthesis — последний, priority 100):
+# system_context → component_model → interaction_view → deployment_map →
+# design_synthesis. Каждый шаг ссылается только на id, зафиксированные выше
+# (корректность по построению).
+#
+# deployment_map помечен required: false — он не блокирует завершение цели,
+# но всегда выполним (его единственный вход — component_model) и за счёт
+# priority отрабатывает до сборки, обогащая документ. project_risk_register
+# тоже required: false — требует артефактов ТЗ-потока; без ТЗ останется
+# заблокированным, и документ соберётся без секции Risks (согласовано).
+#
+# component_decomposition заменён на component_model (Ф4 переработки гейта);
+# шаблон component_decomposition сохранён в реестре для закреплённых графом
+# прошлых проектов.
 #
 # slots — отложены. Доменные расширения (architecture.* domain packs)
 # планируются на отдельный этап roadmap.

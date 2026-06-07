@@ -3341,29 +3341,37 @@ def _render_design_document(payload: dict[str, Any]) -> str:
 
     comp = payload.get("components") or {}
     if comp:
-        lines.append("\n## Компоненты")
-        if comp.get("summary"):
-            lines.append(comp["summary"])
-        items = comp.get("components") or comp.get("items") or []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            lines.append(f"\n### {item.get('name', '—')}")
-            if item.get("responsibilities"):
-                lines.append(item["responsibilities"])
-            owns = item.get("owns_data") or []
-            if owns:
-                lines.append("**Владеет данными:**")
-                lines.extend(f"- {entry}" for entry in owns)
-            deps = item.get("dependencies") or []
-            if deps:
-                lines.append("**Зависимости:**")
-                lines.extend(f"- {entry}" for entry in deps)
-        lines.extend(
-            _render_mermaid_block(
-                _build_flowchart(comp.get("component_diagram")), "Диаграмма компонентов"
+        if _is_component_model_shape(comp):
+            # Новая модель компонентов (Ф4): переиспользуем её рендер; убираем
+            # ведущий H1, чтобы секции (## Компоненты / ## Покрытие) встали в
+            # документ как обычные разделы.
+            body = _render_component_model(comp)
+            lines.append(body.split("\n", 1)[1] if body.startswith("# ") else body)
+        else:
+            # Старая форма component_decomposition (закреплённые проекты).
+            lines.append("\n## Компоненты")
+            if comp.get("summary"):
+                lines.append(comp["summary"])
+            items = comp.get("components") or comp.get("items") or []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"\n### {item.get('name', '—')}")
+                if item.get("responsibilities"):
+                    lines.append(item["responsibilities"])
+                owns = item.get("owns_data") or []
+                if owns:
+                    lines.append("**Владеет данными:**")
+                    lines.extend(f"- {entry}" for entry in owns)
+                deps = item.get("dependencies") or []
+                if deps:
+                    lines.append("**Зависимости:**")
+                    lines.extend(f"- {entry}" for entry in deps)
+            lines.extend(
+                _render_mermaid_block(
+                    _build_flowchart(comp.get("component_diagram")), "Диаграмма компонентов"
+                )
             )
-        )
 
     interactions = payload.get("interactions") or {}
     if interactions:
@@ -3394,30 +3402,36 @@ def _render_design_document(payload: dict[str, Any]) -> str:
 
     deployment = payload.get("deployment") or {}
     if deployment:
-        lines.append("\n## Развёртывание")
-        envs = deployment.get("environments") or []
-        if envs:
-            lines.append("\n**Среды:**")
-            for env in envs:
-                if not isinstance(env, dict):
-                    continue
-                name = env.get("name", "—")
-                purpose = env.get("purpose", "")
-                lines.append(f"- **{name}** — {purpose}")
-        components_dep = deployment.get("components") or []
-        if components_dep:
-            lines.append("\n| Компонент | Размещение | Технология | Зона ответственности |")
-            lines.append("|-----------|------------|------------|----------------------|")
-            for c in components_dep:
-                if not isinstance(c, dict):
-                    continue
-                lines.append(
-                    f"| {c.get('name', '—')} | {c.get('placement', '—')} "
-                    f"| {c.get('technology', '—')} | {c.get('responsibilities', '—')} |"
-                )
-        if deployment.get("deployment_flow"):
-            lines.append("\n**Процесс развёртывания:**")
-            lines.append(deployment["deployment_flow"])
+        if "deployment_units" in deployment:
+            # Новая карта развёртывания (Ф4): переиспользуем её рендер.
+            body = _render_deployment_map(deployment)
+            lines.append(body.split("\n", 1)[1] if body.startswith("# ") else body)
+        else:
+            # Старая форма deployment_topology (закреплённые проекты).
+            lines.append("\n## Развёртывание")
+            envs = deployment.get("environments") or []
+            if envs:
+                lines.append("\n**Среды:**")
+                for env in envs:
+                    if not isinstance(env, dict):
+                        continue
+                    name = env.get("name", "—")
+                    purpose = env.get("purpose", "")
+                    lines.append(f"- **{name}** — {purpose}")
+            components_dep = deployment.get("components") or []
+            if components_dep:
+                lines.append("\n| Компонент | Размещение | Технология | Зона ответственности |")
+                lines.append("|-----------|------------|------------|----------------------|")
+                for c in components_dep:
+                    if not isinstance(c, dict):
+                        continue
+                    lines.append(
+                        f"| {c.get('name', '—')} | {c.get('placement', '—')} "
+                        f"| {c.get('technology', '—')} | {c.get('responsibilities', '—')} |"
+                    )
+            if deployment.get("deployment_flow"):
+                lines.append("\n**Процесс развёртывания:**")
+                lines.append(deployment["deployment_flow"])
 
     risks = payload.get("risks") or []
     if risks:
@@ -3570,6 +3584,27 @@ _REQUISITE_KIND_LABELS: dict[str, str] = {
 # Мягкий бюджет на количество компонентов: больше — проверка предупреждает
 # (минимизируем; каждый сверх — с обоснованием). Не блокирует.
 _COMPONENT_SOFT_BUDGET = 9
+
+
+def _is_component_model_shape(section: Any) -> bool:
+    """Отличить новую модель компонентов от старой component_decomposition.
+
+    Новая несёт `coverage` и/или компоненты со слоем/контрактом/модулями.
+    Используется рендером design_document для выбора ветки (совместимость с
+    закреплёнными прошлыми проектами).
+    """
+    if not isinstance(section, dict):
+        return False
+    if "coverage" in section:
+        return True
+    for component in section.get("components") or []:
+        if isinstance(component, dict) and (
+            "modules" in component
+            or "provided_interfaces" in component
+            or "layer" in component
+        ):
+            return True
+    return False
 
 
 def _render_component_model(payload: dict[str, Any]) -> str:

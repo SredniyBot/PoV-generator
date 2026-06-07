@@ -390,6 +390,7 @@ export interface ProjectStagesView {
   stages: StageView[];
   next_objective_refs: string[];
   objective_complete: boolean;
+  blocked_by_requisites?: string[]; // Ф5: непредоставленные блокирующие реквизиты
 }
 
 // ---- Реквизиты (требуемые от пользователя входные данные) ----------------
@@ -398,6 +399,10 @@ export interface RequisiteItemView {
   title: string;
   needed_for: string;
   status: string; // "requested" | "provided"
+  key?: string; // устойчивый ключ провижена (если пуст — берётся title)
+  kind?: string; // credential|dataset|file|setting|interface_format|sample|other
+  blocking?: boolean; // блокирует переход на реализацию
+  stage?: string; // realizability | architecture
 }
 
 export interface ProjectRequisitesView {
