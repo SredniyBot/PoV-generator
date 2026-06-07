@@ -46,6 +46,9 @@ from ..infrastructure.filesystem_registry import (
     CachingRegistryLoader,
     FilesystemRegistryLoader,
 )
+from ..infrastructure.harness import (
+    ADAPTER_CAPABILITIES as _HARNESS_ADAPTER_CAPABILITIES,
+)
 from ..infrastructure.harness import DockerSandboxRuntime
 from ..infrastructure.harness.images import DockerImagePreparer
 from ..infrastructure.llm import LLMProviderRegistry
@@ -338,6 +341,16 @@ def create_app(
         # /status (готовность Docker/образа) — это разные сущности: подготовка
         # vs. текущая загрузка.
         return to_primitive(app.state.execution_service.harness_runtime_status())
+
+    @app.get("/api/harness/adapters")
+    def harness_adapters() -> Any:
+        # Ф7c: матрица возможностей адаптеров (для выбора в настройках) +
+        # текущий выбранный исполнитель. Характеристики инструмента, не оценки.
+        active = app.state.execution_service.harness_runtime_status().provider_name
+        return {
+            "active": active,
+            "capabilities": to_primitive(_HARNESS_ADAPTER_CAPABILITIES),
+        }
 
     @app.post("/api/harness/prepare")
     def harness_prepare(payload: dict[str, object] = Body(default_factory=dict)) -> Any:

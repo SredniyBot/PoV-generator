@@ -21,7 +21,12 @@ from .providers.aider import AiderHarnessProvider
 from .providers.base import SandboxHarnessProvider
 from .providers.claude_code import ClaudeCodeHarnessProvider
 from .providers.command import CommandHarnessProvider
-from .registry import HarnessProviderRegistry
+from .registry import (
+    ADAPTER_CAPABILITIES,
+    HarnessConnection,
+    HarnessProviderRegistry,
+    connection_from_env,
+)
 from .sandbox import (
     DockerSandboxRuntime,
     ExecResult,
@@ -34,6 +39,7 @@ from .sandbox import (
 from .slots import HarnessSlotPool, SlotStatus
 
 __all__ = [
+    "ADAPTER_CAPABILITIES",
     "AiderHarnessProvider",
     "BudgetExceeded",
     "BudgetTotals",
@@ -45,6 +51,7 @@ __all__ = [
     "ExpectedArtifact",
     "GateResult",
     "HarnessCapacity",
+    "HarnessConnection",
     "HarnessGate",
     "HarnessProvider",
     "HarnessProviderRegistry",
@@ -60,6 +67,7 @@ __all__ = [
     "SandboxSpec",
     "SlotStatus",
     "StubSandboxRuntime",
+    "connection_from_env",
     "detect_host_capacity",
     "recommend_capacity",
     "run_gates",

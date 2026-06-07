@@ -541,6 +541,15 @@ Governance денег/времени показываем как **внутре�
   «строитель»: headless `claude -p "$(cat brief)" --dangerously-skip-permissions
   [--model ...]` (правки в изолированной песочнице безопасны), сбор — по
   соглашению. Тесты: convention-harvest + состав команды.
-- Дальше Ф7c: резолв адаптера из настроек (тип подключения/образ/модель,
-  инъекция SandboxRuntime в реестр) + матрица возможностей; затем UI Ф6 на
-  живых данных.
+Реализовано (2026-06-08, Ф7c — резолв адаптера + матрица возможностей):
+- `HarnessConnection` (тип/образ/модель/команда; секреты НЕ хранятся — креды в
+  песочницу эфемерно). Реестр собирает адаптер по подключению с инъекцией
+  `SandboxRuntime`; реальный адаптер → ленивый `DockerSandboxRuntime`, stub →
+  без песочницы. `supported_providers` = stub/aider/claude_code/command.
+- Подключение из env (bootstrap, как у LLM): `POV_HARNESS_PROVIDER/IMAGE/MODEL/
+  COMMAND/TIMEOUT_S`. Без env — дефолт stub → CI зелёный без Docker.
+- `ADAPTER_CAPABILITIES` (характеристики инструмента, не оценки) +
+  `GET /api/harness/adapters` (матрица + активный исполнитель). Активный
+  провайдер виден и в `/api/harness/runtime`.
+- Осталось: персист подключения в settings-store + UI выбора (вместе с UI Ф6);
+  затем Ф8 (полный цикл спека→реализация, fan-out, общий том).
