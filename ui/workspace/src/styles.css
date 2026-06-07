@@ -5823,10 +5823,10 @@ code {
 .stage-seg {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.4rem 0.7rem;
+  gap: 0.4rem;
+  padding: 0.28rem 0.6rem;
   border-radius: var(--radius-pill, 999px);
-  font-size: 0.92rem;
+  font-size: 0.85rem;
   color: var(--text-muted, rgba(255, 255, 255, 0.55));
   white-space: nowrap;
 }
@@ -5866,31 +5866,8 @@ code {
   color: var(--accent, #78b8c9);
 }
 
-.stage-seg__body {
-  display: inline-flex;
-  flex-direction: column;
-  line-height: 1.15;
-  min-width: 0;
-}
-
 .stage-seg__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  /* На широких экранах заголовки видны целиком; усечение — только как
-     страховка на узких. Бар при нехватке места переносится (flex-wrap). */
-  max-width: 28rem;
-}
-
-/* Активный этап чуть просторнее — там же прогресс. */
-.stage-seg--active .stage-seg__title,
-.stage-seg--current .stage-seg__title {
-  max-width: 32rem;
-}
-
-.stage-seg__progress {
-  font-size: 0.78rem;
-  color: var(--text-muted, rgba(255, 255, 255, 0.6));
 }
 
 .stage-seg__sep {

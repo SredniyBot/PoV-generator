@@ -40,6 +40,36 @@ function titleForRef(ref: string, stages: StageView[]): string {
   return match ? match.title : ref.split("@")[0] ?? ref;
 }
 
+// Короткая подпись этапа из objective_ref — дорожка должна быть лаконичной,
+// а не повторять длинное процессное название цели. Полное название и прогресс
+// показываем в подсказке (stageTooltip). Неизвестная цель → исходный заголовок.
+function shortStageLabel(ref: string, fallback: string): string {
+  const id = (ref.split("@")[0] ?? "").toLowerCase();
+  if (id.includes("requirements") || id.includes("specification")) return "ТЗ";
+  if (id.includes("architecture") || id.includes("design")) return "Архитектура";
+  if (
+    id.includes("implementation") ||
+    id.includes("build") ||
+    id.includes("plan") ||
+    id.includes("realiz")
+  ) {
+    return "Реализация";
+  }
+  return fallback;
+}
+
+// Подсказка при наведении: полное название цели + прогресс активного этапа.
+function stageTooltip(stage: StageView): string {
+  let t = stage.title;
+  if (stage.is_current) {
+    t += ` · артефакты ${stage.artifacts_ready}/${stage.artifacts_required}`;
+    if (stage.gates_required > 0) {
+      t += ` · гейт ${stage.gates_passed}/${stage.gates_required}`;
+    }
+  }
+  return t;
+}
+
 export function StageStatusBar({
   projectId,
   onActivateNextObjective,
@@ -99,18 +129,8 @@ export function StageStatusBar({
               <span className="stage-seg__icon">
                 <StageIcon stage={stage} />
               </span>
-              <span className="stage-seg__body">
-                <span className="stage-seg__title" title={stage.objective_ref}>
-                  {stage.title}
-                </span>
-                {stage.is_current ? (
-                  <span className="stage-seg__progress">
-                    артефакты {stage.artifacts_ready}/{stage.artifacts_required}
-                    {stage.gates_required > 0 ? (
-                      <> · гейт {stage.gates_passed}/{stage.gates_required}</>
-                    ) : null}
-                  </span>
-                ) : null}
+              <span className="stage-seg__title" title={stageTooltip(stage)}>
+                {shortStageLabel(stage.objective_ref, stage.title)}
               </span>
               {idx < data.stages.length - 1 ? (
                 <span className="stage-seg__sep" aria-hidden>
