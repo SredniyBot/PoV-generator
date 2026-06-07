@@ -2463,6 +2463,11 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     queryKey: projectionKey(projectId, "task_graph"),
     queryFn: () => api.getTaskGraph(projectId),
   });
+  // Чтобы с узла попадать на КОНКРЕТНЫЙ произведённый артефакт (по created_by_task_id).
+  const artifactsQuery = useQuery({
+    queryKey: projectionKey(projectId, "artifacts"),
+    queryFn: () => api.getArtifacts(projectId),
+  });
   const retryMutation = useMutation({
     mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
   });
@@ -2484,7 +2489,16 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
         completedLeafTasks={data.completed_leaf_tasks}
         totalLeafTasks={data.total_leaf_tasks}
         onRetry={(taskId) => retryMutation.mutate(taskId)}
-        onOpenArtifacts={() => navigate(`/projects/${projectId}/artifacts`)}
+        onOpenArtifacts={(task) => {
+          const art = (artifactsQuery.data ?? []).find(
+            (a) => a.created_by_task_id === task.task_id,
+          );
+          navigate(
+            art
+              ? `/projects/${projectId}/artifacts/${art.artifact_id}`
+              : `/projects/${projectId}/artifacts`,
+          );
+        }}
         onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
       />
       <Drawer

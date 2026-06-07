@@ -32,7 +32,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { AlertTriangle, FileText, Layers, Split } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, FileText, Layers, Split } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
@@ -45,7 +45,7 @@ const NODE_HEIGHT = 76;
 
 interface TaskGraphActions {
   onRetry: (taskId: string) => void;
-  onOpenArtifacts: () => void;
+  onOpenArtifacts: (task: TaskNodeView) => void;
   onGoToDecisions: () => void;
 }
 
@@ -55,11 +55,15 @@ const TaskGraphActionsCtx = createContext<TaskGraphActions | null>(null);
 
 interface TaskNodeCardData extends Record<string, unknown> {
   task: TaskNodeView;
+  // Композит с детьми можно свернуть (прячет поддерево).
+  onToggle?: (id: string) => void;
+  isCollapsed?: boolean;
+  childCount?: number;
 }
 
 interface FanOutCardData extends Record<string, unknown> {
   task: TaskNodeView;
-  onToggleFanOut: (id: string) => void;
+  onToggle: (id: string) => void;
   isCollapsed: boolean;
 }
 
@@ -67,7 +71,8 @@ type FlowNode = Node<TaskNodeCardData | FanOutCardData>;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Flatten with collapse support — skips children of collapsed fan-out nodes. */
+/** Flatten with collapse support — skips children of any collapsed node
+ *  (composite или fan-out). */
 function flattenTree(nodes: TaskNodeView[], collapsed: Set<string>): TaskNodeView[] {
   const result: TaskNodeView[] = [];
   for (const node of nodes) {
@@ -81,17 +86,19 @@ function flattenTree(nodes: TaskNodeView[], collapsed: Set<string>): TaskNodeVie
 
 interface BuildLayoutOptions {
   collapsed: Set<string>;
-  onToggleFanOut: (id: string) => void;
+  onToggle: (id: string) => void;
 }
 
 function buildLayout(
   tasks: TaskNodeView[],
   options: BuildLayoutOptions,
 ): { nodes: FlowNode[]; edges: Edge[] } {
-  const { collapsed, onToggleFanOut } = options;
+  const { collapsed, onToggle } = options;
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 60, marginx: 20, marginy: 20 });
+  // LR: глубина идёт по горизонтали (рангов мало), а широкий веер листьев
+  // выстраивается в высоту — граф получается узким и высоким, а не наоборот.
+  graph.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 90, marginx: 20, marginy: 20 });
 
   for (const task of tasks) {
     graph.setNode(task.task_id, { width: NODE_WIDTH, height: nodeHeight(task) });
@@ -136,8 +143,13 @@ function buildLayout(
       id: task.task_id,
       type: isFanOut ? "fanOutCard" : "taskCard",
       data: isFanOut
-        ? ({ task, onToggleFanOut, isCollapsed: collapsed.has(task.task_id) } as FanOutCardData)
-        : ({ task } as TaskNodeCardData),
+        ? ({ task, onToggle, isCollapsed: collapsed.has(task.task_id) } as FanOutCardData)
+        : ({
+            task,
+            onToggle,
+            isCollapsed: collapsed.has(task.task_id),
+            childCount: task.children?.length ?? 0,
+          } as TaskNodeCardData),
       position: {
         x: (positioned?.x ?? 0) - NODE_WIDTH / 2,
         y: (positioned?.y ?? 0) - h / 2,
@@ -210,20 +222,35 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const meta = statusMeta(task.status);
   const warnCount = task.blocking_clarification_count ?? 0;
   const isComposite = task.template_type === "composite";
+  const childCount = data.childCount ?? 0;
+  const collapsible = isComposite && childCount > 0 && Boolean(data.onToggle);
 
   return (
     <div
       className={`tg-node${task.is_current ? " tg-node--current" : ""}`}
       style={{ borderLeftColor: meta.color }}
     >
-      <Handle type="target" position={Position.Top} className="tg-handle" />
+      <Handle type="target" position={Position.Left} className="tg-handle" />
       <div className="tg-node__status">
+        {collapsible ? (
+          <button
+            type="button"
+            className="tg-node__collapse"
+            title={data.isCollapsed ? "Развернуть подзадачи" : "Свернуть подзадачи"}
+            onClick={(e) => { e.stopPropagation(); data.onToggle?.(task.task_id); }}
+          >
+            {data.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        ) : null}
         <span className="tg-dot" style={{ background: meta.color }} />
         <span className="tg-node__status-label">{meta.label}</span>
         {warnCount > 0 ? (
           <span className="tg-node__warn" title={`Ждут решения: ${warnCount}`}>
             <AlertTriangle size={12} /> {warnCount}
           </span>
+        ) : null}
+        {collapsible && data.isCollapsed ? (
+          <span className="tg-node__hidden" title="скрытых подзадач">{childCount}</span>
         ) : null}
         {isComposite ? (
           <Layers size={13} className="tg-node__type-icon" aria-label="композит" />
@@ -250,7 +277,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           {showArtifacts && (
             <button
               className="tg-action-btn"
-              onClick={(e) => { e.stopPropagation(); actions.onOpenArtifacts(); }}
+              onClick={(e) => { e.stopPropagation(); actions.onOpenArtifacts(task); }}
             >
               Артефакт
             </button>
@@ -265,7 +292,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           )}
         </div>
       ) : null}
-      <Handle type="source" position={Position.Bottom} className="tg-handle" />
+      <Handle type="source" position={Position.Right} className="tg-handle" />
     </div>
   );
 }
@@ -273,7 +300,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
 // ── Fan-out card node ──────────────────────────────────────────────────────
 
 function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
-  const { task, onToggleFanOut, isCollapsed } = data;
+  const { task, onToggle, isCollapsed } = data;
   const meta: FanOutMeta | null | undefined = task.fan_out_meta;
   const status = statusMeta(task.status);
   const pct =
@@ -283,7 +310,7 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
 
   return (
     <div className="tg-node tg-node--fanout" style={{ borderLeftColor: status.color }}>
-      <Handle type="target" position={Position.Top} className="tg-handle" />
+      <Handle type="target" position={Position.Left} className="tg-handle" />
       <div className="tg-node__status">
         <span className="tg-dot" style={{ background: status.color }} />
         <span className="tg-node__status-label">{status.label}</span>
@@ -309,12 +336,12 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
       {meta != null && meta.total_instances > 4 ? (
         <button
           className="tg-action-btn tg-fanout__toggle"
-          onClick={(e) => { e.stopPropagation(); onToggleFanOut(task.task_id); }}
+          onClick={(e) => { e.stopPropagation(); onToggle(task.task_id); }}
         >
           {isCollapsed ? `Показать все ${meta.total_instances}` : "Свернуть"}
         </button>
       ) : null}
-      <Handle type="source" position={Position.Bottom} className="tg-handle" />
+      <Handle type="source" position={Position.Right} className="tg-handle" />
     </div>
   );
 }
@@ -363,7 +390,7 @@ export interface TaskGraphCanvasProps {
   completedLeafTasks?: number;
   totalLeafTasks?: number;
   onRetry?: (taskId: string) => void;
-  onOpenArtifacts?: () => void;
+  onOpenArtifacts?: (task: TaskNodeView) => void;
   onGoToDecisions?: () => void;
 }
 
@@ -380,9 +407,10 @@ function TaskGraphCanvasInner({
   onOpenArtifacts,
   onGoToDecisions,
 }: TaskGraphCanvasProps) {
-  const [collapsedFanOuts, setCollapsedFanOuts] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // Auto-collapse fan-out nodes with > 4 instances on first mount / tree change.
+  // Композиты по умолчанию развёрнуты — пользователь сам решает, что свернуть.
   useEffect(() => {
     const toCollapse = new Set<string>();
     function walk(nodes: TaskNodeView[]) {
@@ -394,16 +422,16 @@ function TaskGraphCanvasInner({
       }
     }
     walk(tree);
-    setCollapsedFanOuts((prev) => {
+    setCollapsed((prev) => {
       const next = new Set(prev);
       toCollapse.forEach((id) => next.add(id));
       return next;
     });
   }, [tree]);
 
-  const toggleFanOut = useCallback(
+  const toggleCollapse = useCallback(
     (id: string) =>
-      setCollapsedFanOuts((prev) => {
+      setCollapsed((prev) => {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
@@ -413,12 +441,12 @@ function TaskGraphCanvasInner({
   );
 
   const tasks = useMemo(
-    () => flattenTree(tree, collapsedFanOuts),
-    [tree, collapsedFanOuts],
+    () => flattenTree(tree, collapsed),
+    [tree, collapsed],
   );
   const layout = useMemo(
-    () => buildLayout(tasks, { collapsed: collapsedFanOuts, onToggleFanOut: toggleFanOut }),
-    [tasks, collapsedFanOuts, toggleFanOut],
+    () => buildLayout(tasks, { collapsed, onToggle: toggleCollapse }),
+    [tasks, collapsed, toggleCollapse],
   );
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(layout.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(layout.edges);
@@ -463,7 +491,7 @@ function TaskGraphCanvasInner({
   const actions: TaskGraphActions = useMemo(
     () => ({
       onRetry:         (id) => onRetry?.(id),
-      onOpenArtifacts: () => onOpenArtifacts?.(),
+      onOpenArtifacts: (task) => onOpenArtifacts?.(task),
       onGoToDecisions: () => onGoToDecisions?.(),
     }),
     [onRetry, onOpenArtifacts, onGoToDecisions],

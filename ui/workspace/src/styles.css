@@ -3613,6 +3613,26 @@ code {
   color: var(--text-disabled, #5a6470);
   flex-shrink: 0;
 }
+.tg-node__collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #9aa4b2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tg-node__collapse:hover { color: var(--text-primary, #e8ecf3); }
+.tg-node__hidden {
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+}
 
 .tg-node__title {
   font-weight: 600;
