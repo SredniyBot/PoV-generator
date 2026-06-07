@@ -4816,6 +4816,20 @@ code {
   color: var(--text-secondary, #9aa4b2);
 }
 
+.provenance__pre {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-sunken, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
 .provenance__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -6469,4 +6483,168 @@ code {
   font-size: 12px;
   padding: 3px 8px;
   width: 200px;
+}
+
+/* ── Машинное отделение (harness): наблюдаемость + выбор исполнителя (Ф6/Ф7) ── */
+
+.mroom {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.mroom__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.9rem;
+}
+
+.mroom-card {
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  border-radius: var(--radius-md, 10px);
+  padding: 1rem 1.15rem;
+  background: var(--surface-raised, rgba(127, 127, 127, 0.04));
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.mroom-card__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.mroom-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.mroom-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.18));
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken, rgba(127, 127, 127, 0.05));
+}
+
+.mroom-tile__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.mroom-tile__value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.mroom-ok { color: var(--success, #3fb950); }
+.mroom-warn { color: var(--warning, #d29922); }
+
+.mroom-blockers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mroom-blockers li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--warning, #d29922);
+}
+
+.mroom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.mroom-muted {
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.mroom-fineprint { font-size: 0.78rem; font-style: italic; }
+
+.mroom-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  margin: 0;
+}
+.mroom-result--ok { color: var(--success, #3fb950); }
+.mroom-result--err { color: var(--danger, #f85149); }
+
+.mroom-adapters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.65rem;
+}
+
+.mroom-adapter {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.22));
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken, rgba(127, 127, 127, 0.04));
+  cursor: pointer;
+  transition: border-color var(--motion-fast, 0.12s) ease, background var(--motion-fast, 0.12s) ease;
+}
+
+.mroom-adapter:hover { border-color: var(--accent, #58a6ff); }
+
+.mroom-adapter--active {
+  border-color: var(--accent, #58a6ff);
+  background: var(--accent-soft, rgba(88, 166, 255, 0.12));
+}
+
+.mroom-adapter__title { font-weight: 600; font-size: 0.9rem; }
+.mroom-adapter__meta { font-size: 0.74rem; color: var(--text-secondary, #9aa4b2); }
+.mroom-adapter__best { font-size: 0.78rem; color: var(--text-secondary, #9aa4b2); }
+
+.mroom-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.mroom-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.mroom-field input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface, transparent);
+  color: var(--text-primary, #e6edf3);
+  font-size: 0.85rem;
 }

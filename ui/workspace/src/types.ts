@@ -635,6 +635,136 @@ export interface MethodologyTraceResponse {
 }
 
 
+// ---- Harness (агенты-исполнители) — наблюдаемость и настройки (Ф6/Ф7) ----
+
+export interface HarnessDockerStatus {
+  available: boolean;
+  version?: string | null;
+  message?: string | null;
+}
+
+export interface HarnessCapacityView {
+  max_concurrent: number;
+  cpu_count?: number;
+  total_memory_mb?: number;
+}
+
+export interface HarnessPullProgress {
+  image: string;
+  in_progress: boolean;
+  ready: boolean;
+  status?: string | null;
+  progress?: number | null;
+  error?: string | null;
+}
+
+export interface HarnessReadinessView {
+  docker: HarnessDockerStatus;
+  capacity: HarnessCapacityView;
+  default_image: string;
+  image_ready: boolean;
+  pull: HarnessPullProgress | null;
+  ready: boolean;
+  blockers: string[];
+}
+
+export interface HarnessSlotsView {
+  capacity: number;
+  in_use: number;
+  waiting: number;
+}
+
+export interface HarnessBudgetView {
+  runs: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface HarnessRunLimitsView {
+  wall_clock_s: number | null;
+  max_tokens: number | null;
+  max_steps: number | null;
+  max_cost_usd: number | null;
+}
+
+export interface HarnessRuntimeStatusView {
+  provider_name: string;
+  slots: HarnessSlotsView;
+  budget: HarnessBudgetView;
+  run_limits: HarnessRunLimitsView;
+  budget_exceeded: string | null;
+}
+
+export interface HarnessAdapterCapability {
+  title: string;
+  autonomy: string;
+  models: string;
+  git_native: boolean;
+  needs_docker: boolean;
+  best_for: string;
+}
+
+export interface HarnessAdaptersView {
+  active: string;
+  capabilities: Record<string, HarnessAdapterCapability>;
+}
+
+export interface HarnessConnectionView {
+  provider: string;
+  image: string | null;
+  model: string | null;
+  command: string | null;
+  default_timeout_s: number | null;
+  source: string;
+  updated_at: string | null;
+}
+
+export interface HarnessGateResultView {
+  name: string;
+  passed: boolean;
+  exit_code: number;
+  log: string;
+}
+
+export interface HarnessUsageView {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+}
+
+export interface HarnessTracePayload {
+  provider: string;
+  model: string | null;
+  output_kind: string;
+  brief: string;
+  transcript: string;
+  gates: HarnessGateResultView[];
+  usage: HarnessUsageView | null;
+}
+
+export interface HarnessTraceResponse {
+  task_id: string;
+  trace: HarnessTracePayload | null;
+  primary_artifact_id?: string;
+  message?: string;
+}
+
+export interface HarnessSelfTestView {
+  ok: boolean;
+  duration_ms: number;
+  transcript: string;
+  error: string | null;
+}
+
+export interface HarnessPrepareView {
+  status: string;
+  pull: HarnessPullProgress | null;
+}
+
+
 // ---- L6 design extensions (P3v2 skeleton, P5 pins, P7 decisions, P8 versions) ----
 
 export type ArtifactSectionStatus = "done" | "in_progress" | "pending" | "needs_review";

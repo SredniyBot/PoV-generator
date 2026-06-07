@@ -236,6 +236,40 @@ export const api = {
     ),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
+  // --- Harness (агенты-исполнители): наблюдаемость + онбординг + настройки ---
+  getHarnessStatus: () =>
+    request<import("./types").HarnessReadinessView>("/api/harness/status"),
+  getHarnessRuntime: () =>
+    request<import("./types").HarnessRuntimeStatusView>("/api/harness/runtime"),
+  getHarnessAdapters: () =>
+    request<import("./types").HarnessAdaptersView>("/api/harness/adapters"),
+  getHarnessConnection: () =>
+    request<import("./types").HarnessConnectionView>("/api/harness/connection"),
+  setHarnessConnection: (payload: {
+    provider: string;
+    image?: string | null;
+    model?: string | null;
+    command?: string | null;
+    default_timeout_s?: number | null;
+  }) =>
+    request<import("./types").HarnessConnectionView>("/api/harness/connection", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  prepareHarnessImage: (image?: string) =>
+    request<import("./types").HarnessPrepareView>("/api/harness/prepare", {
+      method: "POST",
+      body: JSON.stringify(image ? { image } : {}),
+    }),
+  harnessSelfTest: (image?: string) =>
+    request<import("./types").HarnessSelfTestView>("/api/harness/self-test", {
+      method: "POST",
+      body: JSON.stringify(image ? { image } : {}),
+    }),
+  getHarnessTrace: (projectId: string, taskId: string) =>
+    request<import("./types").HarnessTraceResponse>(
+      `/api/projects/${projectId}/tasks/${taskId}/harness-trace`,
+    ),
   // L6 design extensions
   getArtifactSkeleton: (projectId: string, artifactId: string) =>
     request<import("./types").ArtifactSkeletonView>(

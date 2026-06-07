@@ -69,6 +69,7 @@ import {
   PendingDecisionsPage,
 } from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
+import { MachineRoomPage } from "./MachineRoomPage";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { RequisitesPage } from "./RequisitesPage";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
@@ -358,6 +359,7 @@ function AppFrame() {
             }
           />
           <Route path="/settings" element={<LlmSettingsPage />} />
+          <Route path="/machine-room" element={<MachineRoomPage />} />
           <Route path="/projects/:projectId" element={<Navigate to="overview" replace />} />
           <Route
             path="/projects/:projectId/*"
@@ -1479,6 +1481,81 @@ function ProvenanceViewer({ data }: { data: import("./types").MethodologyTraceRe
   );
 }
 
+// ---- Ф6 провенанс прогона узла-агента (harness) -------------------------
+
+function HarnessProvenanceViewer({
+  trace,
+}: {
+  trace: import("./types").HarnessTracePayload;
+}) {
+  const usage = trace.usage;
+  return (
+    <div className="provenance">
+      <section className="provenance__section">
+        <h4>Прогон агента</h4>
+        <dl className="provenance__grid">
+          <ProvenanceField label="Исполнитель" value={trace.provider} />
+          <ProvenanceField label="Модель" value={trace.model ?? "—"} />
+          <ProvenanceField
+            label="Формат выхода"
+            value={trace.output_kind === "bundle" ? "файловый бандл" : "структурный"}
+          />
+          {usage ? (
+            <ProvenanceField
+              label="Токены"
+              value={`${usage.total_tokens.toLocaleString("ru-RU")}`}
+            />
+          ) : null}
+        </dl>
+      </section>
+
+      {trace.gates.length > 0 ? (
+        <section className="provenance__section">
+          <h4>Гейты готовности</h4>
+          <table className="provenance__table">
+            <thead>
+              <tr>
+                <th>Гейт</th>
+                <th>Результат</th>
+                <th>Код</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trace.gates.map((g) => (
+                <tr key={g.name}>
+                  <td><code>{g.name}</code></td>
+                  <td>
+                    {g.passed ? (
+                      <StatusPill tone="success">пройден</StatusPill>
+                    ) : (
+                      <StatusPill tone="danger">провал</StatusPill>
+                    )}
+                  </td>
+                  <td>{g.exit_code}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {trace.brief ? (
+        <section className="provenance__section">
+          <h4>Постановка (brief)</h4>
+          <pre className="provenance__pre">{trace.brief}</pre>
+        </section>
+      ) : null}
+
+      {trace.transcript ? (
+        <section className="provenance__section">
+          <h4>Транскрипт</h4>
+          <pre className="provenance__pre">{trace.transcript}</pre>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 function ProvenanceField({
   label,
   value,
@@ -2331,6 +2408,13 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     queryFn: () => api.getMethodologyTrace(projectId, detail.created_by_task_id!),
     enabled: provenanceOpen && Boolean(detail.created_by_task_id),
   });
+  // Провенанс прогона узла-агента (Ф6): только для harness-артефактов.
+  const isHarnessArtifact = (detail.provider ?? "").startsWith("harness:");
+  const harnessTraceQuery = useQuery({
+    queryKey: [projectId, "harness-trace", detail.created_by_task_id],
+    queryFn: () => api.getHarnessTrace(projectId, detail.created_by_task_id!),
+    enabled: provenanceOpen && isHarnessArtifact && Boolean(detail.created_by_task_id),
+  });
   // v3.0: решения, принятые при сборке этого артефакта.
   const decisionsQuery = useQuery({
     queryKey: ["artifact-decisions", projectId, detail.artifact_id],
@@ -2619,12 +2703,15 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           в Provenance-модалке (segmented кнопка), а на самой страничке
           артефакта они только захламляли документ. */}
       <Modal open={provenanceOpen} onClose={() => setProvenanceOpen(false)} title="Provenance / откуда это">
+        {isHarnessArtifact && harnessTraceQuery.data?.trace ? (
+          <HarnessProvenanceViewer trace={harnessTraceQuery.data.trace} />
+        ) : null}
         {traceQuery.isLoading ? (
           <LoadingPanel title="Грузим provenance…" />
-        ) : traceQuery.data ? (
+        ) : traceQuery.data && (traceQuery.data.trace || traceQuery.data.reasoning) ? (
           <ProvenanceViewer data={traceQuery.data} />
-        ) : (
-          <EmptyState title="Provenance недоступен" description="Не удалось получить methodology-trace для задачи-производителя." />
+        ) : isHarnessArtifact && harnessTraceQuery.data?.trace ? null : (
+          <EmptyState title="Provenance недоступен" description="Не удалось получить provenance для задачи-производителя." />
         )}
       </Modal>
       {mode === "doc" ? (
