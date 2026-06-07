@@ -60,6 +60,51 @@ def test_openrouter_client_returns_actual_usage() -> None:
     assert result.usage.total_tokens == 150
 
 
+def test_openrouter_ensures_word_json_in_messages() -> None:
+    """Qwen/Alibaba через OpenRouter требуют слово 'json' в сообщениях при
+    response_format — иначе HTTP 400. Клиент гарантирует его наличие."""
+    from pov_generator.infrastructure import openrouter_client as mod
+
+    api_response = {"choices": [{"message": {"content": json.dumps({"reply": "ok"})}}], "usage": {}}
+    captured: dict = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(api_response).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse()
+
+    client = mod.OpenRouterClient(mod.OpenRouterConfig(api_key="k", model="x/y"))
+
+    # Промпты БЕЗ слова "json" — клиент должен его добавить.
+    with patch.object(mod.request, "urlopen", side_effect=_fake_urlopen):
+        client.chat_json(
+            system_prompt="You are a connectivity probe. Reply briefly.",
+            user_prompt="Reply with exactly: OK",
+            schema={"type": "object"},
+        )
+    blob = " ".join(m["content"] for m in captured["body"]["messages"]).lower()
+    assert "json" in blob
+
+    # Промпт УЖЕ содержит "json" — лишнего не добавляем (system без изменений).
+    with patch.object(mod.request, "urlopen", side_effect=_fake_urlopen):
+        client.chat_json(
+            system_prompt="Верни json по схеме.",
+            user_prompt="данные",
+            schema={"type": "object"},
+        )
+    system_msg = captured["body"]["messages"][0]["content"]
+    assert system_msg == "Верни json по схеме."
+
+
 def test_claude_sdk_client_returns_actual_usage() -> None:
     from pov_generator.infrastructure import claude_sdk_client as mod
 
