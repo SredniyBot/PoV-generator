@@ -116,6 +116,40 @@ def test_docx_cyrillic_extraction(tmp_path: Path) -> None:
     assert "кириллицей" in text
 
 
+def test_docx_table_extraction(tmp_path: Path) -> None:
+    """Регрессия: таблицы .docx раньше терялись (читались только параграфы).
+
+    Документ с параграфом + таблицей: в извлечённом тексте должны быть и
+    параграф, и содержимое всех ячеек таблицы (в т.ч. кириллица)."""
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph("Вводный параграф документа.")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Параметр"
+    table.cell(0, 1).text = "Значение"
+    table.cell(1, 0).text = "Срок поставки"
+    table.cell(1, 1).text = "30 рабочих дней"
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    workspace, project_id, runtime, _ = _bootstrap(tmp_path)
+    service = AttachmentService(runtime)
+    record = service.upload(
+        workspace,
+        project_id,
+        filename="contract.docx",
+        content=buffer.getvalue(),
+        extract_in_background=False,
+    )
+    stored = runtime.load_attachment(workspace, record.attachment_id)
+    assert stored.extraction_status == "succeeded"
+    text = (workspace / stored.extracted_text_ref).read_text(encoding="utf-8")
+    assert "Вводный параграф документа." in text
+    for cell_value in ("Параметр", "Значение", "Срок поставки", "30 рабочих дней"):
+        assert cell_value in text, f"ячейка таблицы потеряна: {cell_value!r}"
+
+
 def test_pdf_extraction(tmp_path: Path) -> None:
     workspace, project_id, runtime, _ = _bootstrap(tmp_path)
     service = AttachmentService(runtime)

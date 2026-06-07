@@ -241,10 +241,76 @@ class AttachmentService:
 
     @staticmethod
     def _extract_docx(content: bytes) -> str:
+        """Извлечь текст из .docx с сохранением таблиц и порядка блоков.
+
+        Прежняя версия читала только ``document.paragraphs`` и теряла:
+        таблицы (их ячейки — отдельная модель, не параграфы), колонтитулы,
+        текст внутри гиперссылок и надписей (textbox). Здесь обходим тело
+        документа В ПОРЯДКЕ следования (``iter_inner_content`` → параграфы и
+        таблицы вперемешку), таблицы разворачиваем построчно (включая
+        вложенные), плюс добираем колонтитулы. Каждый блок защищён
+        try/except: один битый элемент не должен терять весь документ.
+        """
         from docx import Document
+        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
 
         document = Document(BytesIO(content))
-        return "\n".join(paragraph.text for paragraph in document.paragraphs).strip()
+
+        def para_text(paragraph: Paragraph) -> str:
+            # Собираем все <w:t> (в т.ч. внутри гиперссылок и textbox, которые
+            # paragraph.text пропускает). .iter рекурсивен по всем потомкам.
+            parts = [node.text for node in paragraph._element.iter(qn("w:t")) if node.text]
+            return "".join(parts).strip()
+
+        def render_table(table: Table) -> list[str]:
+            rows_out: list[str] = []
+            for row in table.rows:
+                cells_out: list[str] = []
+                for cell in row.cells:
+                    fragments: list[str] = []
+                    for block in cell.iter_inner_content():
+                        if isinstance(block, Paragraph):
+                            text = para_text(block)
+                            if text:
+                                fragments.append(text)
+                        elif isinstance(block, Table):
+                            fragments.extend(render_table(block))  # вложенная таблица
+                    cells_out.append(" ".join(fragments).replace("\n", " ").strip())
+                if any(cells_out):  # пустые строки таблицы пропускаем
+                    rows_out.append("| " + " | ".join(cells_out) + " |")
+            return rows_out
+
+        lines: list[str] = []
+        for block in document.iter_inner_content():
+            try:
+                if isinstance(block, Paragraph):
+                    text = para_text(block)
+                    if text:
+                        lines.append(text)
+                elif isinstance(block, Table):
+                    lines.extend(render_table(block))
+            except Exception:  # noqa: BLE001 — битый блок не теряет весь файл
+                continue
+
+        # Колонтитулы (часто несут реквизиты/версии/подписи). Дедуп: один и тот
+        # же колонтитул повторяется на каждой секции.
+        seen: set[str] = set()
+        for section in document.sections:
+            for header_footer in (section.header, section.footer):
+                try:
+                    extra: list[str] = [para_text(p) for p in header_footer.paragraphs]
+                    for table in header_footer.tables:
+                        extra.extend(render_table(table))
+                except Exception:  # noqa: BLE001
+                    continue
+                for item in extra:
+                    if item and item not in seen:
+                        seen.add(item)
+                        lines.append(item)
+
+        return "\n".join(lines).strip()
 
     def _build_position(self, position_id: str, record: AttachmentRecord, text: str) -> Position:
         statement_text = text

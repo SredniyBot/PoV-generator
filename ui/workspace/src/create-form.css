@@ -114,6 +114,9 @@
 
 .create-form__advanced-toggle {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   background: transparent;
   border: 0;
   padding: var(--space-2) 0;
@@ -122,6 +125,15 @@
   font-size: var(--font-size-body);
   cursor: pointer;
   transition: color var(--motion-fast) var(--motion-easing);
+}
+
+.create-form__advanced-caret {
+  transform: rotate(-90deg);
+  transition: transform var(--motion-fast) var(--motion-easing);
+}
+
+.create-form__advanced-caret--open {
+  transform: rotate(0deg);
 }
 
 .create-form__advanced-toggle:hover {
@@ -172,6 +184,11 @@
   font-size: var(--font-size-meta);
 }
 
+.create-form__files-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
 .create-form__files-name {
   flex: 1 1 auto;
   overflow: hidden;
@@ -195,4 +212,23 @@
 
 .create-form__files-remove:hover {
   color: var(--danger);
+}
+
+/* Индикатор фонового создания проекта (форма закрывается сразу на submit,
+   а создание — включая LLM-подбор доменных пакетов — продолжается в фоне). */
+.create-progress {
+  position: fixed;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated-strong);
+  color: var(--text-primary);
+  font-size: var(--font-size-meta);
+  box-shadow: var(--shadow-elevated, 0 8px 24px rgba(0, 0, 0, 0.3));
 }

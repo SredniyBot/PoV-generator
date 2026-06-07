@@ -15,11 +15,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  ClipboardPaste,
   Download,
   FileJson2,
+  FileText,
   Layers3,
   Loader2,
+  Paperclip,
   Plus,
   RefreshCcw,
   ShieldAlert,
@@ -28,6 +32,7 @@ import {
   Trash2,
   Undo2,
   Waypoints,
+  X,
   XCircle,
 } from "lucide-react";
 import { marked } from "marked";
@@ -70,6 +75,7 @@ import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
 import { TaskGraphCanvas } from "./TaskGraphCanvas";
 import type {
   ArtifactDetailView,
+  ArtifactSummaryView,
   AttachmentView,
   CommandResultView,
   DomainPackCatalogItemView,
@@ -242,6 +248,10 @@ function AppFrame() {
   const navigate = useNavigate();
   const location = useLocation();
   const [createOpen, setCreateOpen] = useState(false);
+  // Меняется при явном закрытии/успехе → форма перемонтируется и очищается.
+  // При оптимистичном закрытии на submit ключ НЕ меняем: если создание упадёт,
+  // форма откроется снова с сохранённым вводом.
+  const [createFormKey, setCreateFormKey] = useState(0);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const projectsQuery = useQuery({
@@ -286,11 +296,15 @@ function AppFrame() {
       if (failed.length > 0) {
         notify("danger", "Часть файлов не загрузилась", failed.join(", "));
       }
-      setCreateOpen(false);
+      // Форма уже закрыта оптимистично на submit; сбрасываем её для следующего раза.
+      setCreateFormKey((key) => key + 1);
       navigate(`/projects/${created.project_id}/overview`);
     },
     onError: (error: Error) => {
+      // Создание шло в фоне с закрытой формой — возвращаем форму с сохранённым
+      // вводом (ключ не меняли), чтобы пользователь не потерял текст запроса.
       notify("danger", "Не удалось создать проект", error.message);
+      setCreateOpen(true);
     },
   });
 
@@ -364,11 +378,31 @@ function AppFrame() {
       </main>
 
       <CreateProjectModal
+        key={createFormKey}
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onSubmit={(payload) => createProjectMutation.mutate(payload)}
+        onClose={() => {
+          // Явное закрытие (Отмена/фон) сбрасывает черновик.
+          setCreateOpen(false);
+          setCreateFormKey((key) => key + 1);
+        }}
+        onSubmit={(payload) => {
+          // Оптимистично закрываем форму сразу: создание (включая LLM-подбор
+          // доменных пакетов) идёт в фоне, прогресс — в индикаторе ниже.
+          setCreateOpen(false);
+          createProjectMutation.mutate(payload);
+        }}
         busy={createProjectMutation.isPending}
       />
+
+      {createProjectMutation.isPending ? (
+        <div className="create-progress" role="status" aria-live="polite">
+          <Loader2 size={16} className="spin" />
+          <span>
+            Создаётся проект
+            {createProjectMutation.variables?.name ? ` «${createProjectMutation.variables.name}»` : ""}…
+          </span>
+        </div>
+      ) : null}
 
       <ToastViewport toasts={toasts} />
     </div>
@@ -1621,10 +1655,16 @@ function isPdfAttachment(attachment: AttachmentView): boolean {
  */
 function AttachmentsCard({
   projectId,
+  inputArtifact,
+  activeArtifactId,
+  onSelectInputArtifact,
   selectedId,
   onSelect,
 }: {
   projectId: string;
+  inputArtifact: ArtifactSummaryView | null;
+  activeArtifactId: string | null;
+  onSelectInputArtifact: (artifactId: string) => void;
   selectedId: string | null;
   onSelect: (attachment: AttachmentView) => void;
 }) {
@@ -1634,16 +1674,35 @@ function AttachmentsCard({
   });
 
   const attachments = attachmentsQuery.data ?? [];
-  if (attachments.length === 0) {
+  // Блок скрыт только если нет НИ введённого запроса, НИ приложенных файлов.
+  if (attachments.length === 0 && !inputArtifact) {
     return null;
   }
 
   return (
     <SectionCard
-      title="Входные файлы"
-      subtitle="Приложенные материалы; нажмите, чтобы посмотреть содержимое"
+      title="Входные материалы"
+      subtitle="Текст запроса и приложенные файлы; нажмите, чтобы посмотреть"
     >
       <div className="artifact-list">
+        {inputArtifact ? (
+          <button
+            type="button"
+            className={cx(
+              "artifact-list__item",
+              activeArtifactId === inputArtifact.artifact_id && "artifact-list__item--active",
+            )}
+            onClick={() => onSelectInputArtifact(inputArtifact.artifact_id)}
+          >
+            <div className="artifact-list__title">
+              <strong>Текст запроса</strong>
+              <p>Введён вручную при создании проекта</p>
+            </div>
+            <div className="artifact-list__meta">
+              <FileText size={14} />
+            </div>
+          </button>
+        ) : null}
         {attachments.map((attachment) => (
           <button
             key={attachment.attachment_id}
@@ -1796,12 +1855,17 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     return <LoadingPanel title="Загрузка артефактов…" />;
   }
 
+  // Входной запрос (роль input.request) — это введённый при создании текст.
+  // Показываем его в блоке «Входные материалы» рядом с приложенными файлами,
+  // а не в общем списке сгенерированных артефактов.
+  const allArtifacts = artifactsQuery.data ?? [];
+  const inputArtifact = allArtifacts.find((a) => a.artifact_role === "input.request") ?? null;
   // Артефакты от backend идут в порядке создания (старые сверху). В UI
   // менеджеру интереснее ВЕРХНИЙ артефакт = последний/финальный (например,
   // готовое ТЗ или review_report). Поэтому переворачиваем порядок.
-  const artifacts = [...(artifactsQuery.data ?? [])].sort(
-    (a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""),
-  );
+  const artifacts = allArtifacts
+    .filter((a) => a.artifact_role !== "input.request")
+    .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
 
   return (
     <div className="artifacts-page">
@@ -1859,6 +1923,12 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
       </SectionCard>
       <AttachmentsCard
         projectId={projectId}
+        inputArtifact={inputArtifact}
+        activeArtifactId={!selectedAttachment ? artifactId ?? null : null}
+        onSelectInputArtifact={(id) => {
+          setSelectedAttachment(null);
+          navigate(`/projects/${projectId}/artifacts/${id}`);
+        }}
         selectedId={selectedAttachment?.attachment_id ?? null}
         onSelect={(attachment) => {
           setSelectedAttachment(attachment);
@@ -3279,18 +3349,9 @@ function CreateProjectModal({
     }
   }, [objectiveRef, objectivesQuery.data]);
 
-  useEffect(() => {
-    if (!open) {
-      setName("");
-      setRequestText("");
-      setObjectiveRef("");
-      setSelectedPacks([]);
-      setManualPackOverride(false);
-      setAdvancedOpen(false);
-      setDragOver(false);
-      setAttachedFiles([]);
-    }
-  }, [open]);
+  // Сброс полей не привязан к закрытию: при оптимистичном закрытии на submit
+  // ввод должен пережить возможную ошибку создания. Очистка — через remount
+  // по ключу (см. AppFrame: createFormKey меняется при явном закрытии/успехе).
 
   const togglePack = (packRef: string) => {
     setManualPackOverride(true);
@@ -3402,7 +3463,8 @@ function CreateProjectModal({
                 }}
                 hidden
               />
-              <span>📎 Прикрепить файлы</span>
+              <Paperclip size={14} />
+              <span>Прикрепить файлы</span>
             </label>
             <button
               type="button"
@@ -3410,7 +3472,8 @@ function CreateProjectModal({
               onClick={handleAppendPaste}
               title="Вставить из буфера обмена (добавит в конец)"
             >
-              📋 Вставить
+              <ClipboardPaste size={14} />
+              <span>Вставить</span>
             </button>
             <span className="create-form__counter">
               {requestCharCount > 0 ? `${requestCharCount} символов` : "пока пусто"}
@@ -3427,7 +3490,8 @@ function CreateProjectModal({
             <ul className="create-form__files-list">
               {attachedFiles.map((file, index) => (
                 <li key={`${file.name}:${file.size}:${index}`} className="create-form__files-item">
-                  <span className="create-form__files-name">📄 {file.name}</span>
+                  <FileText size={14} className="create-form__files-icon" />
+                  <span className="create-form__files-name">{file.name}</span>
                   <span className="create-form__files-size">{formatFileSize(file.size)}</span>
                   <button
                     type="button"
@@ -3435,7 +3499,7 @@ function CreateProjectModal({
                     onClick={() => removeFile(index)}
                     aria-label={`Убрать ${file.name}`}
                   >
-                    ✕
+                    <X size={14} />
                   </button>
                 </li>
               ))}
@@ -3449,7 +3513,14 @@ function CreateProjectModal({
           onClick={() => setAdvancedOpen((v) => !v)}
           aria-expanded={advancedOpen}
         >
-          {advancedOpen ? "▾ Скрыть дополнительные настройки" : "▸ Дополнительные настройки"}
+          <ChevronDown
+            size={14}
+            className={cx(
+              "create-form__advanced-caret",
+              advancedOpen && "create-form__advanced-caret--open",
+            )}
+          />
+          <span>Дополнительные настройки</span>
         </button>
 
         {advancedOpen && (
