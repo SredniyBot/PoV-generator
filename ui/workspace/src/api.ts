@@ -279,6 +279,15 @@ export const api = {
         body: JSON.stringify({ verified }),
       },
     ),
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер sign-off).
+  signOffArtifact: (projectId: string, artifactId: string, signedOff: boolean = true) =>
+    request<ArtifactDetailView>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/sign-off`,
+      {
+        method: "POST",
+        body: JSON.stringify({ signed_off: signedOff }),
+      },
+    ),
   getDecisionsForArtifact: (projectId: string, artifactId: string) =>
     request<import("./types").DecisionItemView[]>(
       `/api/projects/${projectId}/artifacts/${artifactId}/decisions`,

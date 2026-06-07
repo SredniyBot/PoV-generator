@@ -624,9 +624,10 @@ class PlanningService:
     def _objective_completed(self, workspace: Path, snapshot: RegistrySnapshot) -> bool:
         manifest = self._runtime.load_manifest(workspace)
         objective = snapshot.resolve_objective(manifest.objective_ref)
-        artifacts = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
+        all_artifacts = list(self._runtime.list_artifacts(workspace))
+        roles_present = {artifact.artifact_role for artifact in all_artifacts}
         artifacts_ok = all(
-            artifact_ref.identifier.rsplit(".", 1)[-1] in artifacts
+            artifact_ref.identifier.rsplit(".", 1)[-1] in roles_present
             for artifact_ref in objective.done_artifact_refs
         )
         if not artifacts_ok:
@@ -634,24 +635,17 @@ class PlanningService:
         for gate_ref in objective.done_gate_refs:
             gate = snapshot.resolve_quality_gate(gate_ref)
             if gate.check_type == "human_approval":
-                # v3.1: human-approval gate sign-off хранится как Decision
-                # со source="reactive_validation". Считаем gate пройденным,
-                # если есть финализированное (не proposed) решение с
-                # выбранной опцией "approved" или "approved_with_comments".
-                decisions = self._runtime.list_decisions(
-                    workspace,
-                    project_id=manifest.project_id,
-                    source="reactive_validation",
+                # Ф3: human-approval gate проходится согласованием итогового
+                # артефакта с заказчиком (ArtifactRecord.signed_off), а не
+                # отдельным решением в реестре. Поэтому, пока артефакт нужной
+                # роли не согласован, планировщик возвращает blocked.
+                required_roles = set(getattr(gate, "required_artifact_roles", ()) or ())
+                signed = any(
+                    art.artifact_kind == "primary"
+                    and art.signed_off
+                    and (not required_roles or art.artifact_role in required_roles)
+                    for art in all_artifacts
                 )
-                approved = any(
-                    decision.status in {"accepted_default", "user_overridden", "locked_in"}
-                    and any(
-                        chosen in {"approved", "approved_with_comments"}
-                        for chosen in decision.effective_chosen_ids
-                    )
-                    and gate.title in decision.title
-                    for decision in decisions
-                )
-                if not approved:
+                if not signed:
                     return False
         return True

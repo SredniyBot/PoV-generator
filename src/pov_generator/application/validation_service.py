@@ -237,29 +237,13 @@ class ValidationService:
                     )
                 findings.extend(semantic_findings)
 
-                # Human-approval gate'ы (client.requirements_signoff) блокируют
-                # завершение цели до решения человека. После удаления LLM-ревью
-                # (вариант B grisha_new) эмитим gate-кандидата при создании
-                # ЛЮБОГО primary-артефакта — _maybe_emit_gate_candidates сам
-                # фильтрует gate'ы по required-роли (для ТЗ-цели это
-                # requirements_spec). Регистрируем через CheckpointService —
-                # единый путь decision-ledger (clarification-механизм удалён в
-                # v3.1, поэтому register_candidates больше не используется).
-                gate_inputs = self._maybe_emit_gate_candidates(
-                    workspace=workspace,
-                    snapshot=snapshot,
-                    project_id=manifest.project_id,
-                    task_id=task_id,
-                    artifact_role=output.artifact_role,
-                    artifact_id=artifact.artifact_id,
-                )
-                if gate_inputs:
-                    gate_decisions = self._checkpoint_service.register_decision_inputs(
-                        workspace,
-                        project_id=manifest.project_id,
-                        decision_inputs=tuple(gate_inputs),
-                    )
-                    clarification_candidate_ids.extend(d.decision_id for d in gate_decisions)
+                # Human-approval gate'ы (client.requirements_signoff) теперь
+                # проходятся согласованием итогового артефакта (sign-off через
+                # тумблер в окне артефакта), а не отдельным решением в реестре.
+                # Поэтому решение-кандидат гейта здесь больше НЕ создаётся —
+                # прохождение гейта считается по ArtifactRecord.signed_off
+                # (см. planning_service._objective_completed и
+                # workspace_query_service._human_approval_gate_signed_off).
 
                 if (
                     output.artifact_role == "requirements_spec"
@@ -520,61 +504,6 @@ class ValidationService:
         )
         return list(evaluation.decision_inputs)
 
-    def _maybe_emit_gate_candidates(
-        self,
-        *,
-        workspace: Path,
-        snapshot: RegistrySnapshot,
-        project_id: str,
-        task_id: str,
-        artifact_role: str,
-        artifact_id: str,
-    ) -> list[DecisionInput]:
-        manifest = self._runtime.load_manifest(workspace)
-        objective = snapshot.resolve_objective(manifest.objective_ref)
-        inputs: list[DecisionInput] = []
-        # v3.1: дедуп сигналов sign-off — раньше по (source_type="quality_gate",
-        # source_id=gate_ref); теперь у Decision нет source_id, ищем по
-        # подстроке gate.title внутри Decision.title (формат title задан
-        # ниже как «Согласовать результат gate '<title>'?»). Менее точно,
-        # но достаточно, чтобы не дублировать sign-off-запросы.
-        existing_decisions = self._runtime.list_decisions(
-            workspace,
-            project_id=manifest.project_id,
-            source="reactive_validation",
-        )
-        for gate_ref in objective.done_gate_refs:
-            gate = snapshot.resolve_quality_gate(gate_ref)
-            if gate.check_type != "human_approval":
-                continue
-            required_roles = set(gate.required_artifact_roles)
-            if required_roles and artifact_role not in required_roles:
-                continue
-            already = any(
-                gate.title in decision.title
-                for decision in existing_decisions
-            )
-            if already:
-                continue
-            decision_modes = gate.decision_modes or ("approved", "approved_with_comments", "rejected")
-            options_payload = tuple(
-                (mode, mode, "", None) for mode in decision_modes
-            )
-            inputs.append(
-                _build_decision_input(
-                    title=f"Согласовать результат gate '{gate.title}'?",
-                    description=f"Gate {gate.ref.as_string()} требует решения роли '{gate.approver_role or 'approver'}'.",
-                    rationale="Gate настроен на human_approval — пока не получено решение, цель не считается завершённой.",
-                    impact="Без согласования цель проекта не закрывается.",
-                    # Этап 3.1: внешнее согласование (sign-off) — это
-                    # principal-уровень: всплывает в любом engagement-режиме.
-                    visibility="principal",
-                    answer_mode="single",
-                    confidence=0.0,
-                    source_type="quality_gate",
-                    affected_task_ids=(task_id,),
-                    related_artifact_ids=(artifact_id,),
-                    options=options_payload,
-                )
-            )
-        return inputs
+    # (удалено) _maybe_emit_gate_candidates: human_approval-гейт больше не
+    # создаёт решение в реестре — он проходится согласованием итогового
+    # артефакта (ArtifactRecord.signed_off).

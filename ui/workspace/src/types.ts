@@ -212,6 +212,9 @@ export interface ArtifactDetailView {
   is_low_confidence: boolean;
   user_verified: boolean;
   user_verified_at: string | null;
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер sign-off).
+  signed_off: boolean;
+  signed_off_at: string | null;
   // Разбивка токенов по стадиям сборки (метадата для карточки).
   token_usage: Record<string, TokenUsageStage>;
   // Агрегат расхода токенов задачи из llm_usage-БД. null = «n/a».
@@ -438,6 +441,9 @@ export interface StageView {
   /** Ключевой дилеверабл этапа (ТЗ/Архитектура/...). Клик по завершённому
    *  этапу открывает этот артефакт. null — артефакта ещё нет. */
   key_artifact_id?: string | null;
+  /** Ф3: итоговый артефакт этапа согласован с заказчиком. Активный этап с
+   *  готовыми артефактами, но signed_off=false → жёлтый + блок «Следующий этап». */
+  signed_off?: boolean;
 }
 
 export interface ProjectStagesView {

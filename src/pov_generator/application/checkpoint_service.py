@@ -598,6 +598,25 @@ class CheckpointService:
             verified_at=utc_now_iso() if verified else None,
         )
 
+    def set_artifact_signed_off(
+        self,
+        workspace: Path,
+        *,
+        artifact_id: str,
+        signed_off: bool,
+    ) -> None:
+        """Согласовать итоговый артефакт с заказчиком (sign-off) или снять
+        согласование. Аудит-метка: содержимое не меняется. Прохождение
+        human_approval-гейта считается по этому признаку — заменяет прежний
+        механизм решения-согласования в реестре.
+        """
+        self._runtime.mark_artifact_signed_off(
+            workspace,
+            artifact_id,
+            signed_off=bool(signed_off),
+            signed_off_at=utc_now_iso() if signed_off else None,
+        )
+
     # ---- mode (participation level) ------------------------------------------
 
     def set_participation_mode(self, workspace: Path, mode: str) -> "ModeChangeResult":

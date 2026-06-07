@@ -600,6 +600,8 @@ class WorkspaceQueryService:
             is_low_confidence=artifact.is_low_confidence,
             user_verified=artifact.user_verified,
             user_verified_at=artifact.user_verified_at,
+            signed_off=artifact.signed_off,
+            signed_off_at=artifact.signed_off_at,
             token_usage={k: dict(v) for k, v in artifact.metadata.token_usage.items()},
             usage_input_tokens=usage.input_tokens if usage else None,
             usage_output_tokens=usage.output_tokens if usage else None,
@@ -802,15 +804,12 @@ class WorkspaceQueryService:
             for ref in objective.done_artifact_refs
             if ref.identifier.rsplit(".", 1)[-1] in artifact_roles_present
         )
-        # Финализированные sign-off решения для human-approval gate'ов.
-        approval_decisions = [
-            d
-            for d in self._runtime.list_decisions(
-                context.workspace, project_id=context.manifest.project_id
-            )
-            if d.source == "reactive_validation" or d.source == "emergent"
-            and d.status in {"accepted_default", "user_overridden", "locked_in"}
-        ]
+        # Ф3: human_approval-гейт пройден, если итоговый артефакт цели
+        # согласован с заказчиком (signed_off) — не по решению в реестре.
+        key_artifact_id = self._objective_key_artifact_id(context, objective)
+        key_signed_off = bool(key_artifact_id) and any(
+            a.artifact_id == key_artifact_id and a.signed_off for a in artifacts
+        )
         gates_required = len(objective.done_gate_refs)
         gates_passed = 0
         artifacts_by_role: dict[str, list] = {}
@@ -824,16 +823,7 @@ class WorkspaceQueryService:
                 continue
 
             if gate.check_type == "human_approval":
-                # sign-off ищется в Decisions по совпадению title gate'а и
-                # approved-выбору (фаззи, но достаточно для счётчика «N/N»).
-                if any(
-                    gate.title in d.title
-                    and any(
-                        choice in {"approved", "approved_with_comments"}
-                        for choice in d.effective_chosen_ids
-                    )
-                    for d in approval_decisions
-                ):
+                if key_signed_off:
                     gates_passed += 1
                 continue
 
@@ -922,6 +912,7 @@ class WorkspaceQueryService:
                 continue  # деградируем: пропускаем нерезолвящийся (дрейф реестра)
             progress = self._objective_progress(context, spec)
             key_artifact_id = self._objective_key_artifact_id(context, spec)
+            stage_signed_off = self._human_approval_gate_signed_off(context, spec)
             failed_count = 0
             blocked_count = 0
             awaiting_signoff = 0
@@ -977,6 +968,7 @@ class WorkspaceQueryService:
                     failing_tasks=tuple(failing),
                     pending_decisions=tuple(pending_decisions),
                     key_artifact_id=key_artifact_id,
+                    signed_off=stage_signed_off,
                 )
             )
 
@@ -2089,10 +2081,42 @@ class WorkspaceQueryService:
         candidates.sort(key=lambda a: (order[a.artifact_role], a.created_at))
         return candidates[-1].artifact_id
 
+    def _human_approval_gate_signed_off(self, context: ProjectContext, objective) -> bool:
+        """human_approval-гейты цели пройдены, если её итоговый артефакт
+        согласован с заказчиком (ArtifactRecord.signed_off). Заменяет прежнюю
+        проверку по решению-согласованию в реестре (Ф3). Если у цели нет
+        human_approval-гейтов — считается пройденным.
+        """
+        has_human_gate = False
+        for gate_ref in getattr(objective, "done_gate_refs", ()) or ():
+            try:
+                gate = context.snapshot.resolve_quality_gate(gate_ref)
+            except Exception:
+                continue
+            if gate.check_type == "human_approval":
+                has_human_gate = True
+                break
+        if not has_human_gate:
+            return True
+        key_id = self._objective_key_artifact_id(context, objective)
+        if key_id is None:
+            return False
+        try:
+            artifact = self._runtime.load_artifact(context.workspace, key_id)
+        except Exception:
+            return False
+        return bool(artifact.signed_off)
+
     def _objective_done(self, context: ProjectContext) -> bool:
         objective = context.snapshot.resolve_objective(context.manifest.objective_ref)
         artifacts = {artifact.artifact_role for artifact in self._runtime.list_artifacts(context.workspace)}
-        return all(ref.identifier.rsplit(".", 1)[-1] in artifacts for ref in objective.done_artifact_refs)
+        artifacts_ready = all(
+            ref.identifier.rsplit(".", 1)[-1] in artifacts for ref in objective.done_artifact_refs
+        )
+        if not artifacts_ready:
+            return False
+        # Ф3: цель завершена только если итоговый артефакт согласован.
+        return self._human_approval_gate_signed_off(context, objective)
 
     def _normalize_json_columns(self, payload: dict[str, object]) -> dict[str, object]:
         result = dict(payload)

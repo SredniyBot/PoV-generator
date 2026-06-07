@@ -2278,6 +2278,25 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
       void queryClient.invalidateQueries({ queryKey: [projectId, "artifact-detail", detail.artifact_id] });
     },
   });
+  // Ф3: согласование итогового артефакта с заказчиком (тумблер). Инвалидирует
+  // также проекцию stages — степпер красит этап и разблокирует «Следующий этап».
+  const signOffMutation = useMutation({
+    mutationFn: (next: boolean) => api.signOffArtifact(projectId, detail.artifact_id, next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "artifacts") });
+      void queryClient.invalidateQueries({ queryKey: [projectId, "artifact-detail", detail.artifact_id] });
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "stages") });
+    },
+  });
+  // Согласование показываем только на ИТОГОВОМ артефакте этапа (key_artifact_id
+  // из проекции stages) — на нём держится переход к следующему гейту.
+  const stagesQuery = useQuery({
+    queryKey: projectionKey(projectId, "stages"),
+    queryFn: () => api.getStages(projectId),
+  });
+  const isKeyArtifact = (stagesQuery.data?.stages ?? []).some(
+    (s) => s.key_artifact_id === detail.artifact_id,
+  );
 
   return (
     <div className="artifact-detail">
@@ -2435,6 +2454,35 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           </>
         ) : null}
       </div>
+      {isKeyArtifact ? (
+        <div className={cx("artifact-signoff", detail.signed_off && "artifact-signoff--done")}>
+          <div className="artifact-signoff__text">
+            {detail.signed_off ? (
+              <CheckCircle2 size={18} className="artifact-signoff__icon" aria-hidden />
+            ) : (
+              <AlertTriangle size={18} className="artifact-signoff__icon" aria-hidden />
+            )}
+            <div>
+              <strong>
+                {detail.signed_off ? "Согласовано с заказчиком" : "Согласование с заказчиком"}
+              </strong>
+              <p>
+                {detail.signed_off
+                  ? "Этап завершён. Можно переходить к следующему."
+                  : "Это итоговый артефакт этапа. Согласуйте его, чтобы завершить этап и открыть переход к следующему."}
+              </p>
+            </div>
+          </div>
+          <Button
+            tone={detail.signed_off ? "ghost" : "primary"}
+            icon={detail.signed_off ? undefined : <CheckCircle2 size={16} />}
+            busy={signOffMutation.isPending}
+            onClick={() => signOffMutation.mutate(!detail.signed_off)}
+          >
+            {detail.signed_off ? "Снять согласование" : "Согласовать"}
+          </Button>
+        </div>
+      ) : null}
       <details className="artifact-meta-extra">
         <summary>Подробные параметры артефакта</summary>
         <div className="artifact-meta-extra__grid">

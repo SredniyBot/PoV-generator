@@ -953,6 +953,32 @@ def create_app(
         log.info("артефакт подтверждён пользователем" if verified else "снята метка подтверждения артефакта")
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
 
+    @app.post("/api/projects/{project_id}/artifacts/{artifact_id}/sign-off")
+    def project_artifact_sign_off(
+        project_id: str, artifact_id: str, body: dict[str, Any] | None = None
+    ) -> Any:
+        """Согласовать итоговый артефакт с заказчиком (sign-off) или снять
+        согласование. Заменяет прежнее решение-согласование в реестре:
+        прохождение human_approval-гейта считается по этой метке, и пока
+        итоговый артефакт не согласован — переход на следующий этап закрыт.
+
+        Body (optional): ``{"signed_off": true}`` (default) | ``{"signed_off": false}``.
+        Возвращает обновлённый ArtifactDetailView.
+        """
+        from ..common.errors import NotFoundError
+
+        signed_off = True if body is None else bool(body.get("signed_off", True))
+        try:
+            query_service.artifact_detail(project_id, artifact_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
+        checkpoint_service.set_artifact_signed_off(
+            workspace, artifact_id=artifact_id, signed_off=signed_off
+        )
+        log.info("артефакт согласован с заказчиком" if signed_off else "снято согласование артефакта")
+        return to_primitive(query_service.artifact_detail(project_id, artifact_id))
+
     @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/download.pdf")
     def download_artifact_pdf(project_id: str, artifact_id: str) -> Response:
         """Скачивание артефакта в формате PDF.

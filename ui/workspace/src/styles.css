@@ -4264,6 +4264,47 @@ code {
   font-size: 0.78rem;
 }
 
+/* Ф3: блок согласования итогового артефакта с заказчиком. До согласования —
+   warning-акцент (зовёт к действию), после — success. */
+.artifact-signoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-soft);
+}
+.artifact-signoff--done {
+  border-color: var(--success-border, rgba(140, 196, 153, 0.35));
+  background: var(--success-soft, rgba(140, 196, 153, 0.14));
+}
+.artifact-signoff__text {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.artifact-signoff__icon {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.artifact-signoff--done .artifact-signoff__icon {
+  color: var(--success, #8cc499);
+}
+.artifact-signoff__text strong {
+  color: var(--text-primary);
+}
+.artifact-signoff__text p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  line-height: 1.45;
+}
+
 /* Бейдж в списке артефактов слева. */
 .artifact-lowconf-badge {
   display: inline-flex;
@@ -6047,6 +6088,15 @@ code {
 .stage-seg--active .stage-seg__dot--filled,
 .stage-seg--current .stage-seg__dot--filled {
   color: var(--accent, #78b8c9);
+}
+
+/* Ф3: этап ждёт согласования итогового артефакта — жёлтый значок и подпись,
+   приглашение нажать (откроется артефакт с тумблером «Согласовать»). */
+.stage-seg__dot--awaiting {
+  color: var(--warning, #d6ad59);
+}
+.stage-seg--awaiting-signoff .stage-seg__title {
+  color: var(--warning, #d6ad59);
 }
 
 .stage-seg__title {

@@ -193,6 +193,12 @@ class ArtifactRecord:
     # индикатор is_low_confidence.
     user_verified: bool = False
     user_verified_at: str | None = None
+    # Согласование итогового артефакта с заказчиком (sign-off). Отдельный от
+    # user_verified признак: тот про «просмотрел низкоуверенный артефакт», а
+    # этот — про прохождение human_approval-гейта (не зависит от уверенности).
+    # Аудит-метка, мутируется на месте, содержимое артефакта не меняет.
+    signed_off: bool = False
+    signed_off_at: str | None = None
 
     @property
     def is_low_confidence(self) -> bool:

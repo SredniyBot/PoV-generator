@@ -359,6 +359,10 @@ class ArtifactDetailView:
     is_low_confidence: bool = False
     user_verified: bool = False
     user_verified_at: str | None = None
+    # Ф3: согласование итогового артефакта с заказчиком (sign-off). Тумблер в
+    # окне артефакта; прохождение human_approval-гейта считается по нему.
+    signed_off: bool = False
+    signed_off_at: str | None = None
     # Разбивка токенов по стадиям сборки этого артефакта (метадата для карточки).
     # Ключи: primary_generation, methodology_stage:<id>, decision_identification.
     token_usage: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -547,6 +551,10 @@ class StageView:
     # Ключевой дилеверабл этапа (ТЗ/Архитектура/...) — последний primary-артефакт
     # из done-артефактов цели. UI открывает его по клику на завершённый этап.
     key_artifact_id: str | None = None
+    # Ф3: итоговый артефакт этапа согласован с заказчиком (sign-off). Для
+    # активного этапа с готовыми артефактами, но без согласования — UI красит
+    # этап жёлтым и блокирует «Следующий этап».
+    signed_off: bool = False
 
 
 @dataclass(frozen=True)
