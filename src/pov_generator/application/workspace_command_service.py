@@ -13,6 +13,7 @@ logger = get_logger("project")
 from .checkpoint_service import CheckpointService
 from .domain_pack_selection_service import DomainPackSelectionService
 from .planning_service import PlanningService
+from .project_lock import ensure_project_unlocked
 from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
@@ -43,6 +44,7 @@ class WorkspaceCommandService:
 
     def run_next(self, project_id: str, *, provider: str | None = None, model: str | None = None) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
+        ensure_project_unlocked(self._project_service.runtime, workspace_ref.workspace)
         snapshot = self._validated_snapshot()
         result = self._workflow_service.run_next(workspace_ref.workspace, snapshot, provider=provider, model=model)
         status = "accepted" if result.planning_outcome == "selected" else "blocked"
@@ -68,6 +70,7 @@ class WorkspaceCommandService:
         max_steps: int = 1000,
     ) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
+        ensure_project_unlocked(self._project_service.runtime, workspace_ref.workspace)
         snapshot = self._validated_snapshot()
         result = self._workflow_service.run_until_blocked(
             workspace_ref.workspace,
@@ -104,6 +107,7 @@ class WorkspaceCommandService:
         model: str | None = None,
     ) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
+        ensure_project_unlocked(self._project_service.runtime, workspace_ref.workspace)
         snapshot = self._validated_snapshot()
         result = self._workflow_service.retry_task(
             workspace_ref.workspace,
@@ -250,6 +254,7 @@ class WorkspaceCommandService:
         ``requires.artifacts.optional``.
         """
         workspace_ref = self._catalog.resolve_workspace(project_id)
+        ensure_project_unlocked(self._project_service.runtime, workspace_ref.workspace)
         snapshot = self._validated_snapshot()
         new_ref_obj = ObjectRef.parse(new_objective_ref)
         new_spec = snapshot.resolve_objective(new_ref_obj)

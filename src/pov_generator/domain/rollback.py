@@ -28,6 +28,20 @@ class StepCheckpoint:
 
 
 @dataclass(frozen=True)
+class ProjectLock:
+    """Эксклюзивный замок проекта на время критической операции (ролбек).
+
+    Пока держится — мутации (запуск шагов, активация objective, ответы на
+    решения, повторный ролбек) отказывают. Один замок на проект.
+    """
+
+    project_id: str
+    kind: str  # "rollback"
+    holder: str  # id операции-держателя
+    acquired_at: str
+
+
+@dataclass(frozen=True)
 class RollbackRecord:
     """Аудит выполненного отката."""
 

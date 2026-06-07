@@ -61,6 +61,7 @@ from .parallel_scheduling import (
     task_write_set,
 )
 from .planning_service import PlanningService
+from .project_lock import ensure_project_unlocked
 from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
@@ -147,6 +148,8 @@ class WorkflowRunnerService:
         обязаны получить свой шанс — иначе пользователю кажется, что
         система ходит по кругу.
         """
+        # Шлюз: во время отката новые прогоны не стартуют.
+        ensure_project_unlocked(self._runtime, workspace)
         snapshot = self._snapshot_for(workspace)
 
         run_id = str(uuid.uuid4())

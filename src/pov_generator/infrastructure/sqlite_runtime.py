@@ -49,7 +49,7 @@ from ..domain.project_knowledge import (
     apply_knowledge_patch,
 )
 from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, StateLayer
-from ..domain.rollback import RollbackRecord, StepCheckpoint
+from ..domain.rollback import ProjectLock, RollbackRecord, StepCheckpoint
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
@@ -1027,6 +1027,51 @@ class SqliteRuntime:
                 (rollback_id, *task_ids),
             )
             connection.commit()
+
+    @_serialized_write
+    def acquire_project_lock(self, workspace: Path, kind: str, holder: str) -> bool:
+        """Атомарно занять замок проекта. True — занят нами; False — уже занят."""
+        manifest = self.load_manifest(workspace)
+        with self._connect(workspace) as connection:
+            cursor = connection.execute(
+                "insert or ignore into project_locks(project_id, kind, holder, acquired_at) "
+                "values (?, ?, ?, ?)",
+                (manifest.project_id, kind, holder, utc_now_iso()),
+            )
+            acquired = cursor.rowcount > 0
+            connection.commit()
+        return acquired
+
+    @_serialized_write
+    def release_project_lock(self, workspace: Path, holder: str | None = None) -> None:
+        """Снять замок проекта. ``holder`` — снять только свой (защита от чужого)."""
+        manifest = self.load_manifest(workspace)
+        with self._connect(workspace) as connection:
+            if holder is None:
+                connection.execute(
+                    "delete from project_locks where project_id = ?",
+                    (manifest.project_id,),
+                )
+            else:
+                connection.execute(
+                    "delete from project_locks where project_id = ? and holder = ?",
+                    (manifest.project_id, holder),
+                )
+            connection.commit()
+
+    def active_project_lock(self, workspace: Path) -> ProjectLock | None:
+        with self._connect(workspace) as connection:
+            row = connection.execute(
+                "select * from project_locks limit 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return ProjectLock(
+            project_id=row["project_id"],
+            kind=row["kind"],
+            holder=row["holder"],
+            acquired_at=row["acquired_at"],
+        )
 
     @_serialized_write
     def record_rollback(self, workspace: Path, record: RollbackRecord) -> RollbackRecord:
@@ -2699,6 +2744,15 @@ class SqliteRuntime:
               actor text not null,
               reason text not null,
               created_at text not null
+            );
+
+            -- Эксклюзивный замок проекта на время критической операции (ролбек):
+            -- пока держится, мутации отказывают. Один на проект (PK).
+            create table if not exists project_locks (
+              project_id text primary key,
+              kind text not null,
+              holder text not null,
+              acquired_at text not null
             );
 
             """
