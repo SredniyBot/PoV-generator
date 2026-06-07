@@ -159,3 +159,32 @@ class Position:
             raise ValueError(
                 f"Rejected position {self.identifier!r} must have rejection_reason"
             )
+
+
+def position_from_primitive(payload: dict) -> Position:
+    """Восстановить :class:`Position` из примитива (``to_primitive``).
+
+    Единая точка реконструкции — используется и инфраструктурой (снимки), и
+    кодеком патчей состояния (реплей при ролбеке).
+    """
+    alternatives = tuple(
+        PositionAlternative(**alt) for alt in payload.get("alternatives", ())
+    )
+    return Position(
+        identifier=payload["identifier"],
+        type=payload["type"],
+        statement=payload["statement"],
+        visibility=payload["visibility"],
+        scope=payload["scope"],
+        source=payload["source"],
+        taken_by=payload["taken_by"],
+        taken_at=payload["taken_at"],
+        confidence=float(payload.get("confidence", 1.0)),
+        tags=tuple(payload.get("tags", ())),
+        alternatives=alternatives,
+        related_position_ids=tuple(payload.get("related_position_ids", ())),
+        status=payload.get("status", "active"),
+        supersedes=payload.get("supersedes"),
+        superseded_at=payload.get("superseded_at"),
+        rejection_reason=payload.get("rejection_reason"),
+    )

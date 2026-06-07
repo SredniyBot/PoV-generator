@@ -32,7 +32,7 @@ from ..domain.decisions import (
 from ..domain.execution import ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.llm_usage import LLMUsageAggregate, LLMUsageRecord
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
-from ..domain.positions import Position, PositionAlternative
+from ..domain.positions import Position, position_from_primitive
 from ..domain.process_state import (
     ActiveDomainPackRecord,
     ActiveMethodologyPackRecord,
@@ -208,27 +208,9 @@ def _position_to_dict(position: Position) -> dict[str, object]:
 
 
 def _position_from_dict(payload: dict) -> Position:
-    alternatives = tuple(
-        PositionAlternative(**alt) for alt in payload.get("alternatives", ())
-    )
-    return Position(
-        identifier=payload["identifier"],
-        type=payload["type"],
-        statement=payload["statement"],
-        visibility=payload["visibility"],
-        scope=payload["scope"],
-        source=payload["source"],
-        taken_by=payload["taken_by"],
-        taken_at=payload["taken_at"],
-        confidence=float(payload.get("confidence", 1.0)),
-        tags=tuple(payload.get("tags", ())),
-        alternatives=alternatives,
-        related_position_ids=tuple(payload.get("related_position_ids", ())),
-        status=payload.get("status", "active"),
-        supersedes=payload.get("supersedes"),
-        superseded_at=payload.get("superseded_at"),
-        rejection_reason=payload.get("rejection_reason"),
-    )
+    # Реконструкция централизована в домене (одна точка для снимков и кодека
+    # патчей ролбека).
+    return position_from_primitive(payload)
 
 
 def _knowledge_to_dict(knowledge: ProjectKnowledge) -> dict[str, object]:
