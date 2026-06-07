@@ -13,13 +13,29 @@ from .protocol import (
     RunLimits,
 )
 from .registry import HarnessProviderRegistry
+from .sandbox import (
+    DockerSandboxRuntime,
+    ExecResult,
+    ResourceLimits,
+    SandboxHandle,
+    SandboxRuntime,
+    SandboxSpec,
+    StubSandboxRuntime,
+)
 
 __all__ = [
+    "DockerSandboxRuntime",
+    "ExecResult",
     "ExpectedArtifact",
     "HarnessProvider",
     "HarnessProviderRegistry",
     "HarnessRunResult",
     "HarnessRunSpec",
     "HarvestedArtifact",
+    "ResourceLimits",
     "RunLimits",
+    "SandboxHandle",
+    "SandboxRuntime",
+    "SandboxSpec",
+    "StubSandboxRuntime",
 ]
