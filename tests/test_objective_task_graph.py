@@ -76,6 +76,53 @@ def test_locked_objective_graph_is_readonly_skeleton(tmp_path: Path) -> None:
     assert after == before
 
 
+def test_active_graph_excludes_other_gate_tasks_and_gate_lookup(tmp_path: Path) -> None:
+    """П.2a: граф активного гейта не подмешивает задачи прошлого гейта.
+    П.2b: резолвер /tasks/{id}/gate возвращает гейт задачи (для дип-линка)."""
+    from pov_generator.application.checkpoint_service import CheckpointService
+    from pov_generator.domain.registry import ObjectRef
+
+    arch_ref = "architecture.system_design@1.0.0"
+    runtime_root = tmp_path / "runtime"
+    workspace = runtime_root / "case"
+    project_id = init_project(workspace, "Нужно ТЗ, затем архитектура.")
+
+    registry_service, runtime, project_service, planning_service, workflow_service = build_services()
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+    # Завершаем ТЗ (+согласование) и переходим на архитектуру.
+    r = workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=50)
+    assert r.stopped_reason == "planner_blocked"
+    spec = runtime.latest_artifact_by_role(workspace, "requirements_spec")
+    CheckpointService(runtime).set_artifact_signed_off(
+        workspace, artifact_id=spec.artifact_id, signed_off=True
+    )
+    workflow_service.run_until_blocked(workspace, snapshot, provider="stub", max_steps=5)
+    project_service.activate_next_objective(workspace, ObjectRef.parse(arch_ref))
+    planning_service.expand_graph(workspace, snapshot)
+
+    tz_tasks = [
+        t
+        for t in runtime.list_tasks(workspace)
+        if t.objective_ref == OBJECTIVE_REF and t.template_type == "leaf"
+    ]
+    assert tz_tasks
+    tz_id = tz_tasks[0].task_id
+
+    client = TestClient(create_app(repo_root=REPO_ROOT, runtime_root=runtime_root))
+
+    # П.2a: активный граф (архитектура) НЕ содержит задач гейта ТЗ.
+    active = client.get(f"/api/projects/{project_id}/task-graph").json()
+    assert active["objective_ref"] == arch_ref
+    active_ids = {n["task_id"] for n in _flatten(active["nodes"])}
+    assert tz_id not in active_ids
+
+    # П.2b: гейт задачи ТЗ определяется корректно.
+    gate = client.get(f"/api/projects/{project_id}/tasks/{tz_id}/gate")
+    assert gate.status_code == 200
+    assert gate.json()["objective_ref"] == OBJECTIVE_REF
+
+
 def test_unknown_objective_returns_404(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     workspace = runtime_root / "case"

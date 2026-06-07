@@ -935,6 +935,22 @@ function RunActivitySection({
     return out;
   })();
 
+  // Фактический статус задачи по графу. Шаг в ленте мог записаться «failed»
+  // из-за разрыва сети (WinError 10054 / IncompleteRead), но задача затем
+  // дошла до completed — тогда строку ленты сверяем с графом и не залипаем в
+  // «Ошибке» (и не предлагаем повтор завершённой задачи). П.1.
+  const statusByTaskId = (() => {
+    const map = new Map<string, string>();
+    const walk = (nodes: TaskNodeView[]) => {
+      for (const n of nodes) {
+        map.set(n.task_id, n.status);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    if (taskGraphQuery.data) walk(taskGraphQuery.data.nodes);
+    return map;
+  })();
+
   // Завершённые шаги, схлопнутые ПО ЗАДАЧЕ: одна строка на задачу (последняя
   // попытка по времени завершения). Это убирает дубли и устаревшие статусы —
   // например, когда задача сначала заблокировалась на решениях, а после ответа
@@ -1003,13 +1019,22 @@ function RunActivitySection({
                     (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
                   ))
                 : null;
-              const viz = stepStatusVisual(step.validation_status, step.planning_outcome);
+              // Если задача в графе уже завершена — сбой шага (обычно разрыв
+              // сети) считаем устаревшим: показываем как успех, без повтора и
+              // без застрявшего сообщения об ошибке.
+              const taskDone = step.task_id
+                ? statusByTaskId.get(step.task_id) === "completed"
+                : false;
+              const rawFailed = step.validation_status === "failed";
+              const isFailed = rawFailed && !taskDone;
+              const effectiveValidation =
+                rawFailed && taskDone ? "passed" : step.validation_status;
+              const viz = stepStatusVisual(effectiveValidation, step.planning_outcome);
               const name =
                 (step.task_id ? titleById.get(step.task_id) : null) ||
                 step.task_key ||
                 step.selected_step_id ||
                 "(неизвестная задача)";
-              const isFailed = step.validation_status === "failed";
               return (
                 <li key={`${runId}-${step.sequence}`} className="workflow-run__row">
                   <span className={`workflow-run__row-dot workflow-run__row-dot--${viz.tone}`} />
@@ -1047,7 +1072,7 @@ function RunActivitySection({
                       {retryingIds.has(step.task_id) ? "Повторяю…" : "Повторить"}
                     </button>
                   ) : null}
-                  {step.error_message ? (
+                  {isFailed && step.error_message ? (
                     <span className="workflow-run__row-error" title={step.error_message}>
                       {step.error_message.length > 120
                         ? step.error_message.slice(0, 120) + "…"
@@ -2985,8 +3010,16 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     queryKey: projectionKey(projectId, "stages"),
     queryFn: () => api.getStages(projectId),
   });
+  // Дип-линк ?focus=<taskId>: гейт задачи определяем на бэкенде, чтобы открыть
+  // ИМЕННО её подвкладку, а не граф активного гейта (п.2b).
+  const focusGateQuery = useQuery({
+    queryKey: [projectId, "task-gate", focusTaskId],
+    queryFn: () => api.getTaskGate(projectId, focusTaskId as string),
+    enabled: Boolean(focusTaskId),
+  });
   const activeRef = taskGraphQuery.data?.objective_ref ?? null;
-  const effectiveRef = selectedRef ?? activeRef;
+  // Приоритет: явный выбор подвкладки → гейт задачи из дип-линка → активный гейт.
+  const effectiveRef = selectedRef ?? focusGateQuery.data?.objective_ref ?? activeRef;
   const isActiveSelected = !effectiveRef || effectiveRef === activeRef;
   const objectiveGraphQuery = useQuery({
     queryKey: [projectId, "objective-task-graph", effectiveRef],
@@ -3064,9 +3097,13 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
         ) : null}
         {displayGraph ? (
           <TaskGraphCanvas
+            // key по гейту: при смене подвкладки канва перемонтируется и заново
+            // «вписывает» свой граф (fitView), а не держит камеру на узле прошлой
+            // вкладки (п.3 — корректное примагничивание камеры с вкладками).
+            key={effectiveRef ?? "active"}
             tree={displayGraph.nodes}
             onSelectNode={setSelectedTask}
-            focusTaskId={isActiveSelected ? focusTaskId : undefined}
+            focusTaskId={focusTaskId}
             completedLeafTasks={displayGraph.completed_leaf_tasks}
             totalLeafTasks={displayGraph.total_leaf_tasks}
             onRetry={(taskId) => retryMutation.mutate(taskId)}

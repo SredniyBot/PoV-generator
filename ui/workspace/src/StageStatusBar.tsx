@@ -332,12 +332,7 @@ export function StageStatusBar({
                   </button>
                 );
               })}
-              {awaitingActive ? (
-                <p className="stage-cta-blocked">
-                  Сначала согласуйте итоговый артефакт этапа — нажмите на жёлтый
-                  этап выше, затем «Согласовать».
-                </p>
-              ) : (data.blocked_by_requisites?.length ?? 0) > 0 ? (
+              {(data.blocked_by_requisites?.length ?? 0) > 0 ? (
                 <p className="stage-cta-blocked">
                   Переход к реализации заблокирован: не предоставлены реквизиты —{" "}
                   {(data.blocked_by_requisites ?? []).join("; ")}. Заполните во вкладке «Реквизиты».

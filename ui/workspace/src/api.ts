@@ -65,6 +65,9 @@ export const api = {
     request<ProjectTaskGraphView>(
       `/api/projects/${projectId}/objectives/task-graph?ref=${encodeURIComponent(objectiveRef)}`,
     ),
+  // Гейт задачи — для дип-линка «открыть задачу на графе» (выбрать подвкладку).
+  getTaskGate: (projectId: string, taskId: string) =>
+    request<{ objective_ref: string }>(`/api/projects/${projectId}/tasks/${taskId}/gate`),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),

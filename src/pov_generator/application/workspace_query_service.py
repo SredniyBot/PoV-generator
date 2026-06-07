@@ -324,6 +324,11 @@ class WorkspaceQueryService:
                 context.workspace, context.snapshot, mode="dry-run", record=False
             )
             tasks = self._runtime.list_tasks(context.workspace)
+        # Только задачи активного гейта: после перехода на следующий objective
+        # list_tasks возвращает и задачи прошлых гейтов — их граф живёт в своей
+        # подвкладке, а не подмешивается в активный (Ф1).
+        active_ref = context.manifest.objective_ref
+        tasks = [task for task in tasks if task.objective_ref == active_ref]
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
         nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None, context.snapshot)

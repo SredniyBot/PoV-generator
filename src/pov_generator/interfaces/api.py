@@ -624,6 +624,18 @@ def create_app(
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.get("/api/projects/{project_id}/tasks/{task_id}/gate")
+    def task_gate(project_id: str, task_id: str) -> Any:
+        """Гейт (objective_ref), которому принадлежит задача. Нужен дип-линку
+        «открыть задачу на графе», чтобы выбрать правильную подвкладку гейта,
+        а не открывать задачу в графе активного гейта (Ф1)."""
+        workspace = catalog.resolve_workspace(project_id).workspace
+        try:
+            task = runtime.get_task(workspace, task_id)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Задача не найдена.")
+        return {"objective_ref": task.objective_ref}
+
     @app.get("/api/projects/{project_id}/situation")
     def project_situation(project_id: str) -> Any:
         return to_primitive(query_service.project_situation(project_id))
