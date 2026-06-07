@@ -49,7 +49,7 @@ from ..domain.project_knowledge import (
     apply_knowledge_patch,
 )
 from ..domain.project_state import ProjectManifest, ProjectState, StateEvent, StateLayer
-from ..domain.rollback import StepCheckpoint
+from ..domain.rollback import RollbackRecord, StepCheckpoint
 from ..domain.tasks import TaskEvent, TaskRecord, apply_task_command
 from ..domain.validation import EscalationTicket, ValidationFinding, ValidationRun
 from ..domain.workflow_runs import WorkflowRunRecord, WorkflowRunStatus, WorkflowStepRecord
@@ -695,7 +695,7 @@ class SqliteRuntime:
         """История событий изменения состояния, опционально по слою."""
         query = (
             "select id, layer, version, patch_type, payload_json, actor, reason, "
-            "created_at, task_id from state_events"
+            "created_at, task_id, rolled_back_by from state_events"
         )
         params: tuple = ()
         if layer is not None:
@@ -715,6 +715,7 @@ class SqliteRuntime:
                 created_at=row["created_at"],
                 task_id=row["task_id"],
                 seq=row["id"],
+                rolled_back_by=row["rolled_back_by"],
             )
             for row in rows
         ]
@@ -916,6 +917,143 @@ class SqliteRuntime:
                 (task_id,),
             ).fetchone()
         return self._row_to_step_checkpoint(row) if row is not None else None
+
+    # --- ролбек: восстановление состояния и архивация ----------------------
+
+    def knowledge_from_json(self, state_json: str) -> ProjectKnowledge:
+        """Восстановить ProjectKnowledge из блоба чекпоинта."""
+        return _knowledge_from_dict(json_loads(state_json))
+
+    def process_from_json(self, state_json: str) -> ProcessState:
+        """Восстановить ProcessState из блоба чекпоинта."""
+        return _process_from_dict(json_loads(state_json))
+
+    @_serialized_write
+    def write_state_snapshots(
+        self,
+        workspace: Path,
+        knowledge: ProjectKnowledge,
+        process: ProcessState,
+        *,
+        actor: str,
+        reason: str,
+    ) -> tuple[ProjectKnowledge, ProjectKnowledge]:
+        """Перезаписать снимки knowledge/process (восстановление при ролбеке).
+
+        Версии монотонно растут (current+1) — снимок остаётся авторитетным, а
+        событийный лог не переигрывается «вперёд». Сам факт отката фиксируется в
+        таблице ``rollbacks`` (аудит).
+        """
+        manifest = self.load_manifest(workspace)
+        now = utc_now_iso()
+        with self._connect(workspace) as connection:
+            krow = connection.execute(
+                "select version from knowledge_snapshots where project_id = ?",
+                (manifest.project_id,),
+            ).fetchone()
+            prow = connection.execute(
+                "select version from process_snapshots where project_id = ?",
+                (manifest.project_id,),
+            ).fetchone()
+            new_knowledge = replace(
+                knowledge, version=(krow["version"] if krow else 0) + 1, updated_at=now
+            )
+            new_process = replace(
+                process, version=(prow["version"] if prow else 0) + 1, updated_at=now
+            )
+            connection.execute(
+                "update knowledge_snapshots set state_json = ?, version = ?, updated_at = ? where project_id = ?",
+                (json_dumps(_knowledge_to_dict(new_knowledge)), new_knowledge.version, now, manifest.project_id),
+            )
+            connection.execute(
+                "update process_snapshots set state_json = ?, version = ?, updated_at = ? where project_id = ?",
+                (json_dumps(_process_to_dict(new_process)), new_process.version, now, manifest.project_id),
+            )
+            connection.commit()
+        return new_knowledge, new_process
+
+    @_serialized_write
+    def void_state_events_for_tasks(
+        self, workspace: Path, task_ids: tuple[str, ...], rollback_id: str
+    ) -> None:
+        """Аннулировать патчи откаченных шагов (не переигрываются при следующих
+        реконструкциях)."""
+        if not task_ids:
+            return
+        placeholders = ",".join("?" * len(task_ids))
+        with self._connect(workspace) as connection:
+            connection.execute(
+                f"update state_events set rolled_back_by = ? "
+                f"where task_id in ({placeholders}) and rolled_back_by is null",
+                (rollback_id, *task_ids),
+            )
+            connection.commit()
+
+    @_serialized_write
+    def archive_artifacts_for_tasks(
+        self, workspace: Path, task_ids: tuple[str, ...], rollback_id: str
+    ) -> list[str]:
+        """Архивировать артефакты откаченных шагов (rolled_back_by). Возвращает id."""
+        if not task_ids:
+            return []
+        placeholders = ",".join("?" * len(task_ids))
+        with self._connect(workspace) as connection:
+            rows = connection.execute(
+                f"select artifact_id from artifacts "
+                f"where created_by_task_id in ({placeholders}) and rolled_back_by is null",
+                tuple(task_ids),
+            ).fetchall()
+            archived = [row["artifact_id"] for row in rows]
+            connection.execute(
+                f"update artifacts set rolled_back_by = ? "
+                f"where created_by_task_id in ({placeholders}) and rolled_back_by is null",
+                (rollback_id, *task_ids),
+            )
+            connection.commit()
+        return archived
+
+    @_serialized_write
+    def archive_decisions_for_tasks(
+        self, workspace: Path, task_ids: tuple[str, ...], rollback_id: str
+    ) -> None:
+        """Архивировать решения откаченных шагов (по source_task_id)."""
+        if not task_ids:
+            return
+        placeholders = ",".join("?" * len(task_ids))
+        with self._connect(workspace) as connection:
+            connection.execute(
+                f"update decisions set rolled_back_by = ? "
+                f"where source_task_id in ({placeholders}) and rolled_back_by is null",
+                (rollback_id, *task_ids),
+            )
+            connection.commit()
+
+    @_serialized_write
+    def record_rollback(self, workspace: Path, record: RollbackRecord) -> RollbackRecord:
+        with self._connect(workspace) as connection:
+            connection.execute(
+                """
+                insert into rollbacks(
+                  rollback_id, project_id, target_task_id, target_seq,
+                  reverted_task_ids_json, archived_artifact_ids_json,
+                  actor, reason, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.rollback_id,
+                    record.project_id,
+                    record.target_task_id,
+                    record.target_seq,
+                    json_dumps(list(record.reverted_task_ids)),
+                    json_dumps(list(record.archived_artifact_ids)),
+                    record.actor,
+                    record.reason,
+                    record.created_at,
+                ),
+            )
+            connection.commit()
+        return record
 
     @_serialized_write
     def create_task(self, workspace: Path, task: TaskRecord) -> TaskRecord:
@@ -1453,15 +1591,28 @@ class SqliteRuntime:
             raise NotFoundError(f"Artifact content not found: {artifact.storage_path}")
         return artifact_path.read_text(encoding="utf-8")
 
-    def list_artifacts(self, workspace: Path, artifact_role: str | None = None) -> list[ArtifactRecord]:
-        query = "select * from artifacts"
-        params: tuple[object, ...] = ()
+    def list_artifacts(
+        self,
+        workspace: Path,
+        artifact_role: str | None = None,
+        *,
+        include_rolled_back: bool = False,
+    ) -> list[ArtifactRecord]:
+        # Архивированные откатом артефакты по умолчанию не видны в активных
+        # проекциях/контексте; include_rolled_back=True — для вьюхи архива.
+        clauses: list[str] = []
+        params: list[object] = []
         if artifact_role is not None:
-            query += " where artifact_role = ?"
-            params = (artifact_role,)
+            clauses.append("artifact_role = ?")
+            params.append(artifact_role)
+        if not include_rolled_back:
+            clauses.append("rolled_back_by is null")
+        query = "select * from artifacts"
+        if clauses:
+            query += " where " + " and ".join(clauses)
         query += " order by created_at, artifact_id"
         with self._connect(workspace) as connection:
-            rows = connection.execute(query, params).fetchall()
+            rows = connection.execute(query, tuple(params)).fetchall()
         return [_artifact_from_row(row) for row in rows]
 
     def latest_artifact_by_role(self, workspace: Path, artifact_role: str) -> ArtifactRecord | None:
@@ -1469,7 +1620,7 @@ class SqliteRuntime:
             row = connection.execute(
                 """
                 select * from artifacts
-                where artifact_role = ?
+                where artifact_role = ? and rolled_back_by is null
                 order by created_at desc, artifact_id desc
                 limit 1
                 """,
@@ -2199,7 +2350,8 @@ class SqliteRuntime:
         по ``created_at asc`` (стабильный порядок появления), что позволяет
         UI показывать решения в хронологии работы LLM.
         """
-        where_clauses = ["project_id = ?"]
+        # Архивированные откатом решения не показываем в активных списках.
+        where_clauses = ["project_id = ?", "rolled_back_by is null"]
         params: list[object] = [project_id]
         if level is not None:
             where_clauses.append("level = ?")
@@ -2536,11 +2688,29 @@ class SqliteRuntime:
             create index if not exists step_checkpoints_task_idx
               on step_checkpoints(task_id);
 
+            -- Аудит выполненных откатов.
+            create table if not exists rollbacks (
+              rollback_id text primary key,
+              project_id text not null,
+              target_task_id text not null,
+              target_seq integer not null,
+              reverted_task_ids_json text not null,
+              archived_artifact_ids_json text not null,
+              actor text not null,
+              reason text not null,
+              created_at text not null
+            );
+
             """
         )
         # Ролбек: провенанс патча состояния — id шага, в рамках которого он
         # применён (null для патчей вне шага). Старые БД мигрируются дефолтом.
         self._ensure_column(connection, "state_events", "task_id", "text")
+        # Ролбек: архив-метка. NULL = активно; иначе — id отката, который снял
+        # запись (событие-патч/артефакт). Архивируем, не удаляем. Колонка
+        # decisions.rolled_back_by добавляется ниже — после создания таблицы.
+        self._ensure_column(connection, "state_events", "rolled_back_by", "text")
+        self._ensure_column(connection, "artifacts", "rolled_back_by", "text")
         self._ensure_column(
             connection,
             "validation_runs",
@@ -2697,6 +2867,8 @@ class SqliteRuntime:
         self._ensure_column(
             connection, "decisions", "user_verified_at", "text"
         )
+        # Ролбек: архив-метка решения (id отката). NULL = активно.
+        self._ensure_column(connection, "decisions", "rolled_back_by", "text")
         # v3.10: source "pre_flight" переименован в "identification" (этап
         # выявления решений до сборки). Мигрируем legacy-строки идемпотентно.
         connection.execute(

@@ -23,6 +23,7 @@ TaskCommand = Literal[
     "start", "complete", "fail", "retry", "obsolete", "skip",
     "mark_ready", "mark_blocked", "cancel",
     "expand_fan_out", "reset_fan_out",
+    "rollback_reset",
 ]
 TaskOriginKind = Literal[
     "objective_root", "base_child", "domain_contribution",
@@ -136,5 +137,19 @@ def apply_task_command(task: TaskRecord, command: TaskCommand, *, error_message:
             raise ConflictError(f"Cannot reset_fan_out task from status '{current}'.")
         return TaskRecord(
             **{**task.__dict__, "status": "waiting_for_fan_out_source", "attempt": task.attempt + 1, "error_message": None, "updated_at": now}
+        )
+    if command == "rollback_reset":
+        # Ролбек: задача возвращается в исходный статус своего типа (лист →
+        # candidate, композит → waiting_for_children, веер →
+        # waiting_for_fan_out_source) и снова проходит планирование. Разрешено
+        # из любого статуса (в т.ч. терминального) — это и есть суть отката.
+        return TaskRecord(
+            **{
+                **task.__dict__,
+                "status": initial_task_status(task.template_type),
+                "attempt": task.attempt + 1,
+                "error_message": None,
+                "updated_at": now,
+            }
         )
     raise TypeError(f"Unsupported task command: {command}")
