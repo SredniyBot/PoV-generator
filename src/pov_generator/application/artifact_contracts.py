@@ -1250,6 +1250,26 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "ml_build_spec": _build_spec_schema(),
         "data_build_spec": _build_spec_schema(),
         "integration_build_spec": _build_spec_schema(),
+        # Ф6: спека сборки ОДНОГО компонента (веер по компонентам). Это и есть
+        # самодостаточный вход для harness-задачи реализации компонента.
+        "component_build_spec": _analysis_object(
+            ["component", "purpose"],
+            {
+                "component": {"type": "string"},
+                "purpose": {"type": "string"},
+                "capability_owner": {"type": "string"},
+                "tech": _string_array_schema(),
+                "provided_interfaces": _string_array_schema(),
+                "consumed_interfaces": _string_array_schema(),
+                "data": _string_array_schema(),
+                "build_steps": _string_array_schema(),
+                "test_approach": {"type": "string"},
+                "acceptance": _string_array_schema(),
+                "dependencies": _string_array_schema(),
+                "out_of_scope": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
         "build_plan": _analysis_object(
             ["title", "executive_summary", "summary"],
             {
@@ -3136,6 +3156,9 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines.append("\n\n".join(blocks))
         return "\n".join(lines)
 
+    if artifact_role == "component_build_spec":
+        return _render_component_build_spec(payload)
+
     if artifact_role.endswith("_build_spec"):
         comps = payload.get("components") or []
         lines = [f"# Спека сборки ({artifact_role.removesuffix('_build_spec')})"]
@@ -3707,6 +3730,42 @@ def _render_component_model(payload: dict[str, Any]) -> str:
                 lines.append(f"- внешняя **{entry.get('system', '—')}** → {comps}")
 
     lines.extend(_render_diagrams(payload.get("diagrams")))
+    return "\n".join(lines)
+
+
+def _render_component_build_spec(payload: dict[str, Any]) -> str:
+    lines = [f"# Спека сборки: {payload.get('component', '—')}"]
+    if payload.get("purpose"):
+        lines.append(f"\n{payload['purpose']}")
+    if payload.get("capability_owner"):
+        lines.append(f"**Строит:** {payload['capability_owner']}")
+    for label, key in (
+        ("Технологии", "tech"),
+        ("Предоставляет", "provided_interfaces"),
+        ("Потребляет", "consumed_interfaces"),
+        ("Данные", "data"),
+        ("Зависимости", "dependencies"),
+    ):
+        vals = payload.get(key) or []
+        if vals:
+            lines.append(f"\n**{label}:**")
+            lines.extend(f"- {item}" for item in vals)
+    steps = payload.get("build_steps") or []
+    if steps:
+        lines.append("\n**Шаги сборки:**")
+        for i, step in enumerate(steps, 1):
+            lines.append(f"{i}. {step}")
+    if payload.get("test_approach"):
+        lines.append(f"\n**Тесты:** {payload['test_approach']}")
+    for label, key in (
+        ("Критерии приёмки", "acceptance"),
+        ("Вне рамок", "out_of_scope"),
+        ("Открытые вопросы", "open_questions"),
+    ):
+        vals = payload.get(key) or []
+        if vals:
+            lines.append(f"\n**{label}:**")
+            lines.extend(f"- {item}" for item in vals)
     return "\n".join(lines)
 
 

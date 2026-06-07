@@ -16,11 +16,7 @@ requires:
     required:
       - architecture.component_model@1.0.0
     optional:
-      - implementation.backend_build_spec@1.0.0
-      - implementation.ui_build_spec@1.0.0
-      - implementation.ml_build_spec@1.0.0
-      - implementation.data_build_spec@1.0.0
-      - implementation.integration_build_spec@1.0.0
+      - implementation.component_build_spec@1.0.0
       - common.feasibility_assessment@1.0.0
 produces:
   artifact: implementation.build_plan@1.0.0
@@ -30,14 +26,16 @@ context:
 planning:
   priority: 100
 summary: |
-  Собери сводный план реализации из спек сборки агентов и feasibility.
-  • routing — по каждой части: агент-владелец (covered_by), способность
-    (matched_capability), статус (готово к сборке / при условии / вне зоны /
-    не покрыто);
-  • sequencing — очерёдность фаз с учётом зависимостей между компонентами;
-  • per_agent — сводка по каждому агенту (число компонентов, ключевое);
-  • risks_and_gaps — части infeasible/непокрытые из feasibility и всё, что
-    агенты вынесли в out_of_scope;
-  • executive_summary — короткий абзац: что и как строим, что под условием,
-    что вне рамок.
-  Не выдумывай компоненты, которых нет в спеках агентов или архитектуре.
+  Собери сводный план реализации из покомпонентных спек сборки
+  (implementation.component_build_spec — по одной на компонент) и feasibility.
+  Поля артефакта:
+  • routing — строка на каждый компонент: part = компонент, agent =
+    capability_owner (умение-владелец), capability = умение, status (готово к
+    сборке / при условии / вне зоны / не покрыто);
+  • sequencing — очерёдность фаз по зависимостям компонентов (из dependencies);
+  • per_agent — сводка по каждому УМЕНИЮ (agent = умение): число компонентов,
+    ключевое. Это представление-сводка; ось генерации — по компонентам;
+  • risks_and_gaps — непокрытое из feasibility + out_of_scope/open_questions спек;
+  • executive_summary — короткий абзац: что и как строим, что под условием, что
+    вне рамок.
+  Не выдумывай компоненты, которых нет в покомпонентных спеках или архитектуре.

@@ -1,0 +1,19 @@
+{
+  "component": "Приём заявок",
+  "purpose": "Принимает заявки, валидирует и передаёт на сохранение.",
+  "capability_owner": "capability.backend@1.0.0",
+  "tech": ["FastAPI", "PostgreSQL"],
+  "provided_interfaces": ["submitRequest: форма заявки → id заявки"],
+  "consumed_interfaces": ["store.saveRequest"],
+  "data": ["черновики заявок"],
+  "build_steps": [
+    "Собрать модуль валидации формы",
+    "Собрать диспетчер постановки в очередь"
+  ],
+  "test_approach": "Юнит-тесты валидации + интеграционный тест сохранения.",
+  "acceptance": ["до ~100 заявок/мин без потерь"],
+  "dependencies": ["store"],
+  "out_of_scope": [],
+  "open_questions": [],
+  "confidence": 0.8
+}

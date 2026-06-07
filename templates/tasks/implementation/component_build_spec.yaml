@@ -1,0 +1,55 @@
+kind: task_template
+id: implementation.component_build_spec
+version: 1.0.0
+title: Спека сборки компонента
+type: leaf
+status: active
+domain: implementation
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+    optional:
+      - common.feasibility_assessment@1.0.0
+      - architecture.system_context_definition@1.0.0
+      - architecture.interaction_view@1.0.0
+      - common.normalized_request@1.0.0
+produces:
+  artifact: implementation.component_build_spec@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 20000
+planning:
+  priority: 300
+summary: |
+  Собери самодостаточную спеку сборки ОДНОГО компонента — ту, что можно отдать
+  исполнителю (harness) для реализации этого компонента в изоляции.
+
+  Какой именно компонент — в контексте под заголовком «Целевой элемент (фокус
+  задачи)». Работай ТОЛЬКО по нему. Контракты соседей и системный контекст бери
+  из модели компонентов (полная модель в контексте) — но описывай сборку только
+  целевого компонента.
+
+  Выдай:
+  • component — имя/id целевого компонента;
+  • purpose — что он делает (из его ответственности);
+  • capability_owner — каким умением строится (из компонента);
+  • tech — технологии (из контракта умения, не выдумывай);
+  • provided_interfaces — что компонент предоставляет (операции с формой);
+  • consumed_interfaces — что и у кого потребляет (id соседей.интерфейс);
+  • data — данные/схемы, которыми владеет;
+  • build_steps — порядок сборки внутренних модулей (из внутреннего состава);
+  • test_approach — как проверяем;
+  • acceptance — критерии приёмки (из нефункциональных требований компонента);
+  • dependencies — от каких компонентов зависит сборка (порядок);
+  • out_of_scope — что НЕ входит (упирается в cannot_do умения);
+  • open_questions — нерешённое.
+
+  Не выдумывай интерфейсы и зависимости, которых нет у целевого компонента в
+  модели. Если данных не хватает — снижай `confidence` и пиши в open_questions.
+
+  ▸ `confidence` — число 0.0-1.0: насколько спека готова к передаче в сборку
+    (контракт полон, технологии обоснованы, приёмка измерима).

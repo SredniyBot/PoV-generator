@@ -6,20 +6,12 @@ type: composite
 status: active
 domain: implementation
 children:
-  - id: backend_build_spec
-    task: implementation.backend_build_spec@1.0.0
-    required: false
-  - id: ui_build_spec
-    task: implementation.ui_build_spec@1.0.0
-    required: false
-  - id: ml_build_spec
-    task: implementation.ml_build_spec@1.0.0
-    required: false
-  - id: data_build_spec
-    task: implementation.data_build_spec@1.0.0
-    required: false
-  - id: integration_build_spec
-    task: implementation.integration_build_spec@1.0.0
-    required: false
+  # Ф6: ось веера — компонент. На каждый компонент модели — своя спека сборки
+  # (harness-вход), вместо пяти ролевых спек. Сводка по умениям — в синтезе.
+  - id: component_build_fanout
+    task: implementation.component_build_fanout@1.0.0
   - id: build_plan_synthesis
     task: implementation.build_plan_synthesis@1.0.0
+# Ролевые спеки (backend/ui/ml/data/integration_build_spec) выведены из активного
+# графа в пользу веера по компонентам; шаблоны сохранены для закреплённых
+# графом прошлых проектов.

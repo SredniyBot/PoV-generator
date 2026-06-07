@@ -62,6 +62,7 @@ EXPECTED_STATIC_ROLES = {
     "ml_build_spec",
     "data_build_spec",
     "integration_build_spec",
+    "component_build_spec",
     "build_plan",
 }
 

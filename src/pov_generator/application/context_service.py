@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from ..common.errors import ConflictError
-from ..common.serialization import json_dumps, utc_now_iso
+from ..common.serialization import json_dumps, json_loads, utc_now_iso
 from ..domain.artifacts import ContextBudget, ContextItem, ContextManifest
 from ..domain.positions import Position
 from ..domain.project_state import ProjectState
@@ -167,6 +167,13 @@ class ContextService:
                 )
             add(self._make_artifact_item(workspace, artifact, required=True), ContextAuthority.REQUIRED, pinned=True)
 
+        # 5b. Фокус веера: если это fan_out_instance, кладём «свой» элемент из
+        # источника (например, конкретный компонент модели). Без этого ребёнок
+        # веера не знает, ЗА КАКОЙ элемент он отвечает. Pinned, REQUIRED.
+        focus_item = self._fanout_focus_item(workspace, snapshot, task)
+        if focus_item is not None:
+            add(focus_item, ContextAuthority.REQUIRED, pinned=True)
+
         # 6. Инструкция задачи — pinned (без неё задача не знает, что делать).
         if template.summary:
             add(
@@ -318,6 +325,60 @@ class ContextService:
                 return override
 
         return template_max_tokens
+
+    def _fanout_focus_item(
+        self, workspace: Path, snapshot: RegistrySnapshot, task
+    ) -> ContextItem | None:
+        """«Свой» элемент для ребёнка веера (fan_out_instance).
+
+        Берёт fan_out_spec родителя, находит в источнике элемент с
+        ``key_field == task.origin_ref`` и кладёт его как закреплённый фокус.
+        Без этого per-component задача не знает, за какой компонент отвечает.
+        Защитно: любая неувязка → None (контекст собирается без фокуса).
+        """
+        if getattr(task, "origin_kind", None) != "fan_out_instance" or not task.parent_task_id:
+            return None
+        try:
+            parent = self._runtime.get_task(workspace, task.parent_task_id)
+            parent_template = snapshot.resolve_template(parent.template_ref)
+        except Exception:
+            return None
+        spec = parent_template.fan_out_spec
+        if spec is None:
+            return None
+        source = self._runtime.latest_artifact_by_role(workspace, spec.artifact_role)
+        if source is None:
+            return None
+        try:
+            content = json_loads(self._runtime.load_artifact_content(workspace, source.artifact_id))
+        except Exception:
+            return None
+        array: object = content
+        for part in spec.array_path.split("."):
+            array = array.get(part, []) if isinstance(array, dict) else []
+        if not isinstance(array, list):
+            return None
+        item = next(
+            (
+                entry
+                for entry in array
+                if isinstance(entry, dict) and str(entry.get(spec.key_field)) == task.origin_ref
+            ),
+            None,
+        )
+        if item is None:
+            return None
+        body = json_dumps(item)
+        return ContextItem(
+            item_id=str(uuid.uuid4()),
+            item_type="fanout_focus",
+            source_ref=f"fanout:{spec.artifact_role}:{task.origin_ref}",
+            title="Целевой элемент (фокус задачи)",
+            content=body,
+            token_estimate=estimate_tokens(body),
+            required=True,
+            priority=100,
+        )
 
     def _make_artifact_item(self, workspace: Path, artifact, *, required: bool) -> ContextItem:
         content = self._runtime.load_artifact_content(workspace, artifact.artifact_id)

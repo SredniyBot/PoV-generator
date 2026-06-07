@@ -217,7 +217,7 @@ execution_run, provider, model, context_manifest.
 3. **Несколько активных методологий на проект** (PS10 ограничивает MVP).
 4. **Цепочки objective** (ТЗ → архитектура → реализация). Сегодня один проект = один objective.
 5. **Multi-objective `ProjectManifest`** — пока `objective_ref` singular; чтобы в одном workspace получить и ТЗ, и архитектуру, нужны два workspace'а.
-6. **Архитектурные аналоги deployment/risk-задач** — `common.deployment_topology` и `common.project_risk_register` сейчас требуют артефактов ТЗ-потока (`normalized_request`, `solution_option_inventory`, `constraint_inventory`), поэтому не включены в архитектурный композит; финальный документ опускает соответствующие секции. Решение — тонкие task-обёртки `architecture.*` с тем же артефактом, но другими `requires`.
+6. **Архитектурный реестр рисков** — `common.project_risk_register` ещё требует артефактов ТЗ-потока (`normalized_request`, `solution_option_inventory`, `constraint_inventory`), поэтому помечен `required: false` в архитектурном композите; без ТЗ документ опускает секцию Risks. Решение — тонкая обёртка `architecture.*` с другими `requires`. (Развёртывание уже решено: `architecture.deployment_map` зависит только от `component_model`.)
 7. **Server-side Mermaid → SVG для PDF** — UI рендерит диаграммы через mermaid.js, в PDF (xhtml2pdf) они остаются как fenced code-блоки.
 8. **Schema-driven рендеринг markdown** — сегодня `render_markdown` в `application/artifact_contracts.py` это hand-coded switch по `artifact_role`. Новый артефакт = новая ветка в Python.
 9. **Cost tracking** токенов и денег в `ExecutionResult`.
