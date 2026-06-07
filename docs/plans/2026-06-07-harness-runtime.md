@@ -551,5 +551,11 @@ Governance денег/времени показываем как **внутре�
 - `ADAPTER_CAPABILITIES` (характеристики инструмента, не оценки) +
   `GET /api/harness/adapters` (матрица + активный исполнитель). Активный
   провайдер виден и в `/api/harness/runtime`.
-- Осталось: персист подключения в settings-store + UI выбора (вместе с UI Ф6);
-  затем Ф8 (полный цикл спека→реализация, fan-out, общий том).
+Реализовано (2026-06-08, Ф7d — хранение harness-подключения):
+- `HarnessConnectionSettings` (домен) + `HarnessSettingsStore` (синглтон-строка
+  в settings.db, СВОЯ таблица, БЕЗ секретов — креды эфемерны) +
+  `HarnessSettingsService` (get/set + резолв сохранённое→env→stub).
+- Реестр получает `connection_loader` (ленивый резолвер) → смена адаптера из UI
+  применяется без перезапуска. `GET/PUT /api/harness/connection`.
+- Активный исполнитель из настроек виден в `/api/harness/{runtime,adapters}`.
+- Осталось: UI выбора + панель Ф6; затем Ф8 (цикл спека→реализация).

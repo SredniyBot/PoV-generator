@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from ...common.errors import ConflictError
@@ -146,13 +146,21 @@ class HarnessProviderRegistry:
         self,
         *,
         connection: HarnessConnection | None = None,
+        connection_loader: Callable[[], HarnessConnection] | None = None,
         sandbox: SandboxRuntime | None = None,
     ) -> None:
-        # Подключение явно или из env (по умолчанию stub).
-        self._connection = connection or connection_from_env()
+        # Подключение: ленивый загрузчик (читается на каждый резолв — смена
+        # настроек применяется без перезапуска), либо статическое, либо env.
+        self._static_connection = connection
+        self._connection_loader = connection_loader
         # Песочница для реальных адаптеров. Если не передана — ленивый
         # DockerSandboxRuntime (импорт docker откладывается до прогона).
         self._sandbox = sandbox
+
+    def _active_connection(self) -> HarnessConnection:
+        if self._connection_loader is not None:
+            return self._connection_loader()
+        return self._static_connection or connection_from_env()
 
     @property
     def supported_providers(self) -> tuple[str, ...]:
@@ -160,7 +168,7 @@ class HarnessProviderRegistry:
 
     def default_provider_name(self) -> str:
         """Имя выбранного harness (для метаданных/трейса узла)."""
-        return self._connection.provider
+        return self._active_connection().provider
 
     def _sandbox_runtime(self) -> SandboxRuntime:
         if self._sandbox is not None:
@@ -171,18 +179,24 @@ class HarnessProviderRegistry:
         self._sandbox = DockerSandboxRuntime()
         return self._sandbox
 
-    def get(self, provider: str) -> HarnessProvider:
-        """Собрать провайдера по имени (с конфигом текущего подключения)."""
-        if provider == "stub":
+    def _build(self, connection: HarnessConnection) -> HarnessProvider:
+        if connection.provider == "stub":
             return StubHarnessProvider()
-        builder = _ADAPTER_BUILDERS.get(provider)
+        builder = _ADAPTER_BUILDERS.get(connection.provider)
         if builder is None:
             raise ConflictError(
-                f"Неподдерживаемый harness-провайдер: '{provider}'. "
+                f"Неподдерживаемый harness-провайдер: '{connection.provider}'. "
                 f"Поддерживаются: {', '.join(self.supported_providers)}."
             )
-        return builder(self._connection, self._sandbox_runtime())
+        return builder(connection, self._sandbox_runtime())
+
+    def get(self, provider: str) -> HarnessProvider:
+        """Собрать провайдера по имени (с конфигом текущего подключения)."""
+        connection = self._active_connection()
+        if provider != connection.provider:
+            connection = replace(connection, provider=provider)
+        return self._build(connection)
 
     def resolve_default(self) -> HarnessProvider:
         """Собрать harness по текущему подключению (Ф7c)."""
-        return self.get(self._connection.provider)
+        return self._build(self._active_connection())

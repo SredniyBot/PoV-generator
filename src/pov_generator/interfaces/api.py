@@ -15,7 +15,9 @@ from ..application.decision_extraction_service import DecisionExtractionService
 from ..application.decision_identification_service import DecisionIdentificationService
 from ..application.domain_pack_selection_service import DomainPackSelectionService
 from ..application.execution_service import ExecutionService
+from ..application.harness_execution_service import HarnessExecutionService
 from ..application.harness_onboarding_service import HarnessOnboardingService
+from ..application.harness_settings_service import HarnessSettingsService
 from ..application.parallel_scheduling import (
     max_concurrency_for as default_max_concurrency_for,
 )
@@ -49,8 +51,9 @@ from ..infrastructure.filesystem_registry import (
 from ..infrastructure.harness import (
     ADAPTER_CAPABILITIES as _HARNESS_ADAPTER_CAPABILITIES,
 )
-from ..infrastructure.harness import DockerSandboxRuntime
+from ..infrastructure.harness import DockerSandboxRuntime, HarnessProviderRegistry
 from ..infrastructure.harness.images import DockerImagePreparer
+from ..infrastructure.harness_settings_store import HarnessSettingsStore
 from ..infrastructure.llm import LLMProviderRegistry
 from ..infrastructure.llm_settings_store import SqliteSettingsStore
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -157,6 +160,16 @@ def create_app(
     except Exception:  # noqa: BLE001
         pass
 
+    # Ф7d: активное harness-подключение (system-wide, тот же settings.db, своя
+    # таблица, без секретов). Резолвер передаётся реестру ленивым загрузчиком —
+    # смена адаптера из UI применяется без перезапуска.
+    harness_settings_store = HarnessSettingsStore(resolved_runtime_root)
+    harness_settings_service = HarnessSettingsService(harness_settings_store)
+    harness_registry = HarnessProviderRegistry(
+        connection_loader=harness_settings_service.resolve_runtime_connection
+    )
+    harness_execution_service = HarnessExecutionService(harness_registry)
+
     checkpoint_service = CheckpointService(runtime)
     decision_identification_service = DecisionIdentificationService(llm_registry=llm_registry)
     # v3.10 (идея А): сервис больше не вызывает LLM — он персистит решения,
@@ -169,6 +182,7 @@ def create_app(
         runtime,
         context_service,
         llm_registry=llm_registry,
+        harness_service=harness_execution_service,
         decision_identification_service=decision_identification_service,
         decision_extraction_service=decision_extraction_service,
         checkpoint_service=checkpoint_service,
@@ -351,6 +365,24 @@ def create_app(
             "active": active,
             "capabilities": to_primitive(_HARNESS_ADAPTER_CAPABILITIES),
         }
+
+    @app.get("/api/harness/connection")
+    def harness_connection() -> Any:
+        # Ф7d: активное harness-подключение (нечувствительный выбор исполнителя).
+        return to_primitive(harness_settings_service.get_connection())
+
+    @app.put("/api/harness/connection")
+    def harness_connection_set(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        timeout_raw = payload.get("default_timeout_s")
+        timeout = int(timeout_raw) if isinstance(timeout_raw, (int, float)) else None
+        saved = harness_settings_service.set_connection(
+            provider=_required_str(payload, "provider"),
+            image=_optional_str(payload, "image"),
+            model=_optional_str(payload, "model"),
+            command=_optional_str(payload, "command"),
+            default_timeout_s=timeout,
+        )
+        return to_primitive(saved)
 
     @app.post("/api/harness/prepare")
     def harness_prepare(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
