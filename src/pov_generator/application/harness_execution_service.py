@@ -51,6 +51,22 @@ class HarnessOutcome:
         return self.files is not None
 
 
+@dataclass(frozen=True)
+class HarnessRuntimeStatus:
+    """Живой снимок рантайма harness — для панели «машинное отделение» (Ф6).
+
+    Слоты (занятость класса конкуррентности + очередь ожидания), накопленный
+    расход прогонов и лимиты одного прогона. Это внутренние governance-показатели
+    управления, НЕ оценки/гарантии заказчику (правило проекта).
+    """
+
+    provider_name: str
+    slots: SlotStatus
+    budget: BudgetTotals
+    run_limits: RunLimits
+    budget_exceeded: str | None = None
+
+
 def render_harness_brief(
     *,
     artifact_role: str,
@@ -116,6 +132,20 @@ class HarnessExecutionService:
     def budget_totals(self) -> BudgetTotals:
         """Накопленный расход harness-прогонов — для панели/аудита."""
         return self._budget.totals()
+
+    def runtime_status(self) -> HarnessRuntimeStatus:
+        """Единый живой снимок рантайма для панели «машинное отделение» (Ф6).
+
+        Сводит дефолтный провайдер, занятость слотов, накопленный расход и
+        лимиты прогона. Свободные слоты UI выводит как ``capacity - in_use``.
+        """
+        return HarnessRuntimeStatus(
+            provider_name=self.default_provider_name(),
+            slots=self.slot_status(),
+            budget=self.budget_totals(),
+            run_limits=self._budget_limits,
+            budget_exceeded=self._budget.exceeded(),
+        )
 
     def produce_artifact(
         self,

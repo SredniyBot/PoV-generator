@@ -244,6 +244,8 @@ def create_app(
     app.state.provider_settings_service = provider_settings_service
     app.state.checkpoint_service = checkpoint_service
     app.state.llm_registry = llm_registry
+    # Тот же экземпляр, что исполняет узлы: живой статус harness-рантайма (Ф6).
+    app.state.execution_service = execution_service
     app.state.poll_interval = websocket_poll_interval
 
     # ---- Startup recovery: orphan runs/tasks от прошлых процессов -------
@@ -328,6 +330,14 @@ def create_app(
     @app.get("/api/harness/status")
     def harness_status() -> Any:
         return to_primitive(harness_onboarding.readiness())
+
+    @app.get("/api/harness/runtime")
+    def harness_runtime() -> Any:
+        # Живой снимок «машинного отделения» (Ф6): слоты класса конкуррентности,
+        # очередь ожидания, накопленный расход и лимиты прогона. Отдельно от
+        # /status (готовность Docker/образа) — это разные сущности: подготовка
+        # vs. текущая загрузка.
+        return to_primitive(app.state.execution_service.harness_runtime_status())
 
     @app.post("/api/harness/prepare")
     def harness_prepare(payload: dict[str, object] = Body(default_factory=dict)) -> Any:

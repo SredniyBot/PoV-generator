@@ -32,7 +32,7 @@ from .decision_extraction_service import (
     decisions_schema,
 )
 from .decision_identification_service import DecisionIdentificationService
-from .harness_execution_service import HarnessExecutionService
+from .harness_execution_service import HarnessExecutionService, HarnessRuntimeStatus
 from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -211,6 +211,14 @@ class ExecutionService:
         self._decision_context_builder = decision_context_builder or DecisionContextBuilder(runtime)
         # v3.7: phase_gap инстанс игнорируется (см. сигнатуру выше).
         _ = phase_gap_analysis_service
+
+    def harness_runtime_status(self) -> HarnessRuntimeStatus:
+        """Живой снимок harness-рантайма (слоты/бюджет) для панели Ф6.
+
+        Делегирует второму бэкенду исполнения — это тот же экземпляр, что
+        реально исполняет узлы, поэтому занятость слотов и расход живые.
+        """
+        return self._harness.runtime_status()
 
     def execute_task(
         self,
