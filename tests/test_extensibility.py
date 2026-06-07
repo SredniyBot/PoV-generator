@@ -127,11 +127,14 @@ class TestDerivedComposition:
         # Доменные продолжают подмешиваться через auto-collect.
         expected_common_optional = {
             "solution_tradeoff_matrix",
-            "acceptance_model_definition",
             "implementation_dependency_plan",
             "delivery_scope_definition",
         }
         assert expected_common_optional <= set(template.inputs.optional_artifact_roles)
+        # Критерии приёмки и НФТ теперь ОБЯЗАТЕЛЬНЫЕ входы ТЗ (ядро документа).
+        assert {"acceptance_model_definition", "nonfunctional_requirements"} <= set(
+            template.inputs.required_artifact_roles
+        )
 
     def test_new_domain_pack_artifact_auto_appears_in_context(self, tmp_path: Path) -> None:
         """Когда активен ml-пак, его primary-артефакт (predictive_problem_definition)
@@ -170,6 +173,8 @@ class TestDerivedComposition:
             "scope_boundary_matrix",
             "stakeholder_map",
             "solution_option_inventory",
+            "acceptance_model_definition",
+            "nonfunctional_requirements",
         ]:
             stub = ArtifactRecord(
                 artifact_id=f"core-{role}",

@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: architecture.operational_architecture
+version: 1.0.0
+title: Операционная архитектура
+# Декларативный YAML; строгая схема — в application/artifact_contracts.py.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

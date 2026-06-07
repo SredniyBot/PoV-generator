@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: architecture.data_architecture
+version: 1.0.0
+title: Архитектура данных
+# Декларативный YAML; строгая схема — в application/artifact_contracts.py.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

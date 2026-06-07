@@ -1,0 +1,42 @@
+kind: task_template
+id: architecture.security_architecture
+version: 1.0.0
+title: Описать архитектуру безопасности
+type: leaf
+status: active
+domain: architecture
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+      - common.requirements_spec@1.0.0
+    optional:
+      - common.nonfunctional_requirements@1.0.0
+      - common.constraint_inventory@1.0.0
+      - security.security_compliance_constraints@1.0.0
+      - security.privacy_impact_assessment@1.0.0
+produces:
+  artifact: architecture.security_architecture@1.0.0
+context:
+  max_tokens: 18000
+planning:
+  priority: 340
+summary: |
+  Опиши архитектуру безопасности системы. Опирайся на модель компонентов, ТЗ,
+  НФТ и (если есть) требования ИБ/комплаенса. Не выдумывай требований, которых
+  нет в контексте; недостающее выноси в open_questions.
+
+  Структура:
+  • authentication — как подтверждается личность (механизм, провайдер);
+  • authorization — модель доступа (роли/политики) к данным и операциям;
+  • data_protection — защита данных (в покое/при передаче, ПДн, секреты);
+  • trust_boundaries — границы доверия (внешнее↔внутреннее, зоны);
+  • threats — ключевые угрозы; на каждую threat + mitigation;
+  • controls — меры защиты; на каждую area + control.
+
+  Конкретные стандарты/комплаенс — только если заданы контекстом.
+
+  ▸ confidence — 0.0-1.0.

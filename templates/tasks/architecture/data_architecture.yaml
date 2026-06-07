@@ -1,0 +1,43 @@
+kind: task_template
+id: architecture.data_architecture
+version: 1.0.0
+title: Описать архитектуру данных
+type: leaf
+status: active
+domain: architecture
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+    optional:
+      - common.requirements_spec@1.0.0
+      - common.integration_data_map@1.0.0
+      - architecture.interaction_view@1.0.0
+produces:
+  artifact: architecture.data_architecture@1.0.0
+context:
+  max_tokens: 20000
+planning:
+  priority: 350
+summary: |
+  Опиши архитектуру данных системы — какими данными система владеет, где они
+  живут и как движутся. Опирайся на модель компонентов (кто владеет данными) и
+  ТЗ/карту данных. Не выдумывай сущности, которых нет в контексте.
+
+  Структура:
+  • entities — ключевые сущности данных; на каждую: name, description,
+    owner_component (какой компонент владеет), key_attributes;
+  • stores — хранилища; на каждое: name, kind (relational/document/cache/
+    object/queue…), purpose, technology (только если обоснована контрактом
+    умения/ограничениями, иначе «уточняется»);
+  • data_flows — как данные перемещаются между компонентами/хранилищами;
+  • consistency — подход к согласованности и целостности;
+  • retention — хранение и жизненный цикл данных (если применимо).
+
+  Числа и конкретные технологии — только из контекста. Нерешённое —
+  в open_questions.
+
+  ▸ confidence — 0.0-1.0.

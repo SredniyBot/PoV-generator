@@ -105,8 +105,9 @@ def test_planner_expands_objective_into_hierarchical_task_graph(tmp_path: Path) 
     # 24; затем слияние разбора запроса (убраны request_fact_extraction и
     # ambiguity_gap_analysis, их работа — в «Разобрать запрос») → 22.
     # Privacy_impact_assessment живёт в security-домене и появляется только
-    # когда активен security pack.
-    assert len(tasks) == 22
+    # когда активен security pack. +1 leaf common.nonfunctional_requirements
+    # (НФТ как обязательный раздел профессионального ТЗ) → 23.
+    assert len(tasks) == 23
     assert any(task.template_type == "composite" and task.title == "Разобрать исходный бизнес-запрос" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Сформировать гипотезу цели" for task in tasks)
     assert any(task.template_type == "leaf" and task.title == "Разобрать запрос" for task in tasks)

@@ -1,0 +1,46 @@
+kind: task_template
+id: common.nonfunctional_requirements
+version: 1.0.0
+title: Сформулировать нефункциональные требования
+type: leaf
+status: active
+domain: common
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - common.normalized_request@1.0.0
+      - common.business_outcome_model@1.0.0
+    optional:
+      - common.scope_boundary_matrix@1.0.0
+      - common.constraint_inventory@1.0.0
+      - common.solution_option_inventory@1.0.0
+produces:
+  artifact: common.nonfunctional_requirements@1.0.0
+context:
+  max_tokens: 12000
+planning:
+  priority: 300
+summary: |
+  Сформулируй нефункциональные требования (НФТ) — измеримые требования к
+  КАЧЕСТВУ системы, а не к её функциям. Опирайся на нормализованный запрос,
+  модель бизнес-результата и ограничения.
+
+  Структура:
+  • categories — категории НФТ. Типовые: производительность, доступность и
+    надёжность, масштабируемость, безопасность, наблюдаемость, сопровождаемость,
+    удобство использования, соответствие/комплаенс. Бери релевантные задаче.
+  • для каждой категории requirements — список требований; на каждое:
+    — statement — что требуется (конкретно, проверяемо);
+    — metric — чем измеряем (если применимо);
+    — target — целевое значение/порог;
+    — priority — must / should / could.
+  • assumptions — допущения; open_questions — что нужно уточнить у заказчика.
+
+  ВАЖНО: не выдумывай числовые пороги (нагрузка, RPS, SLA, время отклика), если
+  их нет в контексте — формулируй качественно и вынеси в open_questions, что
+  именно нужно подтвердить. Числа — только из контекста, не как гарантия.
+
+  ▸ confidence — 0.0-1.0: насколько НФТ полны и обоснованы контекстом.

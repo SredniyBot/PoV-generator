@@ -1,0 +1,9 @@
+kind: artifact_contract
+id: common.nonfunctional_requirements
+version: 1.0.0
+title: Нефункциональные требования
+# Декларативный YAML; строгая схема — в application/artifact_contracts.py.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

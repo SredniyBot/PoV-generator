@@ -1,0 +1,40 @@
+kind: task_template
+id: architecture.operational_architecture
+version: 1.0.0
+title: Описать операционную архитектуру
+type: leaf
+status: active
+domain: architecture
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+    optional:
+      - common.requirements_spec@1.0.0
+      - common.nonfunctional_requirements@1.0.0
+      - architecture.deployment_map@1.0.0
+      - common.deployment_topology@1.0.0
+      - common.project_risk_register@1.0.0
+produces:
+  artifact: architecture.operational_architecture@1.0.0
+context:
+  max_tokens: 18000
+planning:
+  priority: 330
+summary: |
+  Опиши операционную (эксплуатационную) сторону архитектуры — как система
+  живёт в проде. Опирайся на модель компонентов, НФТ, топологию/развёртывание.
+  Числа (SLA, нагрузка) — только из контекста; иначе формулируй качественно и
+  фиксируй в open_questions.
+
+  Структура (списками):
+  • scalability — как масштабируется под нагрузкой (что и как);
+  • observability — логи, метрики, трассировка, оповещения;
+  • resilience — отказоустойчивость, восстановление, резервное копирование, DR;
+  • deployment_release — сборка/развёртывание, выкладка, откат;
+  • slas — целевые уровни сервиса (SLA/SLO), если заданы контекстом.
+
+  ▸ confidence — 0.0-1.0.

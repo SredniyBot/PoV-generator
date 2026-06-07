@@ -25,6 +25,8 @@ children:
     task: common.project_risk_register@1.0.0
   - id: feasibility_assessment
     task: common.feasibility_assessment@1.0.0
+  - id: nonfunctional_requirements
+    task: common.nonfunctional_requirements@1.0.0
   - id: requirements_spec_generation
     task: common.requirements_spec_generation@1.0.0
 slots:

@@ -35,6 +35,9 @@ requires:
       - common.scope_boundary_matrix@1.0.0
       - common.stakeholder_map@1.0.0
       - common.solution_option_inventory@1.0.0
+      # Критерии приёмки и НФТ — ядро профессионального ТЗ, обязательны.
+      - common.acceptance_model_definition@1.0.0
+      - common.nonfunctional_requirements@1.0.0
     # Дополнительные аналитические артефакты, обогащающие финальный
     # documenting-проход. Они опциональны, потому что для совсем простых
     # PoV (тривиальная сложность) могут пропускаться. Если присутствуют —
@@ -44,7 +47,6 @@ requires:
       - common.constraint_inventory@1.0.0
       - common.integration_data_map@1.0.0
       - common.solution_tradeoff_matrix@1.0.0
-      - common.acceptance_model_definition@1.0.0
       - common.implementation_dependency_plan@1.0.0
       - common.delivery_scope_definition@1.0.0
       - common.glossary_terms@1.0.0

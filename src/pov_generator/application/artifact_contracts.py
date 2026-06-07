@@ -1802,6 +1802,164 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
             "additionalProperties": False,
             "properties": requirements_spec_properties,
         },
+        # --- НФТ (нефункциональные требования) ---
+        "nonfunctional_requirements": _analysis_object(
+            ["categories", "summary"],
+            {
+                "summary": {"type": "string"},
+                "categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "requirements"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "requirements": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["statement"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "statement": {"type": "string"},
+                                        "metric": {"type": "string"},
+                                        "target": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "assumptions": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        # --- ADR: архитектурные решения ---
+        "architecture_decisions": _analysis_object(
+            ["decisions", "summary"],
+            {
+                "summary": {"type": "string"},
+                "decisions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["title", "decision"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "status": {"type": "string"},
+                            "context": {"type": "string"},
+                            "decision": {"type": "string"},
+                            "alternatives": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["option"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "option": {"type": "string"},
+                                        "why_not": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "consequences": {"type": "string"},
+                        },
+                    },
+                },
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        # --- архитектура данных ---
+        "data_architecture": _analysis_object(
+            ["entities", "summary"],
+            {
+                "summary": {"type": "string"},
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "owner_component": {"type": "string"},
+                            "key_attributes": _string_array_schema(),
+                        },
+                    },
+                },
+                "stores": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "technology": {"type": "string"},
+                        },
+                    },
+                },
+                "data_flows": _string_array_schema(),
+                "consistency": {"type": "string"},
+                "retention": {"type": "string"},
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        # --- вид безопасности ---
+        "security_architecture": _analysis_object(
+            ["controls", "summary"],
+            {
+                "summary": {"type": "string"},
+                "authentication": {"type": "string"},
+                "authorization": {"type": "string"},
+                "data_protection": _string_array_schema(),
+                "trust_boundaries": _string_array_schema(),
+                "threats": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["threat"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "threat": {"type": "string"},
+                            "mitigation": {"type": "string"},
+                        },
+                    },
+                },
+                "controls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["area", "control"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "area": {"type": "string"},
+                            "control": {"type": "string"},
+                        },
+                    },
+                },
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        # --- операционный вид ---
+        "operational_architecture": _analysis_object(
+            ["summary"],
+            {
+                "summary": {"type": "string"},
+                "scalability": _string_array_schema(),
+                "observability": _string_array_schema(),
+                "resilience": _string_array_schema(),
+                "deployment_release": _string_array_schema(),
+                "slas": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
         # Demo / fan-out templates — unstructured, accept any object
         "feature_list": {"type": "object", "additionalProperties": True},
         "feature_detail": {"type": "object", "additionalProperties": True},
@@ -3316,6 +3474,137 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
             lines += ["\n## Потоки данных", *[f"- {x}" for x in payload["data_flows"]]]
         if payload.get("integration_constraints"):
             lines += ["\n## Ограничения интеграции", *[f"- {x}" for x in payload["integration_constraints"]]]
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "nonfunctional_requirements":
+        lines = ["# Нефункциональные требования"]
+        if payload.get("summary"):
+            lines += ["", payload["summary"]]
+        for cat in payload.get("categories", []):
+            lines.append(f"\n## {cat.get('name', '—')}")
+            for req in cat.get("requirements", []):
+                parts = [req.get("statement", "")]
+                if req.get("target"):
+                    parts.append(f"цель: {req['target']}")
+                if req.get("metric"):
+                    parts.append(f"метрика: {req['metric']}")
+                if req.get("priority"):
+                    parts.append(f"приоритет: {req['priority']}")
+                lines.append("- " + " · ".join(p for p in parts if p))
+        if payload.get("assumptions"):
+            lines += ["\n## Допущения", *[f"- {x}" for x in payload["assumptions"]]]
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "architecture_decisions":
+        lines = ["# Архитектурные решения (ADR)"]
+        if payload.get("summary"):
+            lines += ["", payload["summary"]]
+        for dec in payload.get("decisions", []):
+            head = dec.get("title", "Решение")
+            if dec.get("id"):
+                head = f"{dec['id']}. {head}"
+            lines.append(f"\n## {head}")
+            if dec.get("status"):
+                lines.append(f"_Статус: {dec['status']}_")
+            if dec.get("context"):
+                lines += ["", f"**Контекст:** {dec['context']}"]
+            if dec.get("decision"):
+                lines.append(f"**Решение:** {dec['decision']}")
+            alts = dec.get("alternatives", [])
+            if alts:
+                lines.append("**Рассмотренные альтернативы:**")
+                for alt in alts:
+                    text = alt.get("option", "")
+                    if alt.get("why_not"):
+                        text += f" — отклонено: {alt['why_not']}"
+                    lines.append(f"- {text}")
+            if dec.get("consequences"):
+                lines.append(f"**Последствия:** {dec['consequences']}")
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "data_architecture":
+        lines = ["# Архитектура данных"]
+        if payload.get("summary"):
+            lines += ["", payload["summary"]]
+        if payload.get("entities"):
+            lines.append("\n## Сущности")
+            for ent in payload["entities"]:
+                text = f"- **{ent.get('name', '—')}**"
+                if ent.get("owner_component"):
+                    text += f" (владелец: {ent['owner_component']})"
+                if ent.get("description"):
+                    text += f" — {ent['description']}"
+                lines.append(text)
+                if ent.get("key_attributes"):
+                    lines.append(f"  - атрибуты: {', '.join(ent['key_attributes'])}")
+        if payload.get("stores"):
+            lines.append("\n## Хранилища")
+            for store in payload["stores"]:
+                text = f"- **{store.get('name', '—')}**"
+                if store.get("kind"):
+                    text += f" [{store['kind']}]"
+                if store.get("technology"):
+                    text += f" — {store['technology']}"
+                if store.get("purpose"):
+                    text += f": {store['purpose']}"
+                lines.append(text)
+        if payload.get("data_flows"):
+            lines += ["\n## Потоки данных", *[f"- {x}" for x in payload["data_flows"]]]
+        if payload.get("consistency"):
+            lines += ["\n## Согласованность и целостность", payload["consistency"]]
+        if payload.get("retention"):
+            lines += ["\n## Хранение и жизненный цикл данных", payload["retention"]]
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "security_architecture":
+        lines = ["# Архитектура безопасности"]
+        if payload.get("summary"):
+            lines += ["", payload["summary"]]
+        if payload.get("authentication"):
+            lines += ["\n## Аутентификация", payload["authentication"]]
+        if payload.get("authorization"):
+            lines += ["\n## Авторизация", payload["authorization"]]
+        if payload.get("data_protection"):
+            lines += ["\n## Защита данных", *[f"- {x}" for x in payload["data_protection"]]]
+        if payload.get("trust_boundaries"):
+            lines += ["\n## Границы доверия", *[f"- {x}" for x in payload["trust_boundaries"]]]
+        if payload.get("threats"):
+            lines.append("\n## Угрозы и меры")
+            for thr in payload["threats"]:
+                text = f"- {thr.get('threat', '')}"
+                if thr.get("mitigation"):
+                    text += f" → {thr['mitigation']}"
+                lines.append(text)
+        if payload.get("controls"):
+            lines.append("\n## Меры защиты")
+            for ctrl in payload["controls"]:
+                lines.append(f"- **{ctrl.get('area', '')}**: {ctrl.get('control', '')}")
+        if payload.get("open_questions"):
+            lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
+        return "\n".join(lines)
+
+    if artifact_role == "operational_architecture":
+        lines = ["# Операционная архитектура"]
+        if payload.get("summary"):
+            lines += ["", payload["summary"]]
+        if payload.get("scalability"):
+            lines += ["\n## Масштабирование", *[f"- {x}" for x in payload["scalability"]]]
+        if payload.get("observability"):
+            lines += ["\n## Наблюдаемость", *[f"- {x}" for x in payload["observability"]]]
+        if payload.get("resilience"):
+            lines += ["\n## Отказоустойчивость и восстановление", *[f"- {x}" for x in payload["resilience"]]]
+        if payload.get("deployment_release"):
+            lines += ["\n## Развёртывание и релизы", *[f"- {x}" for x in payload["deployment_release"]]]
+        if payload.get("slas"):
+            lines += ["\n## Целевые уровни сервиса (SLA/SLO)", *[f"- {x}" for x in payload["slas"]]]
         if payload.get("open_questions"):
             lines += ["\n## Открытые вопросы", *[f"- {x}" for x in payload["open_questions"]]]
         return "\n".join(lines)

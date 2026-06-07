@@ -33,6 +33,7 @@ requires:
     optional:
       - architecture.deployment_map@1.0.0
       - common.acceptance_model_definition@1.0.0
+      - common.nonfunctional_requirements@1.0.0
       - common.solution_tradeoff_matrix@1.0.0
       - common.constraint_inventory@1.0.0
       - common.feasibility_assessment@1.0.0

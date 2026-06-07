@@ -1,0 +1,46 @@
+kind: task_template
+id: architecture.architecture_decisions
+version: 1.0.0
+title: Зафиксировать архитектурные решения (ADR)
+type: leaf
+status: active
+domain: architecture
+executor: llm
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+      - common.requirements_spec@1.0.0
+    optional:
+      - architecture.system_context_definition@1.0.0
+      - common.solution_tradeoff_matrix@1.0.0
+      - common.nonfunctional_requirements@1.0.0
+      - common.constraint_inventory@1.0.0
+produces:
+  artifact: architecture.architecture_decisions@1.0.0
+context:
+  max_tokens: 20000
+planning:
+  priority: 360
+summary: |
+  Зафиксируй ключевые архитектурные решения как ADR (Architecture Decision
+  Records) — то, ЧТО решено и ПОЧЕМУ. Бери только решения, реально вытекающие
+  из модели компонентов, ТЗ, НФТ и выбранного подхода; не выдумывай.
+
+  Для каждого решения (decisions[]):
+  • id — короткий идентификатор (ADR-1, ADR-2…);
+  • title — суть решения одной строкой;
+  • status — proposed / accepted;
+  • context — какая сила/требование/ограничение его потребовало (со ссылкой на
+    НФТ/ограничения/контекст);
+  • decision — что именно решено;
+  • alternatives — рассмотренные альтернативы; на каждую option + why_not
+    (почему отклонена);
+  • consequences — последствия (плюсы и принятые компромиссы).
+
+  Не дублируй описание компонентов — здесь только РЕШЕНИЯ и их обоснование.
+  Нерешённое — в open_questions.
+
+  ▸ confidence — 0.0-1.0: насколько решения обоснованы контекстом.

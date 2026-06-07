@@ -18,6 +18,20 @@ children:
   - id: project_risk_register
     task: common.project_risk_register@1.0.0
     required: false
+  # Профессиональные виды архитектуры — отдельные документы-артефакты, не
+  # блокируют завершение цели (design_document остаётся главным дилевераблом).
+  - id: architecture_decisions
+    task: architecture.architecture_decisions@1.0.0
+    required: false
+  - id: data_architecture
+    task: architecture.data_architecture@1.0.0
+    required: false
+  - id: security_architecture
+    task: architecture.security_architecture@1.0.0
+    required: false
+  - id: operational_architecture
+    task: architecture.operational_architecture@1.0.0
+    required: false
   - id: design_synthesis
     task: architecture.design_synthesis@1.0.0
 # Порядок генерации (по priority, design_synthesis — последний, priority 100):
