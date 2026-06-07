@@ -49,10 +49,29 @@ def test_rollback_preview_lists_target_and_archived(tmp_path: Path) -> None:
     body = resp.json()
     assert body["target_task_id"] == target
     assert body["target_title"]
+    assert body["rollbackable"] is True  # у выполненного шага есть чекпоинт
     target_steps = [s for s in body["reverted_steps"] if s["task_id"] == target]
     assert target_steps and target_steps[0]["is_target"] is True
     # Откат самого раннего шага утягивает зависимые артефакты в архив.
     assert isinstance(body["archived_artifacts"], list)
+
+
+def test_rollback_preview_unavailable_without_checkpoint(tmp_path: Path) -> None:
+    client, project_id, workspace, _target = _bootstrap(tmp_path)
+    runtime = SqliteRuntime()
+    with_checkpoint = {c.task_id for c in runtime.list_step_checkpoints(workspace)}
+    # Задача без чекпоинта (например, композит/невыполненный лист): откат недоступен.
+    no_checkpoint = next(
+        t.task_id for t in runtime.list_tasks(workspace) if t.task_id not in with_checkpoint
+    )
+    resp = client.get(
+        f"/api/projects/{project_id}/rollback/preview",
+        params={"target_task_id": no_checkpoint},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rollbackable"] is False
+    assert body["blocked_reason"]
 
 
 def test_rollback_command_then_history(tmp_path: Path) -> None:

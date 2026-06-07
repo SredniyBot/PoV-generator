@@ -2495,6 +2495,15 @@ function RollbackPreviewModal({
         <p className="muted">Расчёт зависимостей…</p>
       ) : previewError ? (
         <div className="rollback-error">{previewError}</div>
+      ) : preview && !preview.rollbackable ? (
+        <div className="rollback-preview">
+          <div className="rollback-error">{preview.blocked_reason}</div>
+          <div className="rollback-preview__actions">
+            <Button tone="secondary" onClick={onClose}>
+              Закрыть
+            </Button>
+          </div>
+        </div>
       ) : preview ? (
         <div className="rollback-preview">
           <p>

@@ -1475,6 +1475,22 @@ class WorkspaceQueryService:
         tasks_by_id = {task.task_id: task for task in self._runtime.list_tasks(workspace)}
         target = tasks_by_id.get(target_task_id)
 
+        # Откат возможен только если у целевого шага есть чекпоинт (pre-state) —
+        # база реконструкции. Шаги, выполненные до появления механизма отката,
+        # чекпоинта не имеют: показываем превью, но гасим подтверждение.
+        checkpoint_task_ids = {
+            checkpoint.task_id for checkpoint in self._runtime.list_step_checkpoints(workspace)
+        }
+        rollbackable = target_task_id in checkpoint_task_ids
+        blocked_reason = (
+            ""
+            if rollbackable
+            else (
+                "Шаг выполнен до появления механизма отката — точка "
+                "восстановления (чекпоинт) недоступна, откатить его нельзя."
+            )
+        )
+
         reverted_steps = tuple(
             sorted(
                 (
@@ -1511,6 +1527,8 @@ class WorkspaceQueryService:
             target_title=target.title if target is not None else target_task_id,
             reverted_steps=reverted_steps,
             archived_artifacts=archived_artifacts,
+            rollbackable=rollbackable,
+            blocked_reason=blocked_reason,
         )
 
     def rollback_history(self, project_id: str) -> ProjectRollbackHistoryView:

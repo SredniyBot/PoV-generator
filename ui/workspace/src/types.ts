@@ -309,6 +309,10 @@ export interface RollbackPreviewView {
   target_title: string;
   reverted_steps: RollbackStepView[];
   archived_artifacts: RollbackArtifactView[];
+  // Доступен ли откат (есть ли чекпоинт). Для шагов, выполненных до появления
+  // механизма отката, чекпоинта нет — подтверждение гасится.
+  rollbackable: boolean;
+  blocked_reason: string;
 }
 
 export interface RollbackResultView {

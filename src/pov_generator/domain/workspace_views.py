@@ -749,6 +749,11 @@ class RollbackPreviewView:
     target_title: str
     reverted_steps: tuple[RollbackStepView, ...]
     archived_artifacts: tuple[RollbackArtifactView, ...]
+    # Доступен ли откат для этого шага. Откат требует точку восстановления
+    # (чекпоинт pre-state). У шагов, выполненных до появления механизма
+    # отката, чекпоинта нет — откат недоступен, UI гасит подтверждение.
+    rollbackable: bool = True
+    blocked_reason: str = ""
 
 
 @dataclass(frozen=True)
