@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -20,14 +19,14 @@ import pytest
 
 from pov_generator.application.provider_settings_service import (
     KNOWN_MODELS_BY_PROVIDER,
-    ProviderSettingsService,
     RECOMMENDED_BY_PURPOSE,
+    ProviderSettingsService,
 )
 from pov_generator.common.errors import ValidationError
-from pov_generator.infrastructure.llm import LLMResult
 from pov_generator.domain.llm_settings import (
     PURPOSE_EXECUTION_STANDARD,
 )
+from pov_generator.infrastructure.llm import LLMResult
 from pov_generator.infrastructure.llm_settings_store import SqliteSettingsStore
 
 
@@ -196,7 +195,9 @@ def test_test_connection_missing_id_returns_error(tmp_path: Path, monkeypatch) -
 def test_test_model_uses_top_priority_routing(tmp_path: Path, monkeypatch) -> None:
     svc = _make_service(tmp_path, monkeypatch)
     primary = svc.add_connection(provider_type="anthropic", display_name="Primary", api_key="k1")
-    backup = svc.add_connection(provider_type="claude_cli", display_name="Backup", api_key=None)
+    # Второе подключение нужно ради side-effect (регистрация запасного маршрута),
+    # сам объект не используется.
+    svc.add_connection(provider_type="claude_cli", display_name="Backup", api_key=None)
 
     captured: dict = {}
 

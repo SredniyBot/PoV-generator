@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 PositionType = Literal["fact", "assumption", "decision", "constraint", "risk"]
 """Роль положения в понимании проекта.
 

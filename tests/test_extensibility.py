@@ -16,10 +16,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from pov_generator.application.context_service import ContextService
 from pov_generator.application.planning_service import PlanningService
@@ -31,7 +28,6 @@ from pov_generator.domain.artifacts import (
     ArtifactRelations,
 )
 from pov_generator.domain.registry import ObjectRef
-from pov_generator.domain.tasks import TaskRecord
 from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 

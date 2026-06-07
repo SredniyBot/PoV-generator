@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 from pov_generator.infrastructure.llm import LLMResult
@@ -242,10 +241,12 @@ def test_test_model_endpoint(tmp_path: Path, monkeypatch) -> None:
 
 def test_delete_routing(tmp_path: Path, monkeypatch) -> None:
     client = _build_client(tmp_path, monkeypatch)
-    created = client.post(
+    # POST нужен ради side-effect (создание провайдера+маршрута), тело ответа
+    # в этом тесте не используется.
+    client.post(
         "/api/settings/providers",
         json={"provider_type": "anthropic", "display_name": "A", "api_key": "k"},
-    ).json()
+    )
     catalog = client.get("/api/settings/models").json()
     routing_id = catalog[0]["routings"][0]["routing_id"]
 

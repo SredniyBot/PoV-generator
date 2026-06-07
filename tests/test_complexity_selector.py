@@ -92,7 +92,6 @@ def test_selector_llm_calls_provider_with_correct_schema(monkeypatch) -> None:
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR", "on")
     monkeypatch.setenv("POV_COMPLEXITY_SELECTOR_PROVIDER", "claude_sdk")
 
-    from pov_generator.application import complexity_selector_service as mod
     from pov_generator.infrastructure.llm import LLMResult
 
     fake_response = {"complexity": "complex", "rationale": "LLM решил — многомодальный сценарий."}

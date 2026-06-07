@@ -26,7 +26,6 @@ from ..common.serialization import utc_now_iso
 from .clarifications import ClarificationMode
 from .positions import VisibilityLevel
 
-
 # --- значения статусов -------------------------------------------------------
 
 
