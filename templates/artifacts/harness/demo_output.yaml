@@ -1,0 +1,10 @@
+kind: artifact_contract
+id: harness.demo_output
+version: 1.0.0
+title: Демонстрационный результат harness
+# Каркасный контракт для проверки исполнителя executor: harness (Ф1).
+# Неструктурный: содержимое валидируется не JSON-схемой, а (позже) гейтами.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

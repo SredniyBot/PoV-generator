@@ -1,0 +1,5 @@
+{
+  "summary": "Демонстрационный артефакт, произведённый stub harness-агентом.",
+  "produced_by": "stub-harness",
+  "notes": "Ф1: структурный payload через harvest-by-convention, без Docker."
+}

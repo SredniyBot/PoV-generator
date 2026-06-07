@@ -1,0 +1,28 @@
+kind: task_template
+id: harness.demo
+version: 1.0.0
+title: Демонстрация harness-исполнителя
+type: leaf
+status: active
+domain: demo
+# Узел исполняется автономным агентом (второй бэкенд исполнения). Ф1 — stub
+# harness-рантайм (без Docker). Шаблон провайдер-агностичен: конкретный harness
+# резолвится из настроек. Не привязан к objective — каркас/пример executor=harness.
+executor: harness
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required: []
+    optional: []
+produces:
+  artifact: harness.demo_output@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 4000
+planning:
+  priority: 10
+summary: |
+  Демонстрационный узел, исполняемый harness-агентом. Производит простой
+  структурный артефакт. Служит каркасом и точкой проверки исполнителя
+  executor: harness в общем цикле (контекст → исполнение → артефакт).

@@ -32,6 +32,7 @@ from .decision_extraction_service import (
     decisions_schema,
 )
 from .decision_identification_service import DecisionIdentificationService
+from .harness_execution_service import HarnessExecutionService
 from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
@@ -185,6 +186,9 @@ class ExecutionService:
         decision_planning_service: DecisionIdentificationService | None = None,
         decision_extraction_service: "DecisionExtractionService | None" = None,
         decision_context_builder: DecisionContextBuilder | None = None,
+        # Второй бэкенд исполнения: узлы с executor=harness идут через него
+        # (Ф1 — stub-провайдер, без Docker). Опционален — по умолчанию stub.
+        harness_service: HarnessExecutionService | None = None,
         # v3.7: phase_gap_analysis_service kwarg сохранён в сигнатуре для
         # backward-compat. Сам сервис удалён — phase-gap признан избыточной
         # абстракцией (см. обсуждение v3.7). Игнорируется.
@@ -193,6 +197,7 @@ class ExecutionService:
         self._runtime = runtime
         self._context_service = context_service
         self._llm = llm_registry or LLMProviderRegistry()
+        self._harness = harness_service or HarnessExecutionService()
         # v3.6: выявление решений на уровне задачи + post-artifact extraction +
         # checkpoint integration. Опциональны для backward-compat в тестах;
         # в проде инжектируются из api.py.
@@ -296,11 +301,18 @@ class ExecutionService:
         # 3. Иначе (provider=None) — резолв через settings-store по purpose.
         #    Это **основной** путь: модель и connection определяются
         #    конфигурацией системы (Settings → Default Models).
+        # executor=harness — узел исполняет автономный агент (второй бэкенд за
+        # тем же контрактом артефакта). LLM-провайдер не нужен; конкретный
+        # harness резолвит HarnessExecutionService (Ф1 — stub, без Docker).
+        is_harness = template.executor == "harness"
         llm_provider: LLMProvider | None = None
-        non_llm_path = active_provider == "stub" or (
+        non_llm_path = is_harness or active_provider == "stub" or (
             template.merge is not None and template.merge.strategy == "structural"
         )
-        if non_llm_path:
+        if is_harness:
+            active_provider = self._harness.default_provider_name()
+            active_model = model or ""
+        elif non_llm_path:
             active_model = model or _fallback_model_for_meta(active_provider or "stub", complexity_value)
         elif active_provider in {"openrouter", "claude_sdk", "claude_subscription"}:
             # Legacy: явное имя провайдера, кредиты из env.
@@ -392,6 +404,7 @@ class ExecutionService:
             self._decision_identification is not None
             and self._checkpoint is not None
             and not is_structural_merge
+            and not is_harness  # harness-узел не идёт через LLM-выявление решений
             and template_allows_identification
             and (active_provider != "stub" or force_decision_identification)
         )
@@ -450,7 +463,32 @@ class ExecutionService:
         # Учёт токенов: usages всех LLM-вызовов задачи, заполняется ниже
         # (для stub — оценка по длине; для structural-merge — пусто, n/a).
         llm_usages: list[tuple[str | None, LLMUsage | None]] = []
-        if template.merge is not None and template.merge.strategy == "structural":
+        if is_harness:
+            # Второй бэкенд: payload узла даёт harness-агент (Ф1 — stub).
+            # Downstream (персист/валидация/решения) — общий, как у LLM/stub.
+            outcome = self._harness.produce_artifact_payload(
+                artifact_role=artifact_role,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_hint=model or None,
+            )
+            payload = outcome.payload
+            live_reasoning = None
+            active_provider = outcome.provider_name
+            active_model = outcome.model or active_model
+            # Usage harness'а (best-effort). Нет данных → оценка по длине
+            # brief+payload, чтобы учёт работал в тестах (source=estimated).
+            llm_usages = [
+                (
+                    None,
+                    outcome.usage
+                    or LLMUsage.estimated(
+                        input_text=outcome.brief,
+                        output_text=json_dumps(payload),
+                    ),
+                )
+            ]
+        elif template.merge is not None and template.merge.strategy == "structural":
             payload = self._execute_structural_merge(
                 workspace=workspace,
                 context_manifest=context_manifest,

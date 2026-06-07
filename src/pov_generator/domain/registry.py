@@ -7,7 +7,7 @@ from typing import Any, Literal
 from ..common.errors import NotFoundError, ValidationError
 
 TemplateType = Literal["composite", "leaf", "fan_out"]
-ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system"]
+ExecutorType = Literal["llm", "script", "tool", "human", "hybrid", "system", "harness"]
 ComplexityLevel = Literal["trivial", "standard", "complex"]
 StageExecutionMode = Literal["single_call", "per_stage_cot"]
 QualityGateCheckType = Literal["human_approval", "external_signoff", "automated_review"]
