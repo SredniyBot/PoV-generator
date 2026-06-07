@@ -724,10 +724,10 @@ export function CheckpointSessionPage({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["checkpoint", projectId, sessionId] });
       queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "shell"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
-      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task_graph"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "artifacts"] });
       // Назад на обзор — там пользователь видит свежий workflow run progress
       navigate(`/projects/${projectId}/overview`);
@@ -916,10 +916,10 @@ export function PendingDecisionsPage({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["project-shell", projectId] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "shell"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
       queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
-      queryClient.invalidateQueries({ queryKey: [projectId, "task-graph"] });
+      queryClient.invalidateQueries({ queryKey: [projectId, "task_graph"] });
       navigate(`/projects/${projectId}/overview`);
     },
   });

@@ -9,21 +9,34 @@ export interface UseProjectRealtimeOptions {
   projectId: string | null;
   projections?: ProjectionName[];
   onProjectionChanged: (projection: ProjectionName) => void;
+  /**
+   * Вызывается при ПЕРЕподключении сокета (не на первом коннекте). Нужен,
+   * чтобы закрыть «дыру рассинхрона»: пока WS был оборван, изменения в БД не
+   * приходили; на реконнекте сервер шлёт snapshot с актуальным токеном, но
+   * пропущенные projection_changed уже не придут. Здесь — форсированно
+   * подтянуть всё (инвалидация всех realtime-ключей).
+   */
+  onResync?: () => void;
 }
 
 export function useProjectRealtime({
   projectId,
   projections,
   onProjectionChanged,
+  onResync,
 }: UseProjectRealtimeOptions): { status: RealtimeStatus; lastChangedProjection: ProjectionName | null } {
   const [status, setStatus] = useState<RealtimeStatus>("idle");
   const [lastChangedProjection, setLastChangedProjection] = useState<ProjectionName | null>(null);
   const retryRef = useRef<number | null>(null);
   const callbackRef = useRef(onProjectionChanged);
+  const resyncRef = useRef(onResync);
 
   useEffect(() => {
     callbackRef.current = onProjectionChanged;
   }, [onProjectionChanged]);
+  useEffect(() => {
+    resyncRef.current = onResync;
+  }, [onResync]);
 
   const projectionKey = useMemo(() => (projections ?? []).join(","), [projections]);
 
@@ -36,6 +49,9 @@ export function useProjectRealtime({
 
     let isMounted = true;
     let socket: WebSocket | null = null;
+    // false — первый коннект (resync не нужен, react-query и так грузит на
+    // mount); true — это уже реконнект → подтянуть пропущенное.
+    let hasConnected = false;
 
     const connect = () => {
       if (!isMounted) {
@@ -49,6 +65,10 @@ export function useProjectRealtime({
           return;
         }
         setStatus("connected");
+        if (hasConnected) {
+          resyncRef.current?.();
+        }
+        hasConnected = true;
       };
 
       socket.onmessage = (event) => {

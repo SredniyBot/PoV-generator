@@ -532,6 +532,10 @@ function WorkspaceRoute({
       if (projection === "workflow_runs") {
         void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
         void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+        // Граф задач тоже двигается по ходу прогона (start / смена статуса /
+        // новый шаг). Без явной инвалидации пульс активной задачи и статусы на
+        // графе отставали от прогресса прогона (полл бил только по run).
+        void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "task_graph") });
         // Решения и checkpoint'ы меняются по ходу run'а (identification/
         // extraction/финализация сессий) — это тоже двигает realtime_token,
         // поэтому обновляем их в реальном времени, без перезагрузки сайта.
@@ -540,6 +544,19 @@ function WorkspaceRoute({
         void queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
         void queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
       }
+    },
+    onResync: () => {
+      // Реконнект: WS был оборван — пропущенные projection_changed уже не
+      // придут, поэтому форсированно подтягиваем всё (дыра рассинхрона).
+      REALTIME_PROJECTIONS.forEach((p) =>
+        queryClient.invalidateQueries({ queryKey: projectionKey(projectId, p) }),
+      );
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["decisions", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["pending-decisions", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["checkpoints-list", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["methodology-packs"] });
     },
   });
 
