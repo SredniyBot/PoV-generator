@@ -15,6 +15,7 @@
  * - показывает прогресс-баннер и меню действий на нодах.
  */
 
+import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   Background,
@@ -32,7 +33,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { AlertTriangle, ChevronDown, ChevronRight, FileText, Layers, Split } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, FileText, Layers, Split, Undo2 } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
@@ -49,6 +50,13 @@ interface TaskGraphActions {
   onOpenArtifacts: (task: TaskNodeView) => void;
   onGoToDecisions: () => void;
   onRollback: (taskId: string) => void;
+  // Транзитивное UI-состояние, общее для всех узлов (через контекст, чтобы не
+  // протаскивать в data каждого узла и не ломать мемоизацию ReactFlow):
+  // задача с ретраем в полёте — её кнопка «Повторить» блокируется;
+  // цель отката и транзитивно затрагиваемые шаги — подсветка на графе.
+  retryingTaskId: string | null;
+  rollbackTargetId: string | null;
+  rollbackAffectedIds: Set<string>;
 }
 
 const TaskGraphActionsCtx = createContext<TaskGraphActions | null>(null);
@@ -222,9 +230,26 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
   const childCount = data.childCount ?? 0;
   const collapsible = isComposite && childCount > 0 && Boolean(data.onToggle);
 
+  // Ретрай этой задачи в полёте — кнопка «Повторить» блокируется (задача 2).
+  const retrying = actions?.retryingTaskId === task.task_id;
+  // Подсветка отката: цель / транзитивно затрагиваемый / приглушённый (вне
+  // зоны отката, пока он «взведён»).
+  const rbState =
+    !actions || !actions.rollbackTargetId
+      ? null
+      : actions.rollbackTargetId === task.task_id
+        ? "target"
+        : actions.rollbackAffectedIds.has(task.task_id)
+          ? "affected"
+          : "dimmed";
+
   return (
     <div
-      className={`tg-node${task.is_current ? " tg-node--current" : ""}`}
+      className={
+        "tg-node" +
+        (task.is_current ? " tg-node--current" : "") +
+        (rbState ? ` tg-node--rb-${rbState}` : "")
+      }
       style={{ borderLeftColor: meta.color }}
     >
       <Handle type="target" position={Position.Top} className="tg-handle" />
@@ -272,9 +297,10 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           {showRetry && (
             <button
               className="tg-action-btn tg-action-btn--danger"
+              disabled={retrying}
               onClick={(e) => { e.stopPropagation(); actions.onRetry(task.task_id); }}
             >
-              Повторить
+              {retrying ? "Повторяю…" : "Повторить"}
             </button>
           )}
           {showArtifacts && (
@@ -295,11 +321,14 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           )}
           {showRollback && (
             <button
-              className="tg-action-btn tg-action-btn--rollback"
+              className={
+                "tg-action-btn tg-action-btn--rollback" +
+                (rbState === "target" ? " tg-action-btn--rollback-armed" : "")
+              }
               title="Откатить проект к состоянию до выполнения этого шага"
               onClick={(e) => { e.stopPropagation(); actions.onRollback(task.task_id); }}
             >
-              ↶ Откатить
+              <Undo2 size={11} /> Откатить
             </button>
           )}
         </div>
@@ -413,6 +442,14 @@ export interface TaskGraphCanvasProps {
   onOpenArtifacts?: (task: TaskNodeView) => void;
   onGoToDecisions?: () => void;
   onRollback?: (taskId: string) => void;
+  // Задача с ретраем в полёте — её кнопка «Повторить» блокируется (задача 2).
+  retryingTaskId?: string | null;
+  // Откат: цель + транзитивно затрагиваемые шаги — для подсветки на графе;
+  // overlay — плавающая панель подтверждения внутри канвы (не модал, чтобы
+  // подсветка оставалась видна).
+  rollbackTargetId?: string | null;
+  rollbackAffectedIds?: readonly string[];
+  rollbackOverlay?: ReactNode;
 }
 
 // ── Inner canvas (needs ReactFlowProvider ancestor) ────────────────────────
@@ -428,6 +465,10 @@ function TaskGraphCanvasInner({
   onOpenArtifacts,
   onGoToDecisions,
   onRollback,
+  retryingTaskId = null,
+  rollbackTargetId = null,
+  rollbackAffectedIds,
+  rollbackOverlay,
 }: TaskGraphCanvasProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -510,14 +551,21 @@ function TaskGraphCanvasInner({
     });
   }, [focusTaskId, nodes, setCenter]);
 
+  const rollbackAffectedSet = useMemo(
+    () => new Set(rollbackAffectedIds ?? []),
+    [rollbackAffectedIds],
+  );
   const actions: TaskGraphActions = useMemo(
     () => ({
       onRetry:         (id) => onRetry?.(id),
       onOpenArtifacts: (task) => onOpenArtifacts?.(task),
       onGoToDecisions: () => onGoToDecisions?.(),
       onRollback:      (id) => onRollback?.(id),
+      retryingTaskId,
+      rollbackTargetId,
+      rollbackAffectedIds: rollbackAffectedSet,
     }),
-    [onRetry, onOpenArtifacts, onGoToDecisions, onRollback],
+    [onRetry, onOpenArtifacts, onGoToDecisions, onRollback, retryingTaskId, rollbackTargetId, rollbackAffectedSet],
   );
 
   return (
@@ -528,6 +576,9 @@ function TaskGraphCanvasInner({
           completedLeafTasks={completedLeafTasks}
           totalLeafTasks={totalLeafTasks}
         />
+        {/* Панель подтверждения отката — плавающая внутри канвы (не модал),
+            чтобы подсветка затрагиваемых узлов оставалась видна (задача 3). */}
+        {rollbackOverlay}
         <ReactFlow
           nodes={nodes}
           edges={edges}

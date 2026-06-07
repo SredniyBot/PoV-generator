@@ -1931,32 +1931,6 @@ code {
   animation: timelineFresh 1.2s ease-out;
 }
 
-.detail-callout {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.detail-meta-list {
-  display: grid;
-  gap: 10px;
-}
-
-.detail-meta-list > div {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.detail-meta-list span {
-  color: var(--text-tertiary);
-  font-size: 12px;
-}
-
 .artifacts-layout {
   align-items: start;
 }
@@ -3483,9 +3457,13 @@ code {
   transition: border-color var(--motion-fast) var(--motion-easing),
     color var(--motion-fast) var(--motion-easing);
 }
-.workflow-run__row-retry:hover {
+.workflow-run__row-retry:hover:not(:disabled) {
   border-color: var(--border-strong, rgba(255, 255, 255, 0.14));
   color: var(--text-primary, #e8ecf3);
+}
+.workflow-run__row-retry:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .workflow-run__row-error {
   flex-basis: 100%;
@@ -3511,6 +3489,7 @@ code {
 /* ---- TaskGraphCanvas (ReactFlow + dagre, W4.2 / G1) -------------------- */
 
 .tg-canvas {
+  position: relative;
   width: 100%;
   min-height: 60vh;
   background: rgba(255, 255, 255, 0.01);
@@ -3755,135 +3734,254 @@ code {
 }
 
 .tg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 0.2rem 0.5rem;
   font-size: 0.68rem;
-  border-radius: 0.3rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: var(--surface-primary, rgba(28, 32, 38, 0.95));
-  color: var(--text-secondary, #9aa4b2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition: background var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing);
 }
 
-.tg-action-btn:hover {
-  background: rgba(120, 184, 201, 0.15);
-  color: var(--text-primary, #e8ecf3);
+.tg-action-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--text-primary);
 }
 
-.tg-action-btn--danger:hover {
-  background: rgba(215, 131, 131, 0.18);
-  color: #e3a3a3;
+.tg-action-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
-.tg-action-btn--rollback:hover {
-  background: rgba(214, 173, 89, 0.18);
-  color: #e0c179;
+.tg-action-btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
-/* ── Откат шага: диалог превью + история ──────────────────────────────── */
-.rollback-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.tg-action-btn--rollback:hover:not(:disabled) {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
 }
 
-.rollback-preview > p {
-  margin: 0;
-  color: var(--text-secondary, #9aa4b2);
-  line-height: 1.5;
+/* Кнопка отката «взведена» (её цель сейчас в предпросмотре) — danger-акцент. */
+.tg-action-btn--rollback-armed {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 
-.rollback-preview__section h4 {
-  margin: 0 0 0.5rem;
-  font-size: 0.85rem;
-  color: var(--text-primary, #e8ecf3);
+/* ── Откат шага: подсветка на графе + плавающая панель + история ──────── */
+
+/* Подсветка узлов при «взведённом» откате (задача 3). Двойной класс — чтобы
+   перебить box-shadow .tg-node--current. Цель — danger-кольцо со свечением;
+   транзитивно затрагиваемые — danger-рамка; остальные приглушены, чтобы
+   взгляд сфокусировался на зоне отката. */
+.tg-node.tg-node--rb-target {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px var(--danger), 0 0 20px var(--danger-soft);
 }
 
-.rollback-preview__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  max-height: 220px;
-  overflow-y: auto;
+.tg-node.tg-node--rb-affected {
+  border-color: var(--danger-border);
+  box-shadow: 0 0 0 1px var(--danger-border);
 }
 
-.rollback-preview__row {
+.tg-node.tg-node--rb-dimmed {
+  opacity: 0.38;
+  filter: saturate(0.6);
+}
+
+/* Плавающая панель подтверждения отката — поверх канвы, сверху по центру;
+   не перекрывает контролы (низ-слева) и миникарту (низ-справа). */
+.rollback-bar {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
+  gap: var(--space-3);
+  max-width: min(640px, calc(100% - 32px));
+  padding: 10px 12px 10px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--danger-border);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-overlay);
 }
 
-.rollback-preview__role {
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  font-weight: 600;
-  background: rgba(120, 184, 201, 0.18);
-  color: #9fd2dd;
-  white-space: nowrap;
+.rollback-bar__icon {
+  display: inline-flex;
+  color: var(--danger);
+  flex-shrink: 0;
 }
 
-.rollback-preview__title {
-  color: var(--text-primary, #e8ecf3);
-}
-
-.rollback-preview__target {
-  color: #e0c179;
-  font-weight: 600;
-}
-
-.rollback-preview__actions {
+.rollback-bar__body {
   display: flex;
-  justify-content: flex-end;
-  gap: 0.6rem;
-  margin-top: 0.5rem;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.rollback-error {
-  padding: 0.6rem 0.8rem;
-  border-radius: 0.4rem;
-  background: rgba(215, 131, 131, 0.14);
-  border: 1px solid rgba(215, 131, 131, 0.24);
-  color: #e3a3a3;
-  font-size: 0.82rem;
+.rollback-bar__title {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
 }
 
+.rollback-bar__title--error {
+  color: var(--danger);
+  font-weight: var(--font-weight-regular);
+}
+
+.rollback-bar__meta {
+  font-size: var(--font-size-meta);
+  color: var(--text-secondary);
+}
+
+.rollback-bar__meta strong {
+  color: var(--text-primary);
+}
+
+.rollback-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* История откатов */
 .rollback-history {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-2);
 }
 
 .rollback-history__row {
-  padding: 0.6rem 0.8rem;
-  border-radius: 0.4rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
 }
 
 .rollback-history__meta {
-  font-size: 0.75rem;
-  margin-top: 0.25rem;
+  font-size: var(--font-size-meta);
+  margin-top: 4px;
 }
 
 /* Status summary on failed node */
 .tg-node__error {
   font-size: 0.68rem;
-  color: rgba(215, 131, 131, 0.85);
+  color: var(--danger);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: -0.15rem;
+}
+
+/* ── Панель подробностей задачи (drawer графа, задача 4) ──────────────── */
+.task-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.task-detail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.task-detail__type {
+  font-size: var(--font-size-meta);
+  color: var(--text-tertiary);
+}
+
+.task-detail__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Алерт «задача упала» — на токенах danger, со значком. */
+.task-detail__alert {
+  display: flex;
+  gap: var(--space-2);
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+}
+
+.task-detail__alert-icon {
+  color: var(--danger);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.task-detail__alert strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-primary);
+}
+
+.task-detail__alert p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  line-height: 1.45;
+}
+
+.task-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Технические детали — спокойный key-value список (label слева, значение справа). */
+.task-detail__meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.task-detail__meta > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 9px 12px;
+  background: var(--surface-secondary);
+}
+
+.task-detail__meta dt {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+  flex-shrink: 0;
+}
+
+.task-detail__meta dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  font-family: var(--font-family-mono, monospace);
+  text-align: right;
+  word-break: break-word;
 }
 
 /* ---- Decision Log (унификация со стилем остальных вкладок) ---------- */
@@ -4271,57 +4369,6 @@ code {
 .artifact-detail__provenance-collapsible li {
   list-style: disc;
   margin: 0.15rem 0;
-}
-
-/* L3: Баннер «у failed-задачи есть открытые вопросы». Появляется в
-   TaskNodeDetail (drawer task-graph и L2 timeline). Раньше пользователь
-   видел только status pill «Ошибка» и тех. инфо шаблона — было непонятно,
-   что делать. Теперь явно: «открой вопросы → ответь → задача перезапустится». */
-.task-open-questions-banner {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  padding: 0.85rem 1rem;
-  margin: 0.4rem 0 0.7rem;
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-left: 3px solid rgba(239, 68, 68, 0.8);
-  border-radius: 0.5rem;
-  font-size: 0.88rem;
-  line-height: 1.45;
-}
-
-.task-open-questions-banner--muted {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
-  border-left-color: rgba(245, 158, 11, 0.7);
-}
-
-.task-open-questions-banner__head strong {
-  display: block;
-  margin-bottom: 0.25rem;
-}
-
-.task-open-questions-banner__head p {
-  margin: 0;
-  opacity: 0.85;
-}
-
-.task-open-questions-banner__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.task-open-questions-banner__list li {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  opacity: 0.92;
 }
 
 .clar-counter {
@@ -6146,6 +6193,15 @@ code {
   cursor: progress;
 }
 
+/* Пояснение, почему переход к этапу заблокирован (не предоставлены реквизиты). */
+.stage-cta-blocked {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  font-size: var(--font-size-meta);
+  color: var(--warning);
+  line-height: 1.45;
+}
+
 /* ── Реквизиты (требуемые входные данные) ──────────────────────────────── */
 .requisites { display: flex; flex-direction: column; gap: 1rem; }
 .requisites__group {
@@ -6167,6 +6223,16 @@ code {
   gap: 0.75rem;
 }
 .requisites__item-title { color: var(--text-primary, #e6edf3); }
+/* Вид реквизита (· набор данных) — приглушённо; «обязателен» — warning-акцент. */
+.requisites__item-kind {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+.requisites__item-blocking {
+  color: var(--warning);
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
+}
 
 /* ── Зоны роста (пробелы в умениях) ────────────────────────────────────── */
 .stacked-sections { display: flex; flex-direction: column; gap: 1rem; }

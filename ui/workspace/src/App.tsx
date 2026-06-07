@@ -26,6 +26,7 @@ import {
   Sparkles,
   TerminalSquare,
   Trash2,
+  Undo2,
   Waypoints,
   XCircle,
 } from "lucide-react";
@@ -98,7 +99,7 @@ import {
   prettyLabel,
 } from "./ui";
 import { StageStatusBar } from "./StageStatusBar";
-import { runStatusVisual, stepStatusVisual } from "./workflowStatus";
+import { runStatusVisual, stepStatusVisual, taskStatusVisual } from "./workflowStatus";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
   "shell",
@@ -804,6 +805,12 @@ function RunActivitySection({
   const sticky = stickyRunId ? recent.find((r) => r.run_id === stickyRunId) ?? null : null;
   const display = active ?? sticky ?? recent[0] ?? null;
 
+  // Локальная блокировка кнопки «Повторить» в ленте: после нажатия задача
+  // помечается «в процессе ретрая», кнопка гаснет — нельзя дёрнуть дважды
+  // и видно, что нажатие сработало (задача 2). Снимается при любом обновлении
+  // ленты (ретрай зарегистрирован → новый шаг/смена статуса).
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
+
   // Полная лента: шаги ВСЕХ прогонов проекта, упорядоченные по времени (с начала
   // проекта). Раньше показывались шаги лишь одного прогона (display.steps),
   // из-за чего после перезагрузки лента «теряла» всё, кроме последнего прогона.
@@ -819,6 +826,13 @@ function RunActivitySection({
     );
     return steps;
   }, [recent]);
+
+  // Лента обновилась (ретрай зарегистрирован) → снимаем локальную блокировку
+  // кнопок «Повторить».
+  useEffect(() => {
+    setRetryingIds((prev) => (prev.size ? new Set() : prev));
+  }, [allSteps]);
+
   // task_id → человеческое имя задачи (в ленте показываем имя, а не id).
   const titleById = useMemo(() => {
     const map = new Map<string, string>();
@@ -932,13 +946,18 @@ function RunActivitySection({
                 {durationSec !== null ? (
                   <span className="workflow-run__row-duration">{formatElapsedHMS(durationSec)}</span>
                 ) : null}
-                {isFailed && step.task_id && onRetryTask ? (
+                {isFailed && !isPrevAttempt && step.task_id && onRetryTask ? (
                   <button
                     type="button"
                     className="workflow-run__row-retry"
-                    onClick={() => onRetryTask(step.task_id!)}
+                    disabled={retryingIds.has(step.task_id)}
+                    onClick={() => {
+                      const id = step.task_id!;
+                      setRetryingIds((prev) => new Set(prev).add(id));
+                      onRetryTask(id);
+                    }}
                   >
-                    Повторить
+                    {retryingIds.has(step.task_id) ? "Повторяю…" : "Повторить"}
                   </button>
                 ) : null}
                 {step.error_message ? (
@@ -1488,84 +1507,86 @@ function TaskNodeDetail({
   task,
   onRetryTask,
   projectId,
+  retrying = false,
 }: {
   task: TaskNodeView;
   onRetryTask: (taskId: string) => void;
   projectId?: string;
+  retrying?: boolean;
 }) {
   const navigate = useNavigate();
-
+  // Статус — из единого словаря (та же пилюля/цвет, что на графе и в ленте).
+  const viz = taskStatusVisual(task.status);
+  const failed = task.status === "failed";
   // v3.1: блок «открытые вопросы по задаче» убран — в новой Decision-модели
-  // вопросы привязаны к checkpoint-сессиям и показываются на главном
-  // экране проекта. Здесь оставлен только retry-CTA для упавших задач.
-  const showStuckBanner = task.status === "failed" && Boolean(projectId);
+  // вопросы привязаны к checkpoint-сессиям и показываются на главном экране.
 
   return (
-    <div className="detail-stack">
-      <div className="detail-callout">
-        <StatusPill
-          tone={
-            task.status === "completed"
-              ? "success"
-              : task.status === "failed" || task.status === "blocked"
-                ? "danger"
-                : task.is_current
-                  ? "active"
-                  : "muted"
-          }
-        >
-          {prettyLabel(task.status)}
-        </StatusPill>
-        <span>{prettyLabel(task.template_type)}</span>
+    <div className="task-detail">
+      <div className="task-detail__head">
+        <StatusPill tone={viz.tone}>{viz.label}</StatusPill>
+        <span className="task-detail__type">{prettyLabel(task.template_type)}</span>
       </div>
 
-      {showStuckBanner ? (
-        <div className="task-open-questions-banner task-open-questions-banner--muted">
-          <strong>Задача упала</strong>
-          <p>
-            Возможные причины: ошибка LLM-вызова, сбой валидации или гонка
-            состояний. Нажмите «Повторить шаг» — задача переподнимется с
-            актуальным контекстом. Если для задачи нужны решения, они
-            появятся как checkpoint в шапке проекта.
-          </p>
-          {projectId ? (
-            <div className="inline-actions">
-              <Button tone="secondary" onClick={() => navigate(`/projects/${projectId}/decisions`)}>
-                Открыть реестр решений
-              </Button>
-            </div>
+      {task.status_summary ? (
+        <p className="task-detail__summary">{task.status_summary}</p>
+      ) : null}
+
+      {failed ? (
+        <div className="task-detail__alert">
+          <AlertTriangle size={16} className="task-detail__alert-icon" aria-hidden />
+          <div>
+            <strong>Задача упала</strong>
+            <p>
+              Возможные причины: ошибка LLM-вызова, сбой валидации или гонка
+              состояний. Повторите шаг — задача переподнимется с актуальным
+              контекстом. Если для неё нужны решения, они появятся в шапке проекта.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {task.retryable || (projectId && failed) ? (
+        <div className="task-detail__actions">
+          {task.retryable ? (
+            <Button
+              tone="secondary"
+              icon={<RefreshCcw size={16} />}
+              busy={retrying}
+              onClick={() => onRetryTask(task.task_id)}
+            >
+              {retrying ? "Повторяю…" : "Повторить шаг"}
+            </Button>
+          ) : null}
+          {projectId && failed ? (
+            <Button tone="ghost" onClick={() => navigate(`/projects/${projectId}/decisions`)}>
+              Открыть решения
+            </Button>
           ) : null}
         </div>
       ) : null}
 
-      {task.status_summary ? <p>{task.status_summary}</p> : null}
-
-      <div className="detail-meta-list">
+      {/* Технические детали — спокойный key-value список для тех, кому нужно. */}
+      <dl className="task-detail__meta">
         <div>
-          <span>Шаблон</span>
-          <strong>{task.template_ref}</strong>
-        </div>
-        <div>
-          <span>Источник</span>
-          <strong>{labelForSourceKind(task.origin_kind)}</strong>
+          <dt>Шаблон</dt>
+          <dd>{task.template_ref}</dd>
         </div>
         <div>
-          <span>Ref источника</span>
-          <strong>{task.origin_ref}</strong>
+          <dt>Источник</dt>
+          <dd>{labelForSourceKind(task.origin_kind)}</dd>
         </div>
         <div>
-          <span>Слот</span>
-          <strong>{task.slot_id ?? "—"}</strong>
+          <dt>Ref источника</dt>
+          <dd>{task.origin_ref}</dd>
         </div>
-      </div>
-
-      {task.retryable ? (
-        <div className="inline-actions">
-          <Button tone="secondary" icon={<RefreshCcw size={16} />} onClick={() => onRetryTask(task.task_id)}>
-            Повторить шаг
-          </Button>
-        </div>
-      ) : null}
+        {task.slot_id ? (
+          <div>
+            <dt>Слот</dt>
+            <dd>{task.slot_id}</dd>
+          </div>
+        ) : null}
+      </dl>
 
       {projectId && task.template_type === "leaf" && task.status === "completed" ? (
         <ReasoningPanel projectId={projectId} taskId={task.task_id} />
@@ -2551,108 +2572,76 @@ const ROLLBACK_INVALIDATED_PROJECTIONS: ProjectionName[] = [
 const ROLLBACK_HISTORY_KEY = (projectId: string) => ["rollback-history", projectId] as const;
 
 /**
- * Диалог подтверждения отката: показывает, что именно будет инвалидировано
- * (целевой шаг + транзитивно зависящие) и какие артефакты уйдут в архив —
- * до того, как пользователь подтвердит необратимую (для активных данных)
- * операцию. Превью читается отдельным запросом и не меняет состояние.
+ * Плавающая панель подтверждения отката внутри канвы графа (НЕ модал —
+ * чтобы подсветка затрагиваемых узлов на графе оставалась видна). Показывает,
+ * сколько шагов будет сброшено и сколько артефактов уйдёт в архив, а сами
+ * затрагиваемые шаги подсвечиваются на графе (target + транзитивные). Откат
+ * необратим для активных данных, поэтому подтверждение — отдельная danger-кнопка
+ * (двухшаговый, осознанный жест: «взвести» на узле → подтвердить здесь).
  */
-function RollbackPreviewModal({
-  open,
+function RollbackConfirmBar({
   preview,
   loading,
   previewError,
   confirming,
   confirmError,
   onConfirm,
-  onClose,
+  onCancel,
 }: {
-  open: boolean;
   preview: RollbackPreviewView | undefined;
   loading: boolean;
   previewError: string | null;
   confirming: boolean;
   confirmError: string | null;
   onConfirm: () => void;
-  onClose: () => void;
+  onCancel: () => void;
 }) {
   const stepCount = preview?.reverted_steps.length ?? 0;
   const artifactCount = preview?.archived_artifacts.length ?? 0;
+  const blocked = Boolean(preview && !preview.rollbackable);
+  const errorText = previewError ?? (blocked ? preview?.blocked_reason ?? null : null);
+  const canConfirm = Boolean(preview) && !blocked && !previewError && !loading;
   return (
-    <Modal open={open} title="Откат к состоянию до шага" onClose={onClose}>
-      {loading ? (
-        <p className="muted">Расчёт зависимостей…</p>
-      ) : previewError ? (
-        <div className="rollback-error">{previewError}</div>
-      ) : preview && !preview.rollbackable ? (
-        <div className="rollback-preview">
-          <div className="rollback-error">{preview.blocked_reason}</div>
-          <div className="rollback-preview__actions">
-            <Button tone="secondary" onClick={onClose}>
-              Закрыть
-            </Button>
-          </div>
-        </div>
-      ) : preview ? (
-        <div className="rollback-preview">
-          <p>
-            Проект будет возвращён к состоянию <strong>до</strong> выполнения шага{" "}
-            <strong>«{preview.target_title}»</strong>. Это действие инвалидирует
-            сам шаг и все зависящие от него; их артефакты будут перенесены в
-            архив, а задачи — сброшены для повторного выполнения. Независимые
-            ветки сохранятся.
-          </p>
-
-          <div className="rollback-preview__section">
-            <h4>Будут инвалидированы шаги: {stepCount}</h4>
-            <ul className="rollback-preview__list">
-              {preview.reverted_steps.map((step) => (
-                <li key={step.task_id} className="rollback-preview__row">
-                  <span className={`tg-pill tg-pill--${step.status}`}>{step.status}</span>
-                  <span className="rollback-preview__title">
-                    {step.title}
-                    {step.is_target ? (
-                      <span className="rollback-preview__target"> (выбранный шаг)</span>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="rollback-preview__section">
-            <h4>Уйдут в архив артефакты: {artifactCount}</h4>
-            {artifactCount === 0 ? (
-              <p className="muted">Артефактов для архивации нет.</p>
-            ) : (
-              <ul className="rollback-preview__list">
-                {preview.archived_artifacts.map((artifact) => (
-                  <li key={artifact.artifact_id} className="rollback-preview__row">
-                    <span className="rollback-preview__role">{artifact.artifact_role}</span>
-                    <span className="rollback-preview__title">{artifact.title}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {confirmError ? <div className="rollback-error">{confirmError}</div> : null}
-
-          <div className="rollback-preview__actions">
-            <Button tone="secondary" onClick={onClose} disabled={confirming}>
-              Отмена
-            </Button>
-            <Button
-              tone="danger"
-              icon={<RefreshCcw size={16} />}
-              onClick={onConfirm}
-              disabled={confirming}
-            >
-              {confirming ? "Выполняется откат…" : "Откатить"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-    </Modal>
+    <div className="rollback-bar" role="dialog" aria-label="Подтверждение отката">
+      <span className="rollback-bar__icon" aria-hidden>
+        <Undo2 size={18} />
+      </span>
+      <div className="rollback-bar__body">
+        {loading ? (
+          <span className="rollback-bar__title">Расчёт зависимостей…</span>
+        ) : errorText ? (
+          <span className="rollback-bar__title rollback-bar__title--error">{errorText}</span>
+        ) : preview ? (
+          <>
+            <span className="rollback-bar__title">
+              Откат до «{preview.target_title}»
+            </span>
+            <span className="rollback-bar__meta">
+              Будет сброшено шагов: <strong>{stepCount}</strong> · в архив:{" "}
+              <strong>{artifactCount}</strong>. Затрагиваемые шаги подсвечены на графе.
+            </span>
+            {confirmError ? (
+              <span className="rollback-bar__title rollback-bar__title--error">{confirmError}</span>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      <div className="rollback-bar__actions">
+        <Button tone="ghost" onClick={onCancel} disabled={confirming}>
+          Отмена
+        </Button>
+        {canConfirm ? (
+          <Button
+            tone="danger"
+            icon={<Undo2 size={16} />}
+            onClick={onConfirm}
+            busy={confirming}
+          >
+            {confirming ? "Откат…" : "Подтвердить откат"}
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -2740,6 +2729,14 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     setRollbackTarget(null);
     rollbackMutation.reset();
   };
+  // Какая задача сейчас перезапускается — её кнопка «Повторить» блокируется,
+  // чтобы нельзя было запустить ретрай повторно до обновления графа (задача 2).
+  const retryingTaskId = retryMutation.isPending ? retryMutation.variables ?? null : null;
+  // Шаги, которые откатятся вместе с выбранным — для подсветки на графе (задача 3).
+  const rollbackAffectedIds =
+    rollbackTarget !== null
+      ? previewQuery.data?.reverted_steps.map((s) => s.task_id) ?? []
+      : [];
   return (
     <>
       <SectionCard
@@ -2765,6 +2762,28 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
           }}
           onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
           onRollback={(taskId) => setRollbackTarget(taskId)}
+          retryingTaskId={retryingTaskId}
+          rollbackTargetId={rollbackTarget}
+          rollbackAffectedIds={rollbackAffectedIds}
+          rollbackOverlay={
+            rollbackTarget !== null ? (
+              <RollbackConfirmBar
+                preview={previewQuery.data}
+                loading={previewQuery.isLoading}
+                previewError={
+                  previewQuery.error instanceof Error ? previewQuery.error.message : null
+                }
+                confirming={rollbackMutation.isPending}
+                confirmError={
+                  rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null
+                }
+                onConfirm={() => {
+                  if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
+                }}
+                onCancel={closeRollback}
+              />
+            ) : null
+          }
         />
         <Drawer
           open={Boolean(selectedTask)}
@@ -2776,27 +2795,13 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
               task={selectedTask}
               projectId={projectId}
               onRetryTask={(taskId) => retryMutation.mutate(taskId)}
+              retrying={retryingTaskId === selectedTask.task_id}
             />
           ) : null}
         </Drawer>
       </SectionCard>
 
       <RollbackHistorySection projectId={projectId} />
-
-      <RollbackPreviewModal
-        open={rollbackTarget !== null}
-        preview={previewQuery.data}
-        loading={previewQuery.isLoading}
-        previewError={
-          previewQuery.error instanceof Error ? previewQuery.error.message : null
-        }
-        confirming={rollbackMutation.isPending}
-        confirmError={rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null}
-        onConfirm={() => {
-          if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
-        }}
-        onClose={closeRollback}
-      />
     </>
   );
 }
