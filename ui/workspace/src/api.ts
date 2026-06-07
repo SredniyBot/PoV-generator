@@ -60,6 +60,11 @@ export const api = {
   listMethodologyPacks: () => request<MethodologyPackView[]>("/api/registry/methodology-packs"),
   getShell: (projectId: string) => request<ProjectShellView>(`/api/projects/${projectId}/shell`),
   getTaskGraph: (projectId: string) => request<ProjectTaskGraphView>(`/api/projects/${projectId}/task-graph`),
+  // Ф1: граф задач конкретного гейта (objective). ref содержит '@' — кодируем.
+  getObjectiveTaskGraph: (projectId: string, objectiveRef: string) =>
+    request<ProjectTaskGraphView>(
+      `/api/projects/${projectId}/objectives/task-graph?ref=${encodeURIComponent(objectiveRef)}`,
+    ),
   getSituation: (projectId: string) => request<ProjectSituationView>(`/api/projects/${projectId}/situation`),
   getTimeline: (projectId: string) => request<ProjectTimelineView>(`/api/projects/${projectId}/timeline`),
   getArtifacts: (projectId: string) => request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts`),

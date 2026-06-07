@@ -63,7 +63,12 @@ from ..domain.workspace_views import (
     TimelineEntryView,
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
-from .planning_service import PlanningService
+from .planning_service import (
+    PlanningService,
+    SkeletonNode,
+    count_skeleton_leaves,
+    walk_composite_skeleton,
+)
 from .project_registry import ProjectRegistryResolver
 from .registry_service import RegistryService
 from .rollback_graph import collect_step_footprints, compute_rollback_set
@@ -322,6 +327,10 @@ class WorkspaceQueryService:
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
         nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None, context.snapshot)
+        try:
+            title = context.snapshot.resolve_objective(context.manifest.objective_ref).title
+        except Exception:
+            title = ""
         return ProjectTaskGraphView(
             project_id=context.manifest.project_id,
             objective_ref=context.manifest.objective_ref,
@@ -329,6 +338,94 @@ class WorkspaceQueryService:
             completed_leaf_tasks=sum(1 for task in leaf_tasks if task.status == "completed"),
             total_leaf_tasks=len(leaf_tasks),
             nodes=nodes,
+            objective_state="active",
+            title=title,
+        )
+
+    def project_objective_task_graph(
+        self, project_id: str, objective_ref: str
+    ) -> ProjectTaskGraphView:
+        """Граф задач ЛЮБОГО гейта проекта (для подвкладок, Ф1):
+        - активный гейт → живой граф (как ``project_task_graph``);
+        - завершённый → сохранённые задачи этого objective (read-only);
+        - ещё не запущенный → статический скелет из реестра, fan-out не раскрыт.
+        Задачи неактивных гейтов помечаются ``available=False``.
+        """
+        from ..common.errors import NotFoundError
+
+        context = self._load_context(project_id)
+        snapshot = context.snapshot
+        try:
+            objective = snapshot.resolve_objective(objective_ref)
+        except Exception as exc:
+            raise NotFoundError(f"Цель '{objective_ref}' не найдена в реестре проекта.") from exc
+        title = objective.title
+        active_ref = context.manifest.objective_ref
+        if objective_ref == active_ref:
+            return self._build_task_graph(context)
+
+        history = set(context.manifest.objective_history or ())
+        if objective_ref in history:
+            tasks = [
+                t
+                for t in self._runtime.list_tasks(context.workspace)
+                if t.objective_ref == objective_ref
+            ]
+            nodes = self._build_task_tree(
+                context.workspace, tasks, None, snapshot, available=False
+            )
+            leaf = [t for t in tasks if t.template_type == "leaf"]
+            return ProjectTaskGraphView(
+                project_id=context.manifest.project_id,
+                objective_ref=objective_ref,
+                current_task_id=None,
+                completed_leaf_tasks=sum(1 for t in leaf if t.status == "completed"),
+                total_leaf_tasks=len(leaf),
+                nodes=nodes,
+                objective_state="done",
+                title=title,
+            )
+
+        # locked: статический скелет из реестра (без записи в runtime).
+        active_pack_refs = tuple(sorted(context.state.process.active_domain_pack_records.keys()))
+        skeleton = walk_composite_skeleton(snapshot, objective.root_task_ref, active_pack_refs)
+        root_node = self._skeleton_node_view(skeleton, objective_ref, parent_id=None, path="root")
+        return ProjectTaskGraphView(
+            project_id=context.manifest.project_id,
+            objective_ref=objective_ref,
+            current_task_id=None,
+            completed_leaf_tasks=0,
+            total_leaf_tasks=count_skeleton_leaves(skeleton),
+            nodes=(root_node,),
+            objective_state="locked",
+            title=title,
+        )
+
+    def _skeleton_node_view(
+        self, node: SkeletonNode, objective_ref: str, *, parent_id: str | None, path: str
+    ) -> TaskNodeView:
+        node_id = f"skeleton:{objective_ref}:{path}"
+        children = tuple(
+            self._skeleton_node_view(child, objective_ref, parent_id=node_id, path=f"{path}.{idx}")
+            for idx, child in enumerate(node.children)
+        )
+        return TaskNodeView(
+            task_id=node_id,
+            task_key=node_id,
+            parent_task_id=parent_id,
+            title=node.title,
+            template_ref=node.template_ref,
+            template_type=node.template_type,
+            status="candidate",
+            status_summary=None,
+            origin_kind=node.origin_kind,
+            origin_ref=node.origin_ref,
+            slot_id=node.slot_id,
+            depth=node.depth,
+            retryable=False,
+            is_current=False,
+            children=children,
+            available=False,
         )
 
     def project_situation(self, project_id: str) -> ProjectSituationView:
@@ -1593,7 +1690,7 @@ class WorkspaceQueryService:
             snapshot=snapshot,
         )
 
-    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None) -> tuple[TaskNodeView, ...]:
+    def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None, *, available: bool = True) -> tuple[TaskNodeView, ...]:
         children_by_parent: dict[str | None, list[TaskRecord]] = {}
         for task in tasks:
             children_by_parent.setdefault(task.parent_task_id, []).append(task)
@@ -1659,6 +1756,7 @@ class WorkspaceQueryService:
                 updated_at=task.updated_at,
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
                 fan_out_meta=fan_out_meta,
+                available=available,
             )
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))

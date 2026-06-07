@@ -106,6 +106,9 @@ class TaskNodeView:
     updated_at: str = ""
     children: tuple["TaskNodeView", ...] = ()
     fan_out_meta: FanOutMeta | None = None
+    # Ф1: доступна ли задача для действий. У неактивного (ещё не запущенного)
+    # гейта задачи показываются как скелет и помечаются недоступными.
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,10 @@ class ProjectTaskGraphView:
     completed_leaf_tasks: int
     total_leaf_tasks: int
     nodes: tuple[TaskNodeView, ...]
+    # Ф1: состояние гейта этого графа (done|active|locked) и его заголовок —
+    # для подвкладок графа по гейтам. Активный гейт == прежнее поведение.
+    objective_state: str = "active"
+    title: str = ""
 
 
 @dataclass(frozen=True)

@@ -100,6 +100,9 @@ export interface TaskNodeView {
   updated_at: string;
   children: TaskNodeView[];
   fan_out_meta?: FanOutMeta | null;
+  /** Ф1: доступна ли задача для действий. У неактивного гейта (скелет/история)
+   *  задачи помечены недоступными (read-only, приглушены). По умолчанию true. */
+  available?: boolean;
 }
 
 export interface ProjectTaskGraphView {
@@ -109,6 +112,9 @@ export interface ProjectTaskGraphView {
   completed_leaf_tasks: number;
   total_leaf_tasks: number;
   nodes: TaskNodeView[];
+  /** Ф1: состояние гейта этого графа и его заголовок (для подвкладок). */
+  objective_state?: "done" | "active" | "locked";
+  title?: string;
 }
 
 export interface ActionDescriptor {

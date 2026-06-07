@@ -104,7 +104,7 @@ import {
   formatDateTime,
   prettyLabel,
 } from "./ui";
-import { StageStatusBar } from "./StageStatusBar";
+import { StageStatusBar, shortStageLabel } from "./StageStatusBar";
 import { runStatusVisual, stepStatusVisual, taskStatusVisual } from "./workflowStatus";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
@@ -2860,6 +2860,8 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   const [selectedTask, setSelectedTask] = useState<TaskNodeView | null>(null);
   // Цель отката (task_id выбранного шага) — открывает диалог подтверждения.
   const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+  // Ф1: выбранная подвкладка-гейт (objective_ref). null → текущий (активный) гейт.
+  const [selectedRef, setSelectedRef] = useState<string | null>(null);
   // Дип-линк из статус-бара: /task-graph?focus=<taskId> — центрируем граф.
   const [searchParams] = useSearchParams();
   const focusTaskId = searchParams.get("focus") ?? undefined;
@@ -2893,11 +2895,29 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     },
   });
 
+  // Ф1: цепочка гейтов для подвкладок + граф выбранного гейта. Все хуки —
+  // до раннего return (правила хуков).
+  const stagesQuery = useQuery({
+    queryKey: projectionKey(projectId, "stages"),
+    queryFn: () => api.getStages(projectId),
+  });
+  const activeRef = taskGraphQuery.data?.objective_ref ?? null;
+  const effectiveRef = selectedRef ?? activeRef;
+  const isActiveSelected = !effectiveRef || effectiveRef === activeRef;
+  const objectiveGraphQuery = useQuery({
+    queryKey: [projectId, "objective-task-graph", effectiveRef],
+    queryFn: () => api.getObjectiveTaskGraph(projectId, effectiveRef as string),
+    enabled: Boolean(effectiveRef) && !isActiveSelected,
+  });
+
   if (taskGraphQuery.isLoading || !taskGraphQuery.data) {
     return <LoadingPanel title="Загрузка графа задач…" />;
   }
 
   const data = taskGraphQuery.data;
+  // Граф выбранного гейта: активный — живой taskGraphQuery; иной — по objective.
+  const displayGraph = isActiveSelected ? data : objectiveGraphQuery.data ?? null;
+  const stages = stagesQuery.data?.stages ?? [];
   const closeRollback = () => {
     if (rollbackMutation.isPending) return; // не закрываем во время отката
     setRollbackTarget(null);
@@ -2915,50 +2935,92 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
     <>
       <SectionCard
         title="Граф задач"
-        subtitle={`Завершено ${data.completed_leaf_tasks} из ${data.total_leaf_tasks} листовых задач`}
+        subtitle={
+          displayGraph
+            ? `Завершено ${displayGraph.completed_leaf_tasks} из ${displayGraph.total_leaf_tasks} листовых задач`
+            : "Загрузка графа гейта…"
+        }
       >
-        <TaskGraphCanvas
-          tree={data.nodes}
-          onSelectNode={setSelectedTask}
-          focusTaskId={focusTaskId}
-          completedLeafTasks={data.completed_leaf_tasks}
-          totalLeafTasks={data.total_leaf_tasks}
-          onRetry={(taskId) => retryMutation.mutate(taskId)}
-          onOpenArtifacts={(task) => {
-            const art = (artifactsQuery.data ?? []).find(
-              (a) => a.created_by_task_id === task.task_id,
-            );
-            navigate(
-              art
-                ? `/projects/${projectId}/artifacts/${art.artifact_id}`
-                : `/projects/${projectId}/artifacts`,
-            );
-          }}
-          onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
-          onRollback={(taskId) => setRollbackTarget(taskId)}
-          retryingTaskId={retryingTaskId}
-          rollbackTargetId={rollbackTarget}
-          rollbackAffectedIds={rollbackAffectedIds}
-          rollbackOverlay={
-            rollbackTarget !== null ? (
-              <RollbackConfirmBar
-                preview={previewQuery.data}
-                loading={previewQuery.isLoading}
-                previewError={
-                  previewQuery.error instanceof Error ? previewQuery.error.message : null
-                }
-                confirming={rollbackMutation.isPending}
-                confirmError={
-                  rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null
-                }
-                onConfirm={() => {
-                  if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
-                }}
-                onCancel={closeRollback}
-              />
-            ) : null
-          }
-        />
+        {/* Ф1: подвкладки по гейтам. Текущий исполняемый гейт помечен точкой,
+            выбранная подвкладка — активным стилем. Граф неактивного гейта
+            доступен сразу, его задачи показаны недоступными. */}
+        {stages.length > 1 ? (
+          <div className="tg-subtabs" role="tablist">
+            {stages.map((s) => {
+              const isSel = effectiveRef === s.objective_ref;
+              return (
+                <button
+                  key={s.objective_ref}
+                  type="button"
+                  role="tab"
+                  aria-selected={isSel}
+                  className={cx(
+                    "tg-subtab",
+                    isSel && "tg-subtab--active",
+                    s.is_current && "tg-subtab--current",
+                  )}
+                  title={
+                    s.is_current
+                      ? "Текущий исполняемый гейт"
+                      : s.state === "done"
+                        ? "Завершённый гейт"
+                        : "Ещё не запущен — задачи показаны как недоступные"
+                  }
+                  onClick={() => setSelectedRef(s.objective_ref)}
+                >
+                  {s.is_current ? <span className="tg-subtab__dot" aria-hidden /> : null}
+                  {shortStageLabel(s.objective_ref, s.title)}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {displayGraph ? (
+          <TaskGraphCanvas
+            tree={displayGraph.nodes}
+            onSelectNode={setSelectedTask}
+            focusTaskId={isActiveSelected ? focusTaskId : undefined}
+            completedLeafTasks={displayGraph.completed_leaf_tasks}
+            totalLeafTasks={displayGraph.total_leaf_tasks}
+            onRetry={(taskId) => retryMutation.mutate(taskId)}
+            onOpenArtifacts={(task) => {
+              const art = (artifactsQuery.data ?? []).find(
+                (a) => a.created_by_task_id === task.task_id,
+              );
+              navigate(
+                art
+                  ? `/projects/${projectId}/artifacts/${art.artifact_id}`
+                  : `/projects/${projectId}/artifacts`,
+              );
+            }}
+            onGoToDecisions={() => navigate(`/projects/${projectId}/decisions/pending`)}
+            onRollback={(taskId) => setRollbackTarget(taskId)}
+            retryingTaskId={retryingTaskId}
+            rollbackTargetId={isActiveSelected ? rollbackTarget : null}
+            rollbackAffectedIds={isActiveSelected ? rollbackAffectedIds : []}
+            rollbackOverlay={
+              isActiveSelected && rollbackTarget !== null ? (
+                <RollbackConfirmBar
+                  preview={previewQuery.data}
+                  loading={previewQuery.isLoading}
+                  previewError={
+                    previewQuery.error instanceof Error ? previewQuery.error.message : null
+                  }
+                  confirming={rollbackMutation.isPending}
+                  confirmError={
+                    rollbackMutation.error instanceof Error ? rollbackMutation.error.message : null
+                  }
+                  onConfirm={() => {
+                    if (rollbackTarget) rollbackMutation.mutate(rollbackTarget);
+                  }}
+                  onCancel={closeRollback}
+                />
+              ) : null
+            }
+          />
+        ) : (
+          <div className="tg-subtabs__loading">Загрузка графа гейта…</div>
+        )}
         <Drawer
           open={Boolean(selectedTask)}
           title={selectedTask?.title ?? "Задача"}

@@ -60,7 +60,7 @@ function titleForRef(ref: string, stages: StageView[]): string {
 // Короткая подпись этапа из objective_ref — дорожка должна быть лаконичной,
 // а не повторять длинное процессное название цели. Полное название и прогресс
 // показываем в подсказке (stageTooltip). Неизвестная цель → исходный заголовок.
-function shortStageLabel(ref: string, fallback: string): string {
+export function shortStageLabel(ref: string, fallback: string): string {
   const id = (ref.split("@")[0] ?? "").toLowerCase();
   if (id.includes("requirements") || id.includes("specification")) return "ТЗ";
   if (id.includes("architecture") || id.includes("design")) return "Архитектура";

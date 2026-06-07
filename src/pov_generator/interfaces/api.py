@@ -609,6 +609,21 @@ def create_app(
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))
 
+    @app.get("/api/projects/{project_id}/objectives/task-graph")
+    def project_objective_task_graph(project_id: str, ref: str) -> Any:
+        """Граф задач конкретного гейта (objective) проекта — для подвкладок
+        графа по гейтам (Ф1). ``ref`` передаётся query-параметром, так как
+        содержит '@'. Активный гейт → живой граф; завершённый → сохранённые
+        задачи; ещё не запущенный → статический скелет (read-only)."""
+        from ..common.errors import NotFoundError
+
+        try:
+            return to_primitive(
+                query_service.project_objective_task_graph(project_id, ref)
+            )
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     @app.get("/api/projects/{project_id}/situation")
     def project_situation(project_id: str) -> Any:
         return to_primitive(query_service.project_situation(project_id))

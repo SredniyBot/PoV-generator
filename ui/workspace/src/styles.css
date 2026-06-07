@@ -3531,6 +3531,56 @@ code {
   overflow: hidden;
 }
 
+/* Ф1: подвкладки графа по гейтам — пилюли над канвой. */
+.tg-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.tg-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--motion-easing),
+    border-color var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
+}
+.tg-subtab:hover {
+  border-color: var(--border-accent);
+}
+.tg-subtab--active {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+/* Текущий исполняемый гейт — пульсирующая точка-акцент. */
+.tg-subtab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.tg-subtabs__loading {
+  padding: 24px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
+/* Ф1: задача неактивного гейта (скелет/история) — недоступна, приглушена. */
+.tg-node--locked {
+  opacity: 0.5;
+  filter: saturate(0.7);
+}
+
 .tg-canvas .react-flow__attribution { display: none; }
 .tg-canvas .react-flow__controls {
   background: rgba(18, 22, 28, 0.85);

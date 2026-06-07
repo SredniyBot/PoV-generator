@@ -207,6 +207,10 @@ function resolveActions(task: TaskNodeView): {
   showDecisions: boolean;
   showRollback: boolean;
 } {
+  // Ф1: задачи неактивного гейта (скелет/история) недоступны — никаких действий.
+  if (task.available === false) {
+    return { showRetry: false, showArtifacts: false, showDecisions: false, showRollback: false };
+  }
   return {
     showRetry:     task.retryable === true && task.status === "failed",
     showArtifacts: task.status === "completed",
@@ -248,6 +252,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
       className={
         "tg-node" +
         (task.is_current ? " tg-node--current" : "") +
+        (task.available === false ? " tg-node--locked" : "") +
         (rbState ? ` tg-node--rb-${rbState}` : "")
       }
       style={{ borderLeftColor: meta.color }}
