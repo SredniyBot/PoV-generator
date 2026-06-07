@@ -551,14 +551,14 @@ def test_previous_task_decision_constraints_appear_in_downstream_prompt(tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
-    """Симулируем WorkflowService.run_next: execute_task возвращает
-    paused → WorkflowService должен пометить task как failed.
+def test_pause_blocks_task_not_failed(tmp_path: Path) -> None:
+    """Нормализация статусов: пауза-на-решение — это НЕ ошибка.
 
-    Здесь без WorkflowService.run_next — он зовёт execute_task без
-    force_decision_identification, и для stub-провайдера pre-flight пропускается.
-    Эмулируем ту же логику вручную (transition_task fail), чтобы
-    проверить именно auto-resume через submit_answers."""
+    execute_task возвращает paused → задача НЕ должна попадать в `failed`.
+    По новой схеме workflow возвращает её в ready (cancel), а планировщик
+    держит её `blocked` по открытому решению (_clarification_blockers), пока
+    пользователь не ответит. После submit_answers задача снимается с
+    блокировки в ready. Так `failed` остаётся только для настоящих ошибок."""
     workspace = tmp_path / "case_wf"
     init_project(workspace, "Workflow-уровень теста.")
     runtime, snapshot, _workflow_svc, checkpoint_svc, planning_svc, exec_svc = _bootstrap_services(
@@ -574,17 +574,16 @@ def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
     assert bundle.result.status == "paused_for_checkpoint"
     session_id = bundle.result.checkpoint_session_id
 
-    # 2. WorkflowService на этот результат делает transition_task("fail")
-    #    с error_type="paused_for_checkpoint". Эмулируем.
-    planning_svc.transition_task(
-        workspace,
-        task.task_id,
-        "fail",
-        payload={"error_message": "paused", "error_type": "paused_for_checkpoint"},
-    )
-    assert runtime.get_task(workspace, task.task_id).status == "failed"
+    # 2. Новое поведение workflow на паузу: start → cancel (задача в ready, НЕ
+    #    failed). Дальше планировщик при пересчёте admission держит её blocked
+    #    по открытому proposed-решению.
+    planning_svc.transition_task(workspace, task.task_id, "start")
+    planning_svc.transition_task(workspace, task.task_id, "cancel")
+    planning_svc.admissible_candidates(workspace, snapshot)
+    paused = runtime.get_task(workspace, task.task_id)
+    assert paused.status == "blocked"  # НЕ failed
 
-    # 3. submit_answers → авто-resume: задача обратно в ready/blocked
+    # 3. submit_answers → авто-resume: задача снимается с блокировки в ready
     checkpoint_svc.submit_answers(
         workspace,
         session_id=session_id,
@@ -595,4 +594,4 @@ def test_workflow_service_marks_task_failed_on_pause(tmp_path: Path) -> None:
         ),
     )
     task_after = runtime.get_task(workspace, task.task_id)
-    assert task_after.status in {"ready", "blocked"}
+    assert task_after.status in {"ready", "candidate"}

@@ -261,14 +261,26 @@ class CheckpointService:
             auto_accepted=len(valid_ids - answered_ids),
         )
 
-        # v3.0 — auto-resume: задача, которая была failed из-за паузы,
-        # переводится обратно в ready. Это позволит планнеру при следующем
-        # run_next / start_run немедленно её подобрать; выявление в
-        # ExecutionService увидит finalized session и пропустит его,
-        # сразу подтянет locked-in decisions в основной промпт.
+        # v3.0 — auto-resume: задача, приостановленная на решение, снимается с
+        # блокировки. Нормализация статусов: пауза держится в `blocked`
+        # (не `failed`), поэтому снимаем через mark_ready. Ветка `failed`
+        # оставлена на случай реальной ошибки до паузы (retry с attempt+1).
+        # Планировщик при следующем run всё равно перепроверит admission;
+        # выявление в ExecutionService увидит finalized session и пропустит его.
         try:
             task = self._runtime.get_task(workspace, session.task_id)
-            if task.status == "failed":
+            if task.status == "blocked":
+                self._runtime.transition_task(
+                    workspace,
+                    session.task_id,
+                    "mark_ready",
+                    payload={
+                        "reason": "auto-resume after checkpoint finalized",
+                        "source": "checkpoint_submit",
+                        "checkpoint_session_id": session.session_id,
+                    },
+                )
+            elif task.status == "failed":
                 self._runtime.transition_task(
                     workspace,
                     session.task_id,
@@ -665,10 +677,22 @@ class CheckpointService:
                 )
                 self._runtime.upsert_checkpoint_session(workspace, finalized)
                 finalized_sessions.append(session.session_id)
-                # Auto-resume failed task
+                # Auto-resume приостановленной задачи (blocked) / упавшей (failed)
                 try:
                     task = self._runtime.get_task(workspace, session.task_id)
-                    if task.status == "failed":
+                    if task.status == "blocked":
+                        self._runtime.transition_task(
+                            workspace,
+                            session.task_id,
+                            "mark_ready",
+                            payload={
+                                "reason": "auto-resume after mode change",
+                                "source": "set_participation_mode",
+                                "new_mode": mode,
+                            },
+                        )
+                        resumed_tasks.append(session.task_id)
+                    elif task.status == "failed":
                         self._runtime.transition_task(
                             workspace,
                             session.task_id,
