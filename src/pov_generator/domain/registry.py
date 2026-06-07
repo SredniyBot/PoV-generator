@@ -243,6 +243,10 @@ class TemplateSpec:
     # проекту не решают — там identification только генерирует мета-шум
     # (см. docs/decision_subsystem_design_v3.6.md).
     decision_identification_enabled: bool = True
+    # Ф5: вид выхода harness-узла. "structured" (по умолчанию) — JSON-payload;
+    # "bundle" — файловый набор (код/документы/двоичные/БД/образ), сохраняемый
+    # как bundle-артефакт. Имеет смысл только для executor=harness.
+    harness_output: str | None = None
     fan_out_spec: FanOutSpec | None = None
     children_template_ref: str | None = None
     source_path: Path = Path("")
@@ -874,6 +878,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
         decision_identification_enabled=bool(
             raw.get("decision_identification", True)
         ),
+        harness_output=optional_str(raw, "harness_output"),
         fan_out_spec=fan_out_spec,
         children_template_ref=children_template_ref_val,
         source_path=source_path,

@@ -1807,6 +1807,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "feature_detail": {"type": "object", "additionalProperties": True},
         # Harness-демо (executor: harness) — неструктурный демонстрационный выход.
         "demo_output": {"type": "object", "additionalProperties": True},
+        "demo_bundle": {"type": "object", "additionalProperties": True},
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")

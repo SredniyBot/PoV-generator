@@ -33,14 +33,20 @@ from ..infrastructure.llm.protocol import LLMUsage
 
 @dataclass(frozen=True)
 class HarnessOutcome:
-    """Результат produce_artifact_payload для ``ExecutionService``."""
+    """Результат прогона узла: структурный payload ЛИБО файловый бандл."""
 
-    payload: dict[str, Any]
     provider_name: str
     model: str | None
     transcript: str
     usage: LLMUsage | None
     brief: str
+    payload: dict[str, Any] | None = None       # структурный выход (Ф1)
+    files: dict[str, bytes] | None = None         # файловый бандл (Ф5)
+    bundle_kind: str | None = None
+
+    @property
+    def is_bundle(self) -> bool:
+        return self.files is not None
 
 
 def render_harness_brief(
@@ -109,22 +115,25 @@ class HarnessExecutionService:
         """Накопленный расход harness-прогонов — для панели/аудита."""
         return self._budget.totals()
 
-    def produce_artifact_payload(
+    def produce_artifact(
         self,
         *,
         artifact_role: str,
         system_prompt: str,
         user_prompt: str,
+        output_kind: str = "structured",
         model_hint: str | None = None,
     ) -> HarnessOutcome:
-        """Запустить дефолтный harness и собрать структурный payload роли.
+        """Запустить дефолтный harness и собрать выход роли.
 
-        Ф1: один ожидаемый артефакт (структурный JSON), harvest-by-convention.
-        Файловые бандлы и несколько артефактов — следующие фазы.
+        ``output_kind="structured"`` → структурный JSON-payload (Ф1);
+        ``"bundle"`` → файловый бандл (код/документы/двоичные/БД/образ, Ф5).
+        Один ожидаемый артефакт; harvest-by-convention.
         """
         # Governance: кумулятивный бюджет исчерпан → не запускаем (fail-loudly).
         self._budget.ensure_within_budget()
-        expected = (ExpectedArtifact(role=artifact_role, fmt="json"),)
+        fmt = "files" if output_kind == "bundle" else "json"
+        expected = (ExpectedArtifact(role=artifact_role, fmt=fmt),)
         brief = render_harness_brief(
             artifact_role=artifact_role,
             system_prompt=system_prompt,
@@ -149,19 +158,45 @@ class HarnessExecutionService:
                 f"harness '{provider.name}' не завершил узел "
                 f"(status={result.status}): {result.error or 'без деталей'}."
             )
-        harvested = next(
-            (a for a in result.artifacts if a.role == artifact_role), None
-        )
-        if harvested is None or harvested.payload is None:
+        harvested = next((a for a in result.artifacts if a.role == artifact_role), None)
+        if harvested is None:
+            raise ConflictError(
+                f"harness '{provider.name}' не вернул артефакт роли '{artifact_role}'."
+            )
+        base = {
+            "provider_name": f"harness:{provider.name}",
+            "model": getattr(provider, "model", None) or model_hint,
+            "transcript": result.transcript,
+            "usage": result.usage,
+            "brief": brief,
+        }
+        if output_kind == "bundle":
+            if not harvested.files:
+                raise ConflictError(
+                    f"harness '{provider.name}' не вернул файловый бандл роли "
+                    f"'{artifact_role}'."
+                )
+            return HarnessOutcome(**base, files=dict(harvested.files))
+        if harvested.payload is None:
             raise ConflictError(
                 f"harness '{provider.name}' не вернул структурный артефакт "
                 f"роли '{artifact_role}'."
             )
-        return HarnessOutcome(
-            payload=harvested.payload,
-            provider_name=f"harness:{provider.name}",
-            model=getattr(provider, "model", None) or model_hint,
-            transcript=result.transcript,
-            usage=result.usage,
-            brief=brief,
+        return HarnessOutcome(**base, payload=harvested.payload)
+
+    def produce_artifact_payload(
+        self,
+        *,
+        artifact_role: str,
+        system_prompt: str,
+        user_prompt: str,
+        model_hint: str | None = None,
+    ) -> HarnessOutcome:
+        """Совместимость (Ф1/Ф3): структурный выход. Делегирует produce_artifact."""
+        return self.produce_artifact(
+            artifact_role=artifact_role,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            output_kind="structured",
+            model_hint=model_hint,
         )

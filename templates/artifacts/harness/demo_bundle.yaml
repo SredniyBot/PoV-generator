@@ -1,0 +1,10 @@
+kind: artifact_contract
+id: harness.demo_bundle
+version: 1.0.0
+title: Демонстрационный файловый бандл harness
+# Файловый выход узла-агента (код/документы/двоичные/…). Неструктурный:
+# проверяется не JSON-схемой, а (позже) гейтами сборки/тестов.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

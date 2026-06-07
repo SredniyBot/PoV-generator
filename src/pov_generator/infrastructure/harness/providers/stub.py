@@ -34,14 +34,20 @@ class StubHarnessProvider:
     def run(self, spec: HarnessRunSpec) -> HarnessRunResult:
         harvested: list[HarvestedArtifact] = []
         for expected in spec.expected_artifacts:
-            payload = self._load_fixture(expected.role)
-            if payload is None:
-                return HarnessRunResult(
-                    status="failed",
-                    transcript=f"stub-harness: нет фикстуры для роли '{expected.role}'",
-                    error=f"Нет harness-фикстуры '{expected.role}.json' в {self._root}.",
+            if expected.fmt == "json":
+                payload = self._load_fixture(expected.role)
+                if payload is None:
+                    return self._missing(expected.role, f"{expected.role}.json")
+                harvested.append(
+                    HarvestedArtifact(role=expected.role, payload=payload, fmt="json")
                 )
-            harvested.append(HarvestedArtifact(role=expected.role, payload=payload, fmt="json"))
+            else:
+                files = self._load_dir_fixture(expected.role)
+                if files is None:
+                    return self._missing(expected.role, f"{expected.role}/")
+                harvested.append(
+                    HarvestedArtifact(role=expected.role, files=files, fmt=expected.fmt)
+                )
         return HarnessRunResult(
             status="completed",
             artifacts=tuple(harvested),
@@ -50,6 +56,24 @@ class StubHarnessProvider:
                 + ", ".join(a.role for a in harvested)
             ),
         )
+
+    def _missing(self, role: str, name: str) -> HarnessRunResult:
+        return HarnessRunResult(
+            status="failed",
+            transcript=f"stub-harness: нет фикстуры для роли '{role}'",
+            error=f"Нет harness-фикстуры '{name}' в {self._root}.",
+        )
+
+    def _load_dir_fixture(self, role: str) -> dict[str, bytes] | None:
+        """Файловый бандл-фикстура: все файлы из каталога ``<role>/``."""
+        directory = self._root / role
+        if not directory.is_dir():
+            return None
+        files: dict[str, bytes] = {}
+        for path in sorted(directory.rglob("*")):
+            if path.is_file():
+                files[path.relative_to(directory).as_posix()] = path.read_bytes()
+        return files or None
 
     def _load_fixture(self, role: str) -> dict[str, object] | None:
         path = self._root / f"{role}.json"

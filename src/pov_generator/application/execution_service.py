@@ -464,18 +464,37 @@ class ExecutionService:
         # (для stub — оценка по длине; для structural-merge — пусто, n/a).
         llm_usages: list[tuple[str | None, LLMUsage | None]] = []
         if is_harness:
-            # Второй бэкенд: payload узла даёт harness-агент (Ф1 — stub).
-            # Downstream (персист/валидация/решения) — общий, как у LLM/stub.
-            outcome = self._harness.produce_artifact_payload(
+            # Второй бэкенд: выход узла даёт harness-агент. Структурный JSON
+            # идёт общим downstream (как LLM/stub); файловый бандл — отдельным
+            # путём (store_bundle_artifact), к нему json-downstream неприменим.
+            bundle_output = template.harness_output == "bundle"
+            outcome = self._harness.produce_artifact(
                 artifact_role=artifact_role,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                output_kind="bundle" if bundle_output else "structured",
                 model_hint=model or None,
             )
-            payload = outcome.payload
-            live_reasoning = None
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model
+            if bundle_output:
+                if cancellation is not None:
+                    cancellation.raise_if_cancelled()
+                return self._finish_bundle_execution(
+                    workspace=workspace,
+                    snapshot=snapshot,
+                    manifest=manifest,
+                    task=task,
+                    template=template,
+                    artifact_role=artifact_role,
+                    context_manifest=context_manifest,
+                    outcome=outcome,
+                    complexity_value=complexity_value,
+                    active_provider=active_provider,
+                    active_model=active_model,
+                )
+            payload = outcome.payload
+            live_reasoning = None
             # Usage harness'а (best-effort). Нет данных → оценка по длине
             # brief+payload, чтобы учёт работал в тестах (source=estimated).
             llm_usages = [
@@ -842,6 +861,125 @@ class ExecutionService:
             provider=active_provider,
             model=active_model,
             usages=llm_usages,
+        )
+        return ExecutionBundle(request=request, result=result, traces=traces)
+
+    def _finish_bundle_execution(
+        self,
+        *,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        manifest,
+        task,
+        template,
+        artifact_role: str,
+        context_manifest,
+        outcome,
+        complexity_value,
+        active_provider: str,
+        active_model: str,
+    ) -> ExecutionBundle:
+        """Сохранить файловый бандл harness-узла как bundle-артефакт + run.
+
+        Отдельный путь от json-генерации: бандл (код/документы/двоичные/БД/образ)
+        хранится через store_bundle_artifact, к нему json-downstream (markdown/
+        решения/confidence) неприменим. Провенанс/учёт/версии — как у обычного
+        артефакта (created_by_task_id, parent_artifact_id, execution run, usage).
+        """
+        execution_run_id = str(uuid.uuid4())
+        artifact_id = str(uuid.uuid4())
+        files = outcome.files or {}
+        input_artifact_ids = self._extract_input_artifact_ids(context_manifest)
+        previous_active = self._runtime.latest_active_artifact_by_role_and_task(
+            workspace, artifact_role=artifact_role, created_by_task_id=task.task_id
+        )
+        usage = outcome.usage or LLMUsage.estimated(
+            input_text=outcome.brief, output_text=json_dumps(sorted(files))
+        )
+        artifact_record = ArtifactRecord(
+            artifact_id=artifact_id,
+            project_id=manifest.project_id,
+            artifact_role=artifact_role,
+            title=_artifact_document_title(snapshot, artifact_role, template.name),
+            description=f"Артефакт, созданный задачей {task.task_key}",
+            artifact_format="bundle",
+            artifact_kind="primary",
+            created_by_task_id=task.task_id,
+            storage_path=f"artifacts/{artifact_id}.json",
+            created_at=utc_now_iso(),
+            relations=ArtifactRelations(
+                parent_artifact_id=previous_active.artifact_id if previous_active else None,
+                input_artifact_ids=input_artifact_ids,
+            ),
+            metadata=ArtifactMetadata(
+                template_ref=template.ref.as_string(),
+                provider=active_provider,
+                model=active_model,
+                complexity=complexity_value,
+                execution_run_id=execution_run_id,
+                token_usage={"primary_generation": self._usage_to_token_dict(usage)},
+            ),
+        )
+        self._runtime.store_bundle_artifact(
+            workspace,
+            artifact=artifact_record,
+            files=files,
+            bundle_kind=outcome.bundle_kind,
+        )
+        logger.info(
+            "harness-бандл сохранён",
+            role=artifact_role,
+            files=len(files),
+            versioned=previous_active is not None,
+        )
+        if previous_active is not None:
+            self._runtime.mark_artifact_superseded(workspace, previous_active.artifact_id)
+        traces = (
+            ExecutionTrace(
+                trace_id=str(uuid.uuid4()),
+                trace_type="prompt_bundle",
+                title="Harness brief",
+                content=json_dumps(
+                    {"provider": active_provider, "model": active_model, "brief": outcome.brief}
+                ),
+            ),
+            ExecutionTrace(
+                trace_id=str(uuid.uuid4()),
+                trace_type="response",
+                title="Harness transcript",
+                content=outcome.transcript or "",
+            ),
+        )
+        request = ExecutionRequest(
+            execution_run_id=execution_run_id,
+            project_id=manifest.project_id,
+            task_id=task.task_id,
+            template_ref=template.ref.as_string(),
+            context_manifest_id=context_manifest.manifest_id,
+            provider=active_provider,
+            model=active_model,
+            actor="workflow",
+            complexity=complexity_value,
+            methodology_pack_ref=None,
+        )
+        result = ExecutionResult(
+            execution_run_id=execution_run_id,
+            status="succeeded",
+            outputs=(ExecutionOutput(artifact_id=artifact_id, artifact_role=artifact_role),),
+            trace_ids=tuple(trace.trace_id for trace in traces),
+            proposed_goal=None,
+            methodology_decisions=(),
+        )
+        self._runtime.record_execution_run(workspace, request=request, result=result, traces=traces)
+        self._record_llm_usages(
+            workspace,
+            project_id=manifest.project_id,
+            task_id=task.task_id,
+            artifact_id=artifact_id,
+            execution_run_id=execution_run_id,
+            provider=active_provider,
+            model=active_model,
+            usages=[(None, usage)],
         )
         return ExecutionBundle(request=request, result=result, traces=traces)
 

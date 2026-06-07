@@ -38,6 +38,7 @@ from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OBJECTIVE_REF = "common.requirements_specification@1.0.0"
 DEMO_TEMPLATE_REF = "harness.demo@1.0.0"
+BUNDLE_TEMPLATE_REF = "harness.demo_bundle@1.0.0"
 
 
 # --- контракт/провайдер/реестр (без БД) -------------------------------------
@@ -105,20 +106,22 @@ def test_produce_artifact_payload_returns_outcome() -> None:
 # --- сквозной диспетч executor=harness через execute_task -------------------
 
 
-def _harness_leaf_task(project_id: str, objective_ref: str) -> TaskRecord:
+def _harness_leaf_task(
+    project_id: str, objective_ref: str, *, template_ref: str = DEMO_TEMPLATE_REF
+) -> TaskRecord:
     now = utc_now_iso()
     return TaskRecord(
         task_id=str(uuid.uuid4()),
         project_id=project_id,
         objective_ref=objective_ref,
         parent_task_id=None,
-        template_ref=DEMO_TEMPLATE_REF,
+        template_ref=template_ref,
         template_type="leaf",
         title="Демо harness-узла",
         status="in_progress",
         origin_kind="system",
-        origin_ref=DEMO_TEMPLATE_REF,
-        stable_key=f"{objective_ref}:harness.demo",
+        origin_ref=template_ref,
+        stable_key=f"{objective_ref}:{template_ref.split('@')[0]}",
         depth=0,
         slot_id=None,
         attempt=0,
@@ -126,6 +129,25 @@ def _harness_leaf_task(project_id: str, objective_ref: str) -> TaskRecord:
         created_at=now,
         updated_at=now,
     )
+
+
+def _bootstrap_execution(tmp_path: Path):
+    registry_service = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates"))
+    runtime = SqliteRuntime()
+    project_service = ProjectService(runtime)
+    context_service = ContextService(runtime)
+    execution_service = ExecutionService(runtime, context_service)
+    snapshot, report = registry_service.validate()
+    assert report.is_valid
+    workspace = tmp_path / "case"
+    bootstrap = project_service.init_project(
+        workspace=workspace,
+        name="harness e2e",
+        objective_ref=ObjectRef.parse(OBJECTIVE_REF),
+        request_text="Проверка узла-агента.",
+        domain_packs=(),
+    )
+    return runtime, execution_service, snapshot, workspace, bootstrap.manifest.project_id
 
 
 def test_execute_task_routes_harness_node_to_harness_backend(tmp_path: Path) -> None:
@@ -165,3 +187,30 @@ def test_execute_task_routes_harness_node_to_harness_backend(tmp_path: Path) -> 
     # Учёт токенов: estimated-usage записан (downstream одинаков для всех бэкендов).
     usage = runtime.llm_usage_for_task(workspace, task.task_id)
     assert usage is not None
+
+
+def test_execute_task_harness_bundle_output_persists_files(tmp_path: Path) -> None:
+    runtime, execution_service, snapshot, workspace, project_id = _bootstrap_execution(tmp_path)
+
+    task = _harness_leaf_task(project_id, OBJECTIVE_REF, template_ref=BUNDLE_TEMPLATE_REF)
+    runtime.create_task(workspace, task)
+
+    bundle = execution_service.execute_task(workspace, snapshot, task.task_id)
+    assert bundle.result.status == "succeeded"
+    assert any(o.artifact_role == "demo_bundle" for o in bundle.result.outputs)
+
+    # Сохранён как bundle-артефакт; файлы фикстуры-каталога доехали.
+    artifact = runtime.latest_artifact_by_role(workspace, "demo_bundle")
+    assert artifact is not None
+    assert artifact.artifact_format == "bundle"
+    assert artifact.metadata.provider == "harness:stub"
+
+    manifest = runtime.load_bundle_manifest(workspace, artifact.artifact_id)
+    paths = {f.path for f in manifest.files}
+    assert "src/main.py" in paths
+    assert "README.md" in paths
+    code = runtime.load_bundle_file(workspace, artifact.artifact_id, "src/main.py")
+    assert b"main" in code
+    # Код классифицирован как код.
+    kinds = {f.path: f.content_kind for f in manifest.files}
+    assert kinds["src/main.py"] == "code"

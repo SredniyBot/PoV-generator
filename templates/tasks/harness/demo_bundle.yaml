@@ -1,0 +1,29 @@
+kind: task_template
+id: harness.demo_bundle
+version: 1.0.0
+title: Демонстрация файлового выхода harness
+type: leaf
+status: active
+domain: demo
+# Узел-агент, отдающий ФАЙЛОВЫЙ бандл (а не структурный JSON): harness_output:
+# bundle → execution_service сохраняет результат через store_bundle_artifact
+# (файлы на диске + манифест). Ф1 — на stub-рантайме (фикстура-каталог).
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required: []
+    optional: []
+produces:
+  artifact: harness.demo_bundle@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 4000
+planning:
+  priority: 10
+summary: |
+  Демонстрационный узел, исполняемый harness-агентом и производящий набор
+  файлов (код/документы). Проверяет путь файлового бандла: контекст →
+  исполнение → bundle-артефакт. Не привязан к objective.
