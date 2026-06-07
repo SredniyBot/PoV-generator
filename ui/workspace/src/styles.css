@@ -2202,6 +2202,7 @@ code {
 /* Stage 6: контейнер под Mermaid-диаграмму. До рендера содержит сырой
    текст диаграммы; mermaid.run заменяет содержимое на SVG. */
 .document-surface .mermaid-host {
+  position: relative;
   overflow-x: auto;
   margin: 1em 0;
   padding: 12px;
@@ -2213,6 +2214,98 @@ code {
 .document-surface .mermaid-host svg {
   max-width: 100%;
   height: auto;
+}
+/* Кнопка «на канвасе» у отрендеренной диаграммы (появляется при наведении). */
+.document-surface .mermaid-host__expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-easing), color var(--motion-fast) var(--motion-easing);
+}
+.document-surface .mermaid-host:hover .mermaid-host__expand {
+  opacity: 1;
+}
+.document-surface .mermaid-host__expand:hover {
+  color: var(--text-primary);
+  border-color: var(--border-accent);
+}
+
+/* ── Интерактивный просмотр диаграммы на канвасе (п.1) ─────────────────── */
+.diagram-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  flex-direction: column;
+}
+.diagram-modal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 14px;
+  background: var(--surface-overlay);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.diagram-modal__toolbar button {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+.diagram-modal__toolbar button:hover {
+  color: var(--text-primary);
+  border-color: var(--border-accent);
+}
+.diagram-modal__zoom {
+  min-width: 48px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+  font-variant-numeric: tabular-nums;
+}
+.diagram-modal__close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.diagram-modal__viewport {
+  flex: 1 1 auto;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.diagram-modal__viewport:active {
+  cursor: grabbing;
+}
+/* Канвас центрируем; transform задаётся инлайном (translate + scale). */
+.diagram-modal__canvas {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+}
+.diagram-modal__canvas svg {
+  max-width: none;
+  max-height: none;
 }
 
 .document-surface h1 {
