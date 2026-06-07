@@ -341,7 +341,7 @@ export function ProjectRail({
               >
                 <div className="project-item__topline">
                   <strong>{project.name}</strong>
-                  {project.has_blockers ? <AlertTriangle size={14} /> : <ChevronRight size={14} />}
+                  {project.has_blockers ? <AlertTriangle size={14} /> : null}
                 </div>
                 <div className="project-item__meta">
                   <StatusPill tone={project.has_blockers ? "danger" : "muted"}>{project.status_label}</StatusPill>
@@ -507,18 +507,20 @@ export function WorkspaceHeader({
 }) {
   return (
     <header className="workspace-header">
-      <div className="workspace-header__intro">
-        <div className="workspace-header__eyebrow">
-          <StatusPill tone={shell.status_label === "Готово" ? "success" : "active"}>{shell.status_label}</StatusPill>
-          <span>Обновлено {formatDateTime(shell.updated_at)}</span>
-        </div>
+      <div className="workspace-header__topline">
         <h1>{shell.name}</h1>
-        <p className="workspace-header__request">{shell.business_request}</p>
+        <StatusPill tone={shell.status_label === "Готово" ? "success" : "active"}>
+          {shell.status_label}
+        </StatusPill>
+        <span className="workspace-header__updated">
+          Обновлено {formatDateTime(shell.updated_at)}
+        </span>
+        <div className="workspace-header__topline-end">
+          <ConnectionBadge status={connectionStatus} />
+          {actions}
+        </div>
       </div>
-      <div className="workspace-header__side">
-        <ConnectionBadge status={connectionStatus} />
-        {actions}
-      </div>
+      <p className="workspace-header__request">{shell.business_request}</p>
     </header>
   );
 }
