@@ -152,6 +152,27 @@ class SandboxHarnessProvider:
 
     # --- общие помощники сбора ---------------------------------------------
 
+    def _harvest_by_convention(
+        self, handle: SandboxHandle, spec: HarnessRunSpec
+    ) -> list[HarvestedArtifact]:
+        """Сбор по соглашению: ``/work/.povgen/out/<role>.<fmt>`` на каждую роль.
+
+        Общая стратегия для агентов, которые пишут результат в условленные пути
+        (Claude Code, generic command-harness). Бросает :class:`HarvestError`,
+        если ожидаемый артефакт не положен.
+        """
+        harvested: list[HarvestedArtifact] = []
+        for expected in spec.expected_artifacts:
+            file_path = f"{_OUT_DIR}/{expected.role}.{expected.fmt}"
+            files = self._sandbox.get_files(handle, file_path)
+            content = files.get(file_path)
+            if content is None:
+                raise HarvestError(
+                    f"Агент не положил артефакт роли '{expected.role}' в {file_path}."
+                )
+            harvested.append(self._harvest_file_as(expected.role, expected.fmt, content))
+        return harvested
+
     @staticmethod
     def _harvest_file_as(role: str, fmt: str, content: bytes) -> HarvestedArtifact:
         """Один файл → артефакт: json парсим в payload, иначе — файловый бандл."""

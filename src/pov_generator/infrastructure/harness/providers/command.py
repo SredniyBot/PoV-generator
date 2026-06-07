@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 from ..protocol import HarnessRunSpec, HarvestedArtifact
 from ..sandbox import ResourceLimits, SandboxHandle, SandboxRuntime, shell_argv
-from .base import _OUT_DIR, HarvestError, SandboxHarnessProvider
+from .base import SandboxHarnessProvider
 
 
 class CommandHarnessProvider(SandboxHarnessProvider):
@@ -52,14 +52,4 @@ class CommandHarnessProvider(SandboxHarnessProvider):
         self, handle: SandboxHandle, spec: HarnessRunSpec
     ) -> Sequence[HarvestedArtifact]:
         """Сбор по соглашению: ``/work/.povgen/out/<role>.<fmt>``."""
-        harvested: list[HarvestedArtifact] = []
-        for expected in spec.expected_artifacts:
-            file_path = f"{_OUT_DIR}/{expected.role}.{expected.fmt}"
-            files = self._sandbox.get_files(handle, file_path)
-            content = files.get(file_path)
-            if content is None:
-                raise HarvestError(
-                    f"Агент не положил артефакт роли '{expected.role}' в {file_path}."
-                )
-            harvested.append(self._harvest_file_as(expected.role, expected.fmt, content))
-        return harvested
+        return self._harvest_by_convention(handle, spec)

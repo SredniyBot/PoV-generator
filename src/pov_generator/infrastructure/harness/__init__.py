@@ -19,6 +19,7 @@ from .protocol import (
 )
 from .providers.aider import AiderHarnessProvider
 from .providers.base import SandboxHarnessProvider
+from .providers.claude_code import ClaudeCodeHarnessProvider
 from .providers.command import CommandHarnessProvider
 from .registry import HarnessProviderRegistry
 from .sandbox import (
@@ -37,6 +38,7 @@ __all__ = [
     "BudgetExceeded",
     "BudgetTotals",
     "BudgetTracker",
+    "ClaudeCodeHarnessProvider",
     "CommandHarnessProvider",
     "DockerSandboxRuntime",
     "ExecResult",

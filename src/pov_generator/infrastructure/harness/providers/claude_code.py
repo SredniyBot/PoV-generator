@@ -1,0 +1,62 @@
+"""Claude Code-адаптер (Ф7): автономный «строитель» как harness-провайдер.
+
+Claude Code — многошаговый агент: берёт постановку и сам решает, что и как
+сделать (под-агенты, инструменты, многофайловые правки). Для harness'а это
+дефолтный адаптер под «собери X по спеке». Сбор — **по соглашению**: brief
+велит положить каждый ожидаемый артефакт в ``.povgen/out/<role>.<fmt>``, и агент
+это делает своими файловыми инструментами.
+
+Тонкая специализация :class:`SandboxHarnessProvider`: отличается лишь командой
+запуска; сбор переиспользует общий ``_harvest_by_convention``.
+
+Headless-прогон: ``claude -p`` (print mode, неинтерактивно). В изолированной
+песочнице (egress запрещён) автономная правка файлов безопасна, поэтому
+разрешения не выспрашиваем (``--dangerously-skip-permissions``). Реальный прогон
+требует образа с установленным ``claude`` и кредами (эфемерно). В CI —
+``StubSandboxRuntime`` (эмуляция через exec_handler), без Docker и сети.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from ..protocol import HarnessRunSpec, HarvestedArtifact
+from ..sandbox import ResourceLimits, SandboxHandle, SandboxRuntime
+from .base import _BRIEF_PATH, SandboxHarnessProvider, shell
+
+
+class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
+    """Запускает Claude Code headless по brief; собирает выход по соглашению."""
+
+    def __init__(
+        self,
+        *,
+        sandbox: SandboxRuntime,
+        image: str,
+        model: str | None = None,
+        name: str = "claude_code",
+        resource_limits: ResourceLimits | None = None,
+        default_timeout_s: int | None = None,
+    ) -> None:
+        super().__init__(
+            sandbox=sandbox,
+            image=image,
+            name=name,
+            model=model,
+            resource_limits=resource_limits,
+            default_timeout_s=default_timeout_s,
+        )
+
+    def _build_command(self, spec: HarnessRunSpec) -> list[str]:
+        # Постановку подаём как промпт (из файла, чтобы не упереться в лимиты
+        # аргументов). Печать без интерактива; правки без выспрашивания (песочница
+        # изолирована). Модель — опциональна (образ может задавать дефолт).
+        parts = ['claude -p "$(cat ' + _BRIEF_PATH + ')"', "--dangerously-skip-permissions"]
+        if self.model:
+            parts.append(f"--model {self.model}")
+        return shell("cd /work && " + " ".join(parts))
+
+    def _harvest(
+        self, handle: SandboxHandle, spec: HarnessRunSpec
+    ) -> Sequence[HarvestedArtifact]:
+        return self._harvest_by_convention(handle, spec)

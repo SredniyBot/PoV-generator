@@ -534,5 +534,13 @@ Governance денег/времени показываем как **внутре�
 - Тесты на `StubSandboxRuntime` (эмуляция git+aider): diff-harvest, состав
   команды (brief+model), «нет изменений» → failed, провал гейта блокирует сбор.
   Реальный Docker — за POV_HARNESS_DOCKER_TEST.
-- Дальше Ф7b: адаптер Claude Code (сбор-по-соглашению, дефолт), Ф7c: резолв
-  адаптера из настроек (образ/модель/подключение) + матрица возможностей.
+Реализовано (2026-06-08, Ф7b — адаптер Claude Code):
+- Сбор-по-соглашению вынесен в базу (`_harvest_by_convention`); им пользуются
+  и `CommandHarnessProvider`, и `ClaudeCodeHarnessProvider`.
+- `ClaudeCodeHarnessProvider` (providers/claude_code.py) — дефолтный автономный
+  «строитель»: headless `claude -p "$(cat brief)" --dangerously-skip-permissions
+  [--model ...]` (правки в изолированной песочнице безопасны), сбор — по
+  соглашению. Тесты: convention-harvest + состав команды.
+- Дальше Ф7c: резолв адаптера из настроек (тип подключения/образ/модель,
+  инъекция SandboxRuntime в реестр) + матрица возможностей; затем UI Ф6 на
+  живых данных.

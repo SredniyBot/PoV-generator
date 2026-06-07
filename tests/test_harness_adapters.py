@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pov_generator.infrastructure.harness import (
     AiderHarnessProvider,
+    ClaudeCodeHarnessProvider,
     ExpectedArtifact,
     HarnessRunSpec,
     StubSandboxRuntime,
@@ -114,3 +115,59 @@ def test_aider_failed_gate_blocks_harvest() -> None:
     assert result.status == "failed"
     assert "tests" in (result.error or "")
     assert result.artifacts == ()
+
+
+# --- Claude Code: сбор по соглашению ----------------------------------------
+
+
+def test_claude_code_convention_harvest() -> None:
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        cmd = argv[-1]
+        if "claude -p" in cmd:  # запуск агента — пишет по соглашению
+            rt.put_files(
+                handle, {"/work/.povgen/out/component_bundle.json": b'{"ok": true}'}
+            )
+            return ExecResult(exit_code=0, stdout="claude: done", stderr="")
+        return ExecResult(exit_code=0, stdout="", stderr="")
+
+    provider = ClaudeCodeHarnessProvider(
+        sandbox=StubSandboxRuntime(exec_handler=handler),
+        image="povgen/claude-code:latest",
+    )
+    spec = HarnessRunSpec(
+        brief="собери компонент",
+        expected_artifacts=(ExpectedArtifact(role="component_bundle", fmt="json"),),
+    )
+    result = provider.run(spec)
+
+    assert result.status == "completed"
+    assert result.artifacts[0].payload == {"ok": True}
+    assert "claude: done" in result.transcript
+
+
+def test_claude_code_command_shape() -> None:
+    captured: list[str] = []
+
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        cmd = argv[-1]
+        captured.append(cmd)
+        if "claude -p" in cmd:
+            rt.put_files(handle, {"/work/.povgen/out/r.json": b"{}"})
+            return ExecResult(0, "", "")
+        return ExecResult(0, "", "")
+
+    provider = ClaudeCodeHarnessProvider(
+        sandbox=StubSandboxRuntime(exec_handler=handler),
+        image="x",
+        model="claude-opus-4-8",
+    )
+    provider.run(
+        HarnessRunSpec(
+            brief="b", expected_artifacts=(ExpectedArtifact(role="r", fmt="json"),)
+        )
+    )
+
+    claude_cmd = next(c for c in captured if "claude -p" in c)
+    assert "$(cat /work/.povgen/brief.txt)" in claude_cmd
+    assert "--dangerously-skip-permissions" in claude_cmd
+    assert "--model claude-opus-4-8" in claude_cmd
