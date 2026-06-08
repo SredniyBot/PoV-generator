@@ -329,7 +329,13 @@ class WorkspaceQueryService:
         # list_tasks возвращает и задачи прошлых гейтов — их граф живёт в своей
         # подвкладке, а не подмешивается в активный (Ф1).
         active_ref = context.manifest.objective_ref
-        tasks = [task for task in tasks if task.objective_ref == active_ref]
+        # #1: устаревшие инстансы (obsolete — прошлые попытки веера/сброса) не
+        # показываем в графе: их бывает очень много и они только зашумляют.
+        tasks = [
+            task
+            for task in tasks
+            if task.objective_ref == active_ref and task.status != "obsolete"
+        ]
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         ready = next((task for task in leaf_tasks if task.status == "ready"), None)
         nodes = self._build_task_tree(context.workspace, tasks, ready.task_id if ready else None, context.snapshot)
@@ -375,7 +381,7 @@ class WorkspaceQueryService:
             tasks = [
                 t
                 for t in self._runtime.list_tasks(context.workspace)
-                if t.objective_ref == objective_ref
+                if t.objective_ref == objective_ref and t.status != "obsolete"
             ]
             # Завершённый гейт доступен (available=True): его выполненные
             # листовые задачи можно откатить — это вернёт проект на этот гейт
@@ -1855,6 +1861,10 @@ class WorkspaceQueryService:
         )
 
     def _build_task_tree(self, workspace: Path, tasks: list[TaskRecord], current_task_id: str | None, snapshot: RegistrySnapshot | None = None, *, available: bool = True) -> tuple[TaskNodeView, ...]:
+        # #1: устаревшие задачи (obsolete — инстансы прошлых попыток веера/сброса)
+        # из графа исключаем целиком: и из дерева, и из счётчиков веера. Их много
+        # и они только зашумляют; в дереве они не несут смысла.
+        tasks = [task for task in tasks if task.status != "obsolete"]
         children_by_parent: dict[str | None, list[TaskRecord]] = {}
         for task in tasks:
             children_by_parent.setdefault(task.parent_task_id, []).append(task)

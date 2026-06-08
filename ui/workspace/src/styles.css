@@ -2012,6 +2012,28 @@ code {
   cursor: pointer;
 }
 
+/* #3: верхняя панель списка артефактов — подвкладки слева, архив+экспорт справа. */
+.artifacts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.artifacts-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* В панели подвкладки и тумблер без собственного нижнего отступа. */
+.artifacts-toolbar .entity-tabs,
+.artifacts-toolbar .artifacts-archive-toggle {
+  margin-bottom: 0;
+}
+
 /* #2: просмотр бандла (код) — дерево файлов + содержимое выбранного файла. */
 .bundle-viewer {
   display: grid;

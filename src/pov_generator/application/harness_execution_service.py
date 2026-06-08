@@ -110,27 +110,42 @@ def render_harness_brief(
     system_prompt: str,
     user_prompt: str,
     expected_artifacts: tuple[ExpectedArtifact, ...],
+    output_kind: str = "structured",
 ) -> str:
-    """Собрать самодостаточную постановку для агента.
+    """Собрать самодостаточную постановку для агента + конвенцию вывода.
 
-    Методология и контекст уже сведены в ``system_prompt``/``user_prompt``
-    (общий путь сборки промпта). Brief добавляет к ним соглашение о выходе:
-    куда и в каком формате положить ожидаемые артефакты — чтобы сбор результата
-    (harvest-by-convention) был детерминированным независимо от конкретного
-    агента. Отдельная функция — чтобы тестировать рендер в изоляции.
+    Постановка (роль/контекст) уже в ``system_prompt``/``user_prompt``. Brief
+    добавляет соглашение о ВЫХОДЕ, и оно зависит от вида результата:
+
+    * ``bundle`` (код/файлы) — агент пишет РАБОЧИЙ исходный код прямо в рабочий
+      каталог (его собирает subtree-harvest). НЕ в ``.povgen`` (служебный,
+      исключается из сбора) и НЕ JSON-описанием — это была причина «нет кода».
+    * ``structured`` (JSON/markdown) — агент кладёт артефакт по соглашению
+      ``.povgen/out/<role>.<fmt>`` (детерминированный harvest-by-convention).
+
+    Отдельная функция — чтобы тестировать рендер в изоляции.
     """
-    expectations = "\n".join(
-        f"- роль `{exp.role}` → файл `.povgen/out/{exp.role}.{exp.fmt}` (формат: {exp.fmt})"
-        for exp in expected_artifacts
-    )
-    return (
-        f"{system_prompt}\n\n"
-        f"{user_prompt}\n\n"
-        "## Что нужно произвести\n"
-        f"{expectations or f'- роль `{artifact_role}`'}\n\n"
-        "Размести каждый ожидаемый артефакт по указанному пути. Не выходи за рамки "
-        "задачи; недостающие данные отметь в содержимом, а не выдумывай."
-    )
+    if output_kind == "bundle":
+        convention = (
+            "## Что произвести\n"
+            "Напиши РАБОЧИЙ исходный код и файлы проекта прямо в рабочий каталог "
+            "(структура — по задаче и контексту: код, минимальный тест, README). "
+            "НЕ записывай результат в каталог `.povgen` и НЕ выводи JSON-описание "
+            "вместо кода — нужны реальные файлы с кодом. Пиши только в свою зону, "
+            "указанную в задаче."
+        )
+    else:
+        expectations = "\n".join(
+            f"- роль `{exp.role}` → файл `.povgen/out/{exp.role}.{exp.fmt}` (формат: {exp.fmt})"
+            for exp in expected_artifacts
+        )
+        convention = (
+            "## Что нужно произвести\n"
+            f"{expectations or f'- роль `{artifact_role}`'}\n"
+            "Размести каждый ожидаемый артефакт по указанному пути. Недостающие "
+            "данные отметь в содержимом, а не выдумывай."
+        )
+    return f"{system_prompt}\n\n{user_prompt}\n\n{convention}"
 
 
 class HarnessExecutionService:
@@ -216,6 +231,7 @@ class HarnessExecutionService:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             expected_artifacts=expected,
+            output_kind=output_kind,
         )
         spec = HarnessRunSpec(
             brief=brief,

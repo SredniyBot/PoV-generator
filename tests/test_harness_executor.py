@@ -83,15 +83,32 @@ def test_registry_resolves_default_stub() -> None:
 
 
 def test_render_brief_includes_expectations() -> None:
+    # structured-выход: соглашение .povgen/out/<role>.<fmt> (harvest-by-convention).
     brief = render_harness_brief(
         artifact_role="demo_output",
         system_prompt="SYS",
         user_prompt="USR",
         expected_artifacts=(ExpectedArtifact(role="demo_output", fmt="json"),),
+        output_kind="structured",
     )
     assert "SYS" in brief and "USR" in brief
     assert "demo_output" in brief
     assert ".povgen/out/demo_output.json" in brief
+
+
+def test_render_brief_bundle_writes_code_not_povgen() -> None:
+    # bundle-выход (код): агент пишет код в рабочий каталог, НЕ в .povgen и НЕ
+    # JSON-описанием. Это устраняет «реализация не реализует» — корневую причину.
+    brief = render_harness_brief(
+        artifact_role="component_implementation",
+        system_prompt="SYS",
+        user_prompt="USR",
+        expected_artifacts=(ExpectedArtifact(role="component_implementation", fmt="files"),),
+        output_kind="bundle",
+    )
+    assert "исходный код" in brief.lower() or "рабочий код" in brief.lower()
+    # Не должно велеть писать в служебный .povgen для bundle.
+    assert ".povgen/out/component_implementation" not in brief
 
 
 def test_produce_artifact_payload_returns_outcome() -> None:

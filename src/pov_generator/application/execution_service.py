@@ -428,14 +428,25 @@ class ExecutionService:
             model=active_model or None,
         )
 
-        system_prompt, user_prompt = self._build_prompt(
-            template_name=template.name,
-            task_summary=template.summary,
-            artifact_role=artifact_role,
-            domain_pack_refs=active_domain_refs,
-            current_step_title=task.title,
-            context_manifest=context_manifest,
-        )
+        # harness-узел — это АГЕНТ-РАЗРАБОТЧИК (пишет код файловыми инструментами),
+        # а не консультант, пишущий документацию. Поэтому бриф строится отдельно:
+        # без doc-промпта (Минто/проза/JSON-схема), с кодовой постановкой. Иначе
+        # агент пишет прозу/JSON вместо кода (корневая причина «не реализует»).
+        if is_harness:
+            system_prompt, user_prompt = self._build_harness_prompt(
+                template_name=template.name,
+                current_step_title=task.title,
+                context_manifest=context_manifest,
+            )
+        else:
+            system_prompt, user_prompt = self._build_prompt(
+                template_name=template.name,
+                task_summary=template.summary,
+                artifact_role=artifact_role,
+                domain_pack_refs=active_domain_refs,
+                current_step_title=task.title,
+                context_manifest=context_manifest,
+            )
 
         # Слой 2: специализация генерации профилем умений. Если задан
         # capability_ref — префиксим system-prompt контрактом (<capability_pledge>:
@@ -1714,6 +1725,54 @@ class ExecutionService:
         return "\n\n".join(sections)
 
     # ---- prompt building -------------------------------------------------
+
+    def _build_harness_prompt(
+        self,
+        *,
+        template_name: str,
+        current_step_title: str,
+        context_manifest,
+    ) -> tuple[str, str]:
+        """Бриф для harness-узла: постановка АГЕНТУ-РАЗРАБОТЧИКУ, а не консультанту.
+
+        Принципиально отличается от ``_build_prompt`` (который готовит
+        документацию для chat_json): здесь нет doc-стиля (Минто/проза/русский),
+        нет JSON-схемы — есть инструкция писать настоящий код файловыми
+        инструментами. Контекст (требования, спека компонента, конституция,
+        контракты) переносится из манифеста как есть — это и есть постановка.
+        Конвенцию вывода (код в каталог vs JSON в .povgen) добавляет
+        ``render_harness_brief`` по виду выхода.
+        """
+        system_prompt = (
+            "<role>\n"
+            "Ты — senior software engineer и автономный агент. Твоя работа — "
+            "РЕАЛИЗОВАТЬ поставленную часть системы: написать настоящий, "
+            "запускаемый исходный код своими файловыми инструментами. Это не "
+            "документация и не JSON-описание — нужен рабочий код в файлах.\n"
+            "</role>\n\n"
+            "<principles>\n"
+            "1. Строй строго по задаче и контексту ниже; не выходи за рамки.\n"
+            "2. Сначала прочти общее ядро проекта в рабочем каталоге, если оно "
+            "есть (AGENTS.md, CONVENTIONS.md, STACK.md, /contracts/): оно "
+            "авторитетно — соблюдай стек, конвенции и контракты соседей.\n"
+            "3. Пиши идиоматичный код выбранного стека с минимальными тестами; "
+            "не оставляй заглушек вместо логики.\n"
+            "4. Не выдумывай интерфейсы соседних сервисов — используй контракты.\n"
+            "5. Пиши только в свою зону (как указано в задаче); чужие зоны, "
+            "общие контракты и конфиги не трогай.\n"
+            "6. Чего реально не хватает — отметь в README, не выдумывай.\n"
+            "</principles>"
+        )
+        context_sections = [
+            f"### {item.title}\n{item.content}" for item in context_manifest.items
+        ]
+        prompt_lines = [
+            f"Текущая задача: {current_step_title}",
+            f"Тип работы: {template_name}",
+            "Контекст (требования, спека, контракты, конституция проекта):",
+            *context_sections,
+        ]
+        return system_prompt, "\n\n".join(prompt_lines)
 
     def _build_prompt(
         self,

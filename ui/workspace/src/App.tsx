@@ -2275,22 +2275,9 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     <div className="artifacts-page">
       <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
       <div className="artifacts-column">
-      <SectionCard
-        title="Артефакты проекта"
-        actions={
-          artifacts.length > 0 ? (
-            <a
-              className="section-card__export"
-              href={api.projectExportZipUrl(projectId)}
-              download
-              title="Скачать все Markdown-артефакты проекта одним архивом"
-            >
-              <Download size={13} />
-              Экспорт MD
-            </a>
-          ) : undefined
-        }
-      >
+      {/* #3: подвкладки категорий + архив + экспорт — единой верхней панелью
+          (как «Реестр»/«Открытые» в решениях), без заголовка «Артефакты проекта». */}
+      <div className="artifacts-toolbar">
         {presentCategories.length > 0 ? (
           <nav className="entity-tabs" aria-label="Категории артефактов">
             {presentCategories.map((c) => (
@@ -2304,26 +2291,41 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
               </button>
             ))}
           </nav>
-        ) : null}
-        <label className="artifacts-archive-toggle">
-          <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
-          />
-          Показывать заархивированные
-        </label>
-        {showArchived && archivedQuery.isLoading ? (
-          <p className="muted">Загрузка архива…</p>
-        ) : artifacts.length === 0 ? (
-          <EmptyState
-            title="Артефактов нет"
-            description="В этой категории пока пусто. Запустите workflow, чтобы получить результаты."
-          />
         ) : (
-          <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
+          <span />
         )}
-      </SectionCard>
+        <div className="artifacts-toolbar__actions">
+          <label className="artifacts-archive-toggle">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            Заархивированные
+          </label>
+          {artifacts.length > 0 ? (
+            <a
+              className="section-card__export"
+              href={api.projectExportZipUrl(projectId)}
+              download
+              title="Скачать все Markdown-артефакты проекта одним архивом"
+            >
+              <Download size={13} />
+              Экспорт MD
+            </a>
+          ) : null}
+        </div>
+      </div>
+      {showArchived && archivedQuery.isLoading ? (
+        <p className="muted">Загрузка архива…</p>
+      ) : artifacts.length === 0 ? (
+        <EmptyState
+          title="Артефактов нет"
+          description="В этой категории пока пусто. Запустите workflow, чтобы получить результаты."
+        />
+      ) : (
+        <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
+      )}
       <AttachmentsCard
         projectId={projectId}
         inputArtifact={inputArtifact}
