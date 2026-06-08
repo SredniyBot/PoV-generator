@@ -1,0 +1,58 @@
+{
+  "summary": "Чистый функциональный интерфейс: акцент на ясности форм и состояниях данных.",
+  "design_principles": [
+    "Ясная обратная связь на каждое действие",
+    "Явные состояния: загрузка, пусто, ошибка, успех",
+    "Доступность: контраст AA, навигация с клавиатуры"
+  ],
+  "color_palette": [
+    { "name": "Primary", "hex": "#2D6CDF", "role": "primary", "usage": "Основные действия, ссылки" },
+    { "name": "Surface", "hex": "#FFFFFF", "role": "surface", "usage": "Карточки, панели" },
+    { "name": "Background", "hex": "#F5F7FA", "role": "background", "usage": "Фон страницы" },
+    { "name": "Text", "hex": "#1C2330", "role": "text", "usage": "Основной текст" },
+    { "name": "Success", "hex": "#2E9E5B", "role": "success", "usage": "Успешные статусы" },
+    { "name": "Danger", "hex": "#D14343", "role": "danger", "usage": "Ошибки, удаление" }
+  ],
+  "typography": [
+    { "role": "heading", "font": "Inter", "size": "24/20/16", "weight": "600", "usage": "Заголовки экранов" },
+    { "role": "body", "font": "Inter", "size": "14", "weight": "400", "usage": "Основной текст" },
+    { "role": "caption", "font": "Inter", "size": "12", "weight": "400", "usage": "Подписи, подсказки" }
+  ],
+  "spacing_scale": ["4", "8", "12", "16", "24", "32"],
+  "screens": [
+    {
+      "id": "list",
+      "name": "Список заявок",
+      "purpose": "Просмотр и фильтрация заявок",
+      "key_elements": ["Таблица заявок", "Фильтр по статусу", "Кнопка создания"],
+      "states": ["загрузка", "пусто", "ошибка", "успех"],
+      "primary_actions": ["Создать заявку", "Открыть заявку"]
+    },
+    {
+      "id": "detail",
+      "name": "Заявка",
+      "purpose": "Просмотр и изменение заявки",
+      "key_elements": ["Форма заявки", "История статусов"],
+      "states": ["загрузка", "ошибка", "успех"],
+      "primary_actions": ["Сохранить", "Сменить статус"]
+    }
+  ],
+  "navigation_flows": [
+    { "name": "Создание заявки", "steps": ["Список", "Кнопка «Создать»", "Форма", "Сохранение", "Список"] }
+  ],
+  "form_patterns": [
+    "Валидация на blur и на submit; ошибки — под полем",
+    "Кнопка submit заблокирована, пока форма невалидна"
+  ],
+  "components": [
+    { "name": "Button", "purpose": "Действия", "variants": ["primary", "secondary", "danger"] },
+    { "name": "Input", "purpose": "Ввод данных", "variants": ["text", "select", "textarea"] },
+    { "name": "Table", "purpose": "Списки данных", "variants": ["compact", "default"] }
+  ],
+  "api_interaction": [
+    { "screen": "Список заявок", "operation": "GET /requests", "purpose": "Загрузка списка с фильтром" },
+    { "screen": "Заявка", "operation": "POST /requests", "purpose": "Создание заявки" }
+  ],
+  "open_questions": [],
+  "confidence": 0.7
+}

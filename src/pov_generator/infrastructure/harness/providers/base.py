@@ -199,7 +199,11 @@ class SandboxHarnessProvider:
         prefix = root + "/"
         files: dict[str, bytes] = {}
         for path, content in raw.items():
-            if "/.povgen/" in path or path.rstrip("/").endswith("/.povgen"):
+            # Служебные каталоги в бандл не попадают: .povgen (brief/out
+            # харнесса) и .git (рабочий репозиторий aider/diff-инструментов).
+            if any(seg in path for seg in ("/.povgen/", "/.git/")) or path.rstrip(
+                "/"
+            ).endswith(("/.povgen", "/.git")):
                 continue
             rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
             if rel:

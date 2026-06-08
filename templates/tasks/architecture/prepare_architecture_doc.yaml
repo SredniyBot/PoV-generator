@@ -34,6 +34,12 @@ children:
     required: false
   - id: design_synthesis
     task: architecture.design_synthesis@1.0.0
+# Доменные виды архитектуры (slot): доменные пакеты добавляют сюда свои
+# профессиональные шаги — напр. frontend → UI/UX дизайн (палитра/экраны/API).
+# Активируются только при активном доменном пакете (UI-проекты), иначе слот пуст.
+slots:
+  - id: architecture.domain_views
+    title: Доменные виды архитектуры
 # Порядок генерации (по priority, design_synthesis — последний, priority 100):
 # system_context → component_model → interaction_view → deployment_map →
 # design_synthesis. Каждый шаг ссылается только на id, зафиксированные выше

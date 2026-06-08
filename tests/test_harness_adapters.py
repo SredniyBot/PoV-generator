@@ -20,18 +20,19 @@ from pov_generator.infrastructure.harness.protocol import HarnessGate
 from pov_generator.infrastructure.harness.sandbox import ExecResult, SandboxHandle
 
 
-def _aider_handler(*, edits: dict[str, bytes], changed: list[str], gate_exit: int = 0):
-    """exec_handler: prepare (git) → aider (пишет файлы) → harvest (diff) → гейты."""
+def _aider_handler(*, edits: dict[str, bytes], gate_exit: int = 0):
+    """exec_handler: prepare (git) → aider (пишет файлы) → гейты.
+
+    Сбор — общий subtree-harvest (RG-C): провайдер сам читает /work через
+    get_files, отдельной diff-команды нет."""
 
     def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
         cmd = argv[-1]
-        if "git init" in cmd:  # подготовка базовой ревизии
+        if "git init" in cmd:  # инициализация репозитория для работы aider
             return ExecResult(exit_code=0, stdout="", stderr="")
-        if "aider" in cmd:  # запуск агента — эмулируем правки
+        if "aider" in cmd:  # запуск агента — эмулируем правки в /work
             rt.put_files(handle, {f"/work/{p}": c for p, c in edits.items()})
             return ExecResult(exit_code=0, stdout="aider: applied edits", stderr="")
-        if "git diff --cached --name-only" in cmd:  # diff-harvest
-            return ExecResult(exit_code=0, stdout="\n".join(changed) + "\n", stderr="")
         # любая иная команда трактуется как гейт
         return ExecResult(exit_code=gate_exit, stdout="gate", stderr="")
 
@@ -46,10 +47,9 @@ def _spec(role: str = "component_bundle", gates: tuple[HarnessGate, ...] = ()) -
     )
 
 
-def test_aider_diff_harvest_collects_changed_files() -> None:
+def test_aider_subtree_harvest_collects_files() -> None:
     handler = _aider_handler(
         edits={"src/app.py": b"print('hi')\n", "README.md": b"# proj\n"},
-        changed=["src/app.py", "README.md"],
     )
     provider = AiderHarnessProvider(
         sandbox=StubSandboxRuntime(exec_handler=handler),
@@ -62,6 +62,7 @@ def test_aider_diff_harvest_collects_changed_files() -> None:
     art = result.artifacts[0]
     assert art.role == "component_bundle"
     assert art.fmt == "files"
+    # Subtree-harvest: дерево кода из /work (служебный .povgen/brief.txt отсеян).
     assert set(art.files or {}) == {"src/app.py", "README.md"}
     assert art.files["src/app.py"] == b"print('hi')\n"
     assert "aider: applied edits" in result.transcript
@@ -76,8 +77,6 @@ def test_aider_command_passes_brief_and_model() -> None:
         if "aider" in cmd:
             rt.put_files(handle, {"/work/a.py": b"x\n"})
             return ExecResult(0, "", "")
-        if "git diff --cached --name-only" in cmd:
-            return ExecResult(0, "a.py\n", "")
         return ExecResult(0, "", "")
 
     provider = AiderHarnessProvider(
@@ -94,20 +93,20 @@ def test_aider_command_passes_brief_and_model() -> None:
     assert "--model" in aider_cmd and "claude-sonnet-4-5" in aider_cmd
 
 
-def test_aider_no_changes_fails() -> None:
-    handler = _aider_handler(edits={}, changed=[])
+def test_aider_no_output_fails() -> None:
+    # Пустой workspace (агент ничего не произвёл) → subtree-harvest даёт пусто →
+    # узел падает с понятной причиной (а не пустой diff).
+    handler = _aider_handler(edits={})
     provider = AiderHarnessProvider(
         sandbox=StubSandboxRuntime(exec_handler=handler), image="x"
     )
     result = provider.run(_spec())
     assert result.status == "failed"
-    assert "изменений" in (result.error or "")
+    assert "бандл" in (result.error or "")
 
 
 def test_aider_failed_gate_blocks_harvest() -> None:
-    handler = _aider_handler(
-        edits={"a.py": b"x\n"}, changed=["a.py"], gate_exit=1
-    )
+    handler = _aider_handler(edits={"a.py": b"x\n"}, gate_exit=1)
     provider = AiderHarnessProvider(
         sandbox=StubSandboxRuntime(exec_handler=handler), image="x"
     )

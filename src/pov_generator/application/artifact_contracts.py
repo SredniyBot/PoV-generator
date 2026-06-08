@@ -2054,6 +2054,102 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "project_scaffold": {"type": "object", "additionalProperties": True},
         "system_integration": {"type": "object", "additionalProperties": True},
         "system_check": {"type": "object", "additionalProperties": True},
+        # UI/UX дизайн-документ (frontend): макет с палитрой/типографикой/экранами
+        # + подход к взаимодействию с API. Производится на гейте «Архитектура»
+        # доменным вкладом frontend-пакета; органично входит в design_document.
+        "ui_design": _analysis_object(
+            ["screens", "color_palette"],
+            {
+                "summary": {"type": "string"},
+                "design_principles": _string_array_schema(),
+                "color_palette": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "hex", "role"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "hex": {"type": "string"},
+                            "role": {"type": "string"},
+                            "usage": {"type": "string"},
+                        },
+                    },
+                },
+                "typography": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["role"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "role": {"type": "string"},
+                            "font": {"type": "string"},
+                            "size": {"type": "string"},
+                            "weight": {"type": "string"},
+                            "usage": {"type": "string"},
+                        },
+                    },
+                },
+                "spacing_scale": _string_array_schema(),
+                "screens": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "purpose"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "key_elements": _string_array_schema(),
+                            "states": _string_array_schema(),
+                            "primary_actions": _string_array_schema(),
+                        },
+                    },
+                },
+                "navigation_flows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "steps"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "steps": _string_array_schema(),
+                        },
+                    },
+                },
+                "form_patterns": _string_array_schema(),
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "purpose": {"type": "string"},
+                            "variants": _string_array_schema(),
+                        },
+                    },
+                },
+                "api_interaction": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["screen"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "screen": {"type": "string"},
+                            "operation": {"type": "string"},
+                            "purpose": {"type": "string"},
+                        },
+                    },
+                },
+                "open_questions": _string_array_schema(),
+            },
+        ),
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")
@@ -3544,6 +3640,9 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     if artifact_role == "interaction_view":
         return _render_interaction_view(payload)
 
+    if artifact_role == "ui_design":
+        return _render_ui_design(payload)
+
     if artifact_role == "design_document":
         return _render_design_document(payload)
 
@@ -3730,6 +3829,76 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     # Generic fallback for demo / unstructured artifacts
     import json as _json
     return f"# {artifact_role}\n\n```json\n{_json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n"
+
+
+def _render_ui_design(payload: dict[str, Any]) -> str:
+    """Профессиональный UI/UX дизайн-документ: палитра, типографика, экраны,
+    навигация, формы, компоненты, взаимодействие с API — в виде раздела."""
+    lines: list[str] = ["# UI/UX дизайн"]
+    if payload.get("summary"):
+        lines += ["", str(payload["summary"])]
+    if payload.get("design_principles"):
+        lines += ["", "## Принципы", *[f"- {p}" for p in payload["design_principles"]]]
+
+    palette = [c for c in (payload.get("color_palette") or []) if isinstance(c, dict)]
+    if palette:
+        lines += ["", "## Цветовая палитра", "", "| Цвет | HEX | Роль | Применение |", "| --- | --- | --- | --- |"]
+        for c in palette:
+            lines.append(
+                f"| {c.get('name', '—')} | `{c.get('hex', '')}` | {c.get('role', '')} | {c.get('usage', '')} |"
+            )
+
+    typo = [t for t in (payload.get("typography") or []) if isinstance(t, dict)]
+    if typo:
+        lines += ["", "## Типографика", "", "| Роль | Шрифт | Размер | Начертание | Применение |", "| --- | --- | --- | --- | --- |"]
+        for t in typo:
+            lines.append(
+                f"| {t.get('role', '—')} | {t.get('font', '')} | {t.get('size', '')} | "
+                f"{t.get('weight', '')} | {t.get('usage', '')} |"
+            )
+
+    if payload.get("spacing_scale"):
+        lines += ["", "## Сетка отступов", "- " + ", ".join(str(s) for s in payload["spacing_scale"])]
+
+    screens = [s for s in (payload.get("screens") or []) if isinstance(s, dict)]
+    if screens:
+        lines += ["", "## Экраны"]
+        for s in screens:
+            lines.append(f"\n### {s.get('name', 'Экран')}")
+            if s.get("purpose"):
+                lines.append(str(s["purpose"]))
+            if s.get("key_elements"):
+                lines += ["", "Ключевые элементы:", *[f"- {e}" for e in s["key_elements"]]]
+            if s.get("states"):
+                lines.append("Состояния: " + ", ".join(str(x) for x in s["states"]))
+            if s.get("primary_actions"):
+                lines.append("Действия: " + ", ".join(str(x) for x in s["primary_actions"]))
+
+    flows = [f for f in (payload.get("navigation_flows") or []) if isinstance(f, dict)]
+    if flows:
+        lines += ["", "## Навигация"]
+        for f in flows:
+            steps = " → ".join(str(x) for x in (f.get("steps") or []))
+            lines.append(f"- **{f.get('name', 'Поток')}**: {steps}")
+
+    if payload.get("form_patterns"):
+        lines += ["", "## Формы", *[f"- {p}" for p in payload["form_patterns"]]]
+
+    comps = [c for c in (payload.get("components") or []) if isinstance(c, dict)]
+    if comps:
+        lines += ["", "## Компоненты"]
+        for c in comps:
+            variants = f" ({', '.join(str(v) for v in c['variants'])})" if c.get("variants") else ""
+            lines.append(f"- **{c.get('name', '—')}**{variants}: {c.get('purpose', '')}")
+
+    api = [a for a in (payload.get("api_interaction") or []) if isinstance(a, dict)]
+    if api:
+        lines += ["", "## Взаимодействие с API"]
+        for a in api:
+            op = f" — `{a['operation']}`" if a.get("operation") else ""
+            lines.append(f"- **{a.get('screen', '—')}**{op}: {a.get('purpose', '')}")
+
+    return "\n".join(lines)
 
 
 def _render_design_document(payload: dict[str, Any]) -> str:

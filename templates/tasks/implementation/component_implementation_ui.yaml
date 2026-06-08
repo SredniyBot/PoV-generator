@@ -22,6 +22,8 @@ requires:
     optional:
       - implementation.build_manifest@1.0.0
       - architecture.interaction_view@1.0.0
+      # UI/UX дизайн (палитра/экраны/формы/API) ведёт сборку фронта.
+      - frontend.ui_design@1.0.0
       - common.normalized_request@1.0.0
 produces:
   artifact: implementation.component_implementation@1.0.0
@@ -42,7 +44,9 @@ summary: |
   AGENTS.md, CONVENTIONS.md/STACK.md (стек фронта и версии), базу стиля сервиса
   (дизайн-токены и базовые примитивы — используй их, НЕ изобретай свои),
   /contracts/ (контракт API — вызывай бэкенд строго по нему, адрес — через имя
-  сервиса compose), interaction_view (потоки/состояния экрана).
+  сервиса compose). Следуй UI/UX дизайну (frontend.ui_design): палитра,
+  типографика, экран и его состояния, формы, компоненты — реализуй экран по
+  дизайну, не придумывай свой стиль.
 
   Затем положи код компонента ТОЛЬКО в зону своего сервиса (services/<сервис>/...):
   • разметка и логика экрана/виджета на стеке ядра, против дизайн-токенов;

@@ -19,3 +19,10 @@ contributes:
     add:
       - id: frontend_user_flow_analysis
         task: frontend.user_flow_analysis@1.0.0
+  # Гейт «Архитектура»: профессиональный UI/UX дизайн (палитра/типографика/
+  # экраны/формы/компоненты + подход к взаимодействию с API). Только для
+  # UI-проектов (пакет активен) — органично входит в архитектурный документ.
+  - to: architecture.domain_views
+    add:
+      - id: frontend_ui_design
+        task: frontend.ui_design@1.0.0

@@ -41,6 +41,9 @@ requires:
       - common.project_risk_register@1.0.0
       - security.security_compliance_constraints@1.0.0
       - integration.integration_operating_model@1.0.0
+      # UI/UX дизайн (для UI-проектов) — органично входит в документ отдельной
+      # секцией, ведёт сборку фронтенда.
+      - frontend.ui_design@1.0.0
 produces:
   artifact: architecture.design_document@1.0.0
 context:
@@ -90,6 +93,11 @@ summary: |
 
   • NON_FUNCTIONAL_REQUIREMENTS (опционально) — нагрузка, надёжность,
     наблюдаемость, безопасность — если есть из upstream-доменов.
+
+  • UI_UX_DESIGN (опционально, для UI-проектов) — если есть frontend.ui_design,
+    включи его содержимое отдельной секцией как есть: цветовая палитра,
+    типографика, экраны и состояния, навигация, формы, компоненты и подход к
+    взаимодействию с API. Не пересобирай — это готовый дизайн-раздел документа.
 
   Правила:
 

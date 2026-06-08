@@ -291,11 +291,6 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
           <FileText size={13} className="tg-node__type-icon" aria-label="задача" />
         )}
       </div>
-      {task.is_harness ? (
-        <span className="tg-node__agent-tag" title="Исполняется автономным агентом (harness)">
-          агент
-        </span>
-      ) : null}
       <div className="tg-node__title" title={task.title}>{task.title}</div>
       {task.status === "failed" && (task.error_message || task.status_summary) ? (
         <div

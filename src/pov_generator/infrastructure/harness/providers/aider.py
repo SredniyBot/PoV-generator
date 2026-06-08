@@ -1,14 +1,15 @@
 """Aider-адаптер (Ф7): git-нативный «редактор» как harness-провайдер.
 
-Aider правит файлы в репозитории и коммитит каждую правку — поэтому самый
-чистый сбор результата здесь **diff-harvest**: что изменилось относительно
-базовой ревизии, то и есть выход узла (файловый бандл). Это и проверка всей
-цепочки сбора на дешёвых моделях (litellm), и git-нативная альтернатива
-сбору-по-соглашению (Claude Code).
+Aider правит файлы в репозитории и коммитит каждую правку — поэтому ему нужен
+git-репозиторий (``_prepare`` инициализирует его). Сбор результата — единый для
+всех адаптеров **subtree-harvest** (RG-C): дерево кода из зоны узла
+(``harvest_path``) или всего ``/work``. Это согласуется с моделью общего тома и
+каркаса (компонент пишет в зону сервиса поверх скелета), и снимает хрупкость
+diff-harvest, который в shared-volume давал пустой diff после авто-коммита aider.
 
-Тонкая специализация :class:`SandboxHarnessProvider`: отличается командой
-запуска, подготовкой (инициализация git + базовая ревизия) и стратегией сбора
-(diff против базовой ревизии). Остальное — общая обвязка.
+Тонкая специализация :class:`SandboxHarnessProvider`: отличается командой запуска
+и подготовкой (инициализация git, нужная самому aider). Сбор — общий
+``_harvest_by_convention`` (для bundle → subtree зоны).
 
 Реальный прогон требует образа с установленным ``aider`` и кредами модели
 (эфемерно, в песочнице). В CI проверяется на ``StubSandboxRuntime`` (эмуляция
@@ -22,29 +23,19 @@ from collections.abc import Sequence
 
 from ..protocol import HarnessRunSpec, HarvestedArtifact
 from ..sandbox import ResourceLimits, SandboxHandle, SandboxRuntime
-from .base import _BRIEF_PATH, HarvestError, SandboxHarnessProvider, shell
+from .base import _BRIEF_PATH, SandboxHarnessProvider, shell
 
-# Тег базовой ревизии: фиксируем состояние ДО прогона агента, чтобы собрать
-# ровно его правки (diff против тега), не таща весь репозиторий.
-_BASE_TAG = "povgen-base"
-
-# Инициализация репозитория и фиксация базовой ревизии. Идемпотентно: если
-# /work уже git-репозиторий, init ничего не ломает. --allow-empty — на случай
-# пустого посева.
+# Инициализация git-репозитория для работы aider (он коммитит правки). Базовый
+# коммит нужен, чтобы aider стартовал на чистом репозитории. Идемпотентно.
 _PREPARE_GIT = (
     "cd /work && git init -q && "
     "git config user.email povgen@local && git config user.name povgen && "
-    "git add -A && git commit -q -m baseline --allow-empty && "
-    f"git tag -f {_BASE_TAG}"
+    "git add -A && git commit -q -m baseline --allow-empty"
 )
-
-# Сбор изменений: стейджим всё (новые/изменённые/удалённые) и берём имена путей,
-# изменившихся относительно базовой ревизии.
-_HARVEST_DIFF = f"cd /work && git add -A && git diff --cached --name-only {_BASE_TAG}"
 
 
 class AiderHarnessProvider(SandboxHarnessProvider):
-    """Запускает aider по brief и собирает изменённые файлы как бандл (diff)."""
+    """Запускает aider по brief; собирает результат subtree-harvest (как все)."""
 
     def __init__(
         self,
@@ -82,20 +73,7 @@ class AiderHarnessProvider(SandboxHarnessProvider):
     def _harvest(
         self, handle: SandboxHandle, spec: HarnessRunSpec
     ) -> Sequence[HarvestedArtifact]:
-        if not spec.expected_artifacts:
-            raise HarvestError("Не задан ожидаемый артефакт для diff-harvest.")
-        role = spec.expected_artifacts[0].role
-        diff = self._sandbox.exec(handle, shell(_HARVEST_DIFF))
-        paths = [line.strip() for line in diff.stdout.splitlines() if line.strip()]
-        files: dict[str, bytes] = {}
-        for path in paths:
-            abs_path = f"/work/{path}"
-            got = self._sandbox.get_files(handle, abs_path)
-            content = got.get(abs_path)
-            if content is not None:
-                files[path] = content
-        if not files:
-            raise HarvestError(
-                "Агент не внёс изменений в репозиторий — нечего собирать (diff пуст)."
-            )
-        return [HarvestedArtifact(role=role, files=files, fmt="files")]
+        # Единый сбор: дерево кода из зоны узла (harvest_path) или всего /work
+        # (RG-C). Согласовано с claude_code/command — одна стратегия на все
+        # адаптеры; .git служебным каталогом отсеивается как и .povgen.
+        return self._harvest_by_convention(handle, spec)

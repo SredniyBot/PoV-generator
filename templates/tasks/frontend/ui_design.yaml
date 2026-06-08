@@ -1,0 +1,64 @@
+kind: task_template
+id: frontend.ui_design
+version: 1.0.0
+title: Дизайн UI/UX и подход к API
+type: leaf
+status: active
+domain: frontend
+executor: llm
+# Качество дизайна критично для последующей сборки UI — сильная модель.
+complexity: complex
+methodology: minimal
+# Доменный шаг гейта «Архитектура» (вклад frontend-пакета). На вход — UI-требования
+# из ТЗ + архитектурные виды; на выход — профессиональный дизайн-документ, который
+# органично входит в архитектурный документ и ведёт сборку UI-компонентов.
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - frontend.ui_requirements_outline@1.0.0
+    optional:
+      - architecture.interaction_view@1.0.0
+      - architecture.component_model@1.0.0
+      - architecture.system_context_definition@1.0.0
+      - common.normalized_request@1.0.0
+produces:
+  artifact: frontend.ui_design@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 28000
+# Выше synthesis (100) и ниже базовых архитектурных видов — чтобы видеть
+# компоненты/взаимодействия и успеть до сборки документа.
+planning:
+  priority: 200
+summary: |
+  Спроектируй UI/UX решения профессионально: это макет, по которому затем
+  собираются экраны. Опирайся на UI-требования (ui_requirements_outline),
+  потоки взаимодействия (interaction_view) и модель компонентов; не выдумывай
+  экраны и данные, которых нет в требованиях/архитектуре.
+
+  Заполни артефакт:
+  • design_principles — 3-6 принципов UX и подхода к взаимодействию (ясность,
+    обратная связь, состояния, доступность);
+  • color_palette — дефолтная палитра: на каждый цвет {name, hex (валидный
+    #RRGGBB), role (primary/secondary/accent/background/surface/text/success/
+    warning/danger), usage}. Палитра согласованная и достаточная для всех
+    состояний;
+  • typography — роли (heading/subheading/body/caption): шрифт, размер,
+    начертание, применение;
+  • spacing_scale — шкала отступов (напр. 4, 8, 12, 16, 24, 32);
+  • screens — ключевые экраны: {name, purpose, key_elements, states
+    (загрузка/пусто/ошибка/успех), primary_actions}. Покрой основные
+    пользовательские потоки;
+  • navigation_flows — переходы между экранами как упорядоченные шаги;
+  • form_patterns — правила форм: валидация, ошибки, подсказки, состояния полей;
+  • components — инвентарь переиспользуемых компонентов (кнопки, поля, таблицы,
+    карточки) с вариантами;
+  • api_interaction — для каждого экрана: какую операцию API он вызывает
+    (по контрактам взаимодействия) и зачем; как обрабатываются загрузка/ошибки.
+
+  Дизайн должен быть целостным (палитра/типографика/компоненты согласованы) и
+  реализуемым выбранным фронтенд-стеком. Чего не хватает в требованиях —
+  отметь и снизь confidence, не заполняй заглушками.
+
+  ▸ confidence — 0.0-1.0: насколько дизайн полон и готов вести сборку UI.
