@@ -92,3 +92,32 @@ implementation.realize (objective)
 - **RG-B** — топо-приоритет инстансов веера + серийная сборочная группа.
 - **RG-C** — скоуп бандла по подкаталогу компонента.
 - **RG-D** — системный DoD + сквозной тест на stub + полный прогон + рестарт.
+
+## Статус реализации (2026-06-08)
+
+Сделано (зелёное, закоммичено; `registry validate` + полный pytest):
+- **RG-0** — `build_manifest` (контракт + структурная схема: services с
+  зоной/стеком/DAG, межсервисные contracts, conventions-устав, build_order) +
+  узел `build_manifest_synthesis`.
+- **RG-A** — фазовый граф `manifest → scaffold → веер компонентов (в зоны
+  сервисов) → integration → system_verification → realization_index`; контракты
+  project_scaffold/system_integration/system_check; каркас материализует
+  конституцию (AGENTS/CONVENTIONS/STACK + контракты-как-код + compose);
+  `done_when = system_check`; stub-фикстуры (граф зелёный на stub-пути).
+- **RG-B** — гейт `sibling_fanout_complete` (интеграция/проверка/сводка ждут
+  ПОЛНОГО завершения веера) + топо-приоритет инстансов (волны по зависимостям).
+- **RG-D (частично)** — страж собираемости (`capability_owner` обязателен).
+  Системный DoD — гейты на `system_verification` (docker build/up + e2e).
+
+Осталось:
+- **RG-C (ядро)** — РЕАЛЬНЫЙ harvest бандла из рабочего каталога по подкаталогу
+  сервиса. Сейчас bundle-harvest — заглушка-соглашение (`.povgen/out/<role>.files`),
+  не сбор дерева кода из песочницы. Это **предусловие реального E2E** (код в
+  docker) и требует реализации сбора поддерева workspace + zone-скоупа.
+- **RG-E** — scoped + полиморфный fan-out (рекурсия до модуля; рецепт по
+  capability_owner). Новая возможность планировщика.
+- **RG-F** — рецепты сборки по капабилити (UI: дизайн-док + база стиля; ML:
+  протокол оценки; …) через `build_recipe` + полиморфный веер.
+
+Зависимость: реальная генерация кода (claude-harness в docker) дополнительно
+требует RG-C + прогона на Docker/claude (среда пользователя), не только stub.
