@@ -703,6 +703,17 @@ class PlanningService:
                 )
             )
 
+            fanout_blockers = self._sibling_fanout_blockers(task, template, tasks, snapshot)
+            checks.append(
+                AdmissionCheck(
+                    "sibling_fanout_complete",
+                    not fanout_blockers,
+                    "Ждёт полного завершения веера: " + ", ".join(fanout_blockers)
+                    if fanout_blockers
+                    else "Веер-источник завершён",
+                )
+            )
+
             admissible = all(check.passed for check in checks)
             if admissible and task.status != "ready":
                 self._runtime.transition_task(workspace, task.task_id, "mark_ready")
@@ -764,6 +775,47 @@ class PlanningService:
             if other.template_ref.startswith("common.requirements_spec_review@"):
                 continue
             if other.status not in {"completed", "skipped"}:
+                blockers.append(other.title)
+        return blockers
+
+    def _sibling_fanout_blockers(
+        self,
+        task: TaskRecord,
+        template: TemplateSpec,
+        tasks: list[TaskRecord],
+        snapshot: RegistrySnapshot,
+    ) -> list[str]:
+        """Лист, потребляющий роль, которую производит веер-сиблинг, ждёт ПОЛНОГО
+        завершения веера (всех инстансов), а не первого артефакта этой роли.
+
+        `requires.artifacts` гейтит по присутствию роли — первый инстанс веера
+        его удовлетворяет. Но узлы интеграции/проверки/сводки должны видеть ВСЕ
+        результаты веера. Поэтому если этот лист — сиблинг незавершённого веера в
+        том же композите и потребляет роль, которую веер производит, держим лист
+        заблокированным, пока обёртка веера не `completed`.
+        """
+        if task.parent_task_id is None:
+            return []
+        consumed = set(template.inputs.required_artifact_roles) | set(
+            template.inputs.optional_artifact_roles
+        )
+        if not consumed:
+            return []
+        blockers: list[str] = []
+        for other in tasks:
+            if (
+                other.parent_task_id != task.parent_task_id
+                or other.template_type != "fan_out"
+                or other.status == "completed"
+            ):
+                continue
+            fan_template = _safe_resolve_template(snapshot, other.template_ref)
+            if fan_template is None or not fan_template.children_template_ref:
+                continue
+            child = _safe_resolve_template(snapshot, fan_template.children_template_ref)
+            if child is None:
+                continue
+            if consumed & set(child.outputs.artifact_roles):
                 blockers.append(other.title)
         return blockers
 

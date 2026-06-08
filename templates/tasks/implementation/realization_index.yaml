@@ -16,6 +16,10 @@ requires:
     required:
       - architecture.component_model@1.0.0
     optional:
+      # RG: индекс сводит результаты веера — потребление этой роли включает гейт
+      # «дождись полного завершения веера» (sibling_fanout_complete).
+      - implementation.component_implementation@1.0.0
+      - implementation.system_check@1.0.0
       - implementation.component_build_spec@1.0.0
       - common.feasibility_assessment@1.0.0
 produces:
