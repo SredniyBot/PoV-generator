@@ -1,0 +1,56 @@
+kind: task_template
+id: implementation.build_manifest_synthesis
+version: 1.0.0
+title: Манифест сборки
+type: leaf
+status: active
+domain: implementation
+executor: llm
+methodology: minimal
+merge:
+  strategy: synthetic
+  conflict_policy: union
+# RG: первый узел гейта реализации. Превращает архитектуру в исполнительный план,
+# по которому изолированные агенты соберут связное E2E-решение.
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - architecture.component_model@1.0.0
+    optional:
+      - implementation.component_build_spec@1.0.0
+      - architecture.interaction_view@1.0.0
+      - architecture.deployment_map@1.0.0
+      - common.feasibility_assessment@1.0.0
+produces:
+  artifact: implementation.build_manifest@1.0.0
+context:
+  include: [artifact.*]
+  max_tokens: 40000
+planning:
+  priority: 560
+summary: |
+  Преврати архитектуру в ИСПОЛНИТЕЛЬНЫЙ план сборки — манифест, по которому
+  агенты соберут связное E2E-решение, НЕ видя работу друг друга. Это источник
+  согласованности: всё, что пересекает границу сервиса, фиксируется здесь.
+
+  Сгруппируй компоненты модели в ДЕПЛОЙ-СЕРВИСЫ по владельцу-умению
+  (capability_owner) и слою (один сервис = один контейнер). Поля артефакта:
+  • services — массив: {id, name, capability (умение-владелец), components (id
+    компонентов из модели), stack (язык/фреймворк/рантайм/версии — из контракта
+    умения, НЕ выдумывай), zone (путь репозитория, напр. services/<id>),
+    depends_on (id сервисов, от которых зависит), exposes (порты/интерфейсы)};
+  • contracts — межсервисные швы для материализации в код: на каждый шов —
+    {name, kind (openapi|types|schema|events), producer (service id), consumers
+    (service ids), summary}. Источник — provided/consumed_interfaces и
+    data_contracts из interaction_view;
+  • conventions — устав: wire_protocol (протокол между сервисами, напр.
+    HTTP/JSON), naming, layout, error_handling, config (контракт env-переменных);
+  • build_order — id сервисов в порядке топосортировки depends_on (листья DAG
+    первыми) — порядок волн сборки.
+
+  Не выдумывай сервисы/компоненты, которых нет в модели. Стек бери из контрактов
+  умений. Если данных не хватает — снижай confidence и пиши в open_questions.
+
+  ▸ confidence — 0.0-1.0: насколько манифест готов вести сборку (сервисы покрыты,
+    стек обоснован, контракты полны, порядок согласован).

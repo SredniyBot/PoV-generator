@@ -9,6 +9,9 @@ default_methodology_pack: process.lean_jtbd@1.0.0
 # с гейтами готовности. Артефакты прошлых objective'ов (component_model,
 # component_build_spec) живут в том же workspace.
 compatible_next_objectives: []
+# RG: цель завершена по СИСТЕМНОМУ DoD (система собирается и проходит сквозную
+# проверку), а не по факту N покомпонентных бандлов. Сводный индекс — следом.
 done_when:
   artifacts:
+    - implementation.system_check@1.0.0
     - implementation.realization_index@1.0.0

@@ -1,0 +1,44 @@
+{
+  "summary": "Декомпозиция на деплой-сервисы: API-бэкенд и веб-интерфейс, связанные REST-контрактом.",
+  "services": [
+    {
+      "id": "backend",
+      "name": "API-бэкенд",
+      "capability": "backend",
+      "components": ["request_intake"],
+      "stack": ["Python 3.12", "FastAPI", "Uvicorn"],
+      "zone": "services/backend",
+      "depends_on": [],
+      "exposes": ["8000:HTTP REST"]
+    },
+    {
+      "id": "web",
+      "name": "Веб-интерфейс",
+      "capability": "ui",
+      "components": ["intake_form"],
+      "stack": ["TypeScript", "React", "Vite"],
+      "zone": "services/web",
+      "depends_on": ["backend"],
+      "exposes": ["5173:HTTP"]
+    }
+  ],
+  "contracts": [
+    {
+      "name": "intake_api",
+      "kind": "openapi",
+      "producer": "backend",
+      "consumers": ["web"],
+      "summary": "REST-контракт приёма заявок: POST /requests, GET /requests/{id}."
+    }
+  ],
+  "conventions": {
+    "wire_protocol": "HTTP/JSON, адреса сервисов через имена docker-compose.",
+    "naming": "snake_case в Python, camelCase в TypeScript.",
+    "layout": "services/<id>/ — код сервиса; /contracts/ — общие контракты.",
+    "error_handling": "Единый формат ошибки {code, message}; коды HTTP по семантике.",
+    "config": "Конфигурация через env (.env.example в корне)."
+  },
+  "build_order": ["backend", "web"],
+  "open_questions": [],
+  "confidence": 0.7
+}

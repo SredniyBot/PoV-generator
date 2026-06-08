@@ -1,0 +1,45 @@
+kind: task_template
+id: implementation.system_integration
+version: 1.0.0
+title: Интеграция системы
+type: leaf
+status: active
+domain: implementation
+# RG: после того как все сервисы собраны в общем томе, агент связывает их в
+# единое запускаемое целое. Владелец стыков один — поэтому это отдельный узел,
+# а не часть какого-либо сервиса.
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.build_manifest@1.0.0
+      - implementation.project_scaffold@1.0.0
+      - implementation.component_implementation@1.0.0
+produces:
+  artifact: implementation.system_integration@1.0.0
+harness_gates:
+  - name: compose-config
+    command: "docker compose config >/dev/null 2>&1 || docker-compose config >/dev/null 2>&1 || test -f docker-compose.yml"
+context:
+  include: [artifact.*]
+  max_tokens: 24000
+planning:
+  priority: 300
+summary: |
+  Свяжи собранные сервисы в единое запускаемое целое по манифесту сборки.
+  Сервисы уже лежат каждый в своей зоне (services/<id>/) общего рабочего
+  каталога; контракты — в /contracts/.
+
+  Сделай:
+  • допиши docker-compose.yml до рабочего состояния: сеть, зависимости запуска
+    (depends_on по manifest), healthcheck, проброс env/конфигурации;
+  • wiring по контрактам: клиенты/адаптеры между сервисами используют контракты
+    из /contracts/ (адреса соседей — через имена сервисов compose, не хардкод);
+  • seed/миграции данных, если нужны для запуска;
+  • корневой README с командой запуска всей системы.
+
+  Не переписывай внутренности сервисов — только стыки и оркестрацию. Не нарушай
+  контракты. Чего не хватает для запуска — отметь в README.

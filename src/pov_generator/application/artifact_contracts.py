@@ -1994,6 +1994,66 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "demo_bundle": {"type": "object", "additionalProperties": True},
         # Ф8: реализация компонента агентом — файловый бандл (код), неструктурный.
         "component_implementation": {"type": "object", "additionalProperties": True},
+        # RG: исполнительный манифест сборки — декомпозиция на деплой-сервисы
+        # (зона + стек + DAG) + межсервисные контракты + конвенции (устав).
+        # Машинный источник для каркаса и брифов узлов реализации.
+        "build_manifest": _analysis_object(
+            ["services"],
+            {
+                "summary": {"type": "string"},
+                "services": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "capability": {"type": "string"},
+                            "components": _string_array_schema(),
+                            "stack": _string_array_schema(),
+                            "zone": {"type": "string"},
+                            "depends_on": _string_array_schema(),
+                            "exposes": _string_array_schema(),
+                        },
+                    },
+                },
+                "contracts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "producer": {"type": "string"},
+                            "consumers": _string_array_schema(),
+                            "summary": {"type": "string"},
+                        },
+                    },
+                },
+                "conventions": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "wire_protocol": {"type": "string"},
+                        "naming": {"type": "string"},
+                        "layout": {"type": "string"},
+                        "error_handling": {"type": "string"},
+                        "config": {"type": "string"},
+                    },
+                },
+                "build_order": _string_array_schema(),
+                "open_questions": _string_array_schema(),
+            },
+        ),
+        # RG: файловые бандлы системных узлов графа реализации — неструктурные,
+        # проверяются гейтами (build/compose/тесты), не JSON-схемой.
+        "project_scaffold": {"type": "object", "additionalProperties": True},
+        "system_integration": {"type": "object", "additionalProperties": True},
+        "system_check": {"type": "object", "additionalProperties": True},
     }
     if artifact_role not in schemas:
         raise ValidationError(f"Неизвестный контракт артефакта: {artifact_role}")

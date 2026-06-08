@@ -1,0 +1,12 @@
+kind: artifact_contract
+id: implementation.build_manifest
+version: 1.0.0
+title: Манифест сборки (декомпозиция на сервисы)
+# RG: исполнительный план — группировка компонентов в деплой-сервисы (зона +
+# стек + DAG зависимостей) + межсервисные контракты + конвенции (устав проекта).
+# Машинный источник для каркаса и брифов узлов реализации. Реальная структурная
+# схема — в application/artifact_contracts.py (как у component_build_spec).
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

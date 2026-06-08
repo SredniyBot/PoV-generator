@@ -6,9 +6,24 @@ type: composite
 status: active
 domain: implementation
 children:
-  # Ф8: веер по компонентам — на каждый компонент узел-агент (harness) даёт
-  # код-бандл. Затем сводный манифест реализации.
+  # RG: фазовый граф «общее ядро → компоненты → интеграция → системный DoD».
+  # Порядок между узлами — по requires (данные) + priority; внутри веера — по
+  # топо-зависимостям компонентов. Общий том делит весь граф (ключ — fan-out).
+  # 1. Манифест сборки: декомпозиция на сервисы + контракты + устав.
+  - id: build_manifest_synthesis
+    task: implementation.build_manifest_synthesis@1.0.0
+  # 2. Каркас: репо-скелеты сервисов + контракты как код + compose + конституция.
+  - id: scaffold
+    task: implementation.scaffold@1.0.0
+  # 3. Веер по компонентам: каждый узел-агент пишет свой компонент в зону сервиса.
   - id: component_implementation_fanout
     task: implementation.component_implementation_fanout@1.0.0
+  # 4. Интеграция: связать сервисы в запускаемое целое (compose, wiring, seed).
+  - id: system_integration
+    task: implementation.system_integration@1.0.0
+  # 5. Системная проверка (DoD): docker build/up + сквозной happy-path.
+  - id: system_verification
+    task: implementation.system_verification@1.0.0
+  # 6. Сводный манифест реализации (per-сервис статус, как запустить).
   - id: realization_index
     task: implementation.realization_index@1.0.0

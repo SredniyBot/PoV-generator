@@ -1,0 +1,12 @@
+# Каркас оркестрации (фикстура stub-harness).
+services:
+  backend:
+    build: ./services/backend
+    ports:
+      - "8000:8000"
+  web:
+    build: ./services/web
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

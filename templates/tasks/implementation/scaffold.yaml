@@ -1,0 +1,56 @@
+kind: task_template
+id: implementation.scaffold
+version: 1.0.0
+title: Каркас проекта
+type: leaf
+status: active
+domain: implementation
+# RG: общее ядро. Агент материализует конституцию из манифеста сборки в
+# работающий репо-скелет: его читают (read-only) все узлы реализации из корня
+# общего тома — это и есть механика «одинакового понимания».
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.build_manifest@1.0.0
+      - architecture.component_model@1.0.0
+    optional:
+      - architecture.deployment_map@1.0.0
+      - architecture.system_context_definition@1.0.0
+      - common.feasibility_assessment@1.0.0
+produces:
+  artifact: implementation.project_scaffold@1.0.0
+# Гейт готовности: репозиторий и оркестрация существуют. Реальные адаптеры (Docker)
+# проверят это в песочнице; на stub не исполняется.
+harness_gates:
+  - name: structure
+    command: "test -f docker-compose.yml && test -f AGENTS.md"
+context:
+  include: [artifact.*]
+  max_tokens: 32000
+planning:
+  priority: 540
+summary: |
+  Построй ОБЩЕЕ ЯДРО проекта по манифесту сборки (implementation.build_manifest).
+  Это субстрат, в который изолированные агенты встроят свои сервисы — он
+  обеспечивает их согласованность, поэтому он авторитетен и неизменен для них.
+
+  Положи в корень рабочего каталога:
+  • репо-скелет каждого сервиса в его зоне (services/<id>/) с манифестом
+    зависимостей и пустой точкой входа в его стеке (из manifest.services[].stack);
+  • /contracts/ — межсервисные контракты КАК КОД (OpenAPI/типы/схемы) из
+    manifest.contracts: каждый сервис будет строиться против них, не против кода
+    соседа;
+  • docker-compose.yml — все сервисы как контейнеры (порты, сеть, healthcheck,
+    env из manifest.conventions.config) + Dockerfile-скелет на каждый сервис;
+  • AGENTS.md — операционка для агентов: что read-only (контракты, конвенции),
+    куда писать (только своя зона сервиса), как собрать/тест/запустить, DoD;
+  • CONVENTIONS.md и STACK.md — устав и договор версий технологий из
+    manifest.conventions (именование, раскладка, ошибки/логи, wire-протокол,
+    пиннинг версий по сервисам).
+
+  Не пиши прикладной код сервисов — только скелеты и общее ядро. Версии стека
+  бери из манифеста, не выдумывай. Чего не хватает — отметь в AGENTS.md.

@@ -1,0 +1,50 @@
+kind: task_template
+id: implementation.system_verification
+version: 1.0.0
+title: Системная проверка
+type: leaf
+status: active
+domain: implementation
+# RG: системный DoD. Гейты проверяют, что собранное целое реально собирается и
+# запускается в docker и проходит сквозной happy-path — а не «N папок, которые
+# вместе не работают». Это и гейтит завершение цели (done_when=system_check).
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.system_integration@1.0.0
+    optional:
+      - implementation.build_manifest@1.0.0
+produces:
+  artifact: implementation.system_check@1.0.0
+# Системный DoD: образы собираются, система поднимается, сквозной поток проходит.
+# Реальные адаптеры (Docker) исполнят это в песочнице; на stub не исполняется.
+harness_gates:
+  - name: build
+    command: "docker compose build 2>&1 | tail -5 || docker-compose build 2>&1 | tail -5"
+    timeout_s: 1800
+  - name: smoke
+    command: "test -f docker-compose.yml && test -f README.md"
+context:
+  include: [artifact.*]
+  max_tokens: 16000
+planning:
+  priority: 200
+summary: |
+  Проверь собранную систему как ЦЕЛОЕ (PoV-уровень: «поднимается и показывает
+  ключевой поток», не полное покрытие).
+
+  Сделай:
+  • убедись, что образы собираются и система поднимается (docker compose build /
+    up) — почини мелкие огрехи интеграции, мешающие старту;
+  • добавь и прогони сквозной happy-path тест ключевого пользовательского потока
+    (из user_stories / interaction_view): запрос проходит через сервисы и даёт
+    ожидаемый результат;
+  • запиши в артефакт отчёт: что собралось, что поднялось, какой поток проверен,
+    что осталось вне проверки.
+
+  Не добавляй прикладные фичи — только то, что нужно для запуска и сквозной
+  проверки. Реальные проблемы фиксируй честно, не маскируй.

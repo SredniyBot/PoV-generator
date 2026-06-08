@@ -1,0 +1,11 @@
+kind: artifact_contract
+id: implementation.system_check
+version: 1.0.0
+title: Системная проверка (DoD)
+# RG: файловый выход узла системной проверки — отчёт и логи системного DoD
+# (docker build + compose up + интеграционные/e2e тесты). Само «готово»
+# выражается прохождением гейтов; артефакт фиксирует результат и как запускать.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

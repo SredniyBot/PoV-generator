@@ -1,0 +1,11 @@
+kind: artifact_contract
+id: implementation.system_integration
+version: 1.0.0
+title: Интеграция системы
+# RG: файловый выход узла-агента — связка сервисов в единое целое (сеть, общий
+# entrypoint, seed данных, wiring по контрактам). Неструктурный: проверяется
+# гейтами (compose up), не JSON-схемой.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true

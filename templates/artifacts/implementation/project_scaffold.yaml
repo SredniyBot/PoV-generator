@@ -1,0 +1,11 @@
+kind: artifact_contract
+id: implementation.project_scaffold
+version: 1.0.0
+title: Каркас проекта (общее ядро)
+# RG: файловый выход узла-агента — репо-скелет всех сервисов + контракты как код
+# + docker-compose/Dockerfile + конституция (AGENTS.md/CONVENTIONS.md/STACK.md).
+# Неструктурный: проверяется гейтами готовности в песочнице, не JSON-схемой.
+unstructured: true
+schema:
+  type: object
+  additionalProperties: true
