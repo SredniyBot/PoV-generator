@@ -4285,6 +4285,15 @@ def check_component_model_consistency(payload: dict[str, Any]) -> list[str]:
                         f"несуществующий модуль '{ref}'."
                     )
 
+        # 8. Собираемость (RG): у компонента должен быть владелец-умение — по нему
+        # сборка группирует компоненты в деплой-сервисы и назначает стек. Без него
+        # граф реализации не сможет построить сервис.
+        if not str(component.get("capability_owner") or "").strip():
+            issues.append(
+                f"Компонент '{cid}': не указан capability_owner — сборка не сможет "
+                f"назначить стек и сгруппировать в сервис."
+            )
+
     # 5. Покрытие ссылается на существующие компоненты.
     coverage = payload.get("coverage") or {}
     for entry in coverage.get("actors") or []:
