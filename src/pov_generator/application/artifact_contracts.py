@@ -1705,7 +1705,7 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                                 "type": "array",
                                 "items": {
                                     "type": "object",
-                                    "required": ["id", "kind", "title"],
+                                    "required": ["id", "kind", "title", "why", "example"],
                                     "additionalProperties": False,
                                     "properties": {
                                         "id": {"type": "string"},
@@ -1723,6 +1723,10 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                                         },
                                         "title": {"type": "string"},
                                         "needed_for": {"type": "string"},
+                                        # Конкретность (редизайн реквизитов): зачем нужно и
+                                        # пример/формат — чтобы запрос не был «пустыми словами».
+                                        "why": {"type": "string"},
+                                        "example": {"type": "string"},
                                         "blocking": {"type": "boolean"},
                                     },
                                 },

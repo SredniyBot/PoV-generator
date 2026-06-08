@@ -16,6 +16,7 @@ from pov_generator.application.project_service import ProjectService
 from pov_generator.application.workspace_query_service import (
     _extract_component_model_requisites,
     blocking_requisites_unprovided,
+    gather_advisory_prerequisites,
     gather_requisites,
 )
 from pov_generator.domain.artifacts import ArtifactRecord
@@ -91,20 +92,28 @@ def test_extract_component_model_tolerates_malformed() -> None:
     assert _extract_component_model_requisites({"components": [None, {}, {"requisites": "x"}]}) == ()
 
 
-# --- 2. Агрегация из двух источников ----------------------------------------
+# --- 2. Разделение actionable (архитектура) vs advisory (предпосылки) --------
 
 
-def test_gather_aggregates_both_sources(tmp_path: Path) -> None:
+def test_actionable_and_advisory_are_separate(tmp_path: Path) -> None:
+    """Редизайн: конкретные запросы данных (модель компонентов) — в actionable;
+    предпосылки реализуемости (условия) — отдельно, advisory."""
     runtime = SqliteRuntime()
     ws = tmp_path / "case"
     _store(runtime, ws, "feasibility_assessment", _FEASIBILITY, "f1")
     _store(runtime, ws, "component_model", _COMPONENT_MODEL, "c1")
 
     items, source_id, _ = gather_requisites(runtime, ws)
-    stages = {i.title: i.stage for i in items}
-    assert stages.get("Описание сущностей") == "realizability"
-    assert stages.get("Доступ к API CRM") == "architecture"
+    item_titles = {i.title for i in items}
+    assert "Доступ к API CRM" in item_titles  # actionable (архитектура)
+    assert "Описание сущностей" not in item_titles  # предпосылка → не actionable
+    assert all(i.stage == "architecture" for i in items)
     assert source_id is not None
+
+    advisory = gather_advisory_prerequisites(runtime, ws)
+    adv_titles = {i.title for i in advisory}
+    assert "Описание сущностей" in adv_titles  # предпосылка реализуемости
+    assert "Доступ к API CRM" not in adv_titles
 
 
 def test_gather_missing_when_no_sources(tmp_path: Path) -> None:
@@ -114,6 +123,7 @@ def test_gather_missing_when_no_sources(tmp_path: Path) -> None:
     items, source_id, _ = gather_requisites(runtime, ws)
     assert items == ()
     assert source_id is None
+    assert gather_advisory_prerequisites(runtime, ws) == ()
 
 
 # --- 3. Шлюз перехода --------------------------------------------------------
