@@ -6568,17 +6568,63 @@ code {
 .gap-item__reason,
 .gap-item__suggestion { margin: 0.15rem 0 0; font-size: 13px; color: var(--text-secondary, #9aa4b2); }
 
-/* ── Реквизиты: предоставление данных (Ф4) ─────────────────────────────── */
-.requisites__provide { display: inline-flex; align-items: center; gap: 0.4rem; }
-.requisites__provide-input {
-  background: var(--surface-sunken, rgba(0,0,0,0.2));
-  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+/* ── Реквизиты: мультиформатный приём (Ф5) ─────────────────────────────── */
+.requisite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 8px);
+}
+.requisite-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.requisite-card__provided { display: inline-flex; align-items: center; gap: 0.5rem; }
+.requisite-card__detail {
+  margin: 0;
+  font-size: var(--font-size-meta);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.requisite-card__form { display: flex; flex-direction: column; gap: 0.5rem; }
+.requisite-card__modes { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.requisite-mode {
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 999px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--font-size-meta);
+  padding: 2px 10px;
+}
+.requisite-mode:hover { color: var(--text-primary); }
+.requisite-mode--active {
+  background: var(--accent-soft, rgba(99, 102, 241, 0.18));
+  border-color: var(--accent, #6366f1);
+  color: var(--text-primary);
+}
+.requisite-card__input {
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
   border-radius: 6px;
   color: var(--text-primary, #e6edf3);
-  font-size: 12px;
-  padding: 3px 8px;
-  width: 200px;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  width: 100%;
+  resize: vertical;
 }
+.requisite-card__note {
+  margin: 0;
+  font-size: var(--font-size-meta);
+  color: var(--text-tertiary);
+}
+.requisite-card__actions { display: flex; gap: 0.5rem; }
 
 /* ── Машинное отделение (harness): наблюдаемость + выбор исполнителя (Ф6/Ф7) ── */
 

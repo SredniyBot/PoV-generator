@@ -229,10 +229,21 @@ export const api = {
     request<import("./types").ProjectRequisitesView>(`/api/projects/${projectId}/requisites`),
   getCapabilityGaps: (projectId: string) =>
     request<import("./types").ProjectGapsView>(`/api/projects/${projectId}/capability-gaps`),
-  provideRequisite: (projectId: string, key: string, note: string) =>
+  // Реквизиты v2: структурное разрешение реквизита — данные (value/file/
+  // reference) ИЛИ обход (assumption/deferred/not_applicable).
+  provideRequisite: (
+    projectId: string,
+    payload: {
+      key: string;
+      mode?: string;
+      value?: string;
+      attachment_id?: string;
+      note?: string;
+    },
+  ) =>
     request<import("./types").ProjectRequisitesView>(
       `/api/projects/${projectId}/requisites/provide`,
-      { method: "POST", body: JSON.stringify({ key, note }) },
+      { method: "POST", body: JSON.stringify(payload) },
     ),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),

@@ -477,6 +477,12 @@ export interface RequisiteItemView {
   kind?: string; // credential|dataset|file|setting|interface_format|sample|other
   blocking?: boolean; // блокирует переход на реализацию
   stage?: string; // realizability | architecture
+  consumer_ref?: string; // кому нужен (component_id); пусто = раннее предупреждение
+  // Что и как предоставлено (реквизиты v2). Пусто, если не предоставлено.
+  provided_mode?: string; // value|file|reference|assumption|deferred|not_applicable
+  provided_value?: string;
+  provided_note?: string;
+  provided_attachment_id?: string;
 }
 
 export interface ProjectRequisitesView {
