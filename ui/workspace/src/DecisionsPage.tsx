@@ -17,7 +17,7 @@
 import { useState } from "react";
 import { useNavigate, useParams, Link, NavLink } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Download, FileText, Lock, Pencil } from "lucide-react";
 
 import { api } from "./api";
 import { Button, EmptyState, LoadingPanel, SectionCard, cx, formatDateTime } from "./ui";
@@ -271,8 +271,11 @@ function DecisionCard({
                 }
                 return (
                   <li key={alt.option_id} className="decision-card__option">
-                    <label className="decision-card__option-label">
+                    <label
+                      className={cx("decision-option", isSelected && "decision-option--selected")}
+                    >
                       <input
+                        className="decision-option__input"
                         type={isMulti ? "checkbox" : "radio"}
                         name={`alt-${decision.decision_id}`}
                         checked={isSelected}
@@ -305,27 +308,19 @@ function DecisionCard({
                           }
                         }}
                       />
-                      <span className="decision-card__option-content">
-                        <span className="decision-card__option-title">
+                      <span className="decision-option__body">
+                        <span className="decision-option__title">
                           {alt.label}
                           {isProposed && !isMulti ? (
-                            <span className="decision-card__option-hint">(по умолчанию)</span>
-                          ) : null}
-                          {alt.confidence !== null && alt.confidence !== undefined ? (
-                            <span
-                              className={cx(
-                                "decision-card__option-confidence",
-                                alt.confidence < 0.5 && "decision-card__option-confidence--low",
-                              )}
-                              title="Уверенность системы в этом варианте"
-                            >
-                              {Math.round(alt.confidence * 100)}%
-                            </span>
+                            <span className="decision-option__default">по умолчанию</span>
                           ) : null}
                         </span>
                         {alt.description ? (
-                          <span className="decision-card__option-desc">{alt.description}</span>
+                          <span className="decision-option__desc">{alt.description}</span>
                         ) : null}
+                      </span>
+                      <span className="decision-option__check" aria-hidden="true">
+                        <Check size={16} strokeWidth={2.5} />
                       </span>
                     </label>
                   </li>
@@ -451,10 +446,21 @@ function DecisionCard({
                 <>
                   <button
                     type="button"
-                    className="decision-card__free-toggle"
+                    className={cx(
+                      "decision-option decision-option--custom",
+                      (freeTextOpen || currentAnswerKind === "free_text") && "decision-option--selected",
+                    )}
                     onClick={() => setFreeTextOpen((v) => !v)}
                   >
-                    {freeTextOpen ? "Скрыть свой ответ" : "Дать свой ответ"}
+                    <span className="decision-option__icon" aria-hidden="true">
+                      <Pencil size={14} />
+                    </span>
+                    <span className="decision-option__body">
+                      <span className="decision-option__title">Свой вариант</span>
+                      <span className="decision-option__desc">
+                        Будет применён в неизменном виде
+                      </span>
+                    </span>
                   </button>
                   {freeTextOpen ? (
                     <textarea
