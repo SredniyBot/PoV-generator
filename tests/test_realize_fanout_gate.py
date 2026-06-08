@@ -137,6 +137,33 @@ def test_topo_rank_handles_cycles_and_external_refs() -> None:
     assert PlanningService._topo_rank("C", deps, {}, set()) == 0
 
 
+def test_polymorphic_fanout_picks_capability_recipe() -> None:
+    snapshot = _snapshot()
+    fanout = snapshot.resolve_template(
+        "implementation.component_implementation_fanout@1.0.0"
+    )
+    spec = fanout.fan_out_spec
+    assert spec is not None and spec.recipe_field == "capability_owner"
+    default_child = snapshot.resolve_template(fanout.children_template_ref)
+
+    # UI-компонент → рецепт капабилити UI (build_recipe профиля capability.ui).
+    ui_item = {"id": "screen", "capability_owner": "capability.ui@1.0.0"}
+    ui_child = PlanningService._resolve_fanout_child(spec, ui_item, default_child, snapshot)
+    assert ui_child.identifier == "implementation.component_implementation_ui"
+
+    # Backend-компонент (нет build_recipe) → общий шаблон.
+    be_item = {"id": "api", "capability_owner": "capability.backend@1.0.0"}
+    be_child = PlanningService._resolve_fanout_child(spec, be_item, default_child, snapshot)
+    assert be_child.identifier == default_child.identifier
+
+    # Нет capability_owner / неизвестный профиль → общий шаблон (защитно).
+    for bad in ({"id": "x"}, {"id": "x", "capability_owner": "capability.unknown@9.9.9"}):
+        assert (
+            PlanningService._resolve_fanout_child(spec, bad, default_child, snapshot).identifier
+            == default_child.identifier
+        )
+
+
 def test_item_dependency_keys_reads_all_edge_shapes() -> None:
     item = {
         "consumed_interfaces": [{"component": "X", "interface": "api"}, {"interface": "z"}],

@@ -15,4 +15,9 @@ fan_out_spec:
   array_path: components
   key_field: id
   label_field: name
+  # RG-E: полиморфный веер — рецепт сборки берётся из capability_profile,
+  # на который ссылается capability_owner компонента (его build_recipe). Нет
+  # рецепта → общий children_template_ref ниже. «Новый тип сервиса = capability
+  # + рецепт», ядро не трогаем.
+  recipe_field: capability_owner
 children_template_ref: implementation.component_implementation@1.0.0

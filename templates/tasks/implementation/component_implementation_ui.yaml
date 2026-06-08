@@ -1,0 +1,54 @@
+kind: task_template
+id: implementation.component_implementation_ui
+version: 1.0.0
+title: Реализация UI-компонента агентом
+type: leaf
+status: active
+domain: implementation
+# RG-F: рецепт сборки капабилити UI. Полиморфный веер выбирает его по
+# capability_owner = capability.ui. Производит ТУ ЖЕ роль component_implementation,
+# чтобы downstream/harvest/гейты/гейт-завершения-веера не менялись — отличие лишь
+# в специализированном брифе (дизайн-док + база стиля + контракт API).
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.project_scaffold@1.0.0
+      - implementation.component_build_spec@1.0.0
+      - architecture.component_model@1.0.0
+    optional:
+      - implementation.build_manifest@1.0.0
+      - architecture.interaction_view@1.0.0
+      - common.normalized_request@1.0.0
+produces:
+  artifact: implementation.component_implementation@1.0.0
+harness_gates:
+  - name: smoke
+    command: "test -f package.json || test -d src || test -f README.md"
+context:
+  include: [artifact.*]
+  max_tokens: 24000
+planning:
+  priority: 400
+summary: |
+  Реализуй ОДИН UI-компонент (экран/виджет) по его спеке сборки, встроив его в
+  готовое общее ядро. Какой именно — в контексте под «Целевой элемент (фокус
+  задачи)». Работай ТОЛЬКО по нему.
+
+  Сначала прочти общее ядро в корне рабочего каталога (оно авторитетно):
+  AGENTS.md, CONVENTIONS.md/STACK.md (стек фронта и версии), базу стиля сервиса
+  (дизайн-токены и базовые примитивы — используй их, НЕ изобретай свои),
+  /contracts/ (контракт API — вызывай бэкенд строго по нему, адрес — через имя
+  сервиса compose), interaction_view (потоки/состояния экрана).
+
+  Затем положи код компонента ТОЛЬКО в зону своего сервиса (services/<сервис>/...):
+  • разметка и логика экрана/виджета на стеке ядра, против дизайн-токенов;
+  • состояния (загрузка/пусто/ошибка/успех) — по interaction_view;
+  • вызовы API строго по контракту /contracts/, обработка ошибок по конвенции;
+  • минимальный тест рендера компонента.
+
+  НЕ трогай чужие зоны, корневые файлы, контракты и базу стиля. Не выдумывай
+  поля API сверх контракта; чего не хватает — отметь в README компонента.

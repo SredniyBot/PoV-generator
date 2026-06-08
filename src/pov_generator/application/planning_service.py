@@ -11,7 +11,7 @@ from ..common.serialization import json_loads, utc_now_iso
 from ..domain.planning import AdmissionCheck, CandidateEvaluation, PlanningDecision
 from ..domain.process_state import SetRootTaskPatch
 from ..domain.project_state import ProjectState
-from ..domain.registry import RegistrySnapshot, TemplateSpec
+from ..domain.registry import FanOutSpec, RegistrySnapshot, TemplateSpec
 from ..domain.tasks import TaskRecord, initial_task_status
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 
@@ -492,12 +492,18 @@ class PlanningService:
                     if existing_attempt is not None and existing_attempt != task.attempt:
                         self._runtime.transition_task(workspace, existing.task_id, "obsolete")
 
-            child_template = snapshot.resolve_template(template.children_template_ref)
+            default_child = snapshot.resolve_template(template.children_template_ref)
             for idx, item in enumerate(array):
                 item_key = str(item.get(template.fan_out_spec.key_field, idx)) if isinstance(item, dict) else str(idx)
                 stable_key = f"{task.stable_key}:instance:{item_key}:{task.attempt}"
                 if self._runtime.find_task_by_stable_key(workspace, stable_key) is not None:
                     continue
+                # RG-E: полиморфный веер — дочерний шаблон по рецепту капабилити
+                # элемента (fallback на общий child). Так UI/ML-узлы получают свою
+                # сборку, не меняя ядро.
+                child_template = self._resolve_fanout_child(
+                    template.fan_out_spec, item, default_child, snapshot
+                )
                 self._create_task(
                     workspace,
                     project_id=task.project_id,
@@ -910,6 +916,36 @@ class PlanningService:
         visiting.discard(item_id)
         cache[item_id] = best
         return best
+
+    @staticmethod
+    def _resolve_fanout_child(
+        spec: FanOutSpec,
+        item: object,
+        default_child: TemplateSpec,
+        snapshot: RegistrySnapshot,
+    ) -> TemplateSpec:
+        """RG-E: дочерний шаблон инстанса веера по рецепту капабилити.
+
+        Если ``recipe_field`` задан и значение элемента — ref на capability_profile
+        с непустым ``build_recipe``, берём рецепт; иначе/при любом сбое — общий
+        ``default_child``. Резолв защитный: неизвестный профиль/рецепт не роняет
+        разворачивание, а откатывается на общий шаблон.
+        """
+        if not spec.recipe_field or not isinstance(item, dict):
+            return default_child
+        ref = item.get(spec.recipe_field)
+        if not isinstance(ref, str) or not ref.strip():
+            return default_child
+        try:
+            profile = snapshot.resolve_capability_profile(ref.strip())
+        except Exception:  # noqa: BLE001 — неизвестный профиль → общий шаблон
+            return default_child
+        if profile.build_recipe is None:
+            return default_child
+        try:
+            return snapshot.resolve_template(profile.build_recipe)
+        except Exception:  # noqa: BLE001 — рецепт не резолвится → общий шаблон
+            return default_child
 
     def _refresh_composite_completion(self, workspace: Path) -> None:
         self._refresh_composite_completion_from_tasks(

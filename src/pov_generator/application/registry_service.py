@@ -304,6 +304,15 @@ class RegistryService:
                             str(agent.source_path),
                         )
                     )
+            if agent.build_recipe is not None and agent.build_recipe.as_string() not in snapshot.templates:
+                errors.append(
+                    RegistryIssue(
+                        "error",
+                        f"Капабилити '{agent.ref.as_string()}' ссылается на неизвестный "
+                        f"рецепт сборки '{agent.build_recipe.as_string()}'.",
+                        str(agent.source_path),
+                    )
+                )
 
         return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 

@@ -95,6 +95,11 @@ class FanOutSpec:
     array_path: str
     key_field: str
     label_field: str
+    # RG-E (полиморфный веер): поле элемента-источника, чьё значение — ref на
+    # capability_profile; дочерний шаблон берётся из его ``build_recipe`` (рецепт
+    # по капабилити). Если None / профиль без рецепта — общий
+    # ``children_template_ref``. Так «новый тип сервиса = capability + рецепт».
+    recipe_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -368,6 +373,10 @@ class CapabilityProfileSpec:
     source_path: Path
     binds: ObjectRef | None = None
     escalation: str | None = None
+    # RG-F: рецепт сборки этой капабилити — composite/leaf-шаблон, которым
+    # полиморфный веер строит компоненты-владельцы данной капабилити. None →
+    # общий child веера. Так специфика (UI/ML/...) живёт на капабилити, не в ядре.
+    build_recipe: ObjectRef | None = None
 
     @property
     def ref(self) -> ObjectRef:
@@ -826,6 +835,7 @@ def parse_task_template(raw: dict[str, Any], source_path: Path) -> TemplateSpec:
             array_path=require_str(fan_out_raw, "array_path", owner),
             key_field=require_str(fan_out_raw, "key_field", owner),
             label_field=require_str(fan_out_raw, "label_field", owner),
+            recipe_field=optional_str(fan_out_raw, "recipe_field"),
         )
         children_template_ref_val = raw.get("children_template_ref")
         if not isinstance(children_template_ref_val, str) or not children_template_ref_val.strip():
@@ -1003,6 +1013,7 @@ def parse_capability_profile(raw: dict[str, Any], source_path: Path) -> Capabili
             )
         )
     binds_raw = optional_str(raw, "binds")
+    build_recipe_raw = optional_str(raw, "build_recipe")
     return CapabilityProfileSpec(
         identifier=require_str(raw, "id", owner),
         version=version,
@@ -1012,6 +1023,7 @@ def parse_capability_profile(raw: dict[str, Any], source_path: Path) -> Capabili
         cannot_do=tuple(str(c) for c in require_list(raw, "cannot_do", owner)),
         binds=ObjectRef.parse(binds_raw) if binds_raw else None,
         escalation=optional_str(raw, "escalation"),
+        build_recipe=ObjectRef.parse(build_recipe_raw) if build_recipe_raw else None,
         source_path=source_path,
     )
 

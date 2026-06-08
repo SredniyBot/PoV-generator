@@ -3,6 +3,10 @@ id: capability.ui
 version: 1.0.0
 title: UI build-agent
 role: ui
+# RG-F: рецепт сборки UI-компонентов — полиморфный веер выбирает его по
+# capability_owner = capability.ui. Специфика фронта (дизайн-токены, контракт
+# API, состояния экрана) живёт в брифе рецепта, а не в ядре графа.
+build_recipe: implementation.component_implementation_ui@1.0.0
 capabilities:
   - capability: ui.web_spa
     tech: [React, TypeScript]
