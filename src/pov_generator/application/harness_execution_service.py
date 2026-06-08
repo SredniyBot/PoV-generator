@@ -194,12 +194,16 @@ class HarnessExecutionService:
         model_hint: str | None = None,
         gates: tuple[HarnessGateSpec, ...] = (),
         build_group: str | None = None,
+        inputs: dict[str, str] | None = None,
     ) -> HarnessOutcome:
         """Запустить дефолтный harness и собрать выход роли.
 
         ``output_kind="structured"`` → структурный JSON-payload (Ф1);
         ``"bundle"`` → файловый бандл (код/документы/двоичные/БД/образ, Ф5).
-        Один ожидаемый артефакт; harvest-by-convention.
+        ``inputs`` (реквизиты v2, Ф5b) — предоставленные пользователем данные/
+        файлы компонента, засеваемые в рабочий каталог узла (``/work/<имя>``),
+        чтобы код-узел видел их как реальные файлы. Один ожидаемый артефакт;
+        harvest-by-convention.
         """
         # Governance: кумулятивный бюджет исчерпан → не запускаем (fail-loudly).
         self._budget.ensure_within_budget()
@@ -221,6 +225,7 @@ class HarnessExecutionService:
                 for g in gates
             ),
             volume=build_group,
+            inputs=dict(inputs) if inputs else {},
         )
         provider = self._registry.resolve_default()
         # Класс конкуррентности: занимаем слот на время прогона (бэкпрешер —

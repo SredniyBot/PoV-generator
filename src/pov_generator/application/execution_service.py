@@ -132,6 +132,22 @@ def _json_safe(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)[1:-1]
 
 
+def _safe_input_name(raw: str, default_ext: str) -> str:
+    """Безопасное плоское имя файла-входа harness-узла (без path traversal).
+
+    Префикс ``requisite_`` отделяет посеянные реквизиты от служебных файлов
+    брифа/ожидаемых артефактов в ``/work``.
+    """
+    cleaned = "".join(
+        ch if (ch.isalnum() or ch in "-_.") else "_" for ch in (raw or "").strip()
+    ).strip("._")
+    if not cleaned:
+        cleaned = "data"
+    if default_ext and not cleaned.lower().endswith(default_ext):
+        cleaned += default_ext
+    return f"requisite_{cleaned}"
+
+
 @dataclass(frozen=True)
 class ExecutionBundle:
     request: ExecutionRequest
@@ -491,6 +507,8 @@ class ExecutionService:
                 model_hint=model or None,
                 gates=template.harness_gates,
                 build_group=build_group,
+                # Ф5b: предоставленные реквизиты компонента → файлы в /work узла.
+                inputs=self._collect_requisite_inputs(workspace, task),
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model
@@ -1249,6 +1267,42 @@ class ExecutionService:
             checkpoint_session_id=checkpoint_session_id,
         )
         return ExecutionBundle(request=request, result=result, traces=())
+
+    def _collect_requisite_inputs(self, workspace: Path, task) -> dict[str, str]:
+        """Ф5b: предоставленные реквизиты компонента → файлы в ``/work`` узла.
+
+        Для задачи-потребителя (``origin_ref`` = id компонента) собираем
+        предоставленные реквизиты этого компонента: режимы value/assumption —
+        текстом, file — извлечённым текстом вложения. Секрет (reference) и
+        обходы (deferred/not_applicable) файлов не дают — инвариант безопасности
+        сохраняется. Защитно: любой сбой → пустой набор, узел не падает.
+        """
+        origin_ref = getattr(task, "origin_ref", None)
+        if not origin_ref:
+            return {}
+        try:
+            from .workspace_query_service import gather_requisites
+
+            items, _, _ = gather_requisites(self._runtime, workspace)
+        except Exception:  # noqa: BLE001 — посев входов не должен ронять узел
+            return {}
+        seeded: dict[str, str] = {}
+        for item in items:
+            if item.consumer_ref != origin_ref or item.status != "provided":
+                continue
+            mode = item.provided_mode
+            if mode in {"value", "assumption"} and (item.provided_value or "").strip():
+                seeded[_safe_input_name(item.key or item.title, ".txt")] = item.provided_value
+            elif mode == "file" and item.provided_attachment_id:
+                try:
+                    record = self._runtime.load_attachment(workspace, item.provided_attachment_id)
+                    if record.extracted_text_ref:
+                        text = (workspace / record.extracted_text_ref).read_text(encoding="utf-8")
+                        if text.strip():
+                            seeded[_safe_input_name(record.original_filename, "")] = text
+                except Exception:  # noqa: BLE001 — недоступный файл просто не сеем
+                    continue
+        return seeded
 
     def _record_llm_usages(
         self,

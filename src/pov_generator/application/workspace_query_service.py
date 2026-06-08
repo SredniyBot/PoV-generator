@@ -696,6 +696,7 @@ class WorkspaceQueryService:
                 used_in_context=attachment.used_in_context,
                 can_delete=attachment.can_delete,
                 created_at=attachment.created_at,
+                purpose=attachment.purpose,
             )
             for attachment in self._runtime.list_attachments(context.workspace)
         )

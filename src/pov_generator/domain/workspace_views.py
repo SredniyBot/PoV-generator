@@ -331,6 +331,8 @@ class AttachmentView:
     used_in_context: bool
     can_delete: bool
     created_at: str
+    # Реквизиты v2: "input" (входной материал) | "requisite" (файл-реквизит).
+    purpose: str = "input"
 
 
 @dataclass(frozen=True)

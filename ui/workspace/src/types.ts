@@ -23,6 +23,7 @@ export interface AttachmentView {
   used_in_context: boolean;
   can_delete: boolean;
   created_at: string;
+  purpose?: string; // "input" (входной материал) | "requisite" (файл-реквизит)
 }
 
 export interface ProjectListItemView {

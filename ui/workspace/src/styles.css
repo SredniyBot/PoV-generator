@@ -6624,6 +6624,9 @@ code {
   font-size: var(--font-size-meta);
   color: var(--text-tertiary);
 }
+.requisite-card__file { display: flex; flex-direction: column; gap: 0.25rem; }
+.requisite-card__file input[type="file"] { font-size: var(--font-size-meta); color: var(--text-secondary); }
+.requisite-card__error { margin: 0; font-size: var(--font-size-meta); color: var(--danger); }
 .requisite-card__actions { display: flex; gap: 0.5rem; }
 
 /* ── Машинное отделение (harness): наблюдаемость + выбор исполнителя (Ф6/Ф7) ── */

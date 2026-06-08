@@ -18,12 +18,13 @@ import { api } from "./api";
 import type { RequisiteItemView } from "./types";
 import { EmptyState, LoadingPanel, SectionCard, StatusPill } from "./ui";
 
-type ProvideMode = "value" | "reference" | "assumption" | "deferred" | "not_applicable";
+type ProvideMode = "value" | "file" | "reference" | "assumption" | "deferred" | "not_applicable";
 
 interface ProvidePayload {
   mode: ProvideMode;
   value?: string;
   note?: string;
+  attachment_id?: string;
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -48,6 +49,7 @@ const KIND_HINTS: Record<string, string> = {
 
 const MODE_LABELS: Record<ProvideMode, string> = {
   value: "Значение",
+  file: "Файл",
   reference: "Ссылка / выдано",
   assumption: "Допущение",
   deferred: "Позже",
@@ -73,10 +75,10 @@ function defaultMode(kind?: string): ProvideMode {
   return kind === "credential" ? "reference" : "value";
 }
 
-// credential нельзя передать значением/допущением (секрет) — только «выдано».
+// credential нельзя передать значением/файлом/допущением (секрет) — только «выдано».
 function modesFor(kind?: string): ProvideMode[] {
   if (kind === "credential") return ["reference", "deferred", "not_applicable"];
-  return ["value", "reference", "assumption", "deferred", "not_applicable"];
+  return ["value", "file", "reference", "assumption", "deferred", "not_applicable"];
 }
 
 function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemView[]][] {
@@ -91,10 +93,12 @@ function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemVie
 }
 
 function RequisiteRow({
+  projectId,
   item,
   onProvide,
   pending,
 }: {
+  projectId: string;
   item: RequisiteItemView;
   onProvide: (payload: ProvidePayload) => void;
   pending: boolean;
@@ -106,15 +110,37 @@ function RequisiteRow({
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<ProvideMode>(defaultMode(item.kind));
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const showForm = !provided || editing;
   const needsText = mode === "value" || mode === "assumption";
-  const canSubmit = !pending && (!needsText || text.trim().length > 0);
+  const canSubmit =
+    !pending && !uploading && (mode !== "file" ? !needsText || text.trim().length > 0 : file != null);
 
-  function submit() {
-    if (mode === "value" || mode === "assumption") onProvide({ mode, value: text });
-    else if (mode === "reference") onProvide({ mode, note: text });
-    else onProvide({ mode });
+  async function submit() {
+    setError(null);
+    if (mode === "file") {
+      if (!file) return;
+      setUploading(true);
+      try {
+        const res = await api.uploadAttachment(projectId, file, "requisite");
+        onProvide({ mode, attachment_id: res.attachment_id, note: file.name });
+        setFile(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Не удалось загрузить файл");
+        return;
+      } finally {
+        setUploading(false);
+      }
+    } else if (mode === "value" || mode === "assumption") {
+      onProvide({ mode, value: text });
+    } else if (mode === "reference") {
+      onProvide({ mode, note: text });
+    } else {
+      onProvide({ mode });
+    }
     setText("");
     setEditing(false);
   }
@@ -169,6 +195,15 @@ function RequisiteRow({
               onChange={(e) => setText(e.target.value)}
             />
           ) : null}
+          {mode === "file" ? (
+            <div className="requisite-card__file">
+              <input
+                type="file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+              {hint ? <p className="requisite-card__note">{hint}</p> : null}
+            </div>
+          ) : null}
           {mode === "assumption" ? (
             <textarea
               className="requisite-card__input"
@@ -197,9 +232,19 @@ function RequisiteRow({
             <p className="requisite-card__note">Отметить, что реквизит не нужен для этого проекта.</p>
           ) : null}
 
+          {error ? <p className="requisite-card__error">{error}</p> : null}
           <div className="requisite-card__actions">
-            <button type="button" className="btn btn--primary" disabled={!canSubmit} onClick={submit}>
-              {mode === "deferred" || mode === "not_applicable" ? "Отметить" : "Предоставить"}
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={!canSubmit}
+              onClick={() => void submit()}
+            >
+              {uploading
+                ? "Загрузка…"
+                : mode === "deferred" || mode === "not_applicable"
+                  ? "Отметить"
+                  : "Предоставить"}
             </button>
             {editing ? (
               <button type="button" className="btn btn--ghost" onClick={() => setEditing(false)}>
@@ -267,6 +312,7 @@ function RequisitesSection({ projectId }: { projectId: string }) {
               {items.map((item) => (
                 <RequisiteRow
                   key={item.key || `${neededFor}:${item.title}`}
+                  projectId={projectId}
                   item={item}
                   pending={provide.isPending}
                   onProvide={(payload) =>

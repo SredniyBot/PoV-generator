@@ -99,6 +99,7 @@ class AttachmentService:
         content: bytes,
         mime_type: str | None = None,
         extract_in_background: bool = True,
+        purpose: str = "input",
     ) -> AttachmentRecord:
         """Сохранить файл и поставить извлечение текста (если формат поддержан).
 
@@ -142,6 +143,7 @@ class AttachmentService:
             extraction_error=(
                 None if supported else f"Формат '{extension or '?'}' не поддержан для извлечения текста."
             ),
+            purpose=purpose if purpose in {"input", "requisite"} else "input",
         )
         self._runtime.store_attachment(workspace, attachment=record, content=content)
         if supported:

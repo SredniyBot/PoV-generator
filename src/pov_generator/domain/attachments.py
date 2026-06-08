@@ -59,6 +59,11 @@ class AttachmentRecord:
     used_in_context: bool = False
     # Мягкое удаление (до первого использования).
     is_deleted: bool = False
+    # Назначение вложения (реквизиты v2): "input" — входной материал проекта
+    # (push, показывается во «Входных материалах»); "requisite" — файл,
+    # предоставленный в ответ на конкретный реквизит (pull, в «Реквизитах»).
+    # Разделяет два идеологически разных бакета, не смешивая их в UI.
+    purpose: str = "input"
 
     @property
     def can_delete(self) -> bool:

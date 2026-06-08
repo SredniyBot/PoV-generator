@@ -489,6 +489,7 @@ def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
         linked_position_id=row["linked_position_id"],
         used_in_context=bool(row["used_in_context"]),
         is_deleted=bool(row["is_deleted"]),
+        purpose=(row["purpose"] if "purpose" in row.keys() else "input"),
     )
 
 
@@ -1435,9 +1436,10 @@ class SqliteRuntime:
                 insert into attachments(
                   attachment_id, project_id, original_filename, mime_type, size_bytes,
                   sha256, storage_path, extraction_status, extracted_text_ref,
-                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at
+                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at,
+                  purpose
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attachment.attachment_id,
@@ -1454,6 +1456,7 @@ class SqliteRuntime:
                     1 if attachment.used_in_context else 0,
                     1 if attachment.is_deleted else 0,
                     attachment.created_at,
+                    attachment.purpose,
                 ),
             )
             connection.commit()
@@ -2765,7 +2768,9 @@ class SqliteRuntime:
               linked_position_id text,
               used_in_context integer not null default 0,
               is_deleted integer not null default 0,
-              created_at text not null
+              created_at text not null,
+              -- Реквизиты v2: 'input' (входной материал) | 'requisite' (файл-реквизит).
+              purpose text not null default 'input'
             );
 
             create table if not exists llm_usage (
@@ -3131,6 +3136,10 @@ class SqliteRuntime:
         )
         self._ensure_column(
             connection, "requisite_provisions", "attachment_id", "text not null default ''"
+        )
+        # Реквизиты v2: назначение вложения (входной материал vs файл-реквизит).
+        self._ensure_column(
+            connection, "attachments", "purpose", "text not null default 'input'"
         )
 
         # W4.1 (R1): async workflow runs.

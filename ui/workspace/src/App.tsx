@@ -1831,7 +1831,11 @@ function AttachmentsCard({
     queryFn: () => api.getAttachments(projectId),
   });
 
-  const attachments = attachmentsQuery.data ?? [];
+  // Только входные материалы (push). Файлы-реквизиты (pull, purpose="requisite")
+  // живут в «Реквизитах» и сюда не попадают — бакеты раздельны.
+  const attachments = (attachmentsQuery.data ?? []).filter(
+    (a) => (a.purpose ?? "input") === "input",
+  );
   // Блок скрыт только если нет НИ введённого запроса, НИ приложенных файлов.
   if (attachments.length === 0 && !inputArtifact) {
     return null;

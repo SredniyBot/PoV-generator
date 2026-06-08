@@ -87,9 +87,11 @@ export const api = {
   uploadAttachment: async (
     projectId: string,
     file: File,
+    purpose: "input" | "requisite" = "input",
   ): Promise<{ attachment_id: string; original_filename: string; extraction_status: string }> => {
     const form = new FormData();
     form.append("file", file);
+    form.append("purpose", purpose);
     // FormData задаёт multipart boundary сам — Content-Type не выставляем.
     const response = await fetch(`${API_BASE}/api/projects/${projectId}/attachments`, {
       method: "POST",

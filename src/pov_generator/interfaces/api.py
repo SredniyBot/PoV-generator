@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..application.attachment_service import AttachmentService
@@ -1155,11 +1155,17 @@ def create_app(
         return to_primitive(query_service.project_attachments(project_id))
 
     @app.post("/api/projects/{project_id}/attachments")
-    async def upload_attachment(project_id: str, file: UploadFile = File(...)) -> Any:
-        """Загрузить входной файл проекта (multipart).
+    async def upload_attachment(
+        project_id: str,
+        file: UploadFile = File(...),
+        purpose: str = Form("input"),
+    ) -> Any:
+        """Загрузить файл проекта (multipart).
 
-        Сохраняет файл со статусом ``pending`` и ставит извлечение текста в
-        фон; отвечает быстро.
+        ``purpose``: ``input`` — входной материал (по умолчанию; показывается во
+        «Входных материалах»); ``requisite`` — файл, предоставленный в ответ на
+        реквизит (отдельный бакет, в «Реквизиты»). Сохраняет со статусом
+        ``pending`` и ставит извлечение текста в фон; отвечает быстро.
         """
         workspace = catalog.resolve_workspace(project_id).workspace
         # Размер ограничиваем при чтении потока, а не после полной материализации:
@@ -1185,6 +1191,7 @@ def create_app(
             filename=file.filename or "file",
             content=content,
             mime_type=file.content_type,
+            purpose="requisite" if purpose == "requisite" else "input",
         )
         return {
             "attachment_id": record.attachment_id,
