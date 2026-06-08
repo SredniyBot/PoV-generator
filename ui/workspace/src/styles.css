@@ -6514,12 +6514,14 @@ code {
   cursor: progress;
 }
 
-/* Пояснение, почему переход к этапу заблокирован (не предоставлены реквизиты). */
-.stage-cta-blocked {
+/* Информационная подсказка: какие задачи реализации будут ждать данные.
+   Ф4 — переход НЕ заблокирован (гейтинг гранулярный), поэтому тон нейтральный,
+   не предупреждающий. */
+.stage-cta-pending {
   flex-basis: 100%;
   margin: 4px 0 0;
   font-size: var(--font-size-meta);
-  color: var(--warning);
+  color: var(--text-secondary);
   line-height: 1.45;
 }
 

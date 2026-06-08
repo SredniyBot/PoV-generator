@@ -1794,6 +1794,26 @@ class WorkspaceQueryService:
                     clarification_counts.get(decision.source_task_id, 0) + 1
                 )
 
+        # Ф4: чего ждёт заблокированная задача-потребитель — её непредоставленные
+        # блокирующие реквизиты (consumer_ref = origin_ref). Считаем один раз.
+        pending_by_consumer: dict[str, list[str]] = {}
+        try:
+            requisite_items, _, _ = gather_requisites(self._runtime, workspace)
+            for requisite in requisite_items:
+                if requisite.blocking and requisite.status != "provided" and requisite.consumer_ref:
+                    pending_by_consumer.setdefault(requisite.consumer_ref, []).append(
+                        requisite.title
+                    )
+        except Exception:
+            pending_by_consumer = {}
+
+        def _summary(task: TaskRecord) -> str | None:
+            if task.status == "blocked":
+                pending = pending_by_consumer.get(task.origin_ref or "", [])
+                if pending:
+                    return "Ждёт данные от пользователя: " + ", ".join(pending)
+            return task.error_message or self._status_summary(task)
+
         def build(task: TaskRecord) -> TaskNodeView:
             fan_out_meta = None
             if task.template_type == "fan_out" and snapshot is not None:
@@ -1818,7 +1838,7 @@ class WorkspaceQueryService:
                 template_ref=task.template_ref,
                 template_type=task.template_type,
                 status=task.status,
-                status_summary=task.error_message or self._status_summary(task),
+                status_summary=_summary(task),
                 origin_kind=task.origin_kind,
                 origin_ref=task.origin_ref,
                 slot_id=task.slot_id,

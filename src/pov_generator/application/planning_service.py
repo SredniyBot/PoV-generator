@@ -572,6 +572,22 @@ class PlanningService:
             project_id=state.manifest.project_id,
             status="proposed",
         )
+
+        # Реквизиты v2 (Ф4): честный гранулярный гейтинг. Непредоставленный
+        # блокирующий реквизит держит ТОЛЬКО задачу-потребителя (свой компонент),
+        # а не весь переход и не задачу-генератор. consumer_ref реквизита =
+        # origin_ref fan-out-задачи компонента (component_model.key_field=id).
+        # Локальный импорт во избежание цикла модулей.
+        from .workspace_query_service import gather_requisites
+
+        unprovided_blocking_by_consumer: dict[str, list[str]] = {}
+        requisite_items, _, _ = gather_requisites(self._runtime, workspace)
+        for requisite in requisite_items:
+            if requisite.blocking and requisite.status != "provided" and requisite.consumer_ref:
+                unprovided_blocking_by_consumer.setdefault(requisite.consumer_ref, []).append(
+                    requisite.title
+                )
+
         for task in leaf_tasks:
             if task.status in {"completed", "failed", "obsolete", "skipped", "in_progress"}:
                 continue
@@ -673,6 +689,17 @@ class PlanningService:
                     "Есть открытые уточнения: " + ", ".join(clarification_blockers)
                     if clarification_blockers
                     else "Блокирующих уточнений нет",
+                )
+            )
+
+            requisite_blockers = unprovided_blocking_by_consumer.get(task.origin_ref or "", [])
+            checks.append(
+                AdmissionCheck(
+                    "blocking_requisites",
+                    not requisite_blockers,
+                    "Ждёт данные от пользователя: " + ", ".join(requisite_blockers)
+                    if requisite_blockers
+                    else "Обязательные реквизиты предоставлены",
                 )
             )
 

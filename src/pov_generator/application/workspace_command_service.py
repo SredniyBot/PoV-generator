@@ -21,7 +21,7 @@ from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 from .workspace_catalog import WorkspaceCatalog
-from .workspace_query_service import blocking_requisites_unprovided, gather_requisites
+from .workspace_query_service import gather_requisites
 
 GRAPH_PROJECTIONS = ("task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state", "debug")
 
@@ -203,17 +203,22 @@ class WorkspaceCommandService:
         attachment_id: str = "",
         note: str = "",
     ) -> CommandResultView:
-        """Зафиксировать предоставленный реквизит и пустить данные в работу.
+        """Разрешить реквизит: предоставить данные ИЛИ осознанно обойти.
 
-        Реквизиты v2 (Ф3): данные реально втекают. Режим ``value`` кладёт
-        значение в слой A как пользовательский факт (``source="user"``) — он
-        попадает в контекст зависимых задач. Безопасность (инвариант 6): вид
-        ``credential`` и режим ``reference`` НИКОГДА не несут значение в
-        контекст/артефакты (только пометка «выдано вне системы»); прежнее
-        value-положение при смене на reference снимается, чтобы секрет/
-        устаревшее значение не осталось в контексте. Предоставление — событие:
-        затем идёт переоценка графа (``expand_graph``), чтобы задача-потребитель
-        могла продолжиться.
+        Реквизиты v2 (Ф3+Ф4). Режимы данных: ``value`` кладёт значение в слой A
+        пользовательским фактом (``source="user"``) — он попадает в контекст
+        зависимых задач; ``file``/``reference`` — без значения. Режимы обхода
+        (честный гейтинг): ``assumption`` («допущение») кладёт рабочий дефолт как
+        положение-допущение (🟡, можно override решением); ``deferred`` («позже»)
+        и ``not_applicable`` («неприменимо») — без положения. Любой режим
+        снимает гранулярный блок задачи-потребителя (admission учитывает только
+        непредоставленные реквизиты).
+
+        Безопасность (инвариант 6): вид ``credential`` и режимы без значения
+        НИКОГДА не несут секрет в контекст/артефакты (только пометка «выдано вне
+        системы»); прежнее value/assumption-положение при смене на режим без
+        значения снимается. Предоставление — событие: затем идёт переоценка
+        графа (``expand_graph``), чтобы задача-потребитель могла продолжиться.
         """
         workspace_ref = self._catalog.resolve_workspace(project_id)
         workspace = workspace_ref.workspace
@@ -231,11 +236,12 @@ class WorkspaceCommandService:
         needed_for = match.needed_for if match else ""
         kind = match.kind if match else "other"
 
-        # Инвариант безопасности: секрет не персистится. credential → только
-        # reference; reference никогда не несёт значение.
-        if kind == "credential" and mode == "value":
+        # Инвариант безопасности: секрет не персистится. credential нельзя
+        # «предположить» или передать значением — только reference.
+        if kind == "credential" and mode in {"value", "assumption"}:
             mode = "reference"
-        if mode == "reference":
+        # Значение несут только value/assumption; остальные режимы — без значения.
+        if mode not in {"value", "assumption"}:
             value = ""
 
         runtime.mark_requisite_provided(
@@ -247,10 +253,16 @@ class WorkspaceCommandService:
             attachment_id=attachment_id,
         )
 
-        # Втекание данных в слой A. Значение → пользовательский факт в контекст.
+        # Втекание в слой A. value → пользовательский факт; assumption → рабочее
+        # допущение (🟡). Остальные режимы значение в контексте не держат.
         position_id = f"{REQUISITE_POSITION_PREFIX}{key}"
-        if mode == "value" and value.strip():
-            statement = f"Данные, предоставленные пользователем по реквизиту «{title}»"
+        if mode in {"value", "assumption"} and value.strip():
+            if mode == "assumption":
+                position_type = "assumption"
+                statement = f"Допущение пользователя по реквизиту «{title}»"
+            else:
+                position_type = "fact"
+                statement = f"Данные, предоставленные пользователем по реквизиту «{title}»"
             if needed_for:
                 statement += f" (нужно для: {needed_for})"
             statement += f":\n\n{value.strip()}"
@@ -259,7 +271,7 @@ class WorkspaceCommandService:
                 UpsertPositionPatch(
                     Position(
                         identifier=position_id,
-                        type="fact",
+                        type=position_type,
                         statement=statement,
                         visibility="architectural",
                         scope="global",
@@ -270,7 +282,7 @@ class WorkspaceCommandService:
                     )
                 ),
                 actor="requisite",
-                reason=f"provided requisite {key} (value)",
+                reason=f"provided requisite {key} ({mode})",
             )
         else:
             # reference/file: значение в контексте не держим. Снимаем прежнее
@@ -369,18 +381,12 @@ class WorkspaceCommandService:
         snapshot = self._validated_snapshot()
         new_ref_obj = ObjectRef.parse(new_objective_ref)
         new_spec = snapshot.resolve_objective(new_ref_obj)
-        # Ф5: шлюз перехода на реализацию — блокирующие реквизиты должны быть
-        # предоставлены. Гасим только переход в objective реализации; остальные
-        # переходы (например, ТЗ → архитектура) реквизитами не держатся.
-        if new_ref_obj.identifier.startswith("implementation"):
-            missing = blocking_requisites_unprovided(
-                self._project_service.runtime, workspace_ref.workspace
-            )
-            if missing:
-                raise ConflictError(
-                    "Нельзя перейти к реализации: не предоставлены обязательные "
-                    "реквизиты — " + "; ".join(missing) + ". Заполните их во вкладке «Реквизиты»."
-                )
+        # Реквизиты v2 (Ф4): переход на реализацию больше НЕ держится огульно.
+        # Честный гейтинг теперь гранулярный — непредоставленный блокирующий
+        # реквизит держит в admission только свою задачу-потребителя
+        # (см. planning_service._recompute_admission, check "blocking_requisites"),
+        # а не весь переход и не генератор. Пользователь входит в этап реализации,
+        # видит «ждёт данные X» у конкретных узлов и предоставляет по ходу.
         methodology_ref = (
             new_spec.default_methodology_pack_ref.as_string()
             if new_spec.default_methodology_pack_ref is not None

@@ -679,25 +679,29 @@ def create_app(
     def project_requisite_provide(
         project_id: str, payload: dict[str, object] = Body(default_factory=dict)
     ) -> Any:
-        """Отметить реквизит как предоставленный (реквизиты v2).
+        """Разрешить реквизит (реквизиты v2): предоставить данные ИЛИ обойти.
 
-        Body: ``{"key", "mode"?, "value"?, "attachment_id"?, "note"?}``, где
-        ``mode`` ∈ {value, file, reference} (по умолчанию reference). Секреты в
-        системе не храним: для credential используется reference — только
-        пометка «доступ выдан вне системы», без поля значения. В режиме
-        reference ``value`` отбрасывается. Возвращает обновлённый список.
+        Body: ``{"key", "mode"?, "value"?, "attachment_id"?, "note"?}``. ``mode``:
+        данные — ``value`` | ``file`` | ``reference`` (по умолчанию reference);
+        обход — ``assumption`` («допущение»: рабочий дефолт), ``deferred``
+        («позже») или ``not_applicable`` («неприменимо»). Любой режим снимает
+        гранулярный блок задачи-потребителя. Секреты не храним: для credential
+        принудительно reference (без поля значения); значение несут только value/
+        assumption. Возвращает обновлённый список.
         """
         key = str(payload.get("key") or "").strip()
         if not key:
             raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
         mode = str(payload.get("mode") or "reference").strip() or "reference"
-        if mode not in {"value", "file", "reference"}:
+        allowed_modes = {"value", "file", "reference", "assumption", "deferred", "not_applicable"}
+        if mode not in allowed_modes:
             raise HTTPException(status_code=400, detail=f"Неизвестный режим: {mode}.")
         note = str(payload.get("note") or "")
         attachment_id = str(payload.get("attachment_id") or "")
-        # reference никогда не несёт значение (защита от утечки секрета). Команда
-        # дополнительно принудит reference для credential.
-        value = "" if mode == "reference" else str(payload.get("value") or "")
+        # Значение несут только value/assumption; остальные режимы — без значения
+        # (защита от утечки секрета; команда дополнительно принудит reference для
+        # credential).
+        value = str(payload.get("value") or "") if mode in {"value", "assumption"} else ""
         command_service.provide_requisite(
             project_id,
             key=key,
