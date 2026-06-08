@@ -695,16 +695,16 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Неизвестный режим: {mode}.")
         note = str(payload.get("note") or "")
         attachment_id = str(payload.get("attachment_id") or "")
-        # reference никогда не несёт значение (защита от утечки секрета).
+        # reference никогда не несёт значение (защита от утечки секрета). Команда
+        # дополнительно принудит reference для credential.
         value = "" if mode == "reference" else str(payload.get("value") or "")
-        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
-        runtime.mark_requisite_provided(
-            workspace,
-            requisite_key=key,
-            note=note,
+        command_service.provide_requisite(
+            project_id,
+            key=key,
             mode=mode,
             value=value,
             attachment_id=attachment_id,
+            note=note,
         )
         return to_primitive(query_service.project_requisites(project_id))
 

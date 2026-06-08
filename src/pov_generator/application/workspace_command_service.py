@@ -6,6 +6,9 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.logging import get_logger
+from ..common.serialization import utc_now_iso
+from ..domain.positions import REQUISITE_POSITION_PREFIX, Position
+from ..domain.project_knowledge import RejectPositionPatch, UpsertPositionPatch
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
 
@@ -18,7 +21,7 @@ from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 from .workspace_catalog import WorkspaceCatalog
-from .workspace_query_service import blocking_requisites_unprovided
+from .workspace_query_service import blocking_requisites_unprovided, gather_requisites
 
 GRAPH_PROJECTIONS = ("task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state", "debug")
 
@@ -188,6 +191,114 @@ class WorkspaceCommandService:
             summary=f"Подключён доменный пакет '{pack_ref}'.",
             changed_projections=("shell", "task_graph", "situation", "timeline", "clarifications", "state", "debug"),
             resource_id=pack_ref,
+        )
+
+    def provide_requisite(
+        self,
+        project_id: str,
+        *,
+        key: str,
+        mode: str = "reference",
+        value: str = "",
+        attachment_id: str = "",
+        note: str = "",
+    ) -> CommandResultView:
+        """Зафиксировать предоставленный реквизит и пустить данные в работу.
+
+        Реквизиты v2 (Ф3): данные реально втекают. Режим ``value`` кладёт
+        значение в слой A как пользовательский факт (``source="user"``) — он
+        попадает в контекст зависимых задач. Безопасность (инвариант 6): вид
+        ``credential`` и режим ``reference`` НИКОГДА не несут значение в
+        контекст/артефакты (только пометка «выдано вне системы»); прежнее
+        value-положение при смене на reference снимается, чтобы секрет/
+        устаревшее значение не осталось в контексте. Предоставление — событие:
+        затем идёт переоценка графа (``expand_graph``), чтобы задача-потребитель
+        могла продолжиться.
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        runtime = self._project_service.runtime
+        ensure_project_unlocked(runtime, workspace)
+
+        # Метаданные реквизита (вид/заголовок/потребитель) для безопасности и
+        # содержательного положения. Реквизит мог стать невидимым (артефакт
+        # переехал) — тогда работаем по ключу как есть.
+        items, _, _ = gather_requisites(runtime, workspace)
+        match = next(
+            (it for it in items if (it.key or it.title) == key or it.title == key), None
+        )
+        title = match.title if match else key
+        needed_for = match.needed_for if match else ""
+        kind = match.kind if match else "other"
+
+        # Инвариант безопасности: секрет не персистится. credential → только
+        # reference; reference никогда не несёт значение.
+        if kind == "credential" and mode == "value":
+            mode = "reference"
+        if mode == "reference":
+            value = ""
+
+        runtime.mark_requisite_provided(
+            workspace,
+            requisite_key=key,
+            note=note,
+            mode=mode,
+            value=value,
+            attachment_id=attachment_id,
+        )
+
+        # Втекание данных в слой A. Значение → пользовательский факт в контекст.
+        position_id = f"{REQUISITE_POSITION_PREFIX}{key}"
+        if mode == "value" and value.strip():
+            statement = f"Данные, предоставленные пользователем по реквизиту «{title}»"
+            if needed_for:
+                statement += f" (нужно для: {needed_for})"
+            statement += f":\n\n{value.strip()}"
+            runtime.apply_knowledge_patch(
+                workspace,
+                UpsertPositionPatch(
+                    Position(
+                        identifier=position_id,
+                        type="fact",
+                        statement=statement,
+                        visibility="architectural",
+                        scope="global",
+                        source="user",
+                        taken_by="requisite",
+                        taken_at=utc_now_iso(),
+                        tags=("requisite", "user_input"),
+                    )
+                ),
+                actor="requisite",
+                reason=f"provided requisite {key} (value)",
+            )
+        else:
+            # reference/file: значение в контексте не держим. Снимаем прежнее
+            # value-положение (например, переключение credential value →
+            # reference), чтобы секрет/устаревшее значение не осталось.
+            knowledge = runtime.load_project_state(workspace).knowledge
+            existing = knowledge.positions.get(position_id)
+            if existing is not None and existing.status == "active":
+                runtime.apply_knowledge_patch(
+                    workspace,
+                    RejectPositionPatch(
+                        position_id=position_id,
+                        reason=f"requisite {key} re-provided as {mode}",
+                    ),
+                    actor="requisite",
+                    reason=f"provided requisite {key} ({mode})",
+                )
+
+        # Предоставление — событие: переоценка графа (дозапуск/реплан потребителя).
+        snapshot = self._validated_snapshot()
+        self._planning_service.expand_graph(workspace, snapshot)
+
+        return CommandResultView(
+            status="accepted",
+            command_name="provide-requisite",
+            summary=f"Реквизит «{title}» отмечен как предоставленный.",
+            changed_projections=("situation", "timeline", "state", "task_graph"),
+            resource_id=key,
         )
 
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:

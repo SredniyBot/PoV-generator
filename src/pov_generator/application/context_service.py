@@ -10,7 +10,7 @@ from pathlib import Path
 from ..common.errors import ConflictError
 from ..common.serialization import json_dumps, json_loads, utc_now_iso
 from ..domain.artifacts import ContextBudget, ContextItem, ContextManifest
-from ..domain.positions import Position
+from ..domain.positions import REQUISITE_POSITION_PREFIX, Position
 from ..domain.project_state import ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..infrastructure.sqlite_runtime import SqliteRuntime
@@ -496,20 +496,38 @@ class ContextService:
                 + "\n".join(gaps_lines[: self._GLOBAL_LIST_LIMIT])
             )
 
+        # 🟢 Данные, предоставленные пользователем по запросу (реквизиты).
+        # Прямой вход заказчика — отделён от извлечённых фактов и от
+        # бизнес-запроса. Секреты сюда не попадают (credential/reference не
+        # создают value-положение, см. provide_requisite).
+        provided_lines = [
+            f"- {position.statement}".rstrip()
+            for position in state.knowledge.by_type("fact")
+            if position.statement
+            and position.identifier.startswith(REQUISITE_POSITION_PREFIX)
+        ]
+        if provided_lines:
+            sections.append(
+                "## 🟢 Данные, предоставленные пользователем по запросу (реквизиты)\n"
+                + "\n".join(provided_lines[: self._GLOBAL_LIST_LIMIT])
+            )
+
         # 🔵 Known facts — extracted база (исключая бизнес-запрос и цель,
         # они уже выведены в отдельные секции выше).
         from ..domain.project_knowledge import GOAL_POSITION_ID
 
         reserved_fact_ids = {GOAL_POSITION_ID, "project.business_request"}
-        # Факты-вложения (attachment.*) сюда НЕ попадают: они подаются
-        # первоисточником задачам-интерпретаторам (см. _collect_source_inputs)
-        # и не должны резаться как обычные факты.
+        # Факты-вложения (attachment.*) и предоставленные реквизиты
+        # (requisite.*) сюда НЕ попадают: первые подаются первоисточником
+        # задачам-интерпретаторам (см. _collect_source_inputs), вторые выведены
+        # отдельной секцией выше.
         facts_lines = [
             f"- {position.statement}".rstrip()
             for position in state.knowledge.by_type("fact")
             if position.statement
             and position.identifier not in reserved_fact_ids
             and not position.identifier.startswith(ATTACHMENT_POSITION_PREFIX)
+            and not position.identifier.startswith(REQUISITE_POSITION_PREFIX)
         ]
         if facts_lines:
             sections.append(
