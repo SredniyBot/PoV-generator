@@ -712,6 +712,22 @@ def create_app(
         )
         return to_primitive(query_service.project_requisites(project_id))
 
+    @app.post("/api/projects/{project_id}/requisites/unprovide")
+    def project_requisite_unprovide(
+        project_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        """Снять предоставление реквизита (реквизиты v7, un-provide).
+
+        Body: ``{"key": "<ключ реквизита>"}``. Удаляет запись и связанное
+        value/assumption-положение; блокирующий реквизит снова держит свою
+        задачу-потребителя. Возвращает обновлённый список.
+        """
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
+        command_service.unprovide_requisite(project_id, key=key)
+        return to_primitive(query_service.project_requisites(project_id))
+
     @app.get("/api/projects/{project_id}/task-graph")
     def project_task_graph(project_id: str) -> Any:
         return to_primitive(query_service.project_task_graph(project_id))

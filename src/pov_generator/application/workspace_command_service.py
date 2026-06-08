@@ -313,6 +313,46 @@ class WorkspaceCommandService:
             resource_id=key,
         )
 
+    def unprovide_requisite(self, project_id: str, *, key: str) -> CommandResultView:
+        """Снять предоставление реквизита (реквизиты v7, un-provide).
+
+        Удаляет запись предоставления и снимает связанное value/assumption-
+        положение слоя A (если было) — данные перестают втекать в контекст.
+        После этого граф переоценивается: если реквизит блокирующий, его
+        задача-потребитель снова заблокируется (честный гейтинг). Снятие
+        положения проходит через журналируемый knowledge-patch (аудит).
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        runtime = self._project_service.runtime
+        ensure_project_unlocked(runtime, workspace)
+
+        runtime.delete_requisite_provision(workspace, key)
+
+        position_id = f"{REQUISITE_POSITION_PREFIX}{key}"
+        existing = runtime.load_project_state(workspace).knowledge.positions.get(position_id)
+        if existing is not None and existing.status == "active":
+            runtime.apply_knowledge_patch(
+                workspace,
+                RejectPositionPatch(
+                    position_id=position_id,
+                    reason=f"requisite {key} un-provided by user",
+                ),
+                actor="requisite",
+                reason=f"un-provided requisite {key}",
+            )
+
+        snapshot = self._validated_snapshot()
+        self._planning_service.expand_graph(workspace, snapshot)
+
+        return CommandResultView(
+            status="accepted",
+            command_name="unprovide-requisite",
+            summary="Предоставление реквизита снято.",
+            changed_projections=("situation", "timeline", "state", "task_graph"),
+            resource_id=key,
+        )
+
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
         """Сменить режим участия пользователя (v3.2).
 

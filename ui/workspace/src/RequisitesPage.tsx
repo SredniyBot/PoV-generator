@@ -96,11 +96,13 @@ function RequisiteRow({
   projectId,
   item,
   onProvide,
+  onUnprovide,
   pending,
 }: {
   projectId: string;
   item: RequisiteItemView;
   onProvide: (payload: ProvidePayload) => void;
+  onUnprovide: () => void;
   pending: boolean;
 }) {
   const provided = item.status === "provided";
@@ -162,6 +164,15 @@ function RequisiteRow({
             </StatusPill>
             <button type="button" className="btn btn--ghost" onClick={() => setEditing(true)}>
               Изменить
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled={pending}
+              onClick={onUnprovide}
+              title="Снять предоставление — данные перестанут учитываться"
+            >
+              Отменить
             </button>
           </span>
         ) : null}
@@ -264,15 +275,20 @@ function RequisitesSection({ projectId }: { projectId: string }) {
     queryKey: ["project", projectId, "requisites"],
     queryFn: () => api.getRequisites(projectId),
   });
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ["project", projectId, "requisites"] });
+    // Граф/лента: смена статуса реквизита влияет на блок задачи-потребителя.
+    void qc.invalidateQueries({ queryKey: ["project", projectId, "task_graph"] });
+    void qc.invalidateQueries({ queryKey: ["project", projectId, "situation"] });
+  };
   const provide = useMutation({
     mutationFn: ({ key, payload }: { key: string; payload: ProvidePayload }) =>
       api.provideRequisite(projectId, { key, ...payload }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["project", projectId, "requisites"] });
-      // Граф/лента: предоставление снимает блок задачи-потребителя.
-      void qc.invalidateQueries({ queryKey: ["project", projectId, "task_graph"] });
-      void qc.invalidateQueries({ queryKey: ["project", projectId, "situation"] });
-    },
+    onSuccess: invalidate,
+  });
+  const unprovide = useMutation({
+    mutationFn: (key: string) => api.unprovideRequisite(projectId, key),
+    onSuccess: invalidate,
   });
 
   if (query.isLoading || !query.data) return <LoadingPanel title="Загрузка реквизитов…" />;
@@ -314,10 +330,11 @@ function RequisitesSection({ projectId }: { projectId: string }) {
                   key={item.key || `${neededFor}:${item.title}`}
                   projectId={projectId}
                   item={item}
-                  pending={provide.isPending}
+                  pending={provide.isPending || unprovide.isPending}
                   onProvide={(payload) =>
                     provide.mutate({ key: item.key || item.title, payload })
                   }
+                  onUnprovide={() => unprovide.mutate(item.key || item.title)}
                 />
               ))}
             </ul>

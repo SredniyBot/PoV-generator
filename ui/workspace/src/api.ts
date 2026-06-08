@@ -247,6 +247,13 @@ export const api = {
       `/api/projects/${projectId}/requisites/provide`,
       { method: "POST", body: JSON.stringify(payload) },
     ),
+  // Снять предоставление реквизита (un-provide): данные перестают втекать,
+  // блокирующий реквизит снова держит задачу-потребителя.
+  unprovideRequisite: (projectId: string, key: string) =>
+    request<import("./types").ProjectRequisitesView>(
+      `/api/projects/${projectId}/requisites/unprovide`,
+      { method: "POST", body: JSON.stringify({ key }) },
+    ),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),
   // --- Harness (агенты-исполнители): наблюдаемость + онбординг + настройки ---

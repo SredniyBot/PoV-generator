@@ -163,3 +163,58 @@ def test_deferred_resolution_also_unblocks(tmp_path: Path) -> None:
         c.task_id: c for c in planning._recompute_admission(ws, snapshot, runtime.list_tasks(ws))
     }
     assert _requisite_check(candidates[instances["ingest"].task_id]).passed is True
+
+
+def test_unprovide_reblocks_consumer(tmp_path: Path) -> None:
+    """Ф7: снятие предоставления (un-provide) снова блокирует потребителя."""
+    ws, snapshot, runtime, planning, fanout = _setup(tmp_path)
+    instances = _by_origin(runtime, ws, fanout.task_id)
+    key = "architecture:ingest:crm_creds"
+
+    runtime.mark_requisite_provided(ws, requisite_key=key, note="выдан")
+    after_provide = {
+        c.task_id: c for c in planning._recompute_admission(ws, snapshot, runtime.list_tasks(ws))
+    }
+    assert _requisite_check(after_provide[instances["ingest"].task_id]).passed is True
+
+    assert runtime.delete_requisite_provision(ws, key) is True
+    after_unprovide = {
+        c.task_id: c for c in planning._recompute_admission(ws, snapshot, runtime.list_tasks(ws))
+    }
+    assert _requisite_check(after_unprovide[instances["ingest"].task_id]).passed is False
+    # idempotent: повтор по уже снятому — False.
+    assert runtime.delete_requisite_provision(ws, key) is False
+
+
+def test_provided_status_survives_artifact_regeneration(tmp_path: Path) -> None:
+    """Ф7: стабильный ключ — предоставление переживает ре-генерацию артефакта.
+
+    Перевыпуск component_model (новый artifact_id) не «теряет» отметку
+    «предоставлено», т.к. ключ устойчив (architecture:<cid>:<rid>), а не привязан
+    к id артефакта или формулировке заголовка.
+    """
+    ws, snapshot, runtime, planning, _ = _setup(tmp_path)
+    from pov_generator.application.workspace_query_service import gather_requisites
+
+    runtime.mark_requisite_provided(
+        ws, requisite_key="architecture:ingest:crm_creds", note="выдан"
+    )
+
+    # Перевыпуск модели компонентов под новым id (та же структура реквизита).
+    artifact = ArtifactRecord(
+        artifact_id="cm2",
+        project_id=runtime.load_manifest(ws).project_id,
+        artifact_role="component_model",
+        title="Модель компонентов (v2)",
+        description=None,
+        artifact_format="json",
+        artifact_kind="primary",
+        created_by_task_id=None,
+        storage_path="artifacts/cm2.json",
+        created_at=utc_now_iso(),
+    )
+    runtime.store_artifact(ws, artifact=artifact, content=json.dumps(_MODEL, ensure_ascii=False))
+
+    items, _, _ = gather_requisites(runtime, ws)
+    creds = next(i for i in items if i.key == "architecture:ingest:crm_creds")
+    assert creds.status == "provided"

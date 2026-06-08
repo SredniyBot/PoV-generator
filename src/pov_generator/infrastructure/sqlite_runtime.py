@@ -1584,6 +1584,18 @@ class SqliteRuntime:
             for row in rows
         }
 
+    @_serialized_write
+    def delete_requisite_provision(self, workspace: Path, requisite_key: str) -> bool:
+        """Снять предоставление реквизита (Ф7, un-provide). Возвращает, была ли
+        запись (idempotent: повтор по уже снятому — ``False``)."""
+        with self._connect(workspace) as connection:
+            cursor = connection.execute(
+                "delete from requisite_provisions where requisite_key = ?",
+                (requisite_key,),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+
     # --- pinned_registry (закрепление графа за проектом) --------------------
 
     @_serialized_write
