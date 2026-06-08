@@ -1197,12 +1197,15 @@ function RunActivitySection({
                     (new Date(step.finished_at).getTime() - new Date(step.started_at).getTime()) / 1000,
                   ))
                 : null;
-              // Если задача в графе уже завершена — сбой шага (обычно разрыв
-              // сети) считаем устаревшим: показываем как успех, без повтора и
-              // без застрявшего сообщения об ошибке.
-              const taskDone = step.task_id
-                ? statusByTaskId.get(step.task_id) === "completed"
-                : false;
+              // Если задача уже завершена — сбой шага (обычно разрыв сети)
+              // считаем устаревшим: показываем как успех, без повтора и без
+              // застрявшего сообщения об ошибке. Статус берём из обогащения API
+              // (task_status, по ВСЕМ гейтам — устойчиво к перезагрузке и шагам
+              // неактивного гейта); fallback — активный граф задач. П.1.
+              const currentTaskStatus = step.task_id
+                ? step.task_status ?? statusByTaskId.get(step.task_id)
+                : undefined;
+              const taskDone = currentTaskStatus === "completed";
               const rawFailed = step.validation_status === "failed";
               const isFailed = rawFailed && !taskDone;
               const effectiveValidation =

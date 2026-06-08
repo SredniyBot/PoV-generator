@@ -6182,6 +6182,12 @@ code {
   background: var(--accent-soft, rgba(120, 184, 201, 0.18));
 }
 
+/* #5: согласованный активный этап — зелёный (пройден), как done. Идёт после
+   правила active/current, чтобы выиграть по цвету при равной специфичности. */
+.stage-seg--signed-off {
+  color: var(--success, #8cc499);
+}
+
 .stage-seg--locked {
   color: var(--text-muted, rgba(255, 255, 255, 0.4));
   opacity: 0.75;
@@ -6302,6 +6308,17 @@ code {
 
 .stage-badge--warning:hover {
   border-color: var(--warning, #d6ad59);
+}
+
+/* #3: спокойный «нужны данные» — акцентный (не тревожный жёлтый/красный). */
+.stage-badge--info {
+  color: var(--accent, #78b8c9);
+  background: var(--accent-soft, rgba(120, 184, 201, 0.15));
+  border-color: var(--accent-soft, rgba(120, 184, 201, 0.15));
+}
+
+.stage-badge--info:hover {
+  border-color: var(--accent, #78b8c9);
 }
 
 /* Поповер со списком упавших/заблокированных шагов */
@@ -6451,17 +6468,6 @@ code {
 .stage-cta:disabled {
   opacity: 0.6;
   cursor: progress;
-}
-
-/* Информационная подсказка: какие задачи реализации будут ждать данные.
-   Ф4 — переход НЕ заблокирован (гейтинг гранулярный), поэтому тон нейтральный,
-   не предупреждающий. */
-.stage-cta-pending {
-  flex-basis: 100%;
-  margin: 4px 0 0;
-  font-size: var(--font-size-meta);
-  color: var(--text-secondary);
-  line-height: 1.45;
 }
 
 /* Вертикальный стек секций раздела «Реквизиты» (реквизиты + предпосылки + зоны). */

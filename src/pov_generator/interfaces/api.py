@@ -1421,15 +1421,25 @@ def create_app(
         if payload is None:
             return None
         try:
-            titles = {t.task_id: t.title for t in runtime.list_tasks(workspace)}
+            all_tasks = runtime.list_tasks(workspace)
+            titles = {t.task_id: t.title for t in all_tasks}
+            statuses = {t.task_id: t.status for t in all_tasks}
         except Exception:  # noqa: BLE001 — обогащение best-effort
             return payload
         runs = payload if isinstance(payload, list) else [payload]
         for run in runs:
             for step in run.get("steps", []) or []:
                 tid = step.get("task_id")
-                if tid and titles.get(tid):
+                if not tid:
+                    continue
+                if titles.get(tid):
                     step["task_title"] = titles[tid]
+                # #1: текущий статус задачи (по ВСЕМ гейтам) — лента сверяет
+                # устаревший failed-шаг (разрыв сети / IncompleteRead) с реальным
+                # статусом задачи, даже если задача из прошлого/неактивного гейта,
+                # которого нет в активном графе после перезагрузки.
+                if statuses.get(tid):
+                    step["task_status"] = statuses[tid]
         return payload
 
     @app.get("/api/projects/{project_id}/workflow-runs/active")

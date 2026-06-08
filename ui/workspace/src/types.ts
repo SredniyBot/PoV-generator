@@ -530,6 +530,10 @@ export interface WorkflowStepView {
   // Человеческое имя задачи (обогащается API из задач всех гейтов). Лента
   // показывает его вместо id для шагов прошлых/будущих гейтов.
   task_title?: string | null;
+  // #1: текущий статус задачи (обогащается API из задач всех гейтов). Лента
+  // сверяет устаревший failed-шаг с реальным статусом задачи даже после
+  // перезагрузки и для шагов неактивного гейта (активный граф их не содержит).
+  task_status?: string | null;
   selected_step_id: string | null;
   planning_outcome: string;
   validation_status: string | null;

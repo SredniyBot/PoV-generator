@@ -303,9 +303,9 @@ def test_objective_compatible_next_objectives_defaults_to_empty() -> None:
     snapshot, report = registry_service.validate()
     assert report.is_valid
 
-    # implementation — конечный objective цепочки: compatible_next_objectives
-    # объявлен пустым списком, что даёт пустой tuple.
-    impl_spec = snapshot.resolve_objective(ObjectRef.parse("implementation.build_plan@1.0.0"))
+    # realize — конечный objective цепочки (RG: build_plan → realize):
+    # compatible_next_objectives объявлен пустым списком, что даёт пустой tuple.
+    impl_spec = snapshot.resolve_objective(ObjectRef.parse("implementation.realize@1.0.0"))
     assert impl_spec.compatible_next_objectives == ()
 
 

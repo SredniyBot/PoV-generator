@@ -7,7 +7,9 @@ default_methodology_pack: process.lean_jtbd@1.0.0
 # Слой 2: после архитектуры workspace продолжается планом реализации. Агентные
 # задачи берут component_decomposition и feasibility (covered_by — агент на
 # часть) из прошлых objective'ов и выдают спеки сборки по ролям + сводный план.
-compatible_next_objectives: []
+# RG: после плана — гейт «Реализация» (harness-узлы строят систему по спекам).
+compatible_next_objectives:
+  - implementation.realize@1.0.0
 done_when:
   artifacts:
     - implementation.build_plan@1.0.0

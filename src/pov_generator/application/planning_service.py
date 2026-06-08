@@ -504,6 +504,17 @@ class PlanningService:
                 child_template = self._resolve_fanout_child(
                     template.fan_out_spec, item, default_child, snapshot
                 )
+                # #6: заголовок инстанса уточняет, к чему он относится —
+                # «<задача>: <элемент>» (label_field источника), а не просто
+                # родовое название шаблона.
+                label = (
+                    str(item.get(template.fan_out_spec.label_field) or "").strip()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                instance_title = (
+                    f"{child_template.title}: {label}" if label else child_template.title
+                )
                 self._create_task(
                     workspace,
                     project_id=task.project_id,
@@ -515,6 +526,7 @@ class PlanningService:
                     stable_key=stable_key,
                     depth=task.depth + 1,
                     slot_id=None,
+                    title=instance_title,
                 )
             # Transition wrapper to waiting_for_children (even if 0 instances)
             self._runtime.transition_task(workspace, task.task_id, "expand_fan_out")
@@ -535,6 +547,7 @@ class PlanningService:
         stable_key: str,
         depth: int,
         slot_id: str | None,
+        title: str | None = None,
     ) -> TaskRecord:
         now = utc_now_iso()
         task = TaskRecord(
@@ -544,7 +557,7 @@ class PlanningService:
             parent_task_id=parent_task_id,
             template_ref=template.ref.as_string(),
             template_type=template.template_type,
-            title=template.title,
+            title=title or template.title,
             status=initial_task_status(template.template_type),
             origin_kind=origin_kind,  # type: ignore[arg-type]
             origin_ref=origin_ref,

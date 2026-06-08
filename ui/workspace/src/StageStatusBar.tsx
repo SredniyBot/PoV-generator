@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, ArrowRight, CheckCircle2, Circle, CircleDot, Clock, MessageSquare, Network, RotateCcw, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Circle, CircleDot, Clock, Inbox, MessageSquare, Network, RotateCcw, X } from "lucide-react";
 
 import { api } from "./api";
 import type { StageView } from "./types";
@@ -41,8 +41,22 @@ function awaitingSignoff(stage: StageView): boolean {
   );
 }
 
+// #5: активный этап с готовыми и СОГЛАСОВАННЫМ итоговым артефактом — зелёный
+// (пройден) сразу после согласования, не дожидаясь активации следующего гейта.
+function signedOffComplete(stage: StageView): boolean {
+  return Boolean(
+    stage.state === "active" &&
+      stage.artifacts_required > 0 &&
+      stage.artifacts_ready >= stage.artifacts_required &&
+      stage.signed_off,
+  );
+}
+
 function StageIcon({ stage }: { stage: StageView }) {
-  if (stage.state === "done") return <CheckCircle2 size={14} className="stage-seg__check" />;
+  // done — пройден по цепочке; signedOffComplete — пройден по согласованию (#5).
+  if (stage.state === "done" || signedOffComplete(stage)) {
+    return <CheckCircle2 size={14} className="stage-seg__check" />;
+  }
   if (stage.state === "active") {
     if (awaitingSignoff(stage)) {
       return <CircleDot size={14} className="stage-seg__dot stage-seg__dot--awaiting" />;
@@ -64,14 +78,11 @@ export function shortStageLabel(ref: string, fallback: string): string {
   const id = (ref.split("@")[0] ?? "").toLowerCase();
   if (id.includes("requirements") || id.includes("specification")) return "ТЗ";
   if (id.includes("architecture") || id.includes("design")) return "Архитектура";
-  if (
-    id.includes("implementation") ||
-    id.includes("build") ||
-    id.includes("plan") ||
-    id.includes("realiz")
-  ) {
-    return "Реализация";
-  }
+  // RG/#4: гейт сборки кода (realize) и гейт плана (build_plan) — разные этапы.
+  // realize проверяем первым; build_plan/plan/build → «План».
+  if (id.includes("realiz")) return "Реализация";
+  if (id.includes("build") || id.includes("plan")) return "План";
+  if (id.includes("implementation")) return "Реализация";
   return fallback;
 }
 
@@ -127,10 +138,19 @@ export function StageStatusBar({
   // «Ждут» — открытые решения; счётчик и список из одного источника.
   const pendingDecisions = active?.pending_decisions ?? [];
   const attentionCount = pendingDecisions.length;
+  // #3: задачи, ждущие данные от пользователя (реквизиты). Это не ошибка и не
+  // решение — отдельный спокойный сигнал «нужны данные» со ссылкой в «Реквизиты»,
+  // а не большой жёлтый текст под кнопкой перехода.
+  const requisiteBlockers = data.blocked_by_requisites ?? [];
+  const requisiteCount = requisiteBlockers.length;
 
   const goToNode = (taskId: string) => {
     setPopover(null);
     navigate(`/projects/${projectId}/task-graph?focus=${taskId}`);
+  };
+  const goToRequisites = () => {
+    setPopover(null);
+    navigate(`/projects/${projectId}/requisites`);
   };
   const goToDecisions = () => {
     setPopover(null);
@@ -156,6 +176,8 @@ export function StageStatusBar({
                   stage.is_current && "stage-seg--current",
                   openable && "stage-seg--openable",
                   awaiting && "stage-seg--awaiting-signoff",
+                  // #5: согласован → визуально как пройденный (зелёный).
+                  signedOffComplete(stage) && "stage-seg--signed-off",
                 )}
               >
                 {openable ? (
@@ -199,8 +221,19 @@ export function StageStatusBar({
         </ol>
 
         <div className="stage-bar__aside">
-          {failedCount > 0 || attentionCount > 0 ? (
+          {failedCount > 0 || attentionCount > 0 || requisiteCount > 0 ? (
             <div className="stage-badges">
+              {requisiteCount > 0 ? (
+                <button
+                  type="button"
+                  className="stage-badge stage-badge--info"
+                  onClick={goToRequisites}
+                  title={`Ждут данные от вас: ${requisiteBlockers.join("; ")}. Откройте «Реквизиты».`}
+                >
+                  <Inbox size={13} /> {requisiteCount}{" "}
+                  {pluralRu(requisiteCount, "задача ждёт данные", "задачи ждут данные", "задач ждут данные")}
+                </button>
+              ) : null}
               {failedCount > 0 ? (
                 <button
                   type="button"
@@ -327,13 +360,9 @@ export function StageStatusBar({
                   Следующий этап <ArrowRight size={14} />
                 </button>
               ))}
-              {(data.blocked_by_requisites?.length ?? 0) > 0 ? (
-                <p className="stage-cta-pending">
-                  Часть задач реализации будет ждать данные:{" "}
-                  {(data.blocked_by_requisites ?? []).join("; ")}. Можно перейти и заполнить по
-                  ходу во вкладке «Реквизиты» — ждут только эти задачи, остальные идут.
-                </p>
-              ) : null}
+              {/* #2/#3: большой жёлтый текст про ожидание реквизитов убран —
+                  сигнал «N задач ждут данные» теперь спокойным бейджем в aside
+                  со ссылкой в «Реквизиты». */}
             </div>
           ) : null}
         </div>
