@@ -46,6 +46,11 @@ class HarnessConnection:
     Секреты (креды модели) ЗДЕСЬ НЕ ХРАНЯТСЯ — они подаются в песочницу эфемерно
     в момент прогона (правило проекта). Тут только нечувствительный выбор:
     тип адаптера, образ, имя модели, (для generic) команда.
+
+    ``engine`` (Ф7e): ``docker`` (изоляция, креды по API) или ``host``
+    (исполнение на хосте — переиспользует залогиненную сессию claude CLI; только
+    для ``claude_code``). ``host_security``: для host-режима — ``restricted``
+    (только файловые правки) или ``full`` (полный доступ, опт-ин).
     """
 
     provider: str = _DEFAULT_PROVIDER
@@ -53,6 +58,8 @@ class HarnessConnection:
     model: str | None = None
     command: str | None = None
     default_timeout_s: int | None = None
+    engine: str = "docker"
+    host_security: str = "restricted"
 
 
 # Матрица возможностей адаптеров — для выбора в настройках (Ф7c) и подсказок UI.
@@ -67,6 +74,7 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "best_for": "Тесты и CI без Docker и сети.",
         "default_image": "",
         "default_model": "",
+        "supports_host": False,
     },
     "claude_code": {
         "title": "Claude Code",
@@ -77,6 +85,9 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "best_for": "Сложное многофайловое «построй X» с разведкой.",
         "default_image": _DEFAULT_IMAGES["claude_code"],
         "default_model": "claude-opus-4-8",
+        # Единственный адаптер с host-режимом: переиспользует залогиненную
+        # сессию claude CLI с хоста (Ф7e).
+        "supports_host": True,
     },
     "aider": {
         "title": "Aider",
@@ -87,6 +98,7 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "best_for": "Точные правки по спеке, контроль стоимости, чистый diff.",
         "default_image": _DEFAULT_IMAGES["aider"],
         "default_model": "gpt-4o-mini",
+        "supports_host": False,
     },
     "command": {
         "title": "Generic command",
@@ -97,6 +109,7 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "best_for": "Escape hatch: произвольный агент-CLI.",
         "default_image": _DEFAULT_IMAGES["command"],
         "default_model": "",
+        "supports_host": False,
     },
 }
 
@@ -144,6 +157,9 @@ def connection_from_env() -> HarnessConnection:
         model=os.environ.get("POV_HARNESS_MODEL") or None,
         command=os.environ.get("POV_HARNESS_COMMAND") or None,
         default_timeout_s=_int_env("POV_HARNESS_TIMEOUT_S"),
+        engine=os.environ.get("POV_HARNESS_ENGINE", "docker") or "docker",
+        host_security=os.environ.get("POV_HARNESS_HOST_SECURITY", "restricted")
+        or "restricted",
     )
 
 
@@ -178,10 +194,15 @@ class HarnessProviderRegistry:
         """Имя выбранного harness (для метаданных/трейса узла)."""
         return self._active_connection().provider
 
-    def _sandbox_runtime(self) -> SandboxRuntime:
+    def _runtime_for(self, connection: HarnessConnection) -> SandboxRuntime:
+        # Инъекция (тесты) имеет приоритет для любого движка.
         if self._sandbox is not None:
             return self._sandbox
         # Ленивый импорт: без Docker модуль грузится, ошибка — только на прогоне.
+        if connection.engine == "host":
+            from .sandbox import HostSandboxRuntime
+
+            return HostSandboxRuntime()
         from .sandbox import DockerSandboxRuntime
 
         self._sandbox = DockerSandboxRuntime()
@@ -190,13 +211,29 @@ class HarnessProviderRegistry:
     def _build(self, connection: HarnessConnection) -> HarnessProvider:
         if connection.provider == "stub":
             return StubHarnessProvider()
+        # Host-движок: исполнение на хосте (переиспользует сессию claude CLI).
+        # Допустим только для claude_code — у прочих адаптеров своя аутентификация.
+        if connection.engine == "host":
+            if connection.provider != "claude_code":
+                raise ConflictError(
+                    "Исполнение на хосте доступно только для адаптера claude_code "
+                    "(переиспользует залогиненную сессию claude CLI). "
+                    "Для остальных адаптеров используйте docker-движок."
+                )
+            return ClaudeCodeHarnessProvider(
+                sandbox=self._runtime_for(connection),
+                image=connection.image or _DEFAULT_IMAGES["claude_code"],
+                model=connection.model,
+                default_timeout_s=connection.default_timeout_s,
+                host_security=connection.host_security or "restricted",
+            )
         builder = _ADAPTER_BUILDERS.get(connection.provider)
         if builder is None:
             raise ConflictError(
                 f"Неподдерживаемый harness-провайдер: '{connection.provider}'. "
                 f"Поддерживаются: {', '.join(self.supported_providers)}."
             )
-        return builder(connection, self._sandbox_runtime())
+        return builder(connection, self._runtime_for(connection))
 
     def get(self, provider: str) -> HarnessProvider:
         """Собрать провайдера по имени (с конфигом текущего подключения)."""

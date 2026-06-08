@@ -16,11 +16,16 @@ Docker — опциональная зависимость (`pip install .[harne
 from __future__ import annotations
 
 import io
+import os
 import shlex
+import shutil
+import subprocess
 import tarfile
+import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ...common.errors import ConflictError
@@ -425,3 +430,196 @@ def _read_tar(raw: bytes, *, base: str) -> dict[str, bytes]:
 def shell_argv(command: str) -> list[str]:
     """Превратить shell-команду в argv для exec (через sh -lc)."""
     return ["sh", "-lc", command if isinstance(command, str) else shlex.join(command)]
+
+
+# --- Host (исполнение на хосте, без контейнера) ------------------------------
+
+_HOST_WORKDIR = "/work"
+
+# runner: (argv, cwd, env, timeout_s) -> (exit_code, output, timed_out).
+# Инъектируется в тестах, чтобы не плодить реальные процессы.
+HostRunner = Callable[[Sequence[str], str, Mapping[str, str], int | None], tuple[int, str, bool]]
+
+
+class HostSandboxRuntime:
+    """Песочница, исполняющая команды на ХОСТЕ в эфемерном temp-каталоге (Ф7e).
+
+    Назначение: переиспользовать залогиненную сессию claude CLI с хоста — claude
+    видит ``~/.claude`` нативно, без второй настройки/монтирования. Рабочий
+    каталог — изолированный temp-dir (по умолчанию чистится после прогона).
+    Логический путь ``/work`` маппится на реальный temp-каталог, так что посев и
+    сбор файлов работают тем же контрактом, что и Docker.
+
+    БЕЗОПАСНОСТЬ: host-режим НЕ изолирует процессы агента от хоста на уровне ОС
+    (в отличие от Docker). Сдерживание — на уровне адаптера: claude в режиме
+    ``restricted`` ограничен файловыми правками в workspace (без хостового
+    shell); ``full`` даёт полный доступ — осознанный опт-ин. Сервисы агент
+    собирает/запускает в docker (гейты — ``docker build``/``run``), а не на голом
+    хосте, поэтому исполняемый результат всё равно контейнеризован.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        runner: HostRunner | None = None,
+        keep_workdir: bool = False,
+    ) -> None:
+        self._root = root  # базовый каталог для temp-workspace (переопределяется в тестах)
+        self._runner = runner or _default_host_runner
+        self._keep = keep_workdir
+        self._dirs: dict[str, Path] = {}  # handle.id → реальный каталог
+        self._volumes: dict[str, Path] = {}  # ключ тома (Ф8) → общий каталог группы
+        self._counter = 0
+
+    def provision(self, spec: SandboxSpec) -> SandboxHandle:
+        self._counter += 1
+        handle_id = f"host-{self._counter}"
+        if spec.volume is not None:
+            real = self._volumes.get(spec.volume)
+            if real is None:
+                real = Path(tempfile.mkdtemp(prefix="povgen-host-grp-", dir=self._root))
+                self._volumes[spec.volume] = real
+        else:
+            real = Path(tempfile.mkdtemp(prefix="povgen-host-", dir=self._root))
+        self._dirs[handle_id] = real
+        return SandboxHandle(id=handle_id, workdir=_HOST_WORKDIR, native=str(real))
+
+    def put_files(self, handle: SandboxHandle, files: Mapping[str, bytes]) -> None:
+        real = Path(handle.native)
+        for path, content in files.items():
+            target = self._map_path(real, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+    def exec(
+        self,
+        handle: SandboxHandle,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout_s: int | None = None,
+        on_log: LogSink | None = None,
+    ) -> ExecResult:
+        real = Path(handle.native)
+        full_env = {**os.environ, **(env or {})}
+        prepared = self._prepare_argv(list(argv), real)
+        exit_code, output, timed_out = self._runner(prepared, str(real), full_env, timeout_s)
+        if on_log and output:
+            on_log(output)
+        return ExecResult(
+            exit_code=exit_code, stdout=output, stderr="", timed_out=timed_out
+        )
+
+    def get_files(self, handle: SandboxHandle, path: str) -> dict[str, bytes]:
+        real = Path(handle.native)
+        base = self._map_path(real, path)
+        out: dict[str, bytes] = {}
+        if base.is_file():
+            out[_norm(path)] = base.read_bytes()
+        elif base.is_dir():
+            prefix = _norm(path).rstrip("/")
+            for file in sorted(base.rglob("*")):
+                if file.is_file():
+                    rel = file.relative_to(base).as_posix()
+                    out[f"{prefix}/{rel}"] = file.read_bytes()
+        return out
+
+    def stop(self, handle: SandboxHandle) -> None:  # host-процессы уже завершены
+        return None
+
+    def destroy(self, handle: SandboxHandle) -> None:
+        real = self._dirs.pop(handle.id, None)
+        if real is None or self._keep:
+            return
+        # Общий том группы (Ф8) переживает снос отдельной песочницы.
+        if real in self._volumes.values():
+            return
+        shutil.rmtree(real, ignore_errors=True)
+
+    # --- внутреннее ---------------------------------------------------------
+
+    def _map_path(self, real: Path, path: str) -> Path:
+        norm = _norm(path)
+        if norm == _HOST_WORKDIR:
+            return real
+        if norm.startswith(_HOST_WORKDIR + "/"):
+            return real / norm[len(_HOST_WORKDIR) + 1 :]
+        # Путь вне /work — кладём по относительному имени внутрь workspace
+        # (безопасный дефолт: ничего не пишем за пределы рабочего каталога).
+        return real / norm.lstrip("/")
+
+    def _prepare_argv(self, argv: list[str], real: Path) -> list[str]:
+        # sh/bash -lc "<cmd>": исполняем через POSIX-шелл хоста с cwd=workspace,
+        # переписывая /work на относительные пути (cwd уже = workspace), чтобы не
+        # связываться с трансляцией абсолютных путей (актуально на Windows/bash).
+        if len(argv) == 3 and argv[0] in {"sh", "bash"} and argv[1] in {"-lc", "-c"}:
+            cmd = argv[2]
+            cmd = cmd.replace("cd /work && ", "").replace("cd /work; ", "")
+            cmd = cmd.replace("/work/", "").replace("/work", ".")
+            return [_resolve_posix_shell(), argv[1], cmd]
+        # Прямой argv: переписываем /work-пути в абсолютные пути workspace.
+        return [self._rewrite_arg(arg, real) for arg in argv]
+
+    @staticmethod
+    def _rewrite_arg(arg: str, real: Path) -> str:
+        if arg == _HOST_WORKDIR:
+            return str(real)
+        if arg.startswith(_HOST_WORKDIR + "/"):
+            return str(real / arg[len(_HOST_WORKDIR) + 1 :])
+        return arg
+
+
+def _resolve_posix_shell() -> str:
+    """Найти POSIX-шелл на хосте (для гейтов/shell-команд в host-режиме)."""
+    for name in ("bash", "sh"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise ConflictError(
+        "Host-режим harness требует POSIX-шелл (bash/sh) на хосте для гейтов. "
+        "На Windows установите Git Bash или используйте docker-движок."
+    )
+
+
+def _wrap_host_argv(argv: Sequence[str]) -> list[str]:
+    """На Windows .cmd/.bat не запускаются напрямую — оборачиваем в ``cmd /c``."""
+    argv_list = [str(a) for a in argv]
+    if argv_list and os.name == "nt":
+        head = argv_list[0].lower()
+        if head.endswith((".cmd", ".bat")):
+            return ["cmd", "/c", *argv_list]
+    return argv_list
+
+
+def _default_host_runner(
+    argv: Sequence[str],
+    cwd: str,
+    env: Mapping[str, str],
+    timeout_s: int | None,
+) -> tuple[int, str, bool]:
+    """Запустить argv на хосте: cwd=workspace, объединённый вывод, таймаут."""
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv формируется адаптером/гейтами
+            _wrap_host_argv(argv),
+            cwd=cwd,
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = _coerce_text(exc.stdout) + _coerce_text(exc.stderr)
+        return 124, out, True
+    except FileNotFoundError as exc:
+        return 127, f"Команда не найдена: {exc}", False
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode, output, False
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
