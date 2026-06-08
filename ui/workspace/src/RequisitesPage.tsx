@@ -1,22 +1,24 @@
 /**
- * Раздел этапа «Реализация»: что нужно от пользователя («Реквизиты») и что мы
- * пока не умеем («Зоны роста»).
+ * Раздел «Реквизиты» — что нужно от пользователя под реализацию.
  *
- * Реквизиты v2 (Ф5): гибкий мультиформатный приём. Вид (`kind`) — лишь подсказка
- * (дефолтный режим + пример), не контракт; источник истины о форме данных —
- * пользователь, поэтому режим редактируемый и валидация мягкая. Режимы:
- *  — данные: значение / ссылка-выдано (файл добавится отдельной фазой);
- *  — обход: допущение / позже / неприменимо (честный гейтинг — снимает блок
- *    только задачи-потребителя).
- * Безопасность: для credential поле значения не предлагается — только «выдано
- * вне системы» (секрет в систему не попадает).
+ * Дизайн согласован с карточкой решения (DecisionCard): реквизит — это вопрос к
+ * пользователю, и выглядит так же. Принципы:
+ * - Система сама выводит форму ответа из вида реквизита (input_kind) — пользователь
+ *   НЕ выбирает «режим». Одна естественная форма на карточку: значение / файл /
+ *   подтверждение доступа. Кросс-affordance (приложить файл ↔ ввести текстом) —
+ *   один тихий переключатель на случай неверной догадки.
+ * - Обход (позже / допущение / неприменимо) спрятан за тихим «не могу
+ *   предоставить», не как равноправные кнопки.
+ * - Конкретность: показываем «зачем» (why) и «пример» (example). Расплывчатые
+ *   предпосылки реализуемости вынесены в отдельный мягкий блок (advisory) — это
+ *   условия, а не запросы «дай сейчас».
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
 import type { RequisiteItemView } from "./types";
-import { EmptyState, LoadingPanel, SectionCard, StatusPill } from "./ui";
+import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
 
 type ProvideMode = "value" | "file" | "reference" | "assumption" | "deferred" | "not_applicable";
 
@@ -28,58 +30,22 @@ interface ProvidePayload {
 }
 
 const KIND_LABELS: Record<string, string> = {
-  credential: "доступ/креды",
-  dataset: "набор данных",
-  file: "файл/таблица",
+  credential: "доступ",
+  dataset: "данные",
+  file: "файл",
   setting: "настройка",
-  interface_format: "формат интерфейса",
+  interface_format: "формат",
   sample: "образец",
 };
 
-// Подсказка-пример по виду (advisory, не контракт).
-const KIND_HINTS: Record<string, string> = {
-  credential:
-    "Не вводите секрет. Отметьте, что доступ выдан вне системы (Vault, почта, отдельный канал).",
-  dataset: "Например, CSV/Excel с примером строк — или опишите структуру значением.",
-  file: "Например, таблица или документ — можно вставить содержимое значением.",
-  sample: "Например, пример заполненной формы или записи.",
-  interface_format: "Например, JSON-схема, список полей или описание формата.",
-  setting: "Например, значение тайм-аута, лимит, флаг.",
-};
-
-const MODE_LABELS: Record<ProvideMode, string> = {
+const PROVIDED_LABELS: Record<string, string> = {
   value: "Значение",
   file: "Файл",
-  reference: "Ссылка / выдано",
-  assumption: "Допущение",
-  deferred: "Позже",
-  not_applicable: "Неприменимо",
-};
-
-const PROVIDED_LABELS: Record<string, string> = {
-  value: "Значение получено",
-  file: "Файл получен",
-  reference: "Выдано / ссылка",
+  reference: "Доступ выдан",
   assumption: "Допущение",
   deferred: "Отложено",
   not_applicable: "Неприменимо",
 };
-
-function providedTone(mode: string): "success" | "active" | "muted" {
-  if (mode === "value" || mode === "file" || mode === "reference") return "success";
-  if (mode === "assumption") return "active";
-  return "muted"; // deferred / not_applicable
-}
-
-function defaultMode(kind?: string): ProvideMode {
-  return kind === "credential" ? "reference" : "value";
-}
-
-// credential нельзя передать значением/файлом/допущением (секрет) — только «выдано».
-function modesFor(kind?: string): ProvideMode[] {
-  if (kind === "credential") return ["reference", "deferred", "not_applicable"];
-  return ["value", "file", "reference", "assumption", "deferred", "not_applicable"];
-}
 
 function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemView[]][] {
   const groups = new Map<string, RequisiteItemView[]>();
@@ -92,7 +58,7 @@ function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemVie
   return Array.from(groups.entries());
 }
 
-function RequisiteRow({
+function RequisiteCard({
   projectId,
   item,
   onProvide,
@@ -107,177 +73,250 @@ function RequisiteRow({
 }) {
   const provided = item.status === "provided";
   const kindLabel = item.kind ? KIND_LABELS[item.kind] : undefined;
-  const hint = item.kind ? KIND_HINTS[item.kind] : undefined;
+  const baseMode: "text" | "file" | "access" =
+    item.input_kind === "access" ? "access" : item.input_kind === "file" ? "file" : "text";
 
   const [editing, setEditing] = useState(false);
-  const [mode, setMode] = useState<ProvideMode>(defaultMode(item.kind));
-  const [text, setText] = useState("");
+  const [altMode, setAltMode] = useState<"text" | "file" | null>(null);
+  const [draft, setDraft] = useState("");
+  const [note, setNote] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [escapeOpen, setEscapeOpen] = useState(false);
+  const [assumeOpen, setAssumeOpen] = useState(false);
+  const [assumeDraft, setAssumeDraft] = useState("");
 
+  const mode = baseMode === "access" ? "access" : (altMode ?? baseMode);
   const showForm = !provided || editing;
-  const needsText = mode === "value" || mode === "assumption";
-  const canSubmit =
-    !pending && !uploading && (mode !== "file" ? !needsText || text.trim().length > 0 : file != null);
 
-  async function submit() {
-    setError(null);
-    if (mode === "file") {
-      if (!file) return;
-      setUploading(true);
-      try {
-        const res = await api.uploadAttachment(projectId, file, "requisite");
-        onProvide({ mode, attachment_id: res.attachment_id, note: file.name });
-        setFile(null);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Не удалось загрузить файл");
-        return;
-      } finally {
-        setUploading(false);
-      }
-    } else if (mode === "value" || mode === "assumption") {
-      onProvide({ mode, value: text });
-    } else if (mode === "reference") {
-      onProvide({ mode, note: text });
-    } else {
-      onProvide({ mode });
-    }
-    setText("");
+  function reset() {
     setEditing(false);
+    setAltMode(null);
+    setDraft("");
+    setNote("");
+    setFile(null);
+    setError(null);
+    setEscapeOpen(false);
+    setAssumeOpen(false);
+    setAssumeDraft("");
+  }
+
+  async function submitFile() {
+    if (!file) return;
+    setError(null);
+    setUploading(true);
+    try {
+      const res = await api.uploadAttachment(projectId, file, "requisite");
+      onProvide({ mode: "file", attachment_id: res.attachment_id, note: file.name });
+      reset();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось загрузить файл");
+    } finally {
+      setUploading(false);
+    }
   }
 
   return (
-    <li className="requisite-card">
-      <div className="requisite-card__head">
-        <span className="requisites__item-title">
-          {item.title}
-          {kindLabel ? <span className="requisites__item-kind"> · {kindLabel}</span> : null}
-          {item.blocking ? (
-            <span className="requisites__item-blocking"> · ждёт задача-потребитель</span>
-          ) : null}
-        </span>
-        {provided && !editing ? (
-          <span className="requisite-card__provided">
-            <StatusPill tone={providedTone(item.provided_mode || "value")}>
-              {PROVIDED_LABELS[item.provided_mode || "value"] || "Получено"}
-            </StatusPill>
-            <button type="button" className="btn btn--ghost" onClick={() => setEditing(true)}>
-              Изменить
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={pending}
-              onClick={onUnprovide}
-              title="Снять предоставление — данные перестанут учитываться"
-            >
-              Отменить
-            </button>
+    <div className={cx("decision-card", provided && !editing && "decision-card--answered")}>
+      <header className="decision-card__head">
+        <div className="decision-card__head-text">
+          <h3 className="decision-card__title">
+            {kindLabel ? <span className="decision-card__section-tag">{kindLabel}</span> : null}
+            <span>{item.title}</span>
+          </h3>
+        </div>
+        {item.blocking && !provided ? (
+          <span className="requisite-need" title="Без этого задача-потребитель не соберётся">
+            нужно для сборки
           </span>
         ) : null}
-      </div>
+      </header>
 
-      {provided && !editing && (item.provided_value || item.provided_note) ? (
-        <p className="requisite-card__detail">{item.provided_value || item.provided_note}</p>
-      ) : null}
+      <div className="decision-card__body">
+        {item.why ? <p className="decision-card__description">{item.why}</p> : null}
 
-      {showForm ? (
-        <div className="requisite-card__form">
-          <div className="requisite-card__modes">
-            {modesFor(item.kind).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`requisite-mode${mode === m ? " requisite-mode--active" : ""}`}
-                onClick={() => setMode(m)}
-              >
-                {item.kind === "credential" && m === "reference" ? "Выдано вне системы" : MODE_LABELS[m]}
-              </button>
-            ))}
-          </div>
-
-          {mode === "value" ? (
-            <textarea
-              className="requisite-card__input"
-              rows={3}
-              placeholder={hint || "Введите значение"}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          ) : null}
-          {mode === "file" ? (
-            <div className="requisite-card__file">
-              <input
-                type="file"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              />
-              {hint ? <p className="requisite-card__note">{hint}</p> : null}
+        {provided && !editing ? (
+          <div className="decision-card__answer">
+            <div className="decision-card__answer-head">
+              <span className="decision-card__answer-value">
+                {PROVIDED_LABELS[item.provided_mode || "value"] || "Получено"}
+              </span>
             </div>
-          ) : null}
-          {mode === "assumption" ? (
-            <textarea
-              className="requisite-card__input"
-              rows={2}
-              placeholder="Рабочее допущение — его можно будет переопределить позже"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          ) : null}
-          {mode === "reference" ? (
-            <input
-              className="requisite-card__input"
-              placeholder={
-                item.kind === "credential"
-                  ? "Пометка: доступ выдан вне системы (без секрета)"
-                  : "Ссылка на ресурс или пометка «выдано вне системы»"
-              }
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          ) : null}
-          {mode === "deferred" ? (
-            <p className="requisite-card__note">Отметить, что данные будут позже — блок задачи снимется, можно вернуться.</p>
-          ) : null}
-          {mode === "not_applicable" ? (
-            <p className="requisite-card__note">Отметить, что реквизит не нужен для этого проекта.</p>
-          ) : null}
-
-          {error ? <p className="requisite-card__error">{error}</p> : null}
-          <div className="requisite-card__actions">
-            <button
-              type="button"
-              className="btn btn--primary"
-              disabled={!canSubmit}
-              onClick={() => void submit()}
-            >
-              {uploading
-                ? "Загрузка…"
-                : mode === "deferred" || mode === "not_applicable"
-                  ? "Отметить"
-                  : "Предоставить"}
-            </button>
-            {editing ? (
-              <button type="button" className="btn btn--ghost" onClick={() => setEditing(false)}>
-                Отмена
-              </button>
+            {item.provided_value || item.provided_note ? (
+              <p className="decision-card__answer-desc">{item.provided_value || item.provided_note}</p>
             ) : null}
+            <div className="requisite-quiet-row">
+              <button type="button" className="requisite-link" onClick={() => setEditing(true)}>
+                Изменить
+              </button>
+              <button type="button" className="requisite-link" disabled={pending} onClick={onUnprovide}>
+                Отменить
+              </button>
+            </div>
           </div>
-        </div>
-      ) : null}
-    </li>
+        ) : null}
+
+        {showForm ? (
+          <div className="requisite-form">
+            {mode === "access" ? (
+              <>
+                <p className="requisite-hint">
+                  Не вводите секрет — подтвердите, что доступ выдан вне системы (Vault, почта,
+                  отдельный канал){item.example ? `. ${item.example}` : ""}.
+                </p>
+                <input
+                  className="decision-card__free-input"
+                  placeholder="Где/как выдан — необязательно"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+                <div className="requisite-form__actions">
+                  <Button
+                    tone="primary"
+                    disabled={pending}
+                    onClick={() => {
+                      onProvide({ mode: "reference", note });
+                      reset();
+                    }}
+                  >
+                    Доступ выдан
+                  </Button>
+                </div>
+              </>
+            ) : mode === "file" ? (
+              <>
+                {item.example ? <p className="requisite-hint">Пример: {item.example}</p> : null}
+                <input
+                  type="file"
+                  className="requisite-file"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+                {error ? <p className="requisite-error">{error}</p> : null}
+                <div className="requisite-form__actions">
+                  <Button tone="primary" disabled={pending || uploading || !file} onClick={() => void submitFile()}>
+                    {uploading ? "Загрузка…" : "Предоставить"}
+                  </Button>
+                  <button type="button" className="requisite-link" onClick={() => setAltMode("text")}>
+                    ввести текстом
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <textarea
+                  className="decision-card__free-input"
+                  rows={3}
+                  placeholder={item.example ? `Например: ${item.example}` : "Введите или вставьте значение"}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                />
+                <div className="requisite-form__actions">
+                  <Button
+                    tone="primary"
+                    disabled={pending || !draft.trim()}
+                    onClick={() => {
+                      onProvide({ mode: "value", value: draft });
+                      reset();
+                    }}
+                  >
+                    Предоставить
+                  </Button>
+                  <button type="button" className="requisite-link" onClick={() => setAltMode("file")}>
+                    приложить файл
+                  </button>
+                </div>
+              </>
+            )}
+
+            <div className="requisite-escape">
+              {!escapeOpen ? (
+                <button type="button" className="requisite-link" onClick={() => setEscapeOpen(true)}>
+                  Не могу предоставить →
+                </button>
+              ) : assumeOpen ? (
+                <>
+                  <textarea
+                    className="decision-card__free-input"
+                    rows={2}
+                    placeholder="Рабочее допущение — его можно будет переопределить"
+                    value={assumeDraft}
+                    onChange={(e) => setAssumeDraft(e.target.value)}
+                  />
+                  <div className="requisite-form__actions">
+                    <Button
+                      tone="primary"
+                      disabled={pending || !assumeDraft.trim()}
+                      onClick={() => {
+                        onProvide({ mode: "assumption", value: assumeDraft });
+                        reset();
+                      }}
+                    >
+                      Принять допущение
+                    </Button>
+                    <button type="button" className="requisite-link" onClick={() => setAssumeOpen(false)}>
+                      назад
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="requisite-escape__opts">
+                  {item.kind !== "credential" ? (
+                    <button
+                      type="button"
+                      className="decision-card__free-skip"
+                      onClick={() => setAssumeOpen(true)}
+                    >
+                      Принять допущение
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="decision-card__free-skip"
+                    onClick={() => {
+                      onProvide({ mode: "deferred" });
+                      reset();
+                    }}
+                  >
+                    Позже
+                  </button>
+                  <button
+                    type="button"
+                    className="decision-card__free-skip"
+                    onClick={() => {
+                      onProvide({ mode: "not_applicable" });
+                      reset();
+                    }}
+                  >
+                    Неприменимо
+                  </button>
+                </div>
+              )}
+              {editing ? (
+                <button type="button" className="requisite-link" onClick={reset}>
+                  Отмена
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
+}
+
+function useRequisites(projectId: string) {
+  return useQuery({
+    queryKey: ["project", projectId, "requisites"],
+    queryFn: () => api.getRequisites(projectId),
+  });
 }
 
 function RequisitesSection({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: ["project", projectId, "requisites"],
-    queryFn: () => api.getRequisites(projectId),
-  });
+  const query = useRequisites(projectId);
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["project", projectId, "requisites"] });
-    // Граф/лента: смена статуса реквизита влияет на блок задачи-потребителя.
     void qc.invalidateQueries({ queryKey: ["project", projectId, "task_graph"] });
     void qc.invalidateQueries({ queryKey: ["project", projectId, "situation"] });
   };
@@ -290,6 +329,7 @@ function RequisitesSection({ projectId }: { projectId: string }) {
     mutationFn: (key: string) => api.unprovideRequisite(projectId, key),
     onSuccess: invalidate,
   });
+  const pending = provide.isPending || unprovide.isPending;
 
   if (query.isLoading || !query.data) return <LoadingPanel title="Загрузка реквизитов…" />;
   const data = query.data;
@@ -299,7 +339,7 @@ function RequisitesSection({ projectId }: { projectId: string }) {
       <SectionCard title="Реквизиты">
         <EmptyState
           title="Пока нечего предоставлять"
-          description="Список появится после оценки реализуемости — она определяет, какие входные данные нужны от вас."
+          description="Список появится после оценки реализуемости и модели компонентов — они определяют, какие конкретные данные нужны от вас."
         />
       </SectionCard>
     );
@@ -308,8 +348,8 @@ function RequisitesSection({ projectId }: { projectId: string }) {
     return (
       <SectionCard title="Реквизиты">
         <EmptyState
-          title="Дополнительные данные не требуются"
-          description="Для того, что взято в реализацию, всё необходимое уже есть."
+          title="Конкретных запросов данных пока нет"
+          description="Они появятся на этапе архитектуры, когда модель компонентов определит, что именно нужно. Ниже — предварительные предпосылки реализуемости."
         />
       </SectionCard>
     );
@@ -318,29 +358,50 @@ function RequisitesSection({ projectId }: { projectId: string }) {
   return (
     <SectionCard
       title="Реквизиты"
-      subtitle="Конкретные данные под реализацию. Вид — лишь подсказка: выберите удобный способ (значение, ссылка/выдано) или обойдите (допущение / позже / неприменимо)."
+      subtitle="Конкретные данные под реализацию. Заполните удобным способом — система предлагает форму, но можно приложить файл или обойти (позже / допущение / неприменимо)."
     >
       <div className="requisites">
         {groupByNeededFor(data.items).map(([neededFor, items]) => (
           <div key={neededFor} className="requisites__group">
             <p className="requisites__group-title">Для: {neededFor}</p>
-            <ul className="requisites__list">
+            <div className="requisites__cards">
               {items.map((item) => (
-                <RequisiteRow
+                <RequisiteCard
                   key={item.key || `${neededFor}:${item.title}`}
                   projectId={projectId}
                   item={item}
-                  pending={provide.isPending || unprovide.isPending}
-                  onProvide={(payload) =>
-                    provide.mutate({ key: item.key || item.title, payload })
-                  }
+                  pending={pending}
+                  onProvide={(payload) => provide.mutate({ key: item.key || item.title, payload })}
                   onUnprovide={() => unprovide.mutate(item.key || item.title)}
                 />
               ))}
-            </ul>
+            </div>
           </div>
         ))}
       </div>
+    </SectionCard>
+  );
+}
+
+function AdvisorySection({ projectId }: { projectId: string }) {
+  const query = useRequisites(projectId);
+  const advisory = query.data?.advisory ?? [];
+  if (advisory.length === 0) return null;
+  return (
+    <SectionCard
+      title="Предпосылки реализуемости"
+      subtitle="Условия, при которых части проекта реализуемы (доступы, согласования, компетенции). Это ранние подсказки — конкретные запросы данных появятся выше, на этапе архитектуры."
+    >
+      <ul className="requisite-advisory">
+        {advisory.map((item) => (
+          <li key={item.key || item.title} className="requisite-advisory__item">
+            <span className="requisite-advisory__title">{item.title}</span>
+            {item.needed_for && item.needed_for !== "проект" ? (
+              <span className="requisite-advisory__for"> · {item.needed_for}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </SectionCard>
   );
 }
@@ -361,14 +422,11 @@ function GapsSection({ projectId }: { projectId: string }) {
       title="Зоны роста"
       subtitle="Эти требования пока не закрыты нашими умениями. Не «никогда» — кандидаты на то, чтобы научиться и брать такое в будущем."
     >
-      <ul className="requisites__list">
+      <ul className="requisite-advisory">
         {data.items.map((gap) => (
-          <li key={gap.title} className="gap-item">
-            <p className="gap-item__title">{gap.title}</p>
-            {gap.reason ? <p className="gap-item__reason">Почему: {gap.reason}</p> : null}
-            {gap.suggestion ? (
-              <p className="gap-item__suggestion">Как закрыть: {gap.suggestion}</p>
-            ) : null}
+          <li key={gap.title} className="requisite-advisory__item">
+            <span className="requisite-advisory__title">{gap.title}</span>
+            {gap.reason ? <span className="requisite-advisory__for"> · {gap.reason}</span> : null}
           </li>
         ))}
       </ul>
@@ -380,6 +438,7 @@ export function RequisitesPage({ projectId }: { projectId: string }) {
   return (
     <div className="stacked-sections">
       <RequisitesSection projectId={projectId} />
+      <AdvisorySection projectId={projectId} />
       <GapsSection projectId={projectId} />
     </div>
   );

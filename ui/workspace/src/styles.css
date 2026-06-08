@@ -6525,109 +6525,71 @@ code {
   line-height: 1.45;
 }
 
-/* ── Реквизиты (требуемые входные данные) ──────────────────────────────── */
-.requisites { display: flex; flex-direction: column; gap: 1rem; }
-.requisites__group {
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-  border-radius: var(--radius-md, 8px);
-  padding: 0.75rem 1rem;
-}
+/* Вертикальный стек секций раздела «Реквизиты» (реквизиты + предпосылки + зоны). */
+.stacked-sections { display: flex; flex-direction: column; gap: 1rem; }
+
+/* ── Реквизиты: карточка-вопрос (стиль DecisionCard) ───────────────────── */
+/* Карточка реквизита переиспользует визуальный язык .decision-card (см.
+   decisions.css): тот же контейнер/шапка/тело/акцентная полоса ответа. Здесь —
+   только специфика реквизита: группировка, форма ввода, тихие ссылки. */
+.requisites { display: flex; flex-direction: column; gap: 1.25rem; }
+.requisites__group { display: flex; flex-direction: column; gap: 0.5rem; }
 .requisites__group-title {
-  margin: 0 0 0.5rem;
-  font-weight: 600;
-  color: var(--text-secondary, #9aa4b2);
-  font-size: 13px;
-}
-.requisites__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
-.requisites__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.requisites__item-title { color: var(--text-primary, #e6edf3); }
-/* Вид реквизита (· набор данных) — приглушённо; «обязателен» — warning-акцент. */
-.requisites__item-kind {
-  color: var(--text-tertiary);
-  font-size: var(--font-size-meta);
-}
-.requisites__item-blocking {
-  color: var(--warning);
+  margin: 0;
   font-size: var(--font-size-meta);
   font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+.requisites__cards { display: flex; flex-direction: column; gap: 0.5rem; }
+
+/* Тихая отметка «нужно для сборки» в шапке карточки. */
+.requisite-need {
+  flex-shrink: 0;
+  font-size: var(--font-size-meta);
+  color: var(--warning);
 }
 
-/* ── Зоны роста (пробелы в умениях) ────────────────────────────────────── */
-.stacked-sections { display: flex; flex-direction: column; gap: 1rem; }
-.gap-item {
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-  border-radius: var(--radius-md, 8px);
-  padding: 0.6rem 0.9rem;
+/* Форма ввода: одна естественная форма + тихие ссылки. */
+.requisite-form { display: flex; flex-direction: column; gap: 0.55rem; }
+.requisite-form__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.requisite-hint {
+  margin: 0;
+  font-size: var(--font-size-meta);
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
-.gap-item__title { margin: 0 0 0.25rem; font-weight: 600; color: var(--text-primary, #e6edf3); }
-.gap-item__reason,
-.gap-item__suggestion { margin: 0.15rem 0 0; font-size: 13px; color: var(--text-secondary, #9aa4b2); }
+.requisite-error { margin: 0; font-size: var(--font-size-meta); color: var(--danger); }
+.requisite-file { font-size: var(--font-size-meta); color: var(--text-secondary); }
 
-/* ── Реквизиты: мультиформатный приём (Ф5) ─────────────────────────────── */
-.requisite-card {
+/* Тихая текстовая кнопка-ссылка (по образцу .decision-card__free-toggle). */
+.requisite-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.requisite-link:hover:not(:disabled) { color: var(--text-primary); }
+.requisite-link:disabled { opacity: 0.5; cursor: default; }
+.requisite-quiet-row { display: flex; gap: 0.85rem; }
+
+/* Escape «не могу предоставить» — спрятанный блок с тихими опциями. */
+.requisite-escape {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-  border-radius: var(--radius-md, 8px);
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border-subtle);
 }
-.requisite-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.requisite-card__provided { display: inline-flex; align-items: center; gap: 0.5rem; }
-.requisite-card__detail {
-  margin: 0;
-  font-size: var(--font-size-meta);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.requisite-card__form { display: flex; flex-direction: column; gap: 0.5rem; }
-.requisite-card__modes { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-.requisite-mode {
-  background: var(--surface-sunken, rgba(0, 0, 0, 0.2));
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
-  border-radius: 999px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: var(--font-size-meta);
-  padding: 2px 10px;
-}
-.requisite-mode:hover { color: var(--text-primary); }
-.requisite-mode--active {
-  background: var(--accent-soft, rgba(99, 102, 241, 0.18));
-  border-color: var(--accent, #6366f1);
-  color: var(--text-primary);
-}
-.requisite-card__input {
-  background: var(--surface-sunken, rgba(0, 0, 0, 0.2));
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
-  border-radius: 6px;
-  color: var(--text-primary, #e6edf3);
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 8px;
-  width: 100%;
-  resize: vertical;
-}
-.requisite-card__note {
-  margin: 0;
-  font-size: var(--font-size-meta);
-  color: var(--text-tertiary);
-}
-.requisite-card__file { display: flex; flex-direction: column; gap: 0.25rem; }
-.requisite-card__file input[type="file"] { font-size: var(--font-size-meta); color: var(--text-secondary); }
-.requisite-card__error { margin: 0; font-size: var(--font-size-meta); color: var(--danger); }
-.requisite-card__actions { display: flex; gap: 0.5rem; }
+.requisite-escape__opts { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+/* Advisory-предпосылки и зоны роста — мягкий список условий (не actionable). */
+.requisite-advisory { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.requisite-advisory__item { font-size: var(--font-size-body); color: var(--text-secondary); line-height: 1.5; }
+.requisite-advisory__title { color: var(--text-primary); }
+.requisite-advisory__for { color: var(--text-disabled); }
 
 /* ── Машинное отделение (harness): наблюдаемость + выбор исполнителя (Ф6/Ф7) ── */
 
