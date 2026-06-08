@@ -489,6 +489,7 @@ def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
         linked_position_id=row["linked_position_id"],
         used_in_context=bool(row["used_in_context"]),
         is_deleted=bool(row["is_deleted"]),
+        purpose=(row["purpose"] if "purpose" in row.keys() else "input"),
     )
 
 
@@ -1435,9 +1436,10 @@ class SqliteRuntime:
                 insert into attachments(
                   attachment_id, project_id, original_filename, mime_type, size_bytes,
                   sha256, storage_path, extraction_status, extracted_text_ref,
-                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at
+                  extraction_error, linked_position_id, used_in_context, is_deleted, created_at,
+                  purpose
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attachment.attachment_id,
@@ -1454,6 +1456,7 @@ class SqliteRuntime:
                     1 if attachment.used_in_context else 0,
                     1 if attachment.is_deleted else 0,
                     attachment.created_at,
+                    attachment.purpose,
                 ),
             )
             connection.commit()
@@ -1528,27 +1531,70 @@ class SqliteRuntime:
 
     @_serialized_write
     def mark_requisite_provided(
-        self, workspace: Path, requisite_key: str, note: str = ""
+        self,
+        workspace: Path,
+        requisite_key: str,
+        note: str = "",
+        *,
+        mode: str = "reference",
+        value: str = "",
+        attachment_id: str = "",
     ) -> None:
-        """Отметить реквизит как предоставленный пользователем (idempotent)."""
+        """Отметить реквизит как предоставленный пользователем (idempotent).
+
+        Реквизиты v2: ``mode`` ∈ {value, file, reference}. ``value`` НЕ должен
+        содержать секреты (для credential — режим reference, только ссылка/
+        подтверждение «выдано»). ``attachment_id`` связывает с вложением для
+        режима file. Старый вызов с одним ``note`` остаётся валиден
+        (mode='reference').
+        """
         project_id = self.load_manifest(workspace).project_id
         with self._connect(workspace) as connection:
             connection.execute(
                 "insert into requisite_provisions "
-                "(project_id, requisite_key, note, provided_at) values (?, ?, ?, ?) "
+                "(project_id, requisite_key, note, mode, value, attachment_id, provided_at) "
+                "values (?, ?, ?, ?, ?, ?, ?) "
                 "on conflict(project_id, requisite_key) do update set "
-                "note = excluded.note, provided_at = excluded.provided_at",
-                (project_id, requisite_key, note, utc_now_iso()),
+                "note = excluded.note, mode = excluded.mode, value = excluded.value, "
+                "attachment_id = excluded.attachment_id, provided_at = excluded.provided_at",
+                (project_id, requisite_key, note, mode, value, attachment_id, utc_now_iso()),
             )
             connection.commit()
 
-    def list_requisite_provisions(self, workspace: Path) -> dict[str, str]:
-        """Карта requisite_key → note по предоставленным реквизитам проекта."""
+    def list_requisite_provisions(self, workspace: Path) -> dict[str, dict[str, str]]:
+        """Карта requisite_key → структурная запись предоставления.
+
+        Запись: ``{mode, value, note, attachment_id, provided_at}``. Проверка
+        факта предоставления — членство ключа в карте (как и прежде); детали
+        нужны потреблению (Ф3) и UI (Ф5).
+        """
         with self._connect(workspace) as connection:
             rows = connection.execute(
-                "select requisite_key, note from requisite_provisions"
+                "select requisite_key, mode, value, note, attachment_id, provided_at "
+                "from requisite_provisions"
             ).fetchall()
-        return {row[0]: row[1] for row in rows}
+        return {
+            row[0]: {
+                "mode": row[1],
+                "value": row[2],
+                "note": row[3],
+                "attachment_id": row[4],
+                "provided_at": row[5],
+            }
+            for row in rows
+        }
+
+    @_serialized_write
+    def delete_requisite_provision(self, workspace: Path, requisite_key: str) -> bool:
+        """Снять предоставление реквизита (Ф7, un-provide). Возвращает, была ли
+        запись (idempotent: повтор по уже снятому — ``False``)."""
+        with self._connect(workspace) as connection:
+            cursor = connection.execute(
+                "delete from requisite_provisions where requisite_key = ?",
+                (requisite_key,),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
 
     # --- pinned_registry (закрепление графа за проектом) --------------------
 
@@ -2734,7 +2780,9 @@ class SqliteRuntime:
               linked_position_id text,
               used_in_context integer not null default 0,
               is_deleted integer not null default 0,
-              created_at text not null
+              created_at text not null,
+              -- Реквизиты v2: 'input' (входной материал) | 'requisite' (файл-реквизит).
+              purpose text not null default 'input'
             );
 
             create table if not exists llm_usage (
@@ -2839,6 +2887,12 @@ class SqliteRuntime:
               project_id text not null,
               requisite_key text not null,
               note text not null default '',
+              -- Реквизиты v2: структурный payload предоставления.
+              -- mode ∈ {value, file, reference}; legacy note-only → 'reference'.
+              -- value не используется для секретов (credential идёт reference).
+              mode text not null default 'reference',
+              value text not null default '',
+              attachment_id text not null default '',
               provided_at text not null,
               primary key (project_id, requisite_key)
             );
@@ -3082,6 +3136,22 @@ class SqliteRuntime:
         # выявления решений до сборки). Мигрируем legacy-строки идемпотентно.
         connection.execute(
             "update decisions set source = 'identification' where source = 'pre_flight'"
+        )
+
+        # Реквизиты v2: структурный payload предоставления. Старые строки
+        # (только note) получают mode='reference' и пустые value/attachment_id.
+        self._ensure_column(
+            connection, "requisite_provisions", "mode", "text not null default 'reference'"
+        )
+        self._ensure_column(
+            connection, "requisite_provisions", "value", "text not null default ''"
+        )
+        self._ensure_column(
+            connection, "requisite_provisions", "attachment_id", "text not null default ''"
+        )
+        # Реквизиты v2: назначение вложения (входной материал vs файл-реквизит).
+        self._ensure_column(
+            connection, "attachments", "purpose", "text not null default 'input'"
         )
 
         # W4.1 (R1): async workflow runs.

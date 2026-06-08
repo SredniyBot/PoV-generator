@@ -696,6 +696,7 @@ class WorkspaceQueryService:
                 used_in_context=attachment.used_in_context,
                 can_delete=attachment.can_delete,
                 created_at=attachment.created_at,
+                purpose=attachment.purpose,
             )
             for attachment in self._runtime.list_attachments(context.workspace)
         )
@@ -807,21 +808,28 @@ class WorkspaceQueryService:
         )
 
     def project_requisites(self, project_id: str) -> ProjectRequisitesView:
-        """Реквизиты — требуемые от пользователя входные данные.
+        """Реквизиты — что нужно от пользователя.
 
-        Ф5: агрегируем из двух источников — предусловий артефакта
-        реализуемости и поля ``requisites`` модели компонентов (архитектура).
-        Факт предоставления (requisite_provisions) накладывается сверху. Вся
-        логика — в :func:`gather_requisites` (используется и шлюзом перехода).
+        Редизайн: два РАЗНЫХ среза, не смешиваются.
+        • items — actionable: конкретные запросы данных (модель компонентов),
+          структурны (что/зачем/пример/вид), их предоставляют.
+        • advisory — предпосылки реализуемости (условия): ранний мягкий сигнал
+          до архитектуры; не предоставляются, не считаются в бейдже.
+        Факт предоставления (requisite_provisions) накладывается в gather.
         """
         context = self._load_context(project_id)
         items, source_id, updated = gather_requisites(self._runtime, context.workspace)
+        advisory = gather_advisory_prerequisites(self._runtime, context.workspace)
+        # «ready», если есть хоть один источник (модель компонентов ИЛИ оценка
+        # реализуемости с предпосылками) — иначе показывать нечего.
+        has_source = source_id is not None or bool(advisory)
         return ProjectRequisitesView(
             project_id=context.manifest.project_id,
-            status="ready" if source_id is not None else "missing",
+            status="ready" if has_source else "missing",
             items=items,
             source_artifact_id=source_id,
             updated_at=updated,
+            advisory=advisory,
         )
 
     def project_capability_gaps(self, project_id: str) -> ProjectGapsView:
@@ -1802,6 +1810,26 @@ class WorkspaceQueryService:
                     clarification_counts.get(decision.source_task_id, 0) + 1
                 )
 
+        # Ф4: чего ждёт заблокированная задача-потребитель — её непредоставленные
+        # блокирующие реквизиты (consumer_ref = origin_ref). Считаем один раз.
+        pending_by_consumer: dict[str, list[str]] = {}
+        try:
+            requisite_items, _, _ = gather_requisites(self._runtime, workspace)
+            for requisite in requisite_items:
+                if requisite.blocking and requisite.status != "provided" and requisite.consumer_ref:
+                    pending_by_consumer.setdefault(requisite.consumer_ref, []).append(
+                        requisite.title
+                    )
+        except Exception:
+            pending_by_consumer = {}
+
+        def _summary(task: TaskRecord) -> str | None:
+            if task.status == "blocked":
+                pending = pending_by_consumer.get(task.origin_ref or "", [])
+                if pending:
+                    return "Ждёт данные от пользователя: " + ", ".join(pending)
+            return task.error_message or self._status_summary(task)
+
         def build(task: TaskRecord) -> TaskNodeView:
             fan_out_meta = None
             if task.template_type == "fan_out" and snapshot is not None:
@@ -1826,7 +1854,7 @@ class WorkspaceQueryService:
                 template_ref=task.template_ref,
                 template_type=task.template_type,
                 status=task.status,
-                status_summary=task.error_message or self._status_summary(task),
+                status_summary=_summary(task),
                 origin_kind=task.origin_kind,
                 origin_ref=task.origin_ref,
                 slot_id=task.slot_id,
@@ -2434,10 +2462,14 @@ def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
                     title=title,
                     needed_for=needed_for,
                     status="requested",
-                    key=title,  # реализуемость: ключ = текст (как и прежде)
+                    # Устойчивый ключ с пространством имён источника (как у
+                    # архитектуры). Текст остаётся частью ключа — структурного
+                    # id у неструктурного артефакта реализуемости пока нет.
+                    key=f"realizability:{title}",
                     kind="other",
                     blocking=False,
                     stage="realizability",
+                    consumer_ref="",  # раннее предупреждение: потребитель ещё не известен
                 )
             )
     return tuple(items)
@@ -2469,48 +2501,59 @@ def _extract_component_model_requisites(payload: dict) -> tuple[RequisiteItemVie
             if not title:
                 continue
             rid = str(req.get("id") or title)
+            kind = str(req.get("kind") or "other")
             items.append(
                 RequisiteItemView(
                     title=title,
                     needed_for=needed_for,
                     status="requested",
                     key=f"architecture:{cid}:{rid}",
-                    kind=str(req.get("kind") or "other"),
+                    kind=kind,
                     blocking=bool(req.get("blocking")),
                     stage="architecture",
+                    consumer_ref=cid,  # потребитель — конкретный компонент
+                    why=str(req.get("why") or "").strip(),
+                    example=str(req.get("example") or "").strip(),
+                    input_kind=_input_kind_for(kind),
                 )
             )
     return tuple(items)
 
 
+def _input_kind_for(kind: str) -> str:
+    """Выводимая форма ввода реквизита по его виду — подсказка для UI (не контракт).
+
+    Карточка реквизита показывает ровно одну форму по этому значению, чтобы
+    пользователь не выбирал «режим» сам: access → подтверждение «выдано», file →
+    загрузка/вставка файла, text → поле значения/формата.
+    """
+    if kind == "credential":
+        return "access"
+    if kind in {"dataset", "file", "sample"}:
+        return "file"
+    return "text"
+
+
 def gather_requisites(
     runtime: SqliteRuntime, workspace: Path
 ) -> tuple[tuple[RequisiteItemView, ...], str | None, str | None]:
-    """Собрать реквизиты из всех источников + наложить факт предоставления (Ф5).
+    """Собрать ACTIONABLE-реквизиты (конкретные запросы данных) + факт предоставления.
 
-    Источники: предусловия артефакта реализуемости и поле ``requisites`` модели
-    компонентов. Дедуп по нормализованному заголовку (блокирующий флаг —
-    логическое ИЛИ). Возвращает (items, source_artifact_id, updated_at).
+    Источник — поле ``requisites`` модели компонентов: структурные запросы,
+    привязанные к компоненту-потребителю (что/зачем/пример/вид). Предпосылки
+    реализуемости (advisory-условия, без потребителя) сюда НЕ входят — они
+    отдельно (``gather_advisory_prerequisites``), чтобы actionable-список не
+    разбавлялся «пустыми словами». Возвращает (items, source_artifact_id,
+    updated_at). Сигнатура та же — гейтинг/бейдж/посев видят только actionable.
     """
-    raw: list[RequisiteItemView] = []
-    source_id: str | None = None
-    updated: str | None = None
-
-    for role, extractor in (
-        ("feasibility_assessment", _extract_requisites),
-        ("component_model", _extract_component_model_requisites),
-    ):
-        artifact = runtime.latest_artifact_by_role(workspace, role)
-        if artifact is None:
-            continue
-        try:
-            payload = json.loads(runtime.load_artifact_content(workspace, artifact.artifact_id))
-        except (json.JSONDecodeError, OSError):
-            continue
-        raw.extend(extractor(payload))
-        if source_id is None:
-            source_id = artifact.artifact_id
-            updated = artifact.created_at
+    artifact = runtime.latest_artifact_by_role(workspace, "component_model")
+    if artifact is None:
+        return (), None, None
+    try:
+        payload = json.loads(runtime.load_artifact_content(workspace, artifact.artifact_id))
+    except (json.JSONDecodeError, OSError):
+        return (), None, None
+    raw = list(_extract_component_model_requisites(payload))
 
     # Дедуп по нормализованному заголовку; блокирующий флаг агрегируем по ИЛИ.
     deduped: list[RequisiteItemView] = []
@@ -2526,13 +2569,44 @@ def gather_requisites(
         deduped.append(item)
 
     provided = runtime.list_requisite_provisions(workspace)
-    items = tuple(
-        replace(item, status="provided")
-        if ((item.key or item.title) in provided or item.title in provided)
-        else item
-        for item in deduped
-    )
-    return items, source_id, updated
+
+    def _resolve(item: RequisiteItemView) -> RequisiteItemView:
+        # Запись ищем по устойчивому ключу, затем по заголовку (legacy-провижены
+        # хранились под заголовком — членство сохраняем для совместимости).
+        record = provided.get(item.key or item.title) or provided.get(item.title)
+        if record is None:
+            return item
+        return replace(
+            item,
+            status="provided",
+            provided_mode=record.get("mode", ""),
+            provided_value=record.get("value", ""),
+            provided_note=record.get("note", ""),
+            provided_attachment_id=record.get("attachment_id", ""),
+        )
+
+    items = tuple(_resolve(item) for item in deduped)
+    return items, artifact.artifact_id, artifact.created_at
+
+
+def gather_advisory_prerequisites(
+    runtime: SqliteRuntime, workspace: Path
+) -> tuple[RequisiteItemView, ...]:
+    """Advisory-предпосылки реализуемости — условия, не запросы «дай сейчас».
+
+    Источник — ``prerequisites`` артефакта реализуемости: «что должно стать
+    правдой, чтобы часть реализовалась» (доступ, согласование, компетенция).
+    Они без структуры и без потребителя — ранний сигнал ДО архитектуры. Не
+    предоставляются и не гейтят; показываются мягко и отдельно от actionable.
+    """
+    artifact = runtime.latest_artifact_by_role(workspace, "feasibility_assessment")
+    if artifact is None:
+        return ()
+    try:
+        payload = json.loads(runtime.load_artifact_content(workspace, artifact.artifact_id))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    return _extract_requisites(payload)
 
 
 def blocking_requisites_unprovided(runtime: SqliteRuntime, workspace: Path) -> tuple[str, ...]:

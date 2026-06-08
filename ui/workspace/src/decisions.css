@@ -259,26 +259,6 @@
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
-.decision-card__option-confidence {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 0.4rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  background: var(--success-soft);
-  border: 1px solid var(--success-border);
-  color: var(--success);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-  cursor: help;
-}
-.decision-card__option-confidence--low {
-  background: var(--warning-soft);
-  border-color: var(--warning-border);
-  color: var(--warning);
-}
 .decision-card__verified-badge {
   display: inline-flex;
   align-items: center;
@@ -318,75 +298,121 @@
 .decision-card__body {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  padding: 0 1rem 0.9rem 1rem;
+  gap: var(--space-3);
+  padding: 0 var(--space-4) var(--space-4);
 }
 .decision-card__description {
-  font-size: 0.9rem;
+  font-size: var(--font-size-body);
   color: var(--text-secondary);
   margin: 0;
-  line-height: 1.55;
+  line-height: var(--line-height-body);
 }
 
-/* Options as radio list — clean, no fancy boxes */
+/* Options as selectable cards — modern radio-card pattern.
+   Каждый вариант — кликабельная плитка с явным выбранным состоянием
+   (акцентная рамка + tint + галочка), вместо нативного radio-dot. */
 .decision-card__options {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: var(--space-2);
 }
-.decision-card__option {
-  padding: 0;
-}
-.decision-card__option-label {
+.decision-card__option { padding: 0; }
+
+.decision-option {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 0.6rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: 6px;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated-strong);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    background var(--motion-fast) var(--motion-easing),
+    box-shadow var(--motion-fast) var(--motion-easing);
 }
-.decision-card__option-label:hover {
-  background: rgba(255, 255, 255, 0.025);
+.decision-option:hover { border-color: var(--border-strong); }
+.decision-option--selected {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
 }
-.decision-card__option-label input[type="radio"] {
-  margin-top: 0.2rem;
-  cursor: pointer;
-  accent-color: var(--accent);
+.decision-option:focus-within { outline: none; box-shadow: var(--focus-ring); }
+/* Нативный input скрыт визуально, но доступен с клавиатуры (a11y). */
+.decision-option__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
 }
-.decision-card__option-content {
+.decision-option__icon {
+  display: inline-flex;
+  margin-top: 1px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.decision-option__body {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
+  gap: var(--space-1);
 }
-.decision-card__option-title {
+.decision-option__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   color: var(--text-primary);
-  font-size: 0.92rem;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
 }
-.decision-card__option-title--chosen {
-  font-weight: 500;
+.decision-option--selected .decision-option__title {
+  font-weight: var(--font-weight-medium);
 }
-.decision-card__option-hint {
-  margin-left: 0.45rem;
-  font-size: 0.78rem;
+.decision-option__default {
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--border-subtle);
   color: var(--text-secondary);
-  font-weight: 400;
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-regular);
+  white-space: nowrap;
 }
-.decision-card__option-desc {
-  font-size: 0.82rem;
+.decision-option__desc {
   color: var(--text-secondary);
-  line-height: 1.5;
+  font-size: var(--font-size-meta);
+  line-height: var(--line-height-body);
+}
+.decision-option__check {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity var(--motion-fast) var(--motion-easing),
+    transform var(--motion-fast) var(--motion-easing);
+}
+.decision-option--selected .decision-option__check {
+  opacity: 1;
+  transform: scale(1);
 }
 
-/* Read-only option (in registry view) */
-.decision-card__body > .decision-card__options > .decision-card__option > .decision-card__option-content {
-  padding: 0.45rem 0.7rem;
+/* «Свой вариант» — пунктирная плитка в одном ряду с вариантами. */
+.decision-option--custom {
+  border-style: dashed;
+  background: transparent;
 }
+.decision-option--custom:hover { background: rgba(255, 255, 255, 0.02); }
 
 .decision-card__user-text {
   padding: 0.5rem 0.75rem;
@@ -410,38 +436,27 @@
 }
 
 .decision-card__free {
-  border-top: 1px dashed var(--border-subtle);
-  padding-top: 0.6rem;
-  margin-top: 0.2rem;
-}
-.decision-card__free-toggle {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  cursor: pointer;
-  padding: 0.2rem 0.4rem;
-  border-radius: 4px;
-}
-.decision-card__free-toggle:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 .decision-card__free-input {
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border-subtle);
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 0.88rem;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
   resize: vertical;
 }
+.decision-card__free-input::placeholder { color: var(--text-disabled); }
 .decision-card__free-input:focus {
   outline: none;
   border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
 }
 
 .decision-card__more {

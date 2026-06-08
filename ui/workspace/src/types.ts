@@ -23,6 +23,7 @@ export interface AttachmentView {
   used_in_context: boolean;
   can_delete: boolean;
   created_at: string;
+  purpose?: string; // "input" (входной материал) | "requisite" (файл-реквизит)
 }
 
 export interface ProjectListItemView {
@@ -477,14 +478,25 @@ export interface RequisiteItemView {
   kind?: string; // credential|dataset|file|setting|interface_format|sample|other
   blocking?: boolean; // блокирует переход на реализацию
   stage?: string; // realizability | architecture
+  consumer_ref?: string; // кому нужен (component_id); пусто = раннее предупреждение
+  // Структура реквизита (конкретность): зачем + пример + выводимая форма ввода.
+  why?: string;
+  example?: string;
+  input_kind?: string; // text | file | access — форма ввода для UI
+  // Что и как предоставлено (реквизиты v2). Пусто, если не предоставлено.
+  provided_mode?: string; // value|file|reference|assumption|deferred|not_applicable
+  provided_value?: string;
+  provided_note?: string;
+  provided_attachment_id?: string;
 }
 
 export interface ProjectRequisitesView {
   project_id: string;
   status: string; // "ready" | "missing"
-  items: RequisiteItemView[];
+  items: RequisiteItemView[]; // actionable: конкретные запросы данных
   source_artifact_id: string | null;
   updated_at: string | null;
+  advisory?: RequisiteItemView[]; // предпосылки реализуемости (условия, мягко)
 }
 
 export interface CapabilityGapView {

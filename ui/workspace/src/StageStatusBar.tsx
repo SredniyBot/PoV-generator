@@ -308,34 +308,30 @@ export function StageStatusBar({
               недоступна с поясняющей подсказкой (Ф3). */}
           {(data.objective_complete || awaitingActive) && data.next_objective_refs.length > 0 ? (
             <div className="stage-cta-group">
-              {data.next_objective_refs.map((ref) => {
-                // Ф5: переход на реализацию держат непредоставленные блокирующие
-                // реквизиты — гасим кнопку и поясняем, чего не хватает.
-                const blockers = data.blocked_by_requisites ?? [];
-                const reqBlocked = ref.startsWith("implementation") && blockers.length > 0;
-                return (
-                  <button
-                    key={ref}
-                    type="button"
-                    className="stage-cta"
-                    disabled={activating || reqBlocked || awaitingActive}
-                    onClick={() => onActivateNextObjective(ref)}
-                    title={
-                      awaitingActive
-                        ? "Сначала согласуйте итоговый артефакт этапа"
-                        : reqBlocked
-                          ? `Заполните обязательные реквизиты: ${blockers.join("; ")}`
-                          : `Активировать этап: ${titleForRef(ref, data.stages)}`
-                    }
-                  >
-                    Следующий этап <ArrowRight size={14} />
-                  </button>
-                );
-              })}
+              {data.next_objective_refs.map((ref) => (
+                // Ф4: переход больше НЕ держится огульно реквизитами. Честный
+                // гейтинг гранулярный — непредоставленный реквизит держит в графе
+                // только свою задачу-потребителя. Кнопку гасит лишь согласование.
+                <button
+                  key={ref}
+                  type="button"
+                  className="stage-cta"
+                  disabled={activating || awaitingActive}
+                  onClick={() => onActivateNextObjective(ref)}
+                  title={
+                    awaitingActive
+                      ? "Сначала согласуйте итоговый артефакт этапа"
+                      : `Активировать этап: ${titleForRef(ref, data.stages)}`
+                  }
+                >
+                  Следующий этап <ArrowRight size={14} />
+                </button>
+              ))}
               {(data.blocked_by_requisites?.length ?? 0) > 0 ? (
-                <p className="stage-cta-blocked">
-                  Переход к реализации заблокирован: не предоставлены реквизиты —{" "}
-                  {(data.blocked_by_requisites ?? []).join("; ")}. Заполните во вкладке «Реквизиты».
+                <p className="stage-cta-pending">
+                  Часть задач реализации будет ждать данные:{" "}
+                  {(data.blocked_by_requisites ?? []).join("; ")}. Можно перейти и заполнить по
+                  ходу во вкладке «Реквизиты» — ждут только эти задачи, остальные идут.
                 </p>
               ) : null}
             </div>

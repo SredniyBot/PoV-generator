@@ -87,9 +87,11 @@ export const api = {
   uploadAttachment: async (
     projectId: string,
     file: File,
+    purpose: "input" | "requisite" = "input",
   ): Promise<{ attachment_id: string; original_filename: string; extraction_status: string }> => {
     const form = new FormData();
     form.append("file", file);
+    form.append("purpose", purpose);
     // FormData задаёт multipart boundary сам — Content-Type не выставляем.
     const response = await fetch(`${API_BASE}/api/projects/${projectId}/attachments`, {
       method: "POST",
@@ -229,10 +231,28 @@ export const api = {
     request<import("./types").ProjectRequisitesView>(`/api/projects/${projectId}/requisites`),
   getCapabilityGaps: (projectId: string) =>
     request<import("./types").ProjectGapsView>(`/api/projects/${projectId}/capability-gaps`),
-  provideRequisite: (projectId: string, key: string, note: string) =>
+  // Реквизиты v2: структурное разрешение реквизита — данные (value/file/
+  // reference) ИЛИ обход (assumption/deferred/not_applicable).
+  provideRequisite: (
+    projectId: string,
+    payload: {
+      key: string;
+      mode?: string;
+      value?: string;
+      attachment_id?: string;
+      note?: string;
+    },
+  ) =>
     request<import("./types").ProjectRequisitesView>(
       `/api/projects/${projectId}/requisites/provide`,
-      { method: "POST", body: JSON.stringify({ key, note }) },
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  // Снять предоставление реквизита (un-provide): данные перестают втекать,
+  // блокирующий реквизит снова держит задачу-потребителя.
+  unprovideRequisite: (projectId: string, key: string) =>
+    request<import("./types").ProjectRequisitesView>(
+      `/api/projects/${projectId}/requisites/unprovide`,
+      { method: "POST", body: JSON.stringify({ key }) },
     ),
   getMethodologyTrace: (projectId: string, taskId: string) =>
     request<MethodologyTraceResponse>(`/api/projects/${projectId}/tasks/${taskId}/methodology-trace`),

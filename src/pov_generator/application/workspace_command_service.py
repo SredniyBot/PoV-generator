@@ -6,6 +6,9 @@ from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.logging import get_logger
+from ..common.serialization import utc_now_iso
+from ..domain.positions import REQUISITE_POSITION_PREFIX, Position
+from ..domain.project_knowledge import RejectPositionPatch, UpsertPositionPatch
 from ..domain.registry import ObjectRef
 from ..domain.workspace_views import CommandResultView, ProjectCreatedView
 
@@ -18,7 +21,7 @@ from .project_service import ProjectService
 from .registry_service import RegistryService
 from .workflow_service import WorkflowService
 from .workspace_catalog import WorkspaceCatalog
-from .workspace_query_service import blocking_requisites_unprovided
+from .workspace_query_service import gather_requisites
 
 GRAPH_PROJECTIONS = ("task_graph", "situation", "timeline", "artifacts", "clarifications", "review", "state", "debug")
 
@@ -190,6 +193,166 @@ class WorkspaceCommandService:
             resource_id=pack_ref,
         )
 
+    def provide_requisite(
+        self,
+        project_id: str,
+        *,
+        key: str,
+        mode: str = "reference",
+        value: str = "",
+        attachment_id: str = "",
+        note: str = "",
+    ) -> CommandResultView:
+        """Разрешить реквизит: предоставить данные ИЛИ осознанно обойти.
+
+        Реквизиты v2 (Ф3+Ф4). Режимы данных: ``value`` кладёт значение в слой A
+        пользовательским фактом (``source="user"``) — он попадает в контекст
+        зависимых задач; ``file``/``reference`` — без значения. Режимы обхода
+        (честный гейтинг): ``assumption`` («допущение») кладёт рабочий дефолт как
+        положение-допущение (🟡, можно override решением); ``deferred`` («позже»)
+        и ``not_applicable`` («неприменимо») — без положения. Любой режим
+        снимает гранулярный блок задачи-потребителя (admission учитывает только
+        непредоставленные реквизиты).
+
+        Безопасность (инвариант 6): вид ``credential`` и режимы без значения
+        НИКОГДА не несут секрет в контекст/артефакты (только пометка «выдано вне
+        системы»); прежнее value/assumption-положение при смене на режим без
+        значения снимается. Предоставление — событие: затем идёт переоценка
+        графа (``expand_graph``), чтобы задача-потребитель могла продолжиться.
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        runtime = self._project_service.runtime
+        ensure_project_unlocked(runtime, workspace)
+
+        # Метаданные реквизита (вид/заголовок/потребитель) для безопасности и
+        # содержательного положения. Реквизит мог стать невидимым (артефакт
+        # переехал) — тогда работаем по ключу как есть.
+        items, _, _ = gather_requisites(runtime, workspace)
+        match = next(
+            (it for it in items if (it.key or it.title) == key or it.title == key), None
+        )
+        title = match.title if match else key
+        needed_for = match.needed_for if match else ""
+        kind = match.kind if match else "other"
+
+        # Инвариант безопасности: секрет не персистится. credential нельзя
+        # «предположить» или передать значением — только reference.
+        if kind == "credential" and mode in {"value", "assumption"}:
+            mode = "reference"
+        # Значение несут только value/assumption; остальные режимы — без значения.
+        if mode not in {"value", "assumption"}:
+            value = ""
+
+        runtime.mark_requisite_provided(
+            workspace,
+            requisite_key=key,
+            note=note,
+            mode=mode,
+            value=value,
+            attachment_id=attachment_id,
+        )
+
+        # Втекание в слой A. value → пользовательский факт; assumption → рабочее
+        # допущение (🟡). Остальные режимы значение в контексте не держат.
+        position_id = f"{REQUISITE_POSITION_PREFIX}{key}"
+        if mode in {"value", "assumption"} and value.strip():
+            if mode == "assumption":
+                position_type = "assumption"
+                statement = f"Допущение пользователя по реквизиту «{title}»"
+            else:
+                position_type = "fact"
+                statement = f"Данные, предоставленные пользователем по реквизиту «{title}»"
+            if needed_for:
+                statement += f" (нужно для: {needed_for})"
+            statement += f":\n\n{value.strip()}"
+            runtime.apply_knowledge_patch(
+                workspace,
+                UpsertPositionPatch(
+                    Position(
+                        identifier=position_id,
+                        type=position_type,
+                        statement=statement,
+                        visibility="architectural",
+                        scope="global",
+                        source="user",
+                        taken_by="requisite",
+                        taken_at=utc_now_iso(),
+                        tags=("requisite", "user_input"),
+                    )
+                ),
+                actor="requisite",
+                reason=f"provided requisite {key} ({mode})",
+            )
+        else:
+            # reference/file: значение в контексте не держим. Снимаем прежнее
+            # value-положение (например, переключение credential value →
+            # reference), чтобы секрет/устаревшее значение не осталось.
+            knowledge = runtime.load_project_state(workspace).knowledge
+            existing = knowledge.positions.get(position_id)
+            if existing is not None and existing.status == "active":
+                runtime.apply_knowledge_patch(
+                    workspace,
+                    RejectPositionPatch(
+                        position_id=position_id,
+                        reason=f"requisite {key} re-provided as {mode}",
+                    ),
+                    actor="requisite",
+                    reason=f"provided requisite {key} ({mode})",
+                )
+
+        # Предоставление — событие: переоценка графа (дозапуск/реплан потребителя).
+        snapshot = self._validated_snapshot()
+        self._planning_service.expand_graph(workspace, snapshot)
+
+        return CommandResultView(
+            status="accepted",
+            command_name="provide-requisite",
+            summary=f"Реквизит «{title}» отмечен как предоставленный.",
+            changed_projections=("situation", "timeline", "state", "task_graph"),
+            resource_id=key,
+        )
+
+    def unprovide_requisite(self, project_id: str, *, key: str) -> CommandResultView:
+        """Снять предоставление реквизита (реквизиты v7, un-provide).
+
+        Удаляет запись предоставления и снимает связанное value/assumption-
+        положение слоя A (если было) — данные перестают втекать в контекст.
+        После этого граф переоценивается: если реквизит блокирующий, его
+        задача-потребитель снова заблокируется (честный гейтинг). Снятие
+        положения проходит через журналируемый knowledge-patch (аудит).
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        runtime = self._project_service.runtime
+        ensure_project_unlocked(runtime, workspace)
+
+        runtime.delete_requisite_provision(workspace, key)
+
+        position_id = f"{REQUISITE_POSITION_PREFIX}{key}"
+        existing = runtime.load_project_state(workspace).knowledge.positions.get(position_id)
+        if existing is not None and existing.status == "active":
+            runtime.apply_knowledge_patch(
+                workspace,
+                RejectPositionPatch(
+                    position_id=position_id,
+                    reason=f"requisite {key} un-provided by user",
+                ),
+                actor="requisite",
+                reason=f"un-provided requisite {key}",
+            )
+
+        snapshot = self._validated_snapshot()
+        self._planning_service.expand_graph(workspace, snapshot)
+
+        return CommandResultView(
+            status="accepted",
+            command_name="unprovide-requisite",
+            summary="Предоставление реквизита снято.",
+            changed_projections=("situation", "timeline", "state", "task_graph"),
+            resource_id=key,
+        )
+
     def set_clarification_mode(self, project_id: str, *, mode: str) -> CommandResultView:
         """Сменить режим участия пользователя (v3.2).
 
@@ -258,18 +421,12 @@ class WorkspaceCommandService:
         snapshot = self._validated_snapshot()
         new_ref_obj = ObjectRef.parse(new_objective_ref)
         new_spec = snapshot.resolve_objective(new_ref_obj)
-        # Ф5: шлюз перехода на реализацию — блокирующие реквизиты должны быть
-        # предоставлены. Гасим только переход в objective реализации; остальные
-        # переходы (например, ТЗ → архитектура) реквизитами не держатся.
-        if new_ref_obj.identifier.startswith("implementation"):
-            missing = blocking_requisites_unprovided(
-                self._project_service.runtime, workspace_ref.workspace
-            )
-            if missing:
-                raise ConflictError(
-                    "Нельзя перейти к реализации: не предоставлены обязательные "
-                    "реквизиты — " + "; ".join(missing) + ". Заполните их во вкладке «Реквизиты»."
-                )
+        # Реквизиты v2 (Ф4): переход на реализацию больше НЕ держится огульно.
+        # Честный гейтинг теперь гранулярный — непредоставленный блокирующий
+        # реквизит держит в admission только свою задачу-потребителя
+        # (см. planning_service._recompute_admission, check "blocking_requisites"),
+        # а не весь переход и не генератор. Пользователь входит в этап реализации,
+        # видит «ждёт данные X» у конкретных узлов и предоставляет по ходу.
         methodology_ref = (
             new_spec.default_methodology_pack_ref.as_string()
             if new_spec.default_methodology_pack_ref is not None

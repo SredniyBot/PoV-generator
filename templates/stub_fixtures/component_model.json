@@ -38,6 +38,8 @@
           "kind": "interface_format",
           "title": "Точный формат заявки из текущей формы",
           "needed_for": "submitRequest",
+          "why": "Чтобы валидатор принимал реальные поля формы без расхождений",
+          "example": "JSON: {\"name\": str, \"phone\": str, \"comment\": str}",
           "blocking": false
         }
       ]

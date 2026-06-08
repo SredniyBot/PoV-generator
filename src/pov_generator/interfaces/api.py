@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..application.attachment_service import AttachmentService
@@ -696,18 +696,53 @@ def create_app(
     def project_requisite_provide(
         project_id: str, payload: dict[str, object] = Body(default_factory=dict)
     ) -> Any:
-        """Отметить реквизит как предоставленный (Ф4).
+        """Разрешить реквизит (реквизиты v2): предоставить данные ИЛИ обойти.
 
-        Body: ``{"key": "<текст реквизита>", "note": "<необязательная заметка>"}``.
-        Секреты в системе не храним — note это пометка («доступ выдан»/значение),
-        а не хранилище токенов. Возвращает обновлённый список реквизитов.
+        Body: ``{"key", "mode"?, "value"?, "attachment_id"?, "note"?}``. ``mode``:
+        данные — ``value`` | ``file`` | ``reference`` (по умолчанию reference);
+        обход — ``assumption`` («допущение»: рабочий дефолт), ``deferred``
+        («позже») или ``not_applicable`` («неприменимо»). Любой режим снимает
+        гранулярный блок задачи-потребителя. Секреты не храним: для credential
+        принудительно reference (без поля значения); значение несут только value/
+        assumption. Возвращает обновлённый список.
         """
         key = str(payload.get("key") or "").strip()
         if not key:
             raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
+        mode = str(payload.get("mode") or "reference").strip() or "reference"
+        allowed_modes = {"value", "file", "reference", "assumption", "deferred", "not_applicable"}
+        if mode not in allowed_modes:
+            raise HTTPException(status_code=400, detail=f"Неизвестный режим: {mode}.")
         note = str(payload.get("note") or "")
-        workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
-        runtime.mark_requisite_provided(workspace, requisite_key=key, note=note)
+        attachment_id = str(payload.get("attachment_id") or "")
+        # Значение несут только value/assumption; остальные режимы — без значения
+        # (защита от утечки секрета; команда дополнительно принудит reference для
+        # credential).
+        value = str(payload.get("value") or "") if mode in {"value", "assumption"} else ""
+        command_service.provide_requisite(
+            project_id,
+            key=key,
+            mode=mode,
+            value=value,
+            attachment_id=attachment_id,
+            note=note,
+        )
+        return to_primitive(query_service.project_requisites(project_id))
+
+    @app.post("/api/projects/{project_id}/requisites/unprovide")
+    def project_requisite_unprovide(
+        project_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        """Снять предоставление реквизита (реквизиты v7, un-provide).
+
+        Body: ``{"key": "<ключ реквизита>"}``. Удаляет запись и связанное
+        value/assumption-положение; блокирующий реквизит снова держит свою
+        задачу-потребителя. Возвращает обновлённый список.
+        """
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
+        command_service.unprovide_requisite(project_id, key=key)
         return to_primitive(query_service.project_requisites(project_id))
 
     @app.get("/api/projects/{project_id}/task-graph")
@@ -1153,11 +1188,17 @@ def create_app(
         return to_primitive(query_service.project_attachments(project_id))
 
     @app.post("/api/projects/{project_id}/attachments")
-    async def upload_attachment(project_id: str, file: UploadFile = File(...)) -> Any:
-        """Загрузить входной файл проекта (multipart).
+    async def upload_attachment(
+        project_id: str,
+        file: UploadFile = File(...),
+        purpose: str = Form("input"),
+    ) -> Any:
+        """Загрузить файл проекта (multipart).
 
-        Сохраняет файл со статусом ``pending`` и ставит извлечение текста в
-        фон; отвечает быстро.
+        ``purpose``: ``input`` — входной материал (по умолчанию; показывается во
+        «Входных материалах»); ``requisite`` — файл, предоставленный в ответ на
+        реквизит (отдельный бакет, в «Реквизиты»). Сохраняет со статусом
+        ``pending`` и ставит извлечение текста в фон; отвечает быстро.
         """
         workspace = catalog.resolve_workspace(project_id).workspace
         # Размер ограничиваем при чтении потока, а не после полной материализации:
@@ -1183,6 +1224,7 @@ def create_app(
             filename=file.filename or "file",
             content=content,
             mime_type=file.content_type,
+            purpose="requisite" if purpose == "requisite" else "input",
         )
         return {
             "attachment_id": record.attachment_id,

@@ -331,6 +331,8 @@ class AttachmentView:
     used_in_context: bool
     can_delete: bool
     created_at: str
+    # Реквизиты v2: "input" (входной материал) | "requisite" (файл-реквизит).
+    purpose: str = "input"
 
 
 @dataclass(frozen=True)
@@ -606,15 +608,32 @@ class RequisiteItemView:
     kind: str = "other"          # credential|dataset|file|setting|interface_format|sample|other
     blocking: bool = False       # блокирует переход на реализацию
     stage: str = "realizability" # источник: realizability | architecture
+    # Реквизиты v2 (план 2026-06-08):
+    consumer_ref: str = ""       # кому нужен: component_id/stable-key задачи (пусто = ранний запрос без привязки)
+    # Структура реквизита (редизайн): конкретность вместо «пустых слов».
+    why: str = ""                # зачем это нужно (1 фраза) — обоснование запроса
+    example: str = ""            # конкретный пример/формат («например, CSV id,date,amount»)
+    input_kind: str = "text"     # выводимая форма ввода для UI: text | file | access
+    # Что и как предоставлено (для потребления и UI). Пусто, если не предоставлено.
+    # provided_mode: "value" | "file" | "reference" (legacy note → "reference").
+    # provided_value не используется для секретов (credential идёт через reference).
+    provided_mode: str = ""
+    provided_value: str = ""
+    provided_note: str = ""
+    provided_attachment_id: str = ""
 
 
 @dataclass(frozen=True)
 class ProjectRequisitesView:
     project_id: str
     status: str  # "ready" | "missing" (нет артефакта реализуемости)
-    items: tuple[RequisiteItemView, ...]
+    items: tuple[RequisiteItemView, ...]          # actionable: конкретные запросы данных (архитектура)
     source_artifact_id: str | None
     updated_at: str | None
+    # Advisory: предпосылки реализуемости (условия, не «дай сейчас»). Показываются
+    # мягко/отдельно — это ранние подсказки, конкретные запросы появятся на
+    # архитектуре. Не предоставляются и не считаются в бейдже.
+    advisory: tuple[RequisiteItemView, ...] = ()
 
 
 # ---------------------------------------------------------------------------
