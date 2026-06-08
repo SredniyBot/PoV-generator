@@ -6532,36 +6532,72 @@ code {
 /* Карточка реквизита переиспользует визуальный язык .decision-card (см.
    decisions.css): тот же контейнер/шапка/тело/акцентная полоса ответа. Здесь —
    только специфика реквизита: группировка, форма ввода, тихие ссылки. */
-.requisites { display: flex; flex-direction: column; gap: 1.25rem; }
-.requisites__group { display: flex; flex-direction: column; gap: 0.5rem; }
+.requisites { display: flex; flex-direction: column; gap: var(--space-5); }
+.requisites__group { display: flex; flex-direction: column; gap: var(--space-2); }
 .requisites__group-title {
   margin: 0;
   font-size: var(--font-size-meta);
   font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
 }
-.requisites__cards { display: flex; flex-direction: column; gap: 0.5rem; }
+.requisites__cards { display: flex; flex-direction: column; gap: var(--space-2); }
 
-/* Тихая отметка «нужно для сборки» в шапке карточки. */
+/* «нужно для сборки» — компактный chip в шапке карточки. */
 .requisite-need {
   flex-shrink: 0;
-  font-size: var(--font-size-meta);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
   color: var(--warning);
+  font-size: var(--font-size-meta);
+  white-space: nowrap;
 }
 
 /* Форма ввода: одна естественная форма + тихие ссылки. */
-.requisite-form { display: flex; flex-direction: column; gap: 0.55rem; }
-.requisite-form__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.requisite-form { display: flex; flex-direction: column; gap: var(--space-3); }
+.requisite-form__actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 .requisite-hint {
   margin: 0;
   font-size: var(--font-size-meta);
   color: var(--text-secondary);
-  line-height: 1.5;
+  line-height: var(--line-height-body);
 }
 .requisite-error { margin: 0; font-size: var(--font-size-meta); color: var(--danger); }
-.requisite-file { font-size: var(--font-size-meta); color: var(--text-secondary); }
 
-/* Тихая текстовая кнопка-ссылка (по образцу .decision-card__free-toggle). */
+/* Загрузка файла — кастомная плитка вместо нативного input (тот выглядит
+   устаревшим и по-разному в каждом браузере). Скрытый input + label-плитка. */
+.requisite-filedrop {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-secondary);
+  font-size: var(--font-size-body);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-easing),
+    background var(--motion-fast) var(--motion-easing),
+    color var(--motion-fast) var(--motion-easing);
+}
+.requisite-filedrop:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.requisite-filedrop:focus-within { outline: none; box-shadow: var(--focus-ring); }
+.requisite-filedrop--filled {
+  border-style: solid;
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.requisite-filedrop__input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.requisite-filedrop__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Тихая текстовая кнопка-ссылка. */
 .requisite-link {
   background: none;
   border: none;
@@ -6569,25 +6605,26 @@ code {
   color: var(--text-secondary);
   font-size: var(--font-size-meta);
   cursor: pointer;
-  transition: color 0.12s;
+  transition: color var(--motion-fast) var(--motion-easing);
 }
 .requisite-link:hover:not(:disabled) { color: var(--text-primary); }
 .requisite-link:disabled { opacity: 0.5; cursor: default; }
-.requisite-quiet-row { display: flex; gap: 0.85rem; }
+.requisite-link--icon { display: inline-flex; align-items: center; gap: var(--space-1); }
+.requisite-quiet-row { display: flex; gap: var(--space-4); }
 
 /* Escape «не могу предоставить» — спрятанный блок с тихими опциями. */
 .requisite-escape {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding-top: 0.5rem;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
   border-top: 1px dashed var(--border-subtle);
 }
-.requisite-escape__opts { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.requisite-escape__opts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 /* Advisory-предпосылки и зоны роста — мягкий список условий (не actionable). */
-.requisite-advisory { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
-.requisite-advisory__item { font-size: var(--font-size-body); color: var(--text-secondary); line-height: 1.5; }
+.requisite-advisory { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.requisite-advisory__item { font-size: var(--font-size-body); color: var(--text-secondary); line-height: var(--line-height-body); }
 .requisite-advisory__title { color: var(--text-primary); }
 .requisite-advisory__for { color: var(--text-disabled); }
 

@@ -15,6 +15,7 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Paperclip, Upload } from "lucide-react";
 
 import { api } from "./api";
 import type { RequisiteItemView } from "./types";
@@ -118,7 +119,13 @@ function RequisiteCard({
   }
 
   return (
-    <div className={cx("decision-card", provided && !editing && "decision-card--answered")}>
+    <div
+      className={cx(
+        "decision-card",
+        showForm && "decision-card--interactive",
+        provided && !editing && "decision-card--answered",
+      )}
+    >
       <header className="decision-card__head">
         <div className="decision-card__head-text">
           <h3 className="decision-card__title">
@@ -187,11 +194,15 @@ function RequisiteCard({
             ) : mode === "file" ? (
               <>
                 {item.example ? <p className="requisite-hint">Пример: {item.example}</p> : null}
-                <input
-                  type="file"
-                  className="requisite-file"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                />
+                <label className={cx("requisite-filedrop", file && "requisite-filedrop--filled")}>
+                  <input
+                    type="file"
+                    className="requisite-filedrop__input"
+                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  />
+                  {file ? <Check size={16} /> : <Upload size={16} />}
+                  <span className="requisite-filedrop__text">{file ? file.name : "Выбрать файл"}</span>
+                </label>
                 {error ? <p className="requisite-error">{error}</p> : null}
                 <div className="requisite-form__actions">
                   <Button tone="primary" disabled={pending || uploading || !file} onClick={() => void submitFile()}>
@@ -222,8 +233,12 @@ function RequisiteCard({
                   >
                     Предоставить
                   </Button>
-                  <button type="button" className="requisite-link" onClick={() => setAltMode("file")}>
-                    приложить файл
+                  <button
+                    type="button"
+                    className="requisite-link requisite-link--icon"
+                    onClick={() => setAltMode("file")}
+                  >
+                    <Paperclip size={13} /> приложить файл
                   </button>
                 </div>
               </>
