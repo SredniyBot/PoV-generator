@@ -4,6 +4,8 @@ version: 1.0.0
 title: ML build-agent
 role: ml
 binds: ml.predictive_analytics@1.0.0
+# RG-F: рецепт сборки ML-компонентов (полиморфный веер по capability_owner).
+build_recipe: implementation.component_implementation_ml@1.0.0
 capabilities:
   - capability: ml.supervised_model
     tech: [scikit-learn, XGBoost]

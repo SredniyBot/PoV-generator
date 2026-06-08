@@ -3,6 +3,8 @@ id: capability.data
 version: 1.0.0
 title: Data build-agent
 role: data
+# RG-F: рецепт сборки data-компонентов (полиморфный веер по capability_owner).
+build_recipe: implementation.component_implementation_data@1.0.0
 capabilities:
   - capability: data.pipeline
     tech: [Airflow, dbt]

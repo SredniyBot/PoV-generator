@@ -1,0 +1,46 @@
+kind: task_template
+id: implementation.component_implementation_data
+version: 1.0.0
+title: Реализация data-компонента агентом
+type: leaf
+status: active
+domain: implementation
+# RG-F: рецепт сборки капабилити data (полиморфный веер по capability_owner =
+# capability.data). Та же роль component_implementation — отличие в брифе.
+executor: harness
+harness_output: bundle
+methodology: minimal
+requires:
+  state: [business_request]
+  artifacts:
+    required:
+      - implementation.project_scaffold@1.0.0
+      - implementation.component_build_spec@1.0.0
+      - architecture.component_model@1.0.0
+    optional:
+      - implementation.build_manifest@1.0.0
+      - common.normalized_request@1.0.0
+produces:
+  artifact: implementation.component_implementation@1.0.0
+harness_gates:
+  - name: smoke
+    command: "test -d src || test -d migrations || test -f README.md"
+context:
+  include: [artifact.*]
+  max_tokens: 24000
+planning:
+  priority: 400
+summary: |
+  Реализуй ОДИН data-компонент по его спеке сборки, встроив его в готовое общее
+  ядро. Какой именно — в «Целевой элемент (фокус задачи)». Работай ТОЛЬКО по нему.
+
+  Сначала прочти ядро в корне: AGENTS.md, CONVENTIONS.md/STACK.md, /contracts/
+  (схемы данных, которыми обмениваются сервисы — строй против них).
+
+  Положи код ТОЛЬКО в зону своего сервиса (services/<сервис>/...):
+  • схему и миграции для owned_data (идемпотентные, применяются с нуля);
+  • слой доступа/репозитории по provided_interfaces (контракт /contracts/);
+  • seed/фикстуры данных для запуска и проверки;
+  • минимальный тест: миграции применяются, базовые операции работают.
+
+  НЕ трогай чужие зоны, корневые файлы и контракты. Чего не хватает — в README.

@@ -3,6 +3,8 @@ id: capability.integration
 version: 1.0.0
 title: Integration build-agent
 role: integration
+# RG-F: рецепт сборки integration-компонентов (полиморфный веер по capability_owner).
+build_recipe: implementation.component_implementation_integration@1.0.0
 capabilities:
   - capability: integration.rest_connector
     tech: [Python, OpenAPI]

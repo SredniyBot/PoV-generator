@@ -151,10 +151,10 @@ def test_polymorphic_fanout_picks_capability_recipe() -> None:
     ui_child = PlanningService._resolve_fanout_child(spec, ui_item, default_child, snapshot)
     assert ui_child.identifier == "implementation.component_implementation_ui"
 
-    # Backend-компонент (нет build_recipe) → общий шаблон.
+    # Backend-компонент → рецепт капабилити backend.
     be_item = {"id": "api", "capability_owner": "capability.backend@1.0.0"}
     be_child = PlanningService._resolve_fanout_child(spec, be_item, default_child, snapshot)
-    assert be_child.identifier == default_child.identifier
+    assert be_child.identifier == "implementation.component_implementation_backend"
 
     # Нет capability_owner / неизвестный профиль → общий шаблон (защитно).
     for bad in ({"id": "x"}, {"id": "x", "capability_owner": "capability.unknown@9.9.9"}):

@@ -3,6 +3,8 @@ id: capability.backend
 version: 1.0.0
 title: Backend build-agent
 role: backend
+# RG-F: рецепт сборки backend-компонентов (полиморфный веер по capability_owner).
+build_recipe: implementation.component_implementation_backend@1.0.0
 capabilities:
   - capability: backend.rest_api
     tech: [FastAPI, PostgreSQL]
