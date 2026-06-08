@@ -2426,10 +2426,14 @@ def _extract_requisites(payload: dict) -> tuple[RequisiteItemView, ...]:
                     title=title,
                     needed_for=needed_for,
                     status="requested",
-                    key=title,  # реализуемость: ключ = текст (как и прежде)
+                    # Устойчивый ключ с пространством имён источника (как у
+                    # архитектуры). Текст остаётся частью ключа — структурного
+                    # id у неструктурного артефакта реализуемости пока нет.
+                    key=f"realizability:{title}",
                     kind="other",
                     blocking=False,
                     stage="realizability",
+                    consumer_ref="",  # раннее предупреждение: потребитель ещё не известен
                 )
             )
     return tuple(items)
@@ -2470,6 +2474,7 @@ def _extract_component_model_requisites(payload: dict) -> tuple[RequisiteItemVie
                     kind=str(req.get("kind") or "other"),
                     blocking=bool(req.get("blocking")),
                     stage="architecture",
+                    consumer_ref=cid,  # потребитель — конкретный компонент
                 )
             )
     return tuple(items)
@@ -2518,12 +2523,23 @@ def gather_requisites(
         deduped.append(item)
 
     provided = runtime.list_requisite_provisions(workspace)
-    items = tuple(
-        replace(item, status="provided")
-        if ((item.key or item.title) in provided or item.title in provided)
-        else item
-        for item in deduped
-    )
+
+    def _resolve(item: RequisiteItemView) -> RequisiteItemView:
+        # Запись ищем по устойчивому ключу, затем по заголовку (legacy-провижены
+        # хранились под заголовком — членство сохраняем для совместимости).
+        record = provided.get(item.key or item.title) or provided.get(item.title)
+        if record is None:
+            return item
+        return replace(
+            item,
+            status="provided",
+            provided_mode=record.get("mode", ""),
+            provided_value=record.get("value", ""),
+            provided_note=record.get("note", ""),
+            provided_attachment_id=record.get("attachment_id", ""),
+        )
+
+    items = tuple(_resolve(item) for item in deduped)
     return items, source_id, updated
 
 

@@ -679,18 +679,33 @@ def create_app(
     def project_requisite_provide(
         project_id: str, payload: dict[str, object] = Body(default_factory=dict)
     ) -> Any:
-        """Отметить реквизит как предоставленный (Ф4).
+        """Отметить реквизит как предоставленный (реквизиты v2).
 
-        Body: ``{"key": "<текст реквизита>", "note": "<необязательная заметка>"}``.
-        Секреты в системе не храним — note это пометка («доступ выдан»/значение),
-        а не хранилище токенов. Возвращает обновлённый список реквизитов.
+        Body: ``{"key", "mode"?, "value"?, "attachment_id"?, "note"?}``, где
+        ``mode`` ∈ {value, file, reference} (по умолчанию reference). Секреты в
+        системе не храним: для credential используется reference — только
+        пометка «доступ выдан вне системы», без поля значения. В режиме
+        reference ``value`` отбрасывается. Возвращает обновлённый список.
         """
         key = str(payload.get("key") or "").strip()
         if not key:
             raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
+        mode = str(payload.get("mode") or "reference").strip() or "reference"
+        if mode not in {"value", "file", "reference"}:
+            raise HTTPException(status_code=400, detail=f"Неизвестный режим: {mode}.")
         note = str(payload.get("note") or "")
+        attachment_id = str(payload.get("attachment_id") or "")
+        # reference никогда не несёт значение (защита от утечки секрета).
+        value = "" if mode == "reference" else str(payload.get("value") or "")
         workspace = query_service._load_context(project_id).workspace  # type: ignore[attr-defined]
-        runtime.mark_requisite_provided(workspace, requisite_key=key, note=note)
+        runtime.mark_requisite_provided(
+            workspace,
+            requisite_key=key,
+            note=note,
+            mode=mode,
+            value=value,
+            attachment_id=attachment_id,
+        )
         return to_primitive(query_service.project_requisites(project_id))
 
     @app.get("/api/projects/{project_id}/task-graph")

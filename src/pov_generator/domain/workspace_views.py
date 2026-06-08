@@ -606,6 +606,15 @@ class RequisiteItemView:
     kind: str = "other"          # credential|dataset|file|setting|interface_format|sample|other
     blocking: bool = False       # блокирует переход на реализацию
     stage: str = "realizability" # источник: realizability | architecture
+    # Реквизиты v2 (план 2026-06-08):
+    consumer_ref: str = ""       # кому нужен: component_id/stable-key задачи (пусто = ранний запрос без привязки)
+    # Что и как предоставлено (для потребления и UI). Пусто, если не предоставлено.
+    # provided_mode: "value" | "file" | "reference" (legacy note → "reference").
+    # provided_value не используется для секретов (credential идёт через reference).
+    provided_mode: str = ""
+    provided_value: str = ""
+    provided_note: str = ""
+    provided_attachment_id: str = ""
 
 
 @dataclass(frozen=True)

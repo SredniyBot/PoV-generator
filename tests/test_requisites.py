@@ -88,7 +88,44 @@ def test_gaps_tolerate_malformed_payload() -> None:
     assert _extract_gaps({"capabilities": [{"name": ""}]}) == ()
 
 
-# --- Ф4: предоставление реквизитов (round-trip стора) ------------------------
+# --- Ф2: модель реквизита (ключ-предусловие + consumer_ref) ------------------
+
+
+def test_realizability_key_is_namespaced_and_consumer_empty() -> None:
+    items = _extract_requisites(
+        {"capabilities": [{"name": "Интеграция", "prerequisites": ["Доступ к 1С"]}]}
+    )
+    assert items[0].key == "realizability:Доступ к 1С"
+    # У реализуемости потребитель ещё не известен — раннее предупреждение.
+    assert items[0].consumer_ref == ""
+
+
+def test_component_model_requisite_carries_consumer_ref() -> None:
+    from pov_generator.application.workspace_query_service import (
+        _extract_component_model_requisites,
+    )
+
+    items = _extract_component_model_requisites(
+        {
+            "components": [
+                {
+                    "id": "ingest",
+                    "name": "Приём данных",
+                    "requisites": [
+                        {"id": "crm_creds", "title": "Доступ к CRM", "kind": "credential",
+                         "blocking": True}
+                    ],
+                }
+            ]
+        }
+    )
+    assert items[0].key == "architecture:ingest:crm_creds"
+    assert items[0].consumer_ref == "ingest"
+    assert items[0].kind == "credential"
+    assert items[0].blocking is True
+
+
+# --- Ф2: предоставление реквизитов (round-trip структурного стора) -----------
 
 
 def test_requisite_provision_round_trip(tmp_path: Path) -> None:
@@ -102,8 +139,19 @@ def test_requisite_provision_round_trip(tmp_path: Path) -> None:
         domain_packs=(),
     )
     assert runtime.list_requisite_provisions(workspace) == {}
+
+    # Legacy-вызов (только note) → mode='reference', value пуст.
     runtime.mark_requisite_provided(workspace, requisite_key="Доступ к 1С", note="выдан")
-    assert runtime.list_requisite_provisions(workspace) == {"Доступ к 1С": "выдан"}
-    # idempotent + обновление заметки
-    runtime.mark_requisite_provided(workspace, requisite_key="Доступ к 1С", note="выдан 2")
-    assert runtime.list_requisite_provisions(workspace) == {"Доступ к 1С": "выдан 2"}
+    provisions = runtime.list_requisite_provisions(workspace)
+    assert set(provisions) == {"Доступ к 1С"}
+    assert provisions["Доступ к 1С"]["note"] == "выдан"
+    assert provisions["Доступ к 1С"]["mode"] == "reference"
+    assert provisions["Доступ к 1С"]["value"] == ""
+
+    # idempotent + смена на структурный payload (mode=value).
+    runtime.mark_requisite_provided(
+        workspace, requisite_key="Доступ к 1С", note="", mode="value", value="42"
+    )
+    provisions = runtime.list_requisite_provisions(workspace)
+    assert provisions["Доступ к 1С"]["mode"] == "value"
+    assert provisions["Доступ к 1С"]["value"] == "42"
