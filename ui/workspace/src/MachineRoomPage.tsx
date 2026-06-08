@@ -178,6 +178,7 @@ function ExecutorSection({
   const [command, setCommand] = useState<string>("");
   const [engine, setEngine] = useState<"docker" | "host">("docker");
   const [hostSecurity, setHostSecurity] = useState<"restricted" | "full">("restricted");
+  const [network, setNetwork] = useState<"none" | "online">("none");
   const [seeded, setSeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
@@ -194,6 +195,7 @@ function ExecutorSection({
       setCommand(conn.command ?? "");
       setEngine(conn.engine ?? "docker");
       setHostSecurity(conn.host_security ?? "restricted");
+      setNetwork(conn.network ?? "none");
       setSeeded(true);
     }
   }, [conn, seeded]);
@@ -226,6 +228,7 @@ function ExecutorSection({
         command: command.trim() || null,
         engine,
         host_security: hostSecurity,
+        network,
       }),
     onSuccess: () => {
       setError(null);
@@ -383,6 +386,42 @@ function ExecutorSection({
             <p className="mroom-result mroom-result--err">
               <AlertCircle size={13} /> Полный доступ: агент сможет выполнять любые
               команды на хосте без ОС-изоляции. Включайте, только если доверяете прогону.
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {/* Доступ в сеть для зависимостей (только docker-движок; на хосте — сеть
+          хоста). Deny-by-default; online нужен, чтобы агент ставил библиотеки. */}
+      {!isHost && provider !== "stub" ? (
+        <div className="mroom-engine">
+          <span className="mroom-engine__label">Доступ в сеть (зависимости)</span>
+          <div className="mroom-seg">
+            <button
+              type="button"
+              className={"mroom-seg__btn" + (network === "none" ? " is-active" : "")}
+              onClick={() => setNetwork("none")}
+            >
+              Без сети · изоляция
+            </button>
+            <button
+              type="button"
+              className={"mroom-seg__btn" + (network === "online" ? " is-active" : "")}
+              onClick={() => setNetwork("online")}
+            >
+              С сетью · ставить зависимости
+            </button>
+          </div>
+          {network === "online" ? (
+            <p className="mroom-result mroom-result--err">
+              <AlertCircle size={13} /> С сетью агент и сборка могут ставить
+              зависимости из реестров (pip/npm) — но у песочницы есть выход в
+              интернет. Включайте, если доверяете прогону.
+            </p>
+          ) : (
+            <p className="mroom-muted mroom-fineprint">
+              Песочница без сети (изоляция). Если коду нужны внешние библиотеки —
+              включите сеть, иначе их не установить и сборка офлайн упадёт.
             </p>
           )}
         </div>

@@ -286,6 +286,7 @@ export const api = {
     default_timeout_s?: number | null;
     engine?: "docker" | "host";
     host_security?: "restricted" | "full";
+    network?: "none" | "online";
   }) =>
     request<import("./types").HarnessConnectionView>("/api/harness/connection", {
       method: "PUT",

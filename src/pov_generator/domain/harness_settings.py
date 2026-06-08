@@ -39,6 +39,14 @@ HARNESS_ENGINES: tuple[HarnessEngine, ...] = ("docker", "host")
 HarnessHostSecurity = Literal["restricted", "full"]
 HARNESS_HOST_SECURITY: tuple[HarnessHostSecurity, ...] = ("restricted", "full")
 
+# Сетевой доступ песочницы:
+#   none   — egress запрещён (изоляция, дефолт безопасности). Агент НЕ может
+#            ставить зависимости из реестров (pip/npm), сборка офлайн.
+#   online — есть сеть (bridge): агент и гейты ставят зависимости из реестров
+#            (pip/npm/...), `docker build` тянет пакеты. Осознанный опт-ин.
+HarnessNetwork = Literal["none", "online"]
+HARNESS_NETWORK: tuple[HarnessNetwork, ...] = ("none", "online")
+
 
 @dataclass(frozen=True)
 class HarnessConnectionSettings:
@@ -53,5 +61,8 @@ class HarnessConnectionSettings:
     # claude_code; full-режим — осознанный размен изоляции на автономность.
     engine: HarnessEngine = "docker"
     host_security: HarnessHostSecurity = "restricted"
+    # Сетевой доступ docker-песочницы: none (изоляция) или online (зависимости из
+    # реестров). Deny-by-default; для host-движка не применимо (сеть хоста).
+    network: HarnessNetwork = "none"
     source: HarnessConnectionSource = "default"
     updated_at: str | None = None

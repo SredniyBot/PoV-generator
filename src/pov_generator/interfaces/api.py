@@ -389,6 +389,7 @@ def create_app(
             default_timeout_s=timeout,
             engine=_optional_str(payload, "engine") or "docker",
             host_security=_optional_str(payload, "host_security") or "restricted",
+            network=_optional_str(payload, "network") or "none",
         )
         return to_primitive(saved)
 

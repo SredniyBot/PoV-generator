@@ -16,6 +16,7 @@ from ..common.serialization import utc_now_iso
 from ..domain.harness_settings import (
     HARNESS_ENGINES,
     HARNESS_HOST_SECURITY,
+    HARNESS_NETWORK,
     HARNESS_PROVIDER_TYPES,
     HarnessConnectionSettings,
 )
@@ -55,6 +56,7 @@ class HarnessSettingsService:
         default_timeout_s: int | None = None,
         engine: str = "docker",
         host_security: str = "restricted",
+        network: str = "none",
     ) -> HarnessConnectionSettings:
         """Сохранить выбор пользователя. Валидирует тип адаптера и движок."""
         if provider not in HARNESS_PROVIDER_TYPES:
@@ -72,6 +74,11 @@ class HarnessSettingsService:
                 f"Неизвестный режим безопасности: '{host_security}'. "
                 f"Допустимы: {', '.join(HARNESS_HOST_SECURITY)}."
             )
+        if network not in HARNESS_NETWORK:
+            raise ValidationError(
+                f"Неизвестный сетевой режим: '{network}'. "
+                f"Допустимы: {', '.join(HARNESS_NETWORK)}."
+            )
         # host-движок переиспользует залогиненную сессию claude CLI — он осмыслен
         # только для адаптера claude_code; для прочих принудительно docker.
         if engine == "host" and provider != "claude_code":
@@ -88,6 +95,7 @@ class HarnessSettingsService:
             default_timeout_s=default_timeout_s,
             engine=engine,  # type: ignore[arg-type]  — проверено выше
             host_security=host_security,  # type: ignore[arg-type]  — проверено выше
+            network=network,  # type: ignore[arg-type]  — проверено выше
             source="user",
             updated_at=utc_now_iso(),
         )
@@ -109,5 +117,6 @@ class HarnessSettingsService:
                 default_timeout_s=stored.default_timeout_s,
                 engine=stored.engine,
                 host_security=stored.host_security,
+                network=stored.network,
             )
         return connection_from_env()

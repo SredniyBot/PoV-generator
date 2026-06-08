@@ -34,7 +34,7 @@ class HarnessSettingsStore:
             row = conn.execute(
                 """
                 select provider, image, model, command, default_timeout_s,
-                       engine, host_security, source, updated_at
+                       engine, host_security, network, source, updated_at
                 from harness_connection where id = 1
                 """
             ).fetchone()
@@ -48,6 +48,7 @@ class HarnessSettingsStore:
             default_timeout_s=row["default_timeout_s"],
             engine=row["engine"] or "docker",
             host_security=row["host_security"] or "restricted",
+            network=row["network"] or "none",
             source=row["source"],
             updated_at=row["updated_at"],
         )
@@ -61,8 +62,8 @@ class HarnessSettingsStore:
                 """
                 insert into harness_connection(
                     id, provider, image, model, command, default_timeout_s,
-                    engine, host_security, source, updated_at
-                ) values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    engine, host_security, network, source, updated_at
+                ) values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(id) do update set
                     provider = excluded.provider,
                     image = excluded.image,
@@ -71,6 +72,7 @@ class HarnessSettingsStore:
                     default_timeout_s = excluded.default_timeout_s,
                     engine = excluded.engine,
                     host_security = excluded.host_security,
+                    network = excluded.network,
                     source = excluded.source,
                     updated_at = excluded.updated_at
                 """,
@@ -82,6 +84,7 @@ class HarnessSettingsStore:
                     settings.default_timeout_s,
                     settings.engine,
                     settings.host_security,
+                    settings.network,
                     settings.source,
                     settings.updated_at,
                 ),
@@ -114,6 +117,7 @@ class HarnessSettingsStore:
                 default_timeout_s integer,
                 engine text not null default 'docker',
                 host_security text not null default 'restricted',
+                network text not null default 'none',
                 source text not null default 'user',
                 updated_at text
             );
@@ -121,6 +125,7 @@ class HarnessSettingsStore:
         )
         # Идемпотентная миграция для БД, созданных до Ф7e (без engine/host_security).
         self._ensure_column(connection, "engine", "text not null default 'docker'")
+        self._ensure_column(connection, "network", "text not null default 'none'")
         self._ensure_column(
             connection, "host_security", "text not null default 'restricted'"
         )

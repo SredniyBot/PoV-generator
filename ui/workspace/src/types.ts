@@ -758,6 +758,7 @@ export interface HarnessConnectionView {
   default_timeout_s: number | null;
   engine: "docker" | "host";
   host_security: "restricted" | "full";
+  network: "none" | "online";
   source: string;
   updated_at: string | null;
 }

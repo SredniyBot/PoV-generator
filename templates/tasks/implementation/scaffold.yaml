@@ -48,7 +48,9 @@ summary: |
     manifest.contracts: каждый сервис будет строиться против них, не против кода
     соседа;
   • docker-compose.yml — все сервисы как контейнеры (порты, сеть, healthcheck,
-    env из manifest.conventions.config) + Dockerfile-скелет на каждый сервис;
+    env из manifest.conventions.config) + Dockerfile на каждый сервис, который
+    УСТАНАВЛИВАЕТ зависимости из манифеста сервиса (pip install -r requirements /
+    npm ci) — тогда `docker build` соберёт сервис с его библиотеками;
   • AGENTS.md — операционка для агентов: что read-only (контракты, конвенции),
     куда писать (только своя зона сервиса), как собрать/тест/запустить, DoD;
   • CONVENTIONS.md и STACK.md — устав и договор версий технологий из

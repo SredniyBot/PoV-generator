@@ -24,7 +24,7 @@ from .providers.aider import AiderHarnessProvider
 from .providers.claude_code import ClaudeCodeHarnessProvider
 from .providers.command import CommandHarnessProvider
 from .providers.stub import StubHarnessProvider
-from .sandbox import SandboxRuntime
+from .sandbox import ResourceLimits, SandboxRuntime
 
 # Дефолтный harness, пока ничего не настроено. Stub — детерминированный, без
 # Docker; в проде дефолт сменится на настоящий адаптер через подключение.
@@ -60,6 +60,9 @@ class HarnessConnection:
     default_timeout_s: int | None = None
     engine: str = "docker"
     host_security: str = "restricted"
+    # Сетевой доступ docker-песочницы: "none" (изоляция) или "online" (зависимости
+    # из реестров: pip/npm, docker build тянет пакеты). Deny-by-default.
+    network: str = "none"
 
 
 # Матрица возможностей адаптеров — для выбора в настройках (Ф7c) и подсказок UI.
@@ -117,6 +120,13 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
     },
 }
 
+def _limits_for(connection: "HarnessConnection") -> ResourceLimits:
+    """Лимиты песочницы из подключения. Сеть: ``online`` → bridge (зависимости
+    из реестров), иначе ``none`` (egress запрещён, дефолт безопасности)."""
+    network = "bridge" if connection.network == "online" else "none"
+    return ResourceLimits(network=network)
+
+
 # Билдеры адаптеров: тип → как собрать из подключения + песочницы.
 _ADAPTER_BUILDERS: dict[
     str, Callable[["HarnessConnection", SandboxRuntime], HarnessProvider]
@@ -126,12 +136,14 @@ _ADAPTER_BUILDERS: dict[
         image=c.image or _DEFAULT_IMAGES["aider"],
         model=c.model,
         default_timeout_s=c.default_timeout_s,
+        resource_limits=_limits_for(c),
     ),
     "claude_code": lambda c, sb: ClaudeCodeHarnessProvider(
         sandbox=sb,
         image=c.image or _DEFAULT_IMAGES["claude_code"],
         model=c.model,
         default_timeout_s=c.default_timeout_s,
+        resource_limits=_limits_for(c),
     ),
     "command": lambda c, sb: CommandHarnessProvider(
         sandbox=sb,
@@ -139,6 +151,7 @@ _ADAPTER_BUILDERS: dict[
         command=c.command or "true",
         model=c.model,
         default_timeout_s=c.default_timeout_s,
+        resource_limits=_limits_for(c),
     ),
 }
 
@@ -164,6 +177,7 @@ def connection_from_env() -> HarnessConnection:
         engine=os.environ.get("POV_HARNESS_ENGINE", "docker") or "docker",
         host_security=os.environ.get("POV_HARNESS_HOST_SECURITY", "restricted")
         or "restricted",
+        network=os.environ.get("POV_HARNESS_NETWORK", "none") or "none",
     )
 
 
@@ -230,6 +244,7 @@ class HarnessProviderRegistry:
                 model=connection.model,
                 default_timeout_s=connection.default_timeout_s,
                 host_security=connection.host_security or "restricted",
+                resource_limits=_limits_for(connection),
             )
         builder = _ADAPTER_BUILDERS.get(connection.provider)
         if builder is None:
