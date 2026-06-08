@@ -251,6 +251,8 @@ export const api = {
     model?: string | null;
     command?: string | null;
     default_timeout_s?: number | null;
+    engine?: "docker" | "host";
+    host_security?: "restricted" | "full";
   }) =>
     request<import("./types").HarnessConnectionView>("/api/harness/connection", {
       method: "PUT",

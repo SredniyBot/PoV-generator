@@ -711,6 +711,7 @@ export interface HarnessAdapterCapability {
   best_for: string;
   default_image?: string;
   default_model?: string;
+  supports_host?: boolean;
 }
 
 export interface HarnessAdaptersView {
@@ -724,6 +725,8 @@ export interface HarnessConnectionView {
   model: string | null;
   command: string | null;
   default_timeout_s: number | null;
+  engine: "docker" | "host";
+  host_security: "restricted" | "full";
   source: string;
   updated_at: string | null;
 }

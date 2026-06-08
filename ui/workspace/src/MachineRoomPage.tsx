@@ -175,6 +175,8 @@ function ExecutorSection({
   const [image, setImage] = useState<string>("");
   const [model, setModel] = useState<string>("");
   const [command, setCommand] = useState<string>("");
+  const [engine, setEngine] = useState<"docker" | "host">("docker");
+  const [hostSecurity, setHostSecurity] = useState<"restricted" | "full">("restricted");
   const [seeded, setSeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
@@ -189,6 +191,8 @@ function ExecutorSection({
       setImage(conn.image ?? "");
       setModel(conn.model ?? "");
       setCommand(conn.command ?? "");
+      setEngine(conn.engine ?? "docker");
+      setHostSecurity(conn.host_security ?? "restricted");
       setSeeded(true);
     }
   }, [conn, seeded]);
@@ -200,10 +204,16 @@ function ExecutorSection({
     setImage(cap?.default_image ?? "");
     setModel(cap?.default_model ?? "");
     if (p !== "command") setCommand("");
+    // Host-движок доступен только адаптерам с supports_host — иначе сбрасываем.
+    if (!cap?.supports_host) setEngine("docker");
     setBuilding(false);
   };
 
-  const supportsImage = provider !== "stub";
+  const selectedCap = caps[provider];
+  const canHost = Boolean(selectedCap?.supports_host);
+  const isHost = engine === "host" && canHost;
+
+  const supportsImage = provider !== "stub" && !isHost; // на хосте образ не нужен
   const needsCommand = provider === "command";
 
   const saveMutation = useMutation({
@@ -213,6 +223,8 @@ function ExecutorSection({
         image: image.trim() || null,
         model: model.trim() || null,
         command: command.trim() || null,
+        engine,
+        host_security: hostSecurity,
       }),
     onSuccess: () => {
       setError(null);
@@ -271,6 +283,88 @@ function ExecutorSection({
           );
         })}
       </div>
+
+      {/* Где исполнять: Docker (изоляция) или хост (сессия claude CLI). Виден
+          только для адаптеров с host-режимом (claude_code). */}
+      {canHost ? (
+        <div className="mroom-engine">
+          <span className="mroom-engine__label">Где исполнять</span>
+          <div className="mroom-seg">
+            <button
+              type="button"
+              className={"mroom-seg__btn" + (engine === "docker" ? " is-active" : "")}
+              onClick={() => setEngine("docker")}
+            >
+              В Docker · изоляция
+            </button>
+            <button
+              type="button"
+              className={"mroom-seg__btn" + (engine === "host" ? " is-active" : "")}
+              onClick={() => setEngine("host")}
+            >
+              На хосте · сессия claude CLI
+            </button>
+          </div>
+          {isHost ? (
+            <p className="mroom-muted mroom-fineprint">
+              claude запускается на этом компьютере и переиспользует вашу залогиненную
+              сессию claude CLI — без второй настройки и ключей. Сервисы проекта агент
+              собирает и запускает в Docker, не на хосте.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Режим безопасности host-исполнения. */}
+      {isHost ? (
+        <div className="mroom-engine">
+          <span className="mroom-engine__label">Доступ агента на хосте</span>
+          <div className="mroom-seg">
+            <button
+              type="button"
+              className={
+                "mroom-seg__btn" + (hostSecurity === "restricted" ? " is-active" : "")
+              }
+              onClick={() => setHostSecurity("restricted")}
+            >
+              Только файлы · безопасно
+            </button>
+            <button
+              type="button"
+              className={"mroom-seg__btn" + (hostSecurity === "full" ? " is-active" : "")}
+              onClick={() => setHostSecurity("full")}
+            >
+              Полный доступ
+            </button>
+          </div>
+          {hostSecurity === "restricted" ? (
+            <p className="mroom-muted mroom-fineprint">
+              Агент правит только файлы в рабочем каталоге — без хостового shell и сети.
+              Сборка, тесты и запуск сервисов — в Docker.
+            </p>
+          ) : (
+            <p className="mroom-result mroom-result--err">
+              <AlertCircle size={13} /> Полный доступ: агент сможет выполнять любые
+              команды на хосте без ОС-изоляции. Включайте, только если доверяете прогону.
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {/* На хосте образ не нужен — только модель claude. */}
+      {isHost ? (
+        <div className="mroom-form">
+          <label className="mroom-field">
+            <span>Модель</span>
+            <input
+              type="text"
+              value={model}
+              placeholder="claude-opus-4-8"
+              onChange={(e) => setModel(e.target.value)}
+            />
+          </label>
+        </div>
+      ) : null}
 
       {supportsImage ? (
         <div className="mroom-form">

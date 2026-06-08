@@ -6678,6 +6678,53 @@ code {
   font-size: 0.85rem;
 }
 
+/* ── Движок исполнения (Docker / хост) + режим безопасности ────────────────── */
+
+.mroom-engine {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.mroom-engine__label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.mroom-seg {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.mroom-seg__btn {
+  padding: 0.4rem 0.85rem;
+  border: none;
+  background: var(--surface, transparent);
+  color: var(--text-secondary, #9aa4b2);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background var(--motion-fast, 0.12s) ease, color var(--motion-fast, 0.12s) ease;
+}
+
+.mroom-seg__btn + .mroom-seg__btn {
+  border-left: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+}
+
+.mroom-seg__btn:hover {
+  color: var(--text-primary, #e6edf3);
+}
+
+.mroom-seg__btn.is-active {
+  background: var(--accent, #58a6ff);
+  color: #fff;
+}
+
 /* ── Settings shell: разделы настроек (LLM / Окружение) ───────────────────── */
 
 .settings-shell {
