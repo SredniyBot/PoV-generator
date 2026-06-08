@@ -33,7 +33,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { AlertTriangle, ChevronDown, ChevronRight, FileText, Layers, Split, Undo2 } from "lucide-react";
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, FileText, Layers, Split, Undo2 } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
@@ -253,6 +253,7 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         "tg-node" +
         (task.is_current ? " tg-node--current" : "") +
         (task.available === false ? " tg-node--locked" : "") +
+        (task.is_harness ? " tg-node--harness" : "") +
         (rbState ? ` tg-node--rb-${rbState}` : "")
       }
       style={{ borderLeftColor: meta.color }}
@@ -284,10 +285,17 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         ) : null}
         {isComposite ? (
           <Layers size={13} className="tg-node__type-icon" aria-label="композит" />
+        ) : task.is_harness ? (
+          <Bot size={13} className="tg-node__type-icon tg-node__type-icon--harness" aria-label="агент" />
         ) : (
           <FileText size={13} className="tg-node__type-icon" aria-label="задача" />
         )}
       </div>
+      {task.is_harness ? (
+        <span className="tg-node__agent-tag" title="Исполняется автономным агентом (harness)">
+          агент
+        </span>
+      ) : null}
       <div className="tg-node__title" title={task.title}>{task.title}</div>
       {task.status === "failed" && (task.error_message || task.status_summary) ? (
         <div

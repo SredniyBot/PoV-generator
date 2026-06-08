@@ -710,7 +710,10 @@ def create_app(
         if not key:
             raise HTTPException(status_code=400, detail="Не указан реквизит (key).")
         mode = str(payload.get("mode") or "reference").strip() or "reference"
-        allowed_modes = {"value", "file", "reference", "assumption", "deferred", "not_applicable"}
+        # mock (#3): «поставить заглушку» — система сгенерирует тестовые данные
+        # для сегмента. Положительное разрешение без данных (снимает блок узла),
+        # узлу-агенту в бриф попадает указание сгенерировать mock.
+        allowed_modes = {"value", "file", "reference", "assumption", "deferred", "not_applicable", "mock"}
         if mode not in allowed_modes:
             raise HTTPException(status_code=400, detail=f"Неизвестный режим: {mode}.")
         note = str(payload.get("note") or "")

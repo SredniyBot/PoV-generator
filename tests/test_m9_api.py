@@ -414,7 +414,9 @@ def test_api_create_project_can_auto_select_domain_packs(tmp_path: Path) -> None
 
 
 ARCHITECTURE_OBJECTIVE_REF = "architecture.system_design@1.0.0"
-IMPLEMENTATION_OBJECTIVE_REF = "implementation.build_plan@1.0.0"
+# #1: план реализации стал первой подзадачей этапа «Реализация» — цепочка
+# теперь ТЗ → Архитектура → realize (отдельного гейта build_plan нет).
+IMPLEMENTATION_OBJECTIVE_REF = "implementation.realize@1.0.0"
 
 
 def test_api_exposes_stage_roadmap(tmp_path: Path) -> None:

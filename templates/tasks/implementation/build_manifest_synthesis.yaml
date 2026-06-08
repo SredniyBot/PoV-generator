@@ -17,6 +17,11 @@ requires:
   artifacts:
     required:
       - architecture.component_model@1.0.0
+      # #1: план (build_plan) производится build_plan_synthesis ТОЛЬКО после
+      # завершения веера покомпонентных спек (sibling_fanout_complete). Требуя
+      # его, манифест/каркас/сборка стартуют после полной под-фазы плана —
+      # внутри одного гейта «Реализация», без отдельного гейта плана.
+      - implementation.build_plan@1.0.0
     optional:
       - implementation.component_build_spec@1.0.0
       - architecture.interaction_view@1.0.0

@@ -1307,6 +1307,19 @@ class ExecutionService:
                             seeded[_safe_input_name(record.original_filename, "")] = text
                 except Exception:  # noqa: BLE001 — недоступный файл просто не сеем
                     continue
+            elif mode == "mock":
+                # #3: «заглушка» — реальных данных нет, пользователь поручил
+                # системе сгенерировать тестовые данные. Узлу-агенту даём явное
+                # указание сгенерировать реалистичный mock для этого сегмента.
+                needed_for = getattr(item, "needed_for", "") or ""
+                note = (
+                    f"ТЕСТОВЫЕ ДАННЫЕ (MOCK). Реальные данные для сегмента «{item.title}» "
+                    f"не предоставлены — сгенерируй реалистичные тестовые (mock) данные "
+                    f"и используй их."
+                )
+                if needed_for:
+                    note += f" Нужно для: {needed_for}."
+                seeded[_safe_input_name((item.key or item.title) + "_mock", ".md")] = note
         return seeded
 
     def _resolve_harvest_path(self, workspace: Path, task) -> str | None:

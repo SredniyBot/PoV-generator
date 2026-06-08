@@ -104,6 +104,9 @@ export interface TaskNodeView {
   /** Ф1: доступна ли задача для действий. У неактивного гейта (скелет/история)
    *  задачи помечены недоступными (read-only, приглушены). По умолчанию true. */
   available?: boolean;
+  /** #2: задача исполняется автономным агентом (executor: harness) — граф
+   *  выделяет такие узлы отдельной иконкой/рамкой. */
+  is_harness?: boolean;
 }
 
 export interface ProjectTaskGraphView {

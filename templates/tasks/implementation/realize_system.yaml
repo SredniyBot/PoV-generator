@@ -6,9 +6,13 @@ type: composite
 status: active
 domain: implementation
 children:
-  # RG: фазовый граф «общее ядро → компоненты → интеграция → системный DoD».
-  # Порядок между узлами — по requires (данные) + priority; внутри веера — по
-  # топо-зависимостям компонентов. Общий том делит весь граф (ключ — fan-out).
+  # RG: фазовый граф «план → общее ядро → компоненты → интеграция → системный
+  # DoD». Порядок между узлами — по requires (данные) + priority; внутри веера —
+  # по топо-зависимостям компонентов. Общий том делит весь граф (ключ — fan-out).
+  # #1: план реализации больше не отдельный гейт, а первая подзадача этапа —
+  # покомпонентные спеки сборки + сводный план (prepare_build_plan composite).
+  - id: prepare_build_plan
+    task: implementation.prepare_build_plan@1.0.0
   # 1. Манифест сборки: декомпозиция на сервисы + контракты + устав.
   - id: build_manifest_synthesis
     task: implementation.build_manifest_synthesis@1.0.0

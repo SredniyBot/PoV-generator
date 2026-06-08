@@ -15,13 +15,20 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Paperclip, Upload } from "lucide-react";
+import { Check, FlaskConical, Paperclip, Upload } from "lucide-react";
 
 import { api } from "./api";
 import type { RequisiteItemView } from "./types";
 import { Button, EmptyState, LoadingPanel, SectionCard, cx } from "./ui";
 
-type ProvideMode = "value" | "file" | "reference" | "assumption" | "deferred" | "not_applicable";
+type ProvideMode =
+  | "value"
+  | "file"
+  | "reference"
+  | "assumption"
+  | "deferred"
+  | "not_applicable"
+  | "mock";
 
 interface ProvidePayload {
   mode: ProvideMode;
@@ -46,6 +53,7 @@ const PROVIDED_LABELS: Record<string, string> = {
   assumption: "Допущение",
   deferred: "Отложено",
   not_applicable: "Неприменимо",
+  mock: "Заглушка (тест. данные)",
 };
 
 function groupByNeededFor(items: RequisiteItemView[]): [string, RequisiteItemView[]][] {
@@ -244,12 +252,30 @@ function RequisiteCard({
               </>
             )}
 
+            {/* #3: «заглушка» и «не могу предоставить» — кнопки одного уровня
+                с «Предоставить», а не спрятанный тихий линк. */}
+            {!escapeOpen ? (
+              <div className="requisite-form__actions requisite-form__actions--alt">
+                <Button
+                  tone="secondary"
+                  disabled={pending}
+                  icon={<FlaskConical size={14} />}
+                  onClick={() => {
+                    onProvide({ mode: "mock" });
+                    reset();
+                  }}
+                >
+                  Заглушка — сгенерировать данные
+                </Button>
+                <Button tone="secondary" disabled={pending} onClick={() => setEscapeOpen(true)}>
+                  Не могу предоставить
+                </Button>
+              </div>
+            ) : null}
+
+            {escapeOpen || editing ? (
             <div className="requisite-escape">
-              {!escapeOpen ? (
-                <button type="button" className="requisite-link" onClick={() => setEscapeOpen(true)}>
-                  Не могу предоставить →
-                </button>
-              ) : assumeOpen ? (
+              {!escapeOpen ? null : assumeOpen ? (
                 <>
                   <textarea
                     className="decision-card__free-input"
@@ -305,6 +331,13 @@ function RequisiteCard({
                   >
                     Неприменимо
                   </button>
+                  <button
+                    type="button"
+                    className="requisite-link"
+                    onClick={() => setEscapeOpen(false)}
+                  >
+                    назад
+                  </button>
                 </div>
               )}
               {editing ? (
@@ -313,6 +346,7 @@ function RequisiteCard({
                 </button>
               ) : null}
             </div>
+            ) : null}
           </div>
         ) : null}
       </div>

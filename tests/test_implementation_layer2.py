@@ -57,7 +57,9 @@ def test_chain_from_architecture_to_implementation() -> None:
     snapshot, _ = _validate(REPO_ROOT / "templates")
     arch = snapshot.resolve_objective("architecture.system_design@1.0.0")
     nexts = {ref.as_string() for ref in arch.compatible_next_objectives}
-    assert "implementation.build_plan@1.0.0" in nexts
+    # #1: план реализации стал первой подзадачей этапа «Реализация» —
+    # после архитектуры идёт сразу realize (отдельного гейта плана нет).
+    assert "implementation.realize@1.0.0" in nexts
 
 
 def test_build_spec_without_capability_ref_is_valid(tmp_path: Path) -> None:

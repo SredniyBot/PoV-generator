@@ -1830,6 +1830,15 @@ class WorkspaceQueryService:
                     return "Ждёт данные от пользователя: " + ", ".join(pending)
             return task.error_message or self._status_summary(task)
 
+        def _is_harness(task: TaskRecord) -> bool:
+            # #2: узел исполняется агентом-harness — резолвим executor шаблона.
+            if snapshot is None:
+                return False
+            try:
+                return snapshot.resolve_template(task.template_ref).executor == "harness"
+            except Exception:  # noqa: BLE001 — нерезолвимый шаблон → не harness
+                return False
+
         def build(task: TaskRecord) -> TaskNodeView:
             fan_out_meta = None
             if task.template_type == "fan_out" and snapshot is not None:
@@ -1866,6 +1875,7 @@ class WorkspaceQueryService:
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
                 fan_out_meta=fan_out_meta,
                 available=available,
+                is_harness=_is_harness(task),
             )
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))

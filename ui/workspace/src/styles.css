@@ -3711,6 +3711,33 @@ code {
   animation: tg-pulse 2s ease-in-out infinite;
 }
 
+/* #2: узел-агент (executor: harness) — выделяем пунктирной фиолетовой рамкой и
+   меткой «агент», чтобы отличать автономную сборку от LLM-узлов. */
+.tg-node--harness {
+  box-shadow: inset 0 0 0 1px rgba(168, 138, 222, 0.55);
+  background: linear-gradient(0deg, rgba(168, 138, 222, 0.07), rgba(168, 138, 222, 0.07)),
+    var(--surface-primary, rgba(28, 32, 38, 0.95));
+}
+
+.tg-node__type-icon--harness {
+  color: rgba(168, 138, 222, 0.95);
+}
+
+.tg-node__agent-tag {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(168, 138, 222, 0.95);
+  background: rgba(168, 138, 222, 0.12);
+  border: 1px solid rgba(168, 138, 222, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+  pointer-events: none;
+}
+
 @keyframes tg-pulse {
   0%, 100% { outline-color: rgba(120, 184, 201, 0.75); box-shadow: 0 0 0 0 rgba(120, 184, 201, 0.25); }
   50%       { outline-color: rgba(120, 184, 201, 0.35); box-shadow: 0 0 8px 3px rgba(120, 184, 201, 0.15); }
@@ -6502,6 +6529,9 @@ code {
 /* Форма ввода: одна естественная форма + тихие ссылки. */
 .requisite-form { display: flex; flex-direction: column; gap: var(--space-3); }
 .requisite-form__actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+/* #3: вторичные действия (заглушка / не могу предоставить) — на одном уровне с
+   «Предоставить», но отделены лёгким верхним отступом. */
+.requisite-form__actions--alt { margin-top: var(--space-2); }
 .requisite-hint {
   margin: 0;
   font-size: var(--font-size-meta);
