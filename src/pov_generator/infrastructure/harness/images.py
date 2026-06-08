@@ -89,6 +89,7 @@ class DockerImagePreparer:
     def prepare(self, image: str, on_progress: ProgressSink | None = None) -> ImageStatus:
         client = self._docker_client()
         dockerfile = _BUNDLED_IMAGES.get(image)
+        build_error: str | None = None
         try:
             if dockerfile is not None:
                 # Образ агента встроен в проект: собираем локально из bundled
@@ -101,10 +102,15 @@ class DockerImagePreparer:
                     rm=True,
                     decode=True,
                 ):
-                    if on_progress and isinstance(line, dict):
-                        msg = line.get("stream") or line.get("status")
-                        if msg and str(msg).strip():
-                            on_progress({"status": str(msg).strip()})
+                    if not isinstance(line, dict):
+                        continue
+                    # Ошибка сборки приходит отдельной строкой потока — ловим её,
+                    # иначе образ молча не соберётся (ready=False без причины).
+                    if line.get("error"):
+                        build_error = str(line["error"]).strip()
+                    msg = line.get("stream") or line.get("status")
+                    if on_progress and msg and str(msg).strip():
+                        on_progress({"status": str(msg).strip()})
             else:
                 # Прочие образы (напр. busybox для self-test) — обычный pull.
                 for line in client.api.pull(image, stream=True, decode=True):
@@ -116,4 +122,9 @@ class DockerImagePreparer:
                 ready=False,
                 error=str(exc).strip() or type(exc).__name__,
             )
-        return ImageStatus(image=image, ready=self.is_ready(image))
+        ready = self.is_ready(image)
+        # Всегда даём ПРИЧИНУ, если образ не готов: без неё UI завис бы в
+        # «собирается» (нет ни ready, ни error).
+        if not ready and build_error is None:
+            build_error = "Сборка завершилась, но образ не появился (см. логи Docker)."
+        return ImageStatus(image=image, ready=ready, error=build_error if not ready else None)

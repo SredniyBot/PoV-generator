@@ -176,6 +176,15 @@ class HarnessOnboardingService:
                     in_progress=False, ready=False, error=str(exc).strip() or type(exc).__name__
                 )
 
+    def image_ready(self, image: str) -> bool:
+        """Собран ли образ локально (есть в Docker). False без Docker/SDK."""
+        if not self.docker_status().available:
+            return False
+        try:
+            return self._images.is_ready(image)
+        except Exception:  # noqa: BLE001 — нет демона/SDK
+            return False
+
     def pull_progress(self, image: str | None = None) -> PullProgress | None:
         target = image or self._self_test_image
         with self._lock:

@@ -265,6 +265,10 @@ export const api = {
     request<import("./types").HarnessPullProgress | null>(
       `/api/harness/image-progress?image=${encodeURIComponent(image)}`,
     ),
+  getHarnessImageStatus: (image: string) =>
+    request<import("./types").HarnessImageStatusView>(
+      `/api/harness/image-status?image=${encodeURIComponent(image)}`,
+    ),
   harnessSelfTest: (image?: string) =>
     request<import("./types").HarnessSelfTestView>("/api/harness/self-test", {
       method: "POST",

@@ -766,6 +766,12 @@ export interface HarnessSelfTestView {
   error: string | null;
 }
 
+export interface HarnessImageStatusView {
+  image: string;
+  ready: boolean;
+  progress: HarnessPullProgress | null;
+}
+
 export interface HarnessPrepareView {
   status: string;
   pull: HarnessPullProgress | null;

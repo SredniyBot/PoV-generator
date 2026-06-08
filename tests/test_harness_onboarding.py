@@ -144,6 +144,47 @@ def test_docker_image_preparer_builds_bundled_image() -> None:
     assert calls["pull"] == ["busybox:latest"]  # не встроенный → pull
 
 
+def test_docker_image_preparer_surfaces_build_error() -> None:
+    """Провал сборки (error в потоке / образ не появился) ВСЕГДА даёт причину —
+    иначе UI завис бы в «собирается» (баг бесконечной загрузки)."""
+    from pov_generator.infrastructure.harness.images import DockerImagePreparer
+
+    class _Api:
+        def build(self, **kw):
+            return iter([{"stream": "Step 1/3"}, {"error": "npm install failed"}])
+
+        def pull(self, image, **kw):
+            return iter([])
+
+    class _Images:
+        def get(self, image):  # noqa: ANN001 — фейк: образ не появился
+            raise RuntimeError("not found")
+
+    class _Client:
+        api = _Api()
+        images = _Images()
+
+    status = DockerImagePreparer(client=_Client()).prepare("povgen/aider:latest")
+    assert status.ready is False
+    assert status.error and "npm install failed" in status.error
+
+
+def test_image_ready_and_status_endpoint(tmp_path: Path) -> None:
+    # image_ready=False без Docker; эндпоинт image-status отвечает штатно.
+    service = _service(docker_available=False, image_ready=False)
+    assert service.image_ready(DEFAULT_SELF_TEST_IMAGE) is False
+    ready_service = _service(docker_available=True, image_ready=True)
+    assert ready_service.image_ready(DEFAULT_SELF_TEST_IMAGE) is True
+
+    app = create_app(repo_root=REPO_ROOT, runtime_root=tmp_path / "runtime")
+    client = TestClient(app)
+    resp = client.get("/api/harness/image-status", params={"image": "povgen/aider:latest"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["image"] == "povgen/aider:latest"
+    assert isinstance(body["ready"], bool)
+
+
 def test_stub_image_preparer_progress_and_ready() -> None:
     preparer = StubImagePreparer()
     assert preparer.is_ready("x:latest") is False
