@@ -20,6 +20,7 @@ from ..domain.workspace_views import (
     ArtifactValidationView,
     ArtifactVersionItemView,
     AttachmentView,
+    BundleFileView,
     CapabilityGapView,
     CheckpointSessionView,
     ContextManifestSummaryView,
@@ -638,6 +639,30 @@ class WorkspaceQueryService:
             details_included=include_details,
         )
 
+    # bundle_kind → категория подвкладки списка артефактов.
+    _BUNDLE_KIND_CATEGORY = {
+        "documents": "documents",
+        "code": "code",
+        "mixed": "code",
+        "files": "code",
+        "data": "data",
+        "database": "binary",
+        "container_image": "binary",
+        "binary": "binary",
+        "empty": "other",
+    }
+
+    def _artifact_category(self, workspace: Path, artifact) -> str:
+        """Категория артефакта для подвкладок: documents | code | binary | data |
+        other. Структурные/markdown → documents; бандл — по его bundle_kind."""
+        if artifact.artifact_format != "bundle":
+            return "documents"
+        try:
+            manifest = self._runtime.load_bundle_manifest(workspace, artifact.artifact_id)
+        except Exception:  # noqa: BLE001 — бандл без манифеста считаем кодом
+            return "code"
+        return self._BUNDLE_KIND_CATEGORY.get(manifest.bundle_kind, "other")
+
     def _artifact_summary(self, workspace: Path, artifact, *, archived: bool) -> ArtifactSummaryView:
         return ArtifactSummaryView(
             artifact_id=artifact.artifact_id,
@@ -651,6 +676,7 @@ class WorkspaceQueryService:
             user_verified=artifact.user_verified,
             archived=archived,
             is_superseded=artifact.is_superseded,
+            category=self._artifact_category(workspace, artifact),
         )
 
     def project_artifacts(self, project_id: str) -> tuple[ArtifactSummaryView, ...]:
@@ -710,6 +736,28 @@ class WorkspaceQueryService:
         if artifact.created_by_task_id is not None:
             usage = self._runtime.llm_usage_for_task(context.workspace, artifact.created_by_task_id)
         previous_versions = self._artifact_previous_versions(context.workspace, artifact)
+        # #2: бандл (код/файлы) — отдаём дерево файлов для просмотра, а не сырой
+        # манифест как json_content (его содержимое — список файлов, не контент).
+        is_bundle = artifact.artifact_format == "bundle"
+        bundle_kind: str | None = None
+        bundle_files: tuple[BundleFileView, ...] = ()
+        json_content = ""
+        if is_bundle:
+            try:
+                manifest = self._runtime.load_bundle_manifest(context.workspace, artifact.artifact_id)
+                bundle_kind = manifest.bundle_kind
+                bundle_files = tuple(
+                    BundleFileView(
+                        path=f.path, content_kind=f.content_kind, size_bytes=f.size_bytes
+                    )
+                    for f in manifest.files
+                )
+            except Exception:  # noqa: BLE001 — битый манифест: пустое дерево
+                bundle_kind = None
+        else:
+            json_content = self._runtime.load_artifact_content(
+                context.workspace, artifact.artifact_id
+            )
         return ArtifactDetailView(
             artifact_id=artifact.artifact_id,
             artifact_role=artifact.artifact_role,
@@ -718,7 +766,7 @@ class WorkspaceQueryService:
             created_at=artifact.created_at,
             created_by_task_id=artifact.created_by_task_id,
             template_ref=artifact.metadata.template_ref,
-            json_content=self._runtime.load_artifact_content(context.workspace, artifact.artifact_id),
+            json_content=json_content,
             markdown_content=markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else None,
             validations=self._artifact_validations(context.workspace, artifact.artifact_id),
             # Metadata Этапов 1 + 5 (раньше не выводилась в UI).
@@ -745,7 +793,34 @@ class WorkspaceQueryService:
             usage_source=("estimated" if usage and usage.has_estimated else "actual") if usage else None,
             usage_call_count=usage.call_count if usage else 0,
             previous_versions=previous_versions,
+            is_bundle=is_bundle,
+            bundle_kind=bundle_kind,
+            bundle_files=bundle_files,
         )
+
+    def bundle_file_text(
+        self, project_id: str, artifact_id: str, path: str
+    ) -> dict[str, object]:
+        """#2: содержимое одного файла бандла для просмотра в окне артефакта.
+
+        Текстовые файлы отдаются как текст (с мягким ограничением размера —
+        вьюер не тянет мегабайты); двоичные помечаются ``binary=True`` без тела.
+        """
+        context = self._load_context(project_id)
+        data = self._runtime.load_bundle_file(context.workspace, artifact_id, path)
+        max_bytes = 400_000
+        truncated = len(data) > max_bytes
+        try:
+            text = data[:max_bytes].decode("utf-8")
+        except UnicodeDecodeError:
+            return {"path": path, "binary": True, "text": "", "size_bytes": len(data)}
+        return {
+            "path": path,
+            "binary": False,
+            "text": text,
+            "size_bytes": len(data),
+            "truncated": truncated,
+        }
 
     def _artifact_previous_versions(
         self, workspace: Path, artifact

@@ -50,6 +50,15 @@ def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fal
     return fallback
 
 
+def _artifact_title(snapshot: RegistrySnapshot, artifact_role: str, template, task) -> str:
+    """Заголовок артефакта. Для инстанса веера — заголовок задачи (он несёт имя
+    компонента, #6): «Реализация компонента (код): FlexLed Web Application».
+    Иначе — документный заголовок по контракту роли."""
+    if getattr(task, "origin_kind", None) == "fan_out_instance" and (task.title or "").strip():
+        return task.title
+    return _artifact_document_title(snapshot, artifact_role, template.name)
+
+
 def _render_capability_pledge(spec: CapabilityProfileSpec) -> str:
     """System-prologue для задачи с executor=agent.
 
@@ -731,7 +740,7 @@ class ExecutionService:
             # вместо задачи «Разобрать неоднозначность запроса». Роль —
             # отдельной мета-меткой в карточке. Fallback на имя задачи, если
             # контракт почему-то не найден.
-            title=_artifact_document_title(snapshot, artifact_role, template.name),
+            title=_artifact_title(snapshot, artifact_role, template, task),
             description=f"Артефакт, созданный задачей {task.task_key}",
             artifact_format="json",
             artifact_kind="primary",
@@ -942,7 +951,7 @@ class ExecutionService:
             artifact_id=artifact_id,
             project_id=manifest.project_id,
             artifact_role=artifact_role,
-            title=_artifact_document_title(snapshot, artifact_role, template.name),
+            title=_artifact_title(snapshot, artifact_role, template, task),
             description=f"Артефакт, созданный задачей {task.task_key}",
             artifact_format="bundle",
             artifact_kind="primary",

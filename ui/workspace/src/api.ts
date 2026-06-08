@@ -76,6 +76,11 @@ export const api = {
     request<ArtifactSummaryView[]>(`/api/projects/${projectId}/artifacts/archive`),
   getArtifactDetail: (projectId: string, artifactId: string) =>
     request<ArtifactDetailView>(`/api/projects/${projectId}/artifacts/${artifactId}`),
+  // #2: содержимое одного файла бандла (кода) для просмотра в окне артефакта.
+  getBundleFile: (projectId: string, artifactId: string, path: string) =>
+    request<{ path: string; binary: boolean; text: string; size_bytes: number; truncated?: boolean }>(
+      `/api/projects/${projectId}/artifacts/${artifactId}/bundle/file?path=${encodeURIComponent(path)}`,
+    ),
   artifactPdfUrl: (projectId: string, artifactId: string) =>
     `/api/projects/${projectId}/artifacts/${artifactId}/download.pdf`,
   artifactMdUrl: (projectId: string, artifactId: string) =>

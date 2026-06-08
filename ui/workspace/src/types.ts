@@ -182,6 +182,14 @@ export interface ArtifactSummaryView {
   /** Архив: заархивирован откатом / заменён более новой версией. */
   archived?: boolean;
   is_superseded?: boolean;
+  /** Категория для подвкладок: documents | code | binary | data | other. */
+  category?: string;
+}
+
+export interface BundleFileView {
+  path: string;
+  content_kind: string;
+  size_bytes: number;
 }
 
 export interface ArtifactValidationView {
@@ -239,6 +247,10 @@ export interface ArtifactDetailView {
   /** Прошлые версии того же артефакта (включая заархивированные), от старой
    *  к новой, без текущей. Для подвкладки «Предыдущие версии (N)». */
   previous_versions?: ArtifactVersionItemView[];
+  /** #2: бандл-артефакт (код/файлы) — дерево файлов для просмотра в окне. */
+  is_bundle?: boolean;
+  bundle_kind?: string | null;
+  bundle_files?: BundleFileView[];
 }
 
 export interface ReviewIssueView {

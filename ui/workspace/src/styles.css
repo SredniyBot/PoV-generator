@@ -1994,6 +1994,91 @@ code {
   margin-bottom: var(--space-3);
 }
 
+/* Тумблер «показывать заархивированные» под подвкладками категорий. */
+.artifacts-archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--font-size-meta);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+/* #2: просмотр бандла (код) — дерево файлов + содержимое выбранного файла. */
+.bundle-viewer {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) 1fr;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.bundle-viewer__tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  padding: var(--space-2);
+}
+
+.bundle-viewer__file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.bundle-viewer__file:hover {
+  background: var(--accent-soft, rgba(120, 184, 201, 0.12));
+  color: var(--text-primary);
+}
+
+.bundle-viewer__file--active {
+  background: var(--accent-soft, rgba(120, 184, 201, 0.18));
+  color: var(--text-primary);
+}
+
+.bundle-viewer__path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* длинные пути обрезаются слева — видно имя файла */
+  text-align: left;
+}
+
+.bundle-viewer__content {
+  min-width: 0;
+}
+
+.bundle-viewer__code {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  padding: var(--space-3);
+  background: var(--surface-primary, rgba(20, 24, 30, 0.6));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.bundle-viewer__truncated {
+  margin-top: var(--space-2);
+}
+
 /* Список предыдущих версий артефакта в подвкладке. */
 .artifact-versions {
   display: flex;

@@ -1104,6 +1104,14 @@ def create_app(
     def project_artifact_detail(project_id: str, artifact_id: str) -> Any:
         return to_primitive(query_service.artifact_detail(project_id, artifact_id))
 
+    @app.get("/api/projects/{project_id}/artifacts/{artifact_id}/bundle/file")
+    def project_artifact_bundle_file(project_id: str, artifact_id: str, path: str) -> Any:
+        # #2: содержимое одного файла бандла (код) для просмотра в окне артефакта.
+        try:
+            return query_service.bundle_file_text(project_id, artifact_id, path)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/api/projects/{project_id}/artifacts/{artifact_id}/verify")
     def project_artifact_verify(
         project_id: str, artifact_id: str, body: dict[str, Any] | None = None

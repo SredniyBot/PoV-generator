@@ -159,3 +159,52 @@ def test_load_bundle_file_blocks_path_traversal(tmp_path: Path) -> None:
     )
     with pytest.raises(NotFoundError):
         runtime.load_bundle_file(workspace, record.artifact_id, "../../etc/passwd")
+
+
+# --- категория + просмотр бандла в окне артефакта (#1/#2) --------------------
+
+
+def _query_service(runtime, workspace):
+    from pov_generator.application.planning_service import PlanningService
+    from pov_generator.application.registry_service import RegistryService
+    from pov_generator.application.workspace_catalog import WorkspaceCatalog
+    from pov_generator.application.workspace_query_service import WorkspaceQueryService
+    from pov_generator.infrastructure.filesystem_registry import FilesystemRegistryLoader
+
+    repo_root = Path(__file__).resolve().parents[1]
+    catalog = WorkspaceCatalog(workspace.parent, runtime)
+    registry = RegistryService(FilesystemRegistryLoader(repo_root / "templates"))
+    return WorkspaceQueryService(catalog, registry, runtime, PlanningService(runtime))
+
+
+def test_code_bundle_category_and_viewer(tmp_path: Path) -> None:
+    runtime, workspace, project_id = _workspace(tmp_path)
+    record, _ = runtime.store_bundle_artifact(
+        workspace,
+        artifact=_bundle_record(project_id),
+        files={"src/app.py": b"print('hi')\n", "README.md": b"# proj\n"},
+    )
+    qs = _query_service(runtime, workspace)
+
+    # #1: бандл кода относится к категории «code» в списке.
+    summary = {a.artifact_id: a for a in qs.project_artifacts(project_id)}
+    assert summary[record.artifact_id].category == "code"
+
+    # #2: окно артефакта отдаёт дерево файлов, а не сырой манифест.
+    detail = qs.artifact_detail(project_id, record.artifact_id)
+    assert detail.is_bundle is True
+    assert detail.bundle_kind in {"code", "mixed"}
+    assert {f.path for f in detail.bundle_files} == {"src/app.py", "README.md"}
+
+    # Содержимое файла читается для просмотра.
+    got = qs.bundle_file_text(project_id, record.artifact_id, "src/app.py")
+    assert got["binary"] is False
+    assert "print('hi')" in got["text"]
+
+
+def test_document_artifact_category_is_documents(tmp_path: Path) -> None:
+    runtime, workspace, project_id = _workspace(tmp_path)
+    # Структурный артефакт (input.request от init_project) — категория documents.
+    qs = _query_service(runtime, workspace)
+    cats = {a.category for a in qs.project_artifacts(project_id)}
+    assert cats == {"documents"} or "documents" in cats

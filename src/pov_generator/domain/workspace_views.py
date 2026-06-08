@@ -319,6 +319,9 @@ class ArtifactSummaryView:
     # версией (is_superseded). В основном списке не показываются — только в «Архиве».
     archived: bool = False
     is_superseded: bool = False
+    # Категория для подвкладок списка артефактов: documents | code | binary |
+    # data | other. Структурные/markdown → documents; бандлы — по bundle_kind.
+    category: str = "documents"
 
 
 @dataclass(frozen=True)
@@ -394,6 +397,21 @@ class ArtifactDetailView:
     # заменённые), включая заархивированные откатом. От старой к новой, без
     # самой текущей. UI показывает их в подвкладке «Предыдущие версии (N)».
     previous_versions: tuple["ArtifactVersionItemView", ...] = ()
+    # #2: бандл-артефакт (код/файлы) — дерево файлов для просмотра в окне.
+    # Контент файла подгружается отдельным запросом (файлы бывают крупными).
+    is_bundle: bool = False
+    bundle_kind: str | None = None
+    bundle_files: tuple["BundleFileView", ...] = ()
+
+
+@dataclass(frozen=True)
+class BundleFileView:
+    """Один файл бандла для просмотра в окне артефакта (метаданные; контент —
+    подгружается отдельным запросом ``/bundle/file``)."""
+
+    path: str
+    content_kind: str
+    size_bytes: int
 
 
 @dataclass(frozen=True)

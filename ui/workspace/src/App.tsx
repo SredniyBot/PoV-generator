@@ -2183,9 +2183,10 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   // Выбранный входной файл для просмотра справа. Локальное состояние (не URL):
   // взаимоисключающе с выбранным артефактом — открытие одного снимает другое.
   const [selectedAttachment, setSelectedAttachment] = useState<AttachmentView | null>(null);
-  // Подраздел списка: текущие артефакты / архив (заархивированные откатом +
-  // заменённые новой версией).
-  const [tab, setTab] = useState<"current" | "archive">("current");
+  // Подвкладка по категории артефакта (документы/код/бинарные/…) + тумблер
+  // «показывать заархивированные» (откат + заменённые новой версией).
+  const [category, setCategory] = useState<string>("documents");
+  const [showArchived, setShowArchived] = useState(false);
   const artifactsQuery = useQuery({
     queryKey: projectionKey(projectId, "artifacts"),
     queryFn: () => api.getArtifacts(projectId),
@@ -2193,7 +2194,7 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   const archivedQuery = useQuery({
     queryKey: [projectId, "artifacts-archive"],
     queryFn: () => api.getArchivedArtifacts(projectId),
-    enabled: tab === "archive",
+    enabled: showArchived,
   });
   const artifactDetailQuery = useQuery({
     queryKey: [projectId, "artifact-detail", artifactId],
@@ -2210,12 +2211,29 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
   // а не в общем списке сгенерированных артефактов.
   const allArtifacts = artifactsQuery.data ?? [];
   const inputArtifact = allArtifacts.find((a) => a.artifact_role === "input.request") ?? null;
-  // Артефакты от backend идут в порядке создания (старые сверху). В UI
-  // менеджеру интереснее ВЕРХНИЙ артефакт = последний/финальный (например,
-  // готовое ТЗ или review_report). Поэтому переворачиваем порядок.
-  const artifacts = allArtifacts
-    .filter((a) => a.artifact_role !== "input.request")
-    .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+  // Объединяем текущие и (по тумблеру) заархивированные. Артефакты от backend
+  // идут в порядке создания (старые сверху); в UI верхним показываем последний.
+  const combined = [
+    ...allArtifacts.filter((a) => a.artifact_role !== "input.request"),
+    ...(showArchived ? archivedQuery.data ?? [] : []),
+  ].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+
+  // Категории-подвкладки: показываем только непустые, в фиксированном порядке.
+  const CATEGORY_ORDER: string[] = ["documents", "code", "binary", "data", "other"];
+  const CATEGORY_LABELS: Record<string, string> = {
+    documents: "Документы",
+    code: "Код",
+    binary: "Бинарные",
+    data: "Данные",
+    other: "Прочее",
+  };
+  const presentCategories = CATEGORY_ORDER.filter((c) =>
+    combined.some((a) => (a.category ?? "documents") === c),
+  );
+  const activeCategory = presentCategories.includes(category)
+    ? category
+    : presentCategories[0] ?? "documents";
+  const artifacts = combined.filter((a) => (a.category ?? "documents") === activeCategory);
 
   // Элемент списка артефактов: только русское название + дата/время (без
   // английской роли). Для архива — метка происхождения.
@@ -2273,37 +2291,37 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
           ) : undefined
         }
       >
-        <div className="segmented artifacts-subnav">
-          <button
-            type="button"
-            className={cx("segmented__item", tab === "current" && "segmented__item--active")}
-            onClick={() => setTab("current")}
-          >
-            Текущие
-          </button>
-          <button
-            type="button"
-            className={cx("segmented__item", tab === "archive" && "segmented__item--active")}
-            onClick={() => setTab("archive")}
-          >
-            Архив
-          </button>
-        </div>
-        {tab === "current" ? (
-          artifacts.length === 0 ? (
-            <EmptyState title="Артефакты отсутствуют" description="Запустите workflow, чтобы получить первые результаты." />
-          ) : (
-            <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
-          )
-        ) : archivedQuery.isLoading ? (
+        {presentCategories.length > 0 ? (
+          <div className="segmented artifacts-subnav">
+            {presentCategories.map((c) => (
+              <button
+                key={c}
+                type="button"
+                className={cx("segmented__item", activeCategory === c && "segmented__item--active")}
+                onClick={() => setCategory(c)}
+              >
+                {CATEGORY_LABELS[c]}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <label className="artifacts-archive-toggle">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Показывать заархивированные
+        </label>
+        {showArchived && archivedQuery.isLoading ? (
           <p className="muted">Загрузка архива…</p>
-        ) : (archivedQuery.data ?? []).length === 0 ? (
+        ) : artifacts.length === 0 ? (
           <EmptyState
-            title="Архив пуст"
-            description="Сюда попадают артефакты, заархивированные откатом или заменённые более новой версией."
+            title="Артефактов нет"
+            description="В этой категории пока пусто. Запустите workflow, чтобы получить результаты."
           />
         ) : (
-          <div className="artifact-list">{(archivedQuery.data ?? []).map(renderArtifactItem)}</div>
+          <div className="artifact-list">{artifacts.map(renderArtifactItem)}</div>
         )}
       </SectionCard>
       <AttachmentsCard
@@ -2532,6 +2550,57 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
   );
 }
 
+
+// #2: просмотр бандла (код/файлы) — дерево файлов слева, содержимое выбранного
+// файла справа. Контент тянется лениво (файлы бывают крупными).
+function BundleViewer({ projectId, detail }: { projectId: string; detail: ArtifactDetailView }) {
+  const files = (detail.bundle_files ?? []).slice().sort((a, b) => a.path.localeCompare(b.path));
+  const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null);
+  const fileQuery = useQuery({
+    queryKey: [projectId, "bundle-file", detail.artifact_id, selected],
+    queryFn: () => api.getBundleFile(projectId, detail.artifact_id, selected!),
+    enabled: Boolean(selected),
+  });
+  if (files.length === 0) {
+    return <EmptyState title="Бандл пуст" description="В этом артефакте нет файлов." />;
+  }
+  return (
+    <div className="bundle-viewer">
+      <div className="bundle-viewer__tree" role="tree" aria-label="Файлы бандла">
+        {files.map((f) => (
+          <button
+            key={f.path}
+            type="button"
+            className={cx("bundle-viewer__file", selected === f.path && "bundle-viewer__file--active")}
+            onClick={() => setSelected(f.path)}
+            title={`${f.path} · ${f.size_bytes} Б`}
+          >
+            <FileText size={13} />
+            <span className="bundle-viewer__path">{f.path}</span>
+          </button>
+        ))}
+      </div>
+      <div className="bundle-viewer__content">
+        {!selected ? (
+          <EmptyState title="Выберите файл" description="Откройте файл слева, чтобы посмотреть его содержимое." />
+        ) : fileQuery.isLoading ? (
+          <p className="muted">Загрузка файла…</p>
+        ) : fileQuery.data?.binary ? (
+          <EmptyState title="Двоичный файл" description="Просмотр недоступен — это не текстовый файл." />
+        ) : (
+          <>
+            <pre className="bundle-viewer__code">
+              <code>{fileQuery.data?.text ?? ""}</code>
+            </pre>
+            {fileQuery.data?.truncated ? (
+              <p className="muted bundle-viewer__truncated">Файл большой — показано начало.</p>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const navigate = useNavigate();
@@ -2914,7 +2983,9 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         )}
       </Modal>
       {mode === "doc" ? (
-        feasibilityData ? (
+        detail.is_bundle ? (
+          <BundleViewer projectId={projectId} detail={detail} />
+        ) : feasibilityData ? (
           <FeasibilityView data={feasibilityData} />
         ) : (
           <div className="document-layout">
