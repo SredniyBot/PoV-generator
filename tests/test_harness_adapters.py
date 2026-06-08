@@ -105,6 +105,32 @@ def test_aider_no_output_fails() -> None:
     assert "бандл" in (result.error or "")
 
 
+def test_aider_uses_project_model_not_fabricated_default() -> None:
+    # Нет override модели у подключения → берём настроенную модель проекта
+    # (model_hint), а НЕ выдуманный gpt-4o-mini.
+    captured: list[str] = []
+
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        cmd = argv[-1]
+        captured.append(cmd)
+        if "aider" in cmd:
+            rt.put_files(handle, {"/work/a.py": b"x\n"})
+        return ExecResult(0, "", "")
+
+    provider = AiderHarnessProvider(
+        sandbox=StubSandboxRuntime(exec_handler=handler), image="x", model=None
+    )
+    spec = HarnessRunSpec(
+        brief="b",
+        expected_artifacts=(ExpectedArtifact(role="component_bundle", fmt="files"),),
+        model_hint="anthropic/claude-sonnet-4-5",
+    )
+    provider.run(spec)
+    aider_cmd = next(c for c in captured if "aider" in c)
+    assert "claude-sonnet-4-5" in aider_cmd
+    assert "gpt-4o-mini" not in aider_cmd
+
+
 def test_aider_failed_gate_blocks_harvest() -> None:
     handler = _aider_handler(edits={"a.py": b"x\n"}, gate_exit=1)
     provider = AiderHarnessProvider(

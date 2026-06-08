@@ -536,7 +536,9 @@ code {
    ряд вкладок: единый bordered-трек с залитым активным сегментом. Так он
    читается как «переключатель вида внутри раздела» и не дублирует визуально
    основной ряд вкладок проекта. */
-.decisions-subnav {
+/* Контейнер подвкладок (реестр решений + список артефактов): единый pill-стиль. */
+.decisions-subnav,
+.entity-tabs {
   display: inline-flex;
   gap: 6px;
   padding: 4px;
@@ -544,9 +546,11 @@ code {
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.025);
+  flex-wrap: wrap;
 }
 
-.decisions-subnav__item {
+.decisions-subnav__item,
+.entity-tabs__item {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -556,14 +560,17 @@ code {
   border-radius: 10px;
   padding: 8px 14px;
   font-size: 13px;
+  cursor: pointer;
   transition: background-color 160ms ease, color 160ms ease;
 }
 
-.decisions-subnav__item:hover {
+.decisions-subnav__item:hover,
+.entity-tabs__item:hover {
   color: var(--text-primary);
 }
 
-.decisions-subnav__item--active {
+.decisions-subnav__item--active,
+.entity-tabs__item--active {
   background: rgba(95, 167, 184, 0.16);
   color: var(--text-primary);
 }

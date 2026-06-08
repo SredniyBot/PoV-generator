@@ -67,6 +67,30 @@ def test_bundle_harvest_whole_work_excludes_povgen() -> None:
     assert set(outcome.files) == {"services/backend/src/main.py", "docker-compose.yml"}
 
 
+def test_bundle_harvest_excludes_inputs_and_agent_files() -> None:
+    # В бандл идёт только код: посеянные реквизиты, рабочие файлы agent/git/кэш
+    # исключаются (иначе бандл забивается мусором — #2).
+    service = _service_writing(
+        {
+            "/work/src/main.py": b"code",
+            "/work/.aider.chat.history.md": b"chat",
+            "/work/.aider.tags.cache.v3": b"cache",
+            "/work/.git/config": b"[core]",
+            "/work/__pycache__/x.pyc": b"\x00",
+            "/work/requisite.txt": b"seeded material",
+        }
+    )
+    outcome = service.produce_artifact(
+        artifact_role="component_implementation",
+        system_prompt="S",
+        user_prompt="U",
+        output_kind="bundle",
+        inputs={"requisite.txt": "seeded material"},
+    )
+    assert outcome.files is not None
+    assert set(outcome.files) == {"src/main.py"}
+
+
 def test_bundle_harvest_empty_zone_fails_loudly() -> None:
     from pov_generator.common.errors import ConflictError
 

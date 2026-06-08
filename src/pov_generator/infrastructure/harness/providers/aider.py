@@ -63,11 +63,13 @@ class AiderHarnessProvider(SandboxHarnessProvider):
         self._sandbox.exec(handle, shell(_PREPARE_GIT), on_log=on_log)
 
     def _build_command(self, spec: HarnessRunSpec) -> list[str]:
-        # Неинтерактивный прогон по постановке из файла. Модель — опциональна
-        # (litellm-имя); образ может задавать её по умолчанию.
+        # Неинтерактивный прогон по постановке из файла. Модель: явный override
+        # подключения ИЛИ настроенная LLM-модель проекта (model_hint) — НЕ
+        # выдуманный дефолт. Если обе пусты — образ/litellm берут свою.
         parts = ["aider", "--yes", f"--message-file {shlex.quote(_BRIEF_PATH)}"]
-        if self.model:
-            parts.append(f"--model {shlex.quote(self.model)}")
+        model = self.model or spec.model_hint
+        if model:
+            parts.append(f"--model {shlex.quote(model)}")
         return shell("cd /work && " + " ".join(parts))
 
     def _harvest(

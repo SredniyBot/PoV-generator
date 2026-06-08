@@ -29,6 +29,25 @@ from ..sandbox import (
 _BRIEF_PATH = "/work/.povgen/brief.txt"
 _OUT_DIR = "/work/.povgen/out"
 
+# Каталоги/файлы, которые НЕ являются продуктом узла и в бандл не попадают:
+# служебное харнесса, рабочие файлы git/aider, кэши, окружения, IDE. (Файлы
+# ``.aider*`` отсекаются по префиксу отдельно — они лежат в корне, не каталогом.)
+_HARVEST_EXCLUDE_DIRS = frozenset(
+    {
+        ".povgen",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        ".idea",
+        ".vscode",
+    }
+)
+
 
 class HarvestError(Exception):
     """Сбор результата не удался (агент не положил ожидаемый артефакт)."""
@@ -191,23 +210,32 @@ class SandboxHarnessProvider:
     ) -> HarvestedArtifact:
         """Собрать дерево кода из песочницы (RG-C): реальный файловый бандл.
 
-        Корень — ``spec.harvest_path`` (зона сервиса) или весь ``/work``. Служебный
-        каталог ``.povgen`` (brief/out) исключается; пути — относительно корня.
+        Корень — ``spec.harvest_path`` (зона сервиса) или весь ``/work``. В бандл
+        идёт ТОЛЬКО продукт узла: исключаются служебные каталоги харнесса/
+        инструментов (``.povgen``, ``.git``, ``.aider*``, кэши/venv/IDE) и
+        ПОСЕЯННЫЕ входы (brief, реквизиты) — это вход узла, а не его выход. Пути —
+        относительно корня сбора.
         """
         root = (spec.harvest_path or "/work").rstrip("/") or "/work"
         raw = self._sandbox.get_files(handle, root)
         prefix = root + "/"
+        seeded = set(spec.inputs or {})  # имена посеянных входов (реквизиты)
         files: dict[str, bytes] = {}
         for path, content in raw.items():
-            # Служебные каталоги в бандл не попадают: .povgen (brief/out
-            # харнесса) и .git (рабочий репозиторий aider/diff-инструментов).
-            if any(seg in path for seg in ("/.povgen/", "/.git/")) or path.rstrip(
-                "/"
-            ).endswith(("/.povgen", "/.git")):
-                continue
             rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
-            if rel:
-                files[rel] = content
+            if not rel:
+                continue
+            segments = rel.split("/")
+            # Служебные каталоги/файлы инструментов — не код проекта.
+            if any(
+                seg in _HARVEST_EXCLUDE_DIRS or seg.startswith(".aider")
+                for seg in segments
+            ):
+                continue
+            # Посеянный вход (реквизит/материал) — это ВХОД узла, не его выход.
+            if rel in seeded:
+                continue
+            files[rel] = content
         if not files:
             raise HarvestError(
                 f"Агент не произвёл файлов бандла роли '{role}' в '{root}'."

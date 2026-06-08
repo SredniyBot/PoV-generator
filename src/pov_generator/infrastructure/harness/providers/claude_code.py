@@ -70,8 +70,11 @@ class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
         else:
             # Docker (изоляция) или host full (опт-ин): полный доступ.
             parts.append("--dangerously-skip-permissions")
-        if self.model:
-            parts.append(f"--model {self.model}")
+        # Модель: явный override подключения ИЛИ настроенная LLM-модель проекта
+        # (model_hint) — не выдуманный дефолт. Пусто → claude берёт свою.
+        model = self.model or spec.model_hint
+        if model:
+            parts.append(f"--model {model}")
         return shell("cd /work && " + " ".join(parts))
 
     def _harvest(

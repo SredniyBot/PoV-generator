@@ -84,7 +84,9 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "needs_docker": True,
         "best_for": "Сложное многофайловое «построй X» с разведкой.",
         "default_image": _DEFAULT_IMAGES["claude_code"],
-        "default_model": "claude-opus-4-8",
+        # Модель НЕ навязываем: по умолчанию берётся настроенная LLM-модель
+        # проекта (resolve по purpose). Поле — явный override, не выдумка.
+        "default_model": "",
         # Единственный адаптер с host-режимом: переиспользует залогиненную
         # сессию claude CLI с хоста (Ф7e).
         "supports_host": True,
@@ -97,7 +99,9 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "needs_docker": True,
         "best_for": "Точные правки по спеке, контроль стоимости, чистый diff.",
         "default_image": _DEFAULT_IMAGES["aider"],
-        "default_model": "gpt-4o-mini",
+        # Модель НЕ навязываем (раньше был выдуманный gpt-4o-mini): по умолчанию
+        # берётся настроенная LLM-модель проекта. Поле — явный override.
+        "default_model": "",
         "supports_host": False,
     },
     "command": {

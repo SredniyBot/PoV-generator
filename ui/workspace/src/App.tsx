@@ -2292,18 +2292,18 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
         }
       >
         {presentCategories.length > 0 ? (
-          <div className="segmented artifacts-subnav">
+          <nav className="entity-tabs" aria-label="Категории артефактов">
             {presentCategories.map((c) => (
               <button
                 key={c}
                 type="button"
-                className={cx("segmented__item", activeCategory === c && "segmented__item--active")}
+                className={cx("entity-tabs__item", activeCategory === c && "entity-tabs__item--active")}
                 onClick={() => setCategory(c)}
               >
                 {CATEGORY_LABELS[c]}
               </button>
             ))}
-          </div>
+          </nav>
         ) : null}
         <label className="artifacts-archive-toggle">
           <input
