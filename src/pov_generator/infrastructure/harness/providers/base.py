@@ -160,14 +160,22 @@ class SandboxHarnessProvider:
     def _harvest_by_convention(
         self, handle: SandboxHandle, spec: HarnessRunSpec
     ) -> list[HarvestedArtifact]:
-        """Сбор по соглашению: ``/work/.povgen/out/<role>.<fmt>`` на каждую роль.
+        """Сбор по соглашению на каждую роль.
 
-        Общая стратегия для агентов, которые пишут результат в условленные пути
-        (Claude Code, generic command-harness). Бросает :class:`HarvestError`,
-        если ожидаемый артефакт не положен.
+        Структурные роли (json/markdown) — один файл ``/work/.povgen/out/<role>.<fmt>``.
+        Файловый бандл (``fmt=files``) — реальное дерево кода из рабочего каталога
+        (RG-C): субдерево зоны ``spec.harvest_path`` (или весь ``/work``), без
+        служебного ``.povgen``, с путями относительно корня сбора.
+
+        Общая стратегия для агентов, пишущих в условленные пути (Claude Code,
+        generic command-harness). Бросает :class:`HarvestError`, если ожидаемый
+        результат не получен.
         """
         harvested: list[HarvestedArtifact] = []
         for expected in spec.expected_artifacts:
+            if expected.fmt == "files":
+                harvested.append(self._harvest_bundle(handle, spec, expected.role))
+                continue
             file_path = f"{_OUT_DIR}/{expected.role}.{expected.fmt}"
             files = self._sandbox.get_files(handle, file_path)
             content = files.get(file_path)
@@ -177,6 +185,30 @@ class SandboxHarnessProvider:
                 )
             harvested.append(self._harvest_file_as(expected.role, expected.fmt, content))
         return harvested
+
+    def _harvest_bundle(
+        self, handle: SandboxHandle, spec: HarnessRunSpec, role: str
+    ) -> HarvestedArtifact:
+        """Собрать дерево кода из песочницы (RG-C): реальный файловый бандл.
+
+        Корень — ``spec.harvest_path`` (зона сервиса) или весь ``/work``. Служебный
+        каталог ``.povgen`` (brief/out) исключается; пути — относительно корня.
+        """
+        root = (spec.harvest_path or "/work").rstrip("/") or "/work"
+        raw = self._sandbox.get_files(handle, root)
+        prefix = root + "/"
+        files: dict[str, bytes] = {}
+        for path, content in raw.items():
+            if "/.povgen/" in path or path.rstrip("/").endswith("/.povgen"):
+                continue
+            rel = path[len(prefix):] if path.startswith(prefix) else path.lstrip("/")
+            if rel:
+                files[rel] = content
+        if not files:
+            raise HarvestError(
+                f"Агент не произвёл файлов бандла роли '{role}' в '{root}'."
+            )
+        return HarvestedArtifact(role=role, files=files, fmt="files")
 
     @staticmethod
     def _harvest_file_as(role: str, fmt: str, content: bytes) -> HarvestedArtifact:

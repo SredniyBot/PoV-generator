@@ -509,6 +509,11 @@ class ExecutionService:
                 build_group=build_group,
                 # Ф5b: предоставленные реквизиты компонента → файлы в /work узла.
                 inputs=self._collect_requisite_inputs(workspace, task),
+                # RG-C: компонент собирает бандл только из зоны своего сервиса;
+                # каркас/интеграция/проверка — весь /work (harvest_path=None).
+                harvest_path=(
+                    self._resolve_harvest_path(workspace, task) if bundle_output else None
+                ),
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model
@@ -1303,6 +1308,37 @@ class ExecutionService:
                 except Exception:  # noqa: BLE001 — недоступный файл просто не сеем
                     continue
         return seeded
+
+    def _resolve_harvest_path(self, workspace: Path, task) -> str | None:
+        """RG-C: корень сбора бандла для узла-агента.
+
+        Компонент (инстанс веера) собирает только зону СВОЕГО сервиса из
+        build_manifest — чтобы его бандл был кодом сервиса, а не всем общим томом.
+        Каркас/интеграция/проверка зоны не задают → собирают весь ``/work``.
+        Best-effort: любой сбой/отсутствие манифеста → None (весь ``/work``).
+        """
+        if getattr(task, "origin_kind", None) != "fan_out_instance":
+            return None
+        component_id = getattr(task, "origin_ref", None)
+        if not component_id:
+            return None
+        try:
+            artifact = self._runtime.latest_artifact_by_role(workspace, "build_manifest")
+            if artifact is None:
+                return None
+            manifest = json.loads(
+                self._runtime.load_artifact_content(workspace, artifact.artifact_id)
+            )
+        except Exception:  # noqa: BLE001 — нет/битый манифест → весь /work
+            return None
+        for service in manifest.get("services") or []:
+            if not isinstance(service, dict):
+                continue
+            members = [str(c) for c in (service.get("components") or [])]
+            if component_id in members:
+                zone = str(service.get("zone") or "").strip().strip("/")
+                return f"/work/{zone}" if zone else None
+        return None
 
     def _record_llm_usages(
         self,

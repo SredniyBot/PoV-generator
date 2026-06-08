@@ -63,7 +63,8 @@ def test_build_group_flows_into_adapter_sandbox() -> None:
     def handler(rt, handle, argv):
         # Песочница ещё жива во время exec — фиксируем её том группы.
         seen_volumes.append(rt.spec_for(handle).volume)
-        rt.put_files(handle, {"/work/.povgen/out/component_implementation.files": b"x"})
+        # RG-C: реальный harvest собирает дерево кода из /work (не .povgen).
+        rt.put_files(handle, {"/work/src/main.py": b"x"})
         return ExecResult(exit_code=0, stdout="", stderr="")
 
     registry = HarnessProviderRegistry(
