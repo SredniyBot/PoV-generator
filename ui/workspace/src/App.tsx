@@ -59,6 +59,105 @@ function preprocessMarkdownForMermaid(markdown: string): string {
   });
 }
 
+// Превращает уже отрендеренную mermaid-диаграмму (SVG в `.mermaid-host`) во
+// встроенный интерактивный канвас: авто-вписывание + центрирование при открытии,
+// колесо — масштаб (к курсору), перетаскивание — панорама, двойной клик —
+// вписать заново. Без отдельной кнопки/модалки (канвас встроен прямо в документ,
+// как граф задач в своей вкладке). Возвращает функцию очистки (ResizeObserver +
+// слушатели).
+function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
+  if (host.dataset.canvasReady) return null;
+  const svg = host.querySelector<SVGSVGElement>("svg");
+  if (!svg) return null;
+  host.dataset.canvasReady = "1";
+  host.classList.add("mermaid-canvas");
+
+  // Натуральный размер диаграммы из viewBox; снимаем ограничения, чтобы
+  // масштабировать вручную и точно вписать.
+  const vb = svg.viewBox?.baseVal;
+  const rect0 = svg.getBoundingClientRect();
+  const natW = vb && vb.width ? vb.width : rect0.width || 1;
+  const natH = vb && vb.height ? vb.height : rect0.height || 1;
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  svg.style.width = `${natW}px`;
+  svg.style.height = `${natH}px`;
+  svg.style.maxWidth = "none";
+
+  const layer = document.createElement("div");
+  layer.className = "mermaid-canvas__layer";
+  layer.appendChild(svg);
+  host.appendChild(layer);
+
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+  const apply = () => {
+    layer.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  };
+  const fit = () => {
+    const vw = host.clientWidth;
+    const vh = host.clientHeight;
+    if (!vw || !vh) return;
+    const s = Math.min(vw / natW, vh / natH) * 0.92;
+    scale = Number.isFinite(s) && s > 0 ? Math.min(s, 2.5) : 1;
+    tx = (vw - natW * scale) / 2;
+    ty = (vh - natH * scale) / 2;
+    apply();
+  };
+
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const r = host.getBoundingClientRect();
+    const cx = e.clientX - r.left;
+    const cy = e.clientY - r.top;
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const ns = Math.min(8, Math.max(0.1, scale * factor));
+    tx = cx - (cx - tx) * (ns / scale);
+    ty = cy - (cy - ty) * (ns / scale);
+    scale = ns;
+    apply();
+  };
+  host.addEventListener("wheel", onWheel, { passive: false });
+
+  let drag: { x: number; y: number; tx: number; ty: number } | null = null;
+  const onDown = (e: PointerEvent) => {
+    host.setPointerCapture(e.pointerId);
+    drag = { x: e.clientX, y: e.clientY, tx, ty };
+    host.classList.add("mermaid-canvas--grabbing");
+  };
+  const onMove = (e: PointerEvent) => {
+    if (!drag) return;
+    tx = drag.tx + (e.clientX - drag.x);
+    ty = drag.ty + (e.clientY - drag.y);
+    apply();
+  };
+  const onUp = () => {
+    drag = null;
+    host.classList.remove("mermaid-canvas--grabbing");
+  };
+  host.addEventListener("pointerdown", onDown);
+  host.addEventListener("pointermove", onMove);
+  host.addEventListener("pointerup", onUp);
+  host.addEventListener("pointerleave", onUp);
+  const onDbl = () => fit();
+  host.addEventListener("dblclick", onDbl);
+
+  requestAnimationFrame(fit);
+  const ro = new ResizeObserver(() => fit());
+  ro.observe(host);
+
+  return () => {
+    ro.disconnect();
+    host.removeEventListener("wheel", onWheel);
+    host.removeEventListener("pointerdown", onDown);
+    host.removeEventListener("pointermove", onMove);
+    host.removeEventListener("pointerup", onUp);
+    host.removeEventListener("pointerleave", onUp);
+    host.removeEventListener("dblclick", onDbl);
+  };
+}
+
 import { api } from "./api";
 import ErrorBoundary from "./ErrorBoundary";
 import { activeRunRefetchInterval } from "./realtime";
@@ -2367,90 +2466,6 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
   );
 }
 
-// Интерактивный просмотр диаграммы (mermaid SVG) на канвасе: колесо — масштаб,
-// перетаскивание — перемещение, Esc/клик по фону — закрыть. Лёгкая реализация
-// через CSS-transform, без доп. зависимостей.
-function DiagramCanvasModal({ svg, onClose }: { svg: string; onClose: () => void }) {
-  const [scale, setScale] = useState(1);
-  const [tx, setTx] = useState(0);
-  const [ty, setTy] = useState(0);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
-
-  // Колесо — масштаб. Слушатель non-passive, чтобы можно было preventDefault
-  // (иначе страница за модалом скроллится).
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      setScale((s) => Math.min(8, Math.max(0.2, s * factor)));
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const reset = () => {
-    setScale(1);
-    setTx(0);
-    setTy(0);
-  };
-
-  return (
-    <div className="diagram-modal" role="dialog" aria-label="Диаграмма на канвасе" onClick={onClose}>
-      <div className="diagram-modal__toolbar" onClick={(e) => e.stopPropagation()}>
-        <button type="button" onClick={() => setScale((s) => Math.min(8, s * 1.2))} title="Приблизить">
-          +
-        </button>
-        <button type="button" onClick={() => setScale((s) => Math.max(0.2, s / 1.2))} title="Отдалить">
-          −
-        </button>
-        <button type="button" onClick={reset} title="Сбросить вид">
-          Сброс
-        </button>
-        <span className="diagram-modal__zoom">{Math.round(scale * 100)}%</span>
-        <button type="button" className="diagram-modal__close" onClick={onClose} title="Закрыть (Esc)">
-          <XCircle size={18} />
-        </button>
-      </div>
-      <div
-        ref={viewportRef}
-        className="diagram-modal__viewport"
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          drag.current = { x: e.clientX, y: e.clientY, tx, ty };
-        }}
-        onPointerMove={(e) => {
-          if (!drag.current) return;
-          setTx(drag.current.tx + (e.clientX - drag.current.x));
-          setTy(drag.current.ty + (e.clientY - drag.current.y));
-        }}
-        onPointerUp={() => {
-          drag.current = null;
-        }}
-        onPointerLeave={() => {
-          drag.current = null;
-        }}
-      >
-        <div
-          className="diagram-modal__canvas"
-          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
-      </div>
-    </div>
-  );
-}
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const navigate = useNavigate();
@@ -2490,9 +2505,6 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     }
   }, [detail.artifact_role, detail.json_content]);
   const articleRef = useRef<HTMLElement | null>(null);
-  // Диаграмма, открытая на интерактивном канвасе (масштаб/перемещение). null —
-  // канвас закрыт. Заполняется по клику на кнопку у отрендеренной mermaid-схемы.
-  const [diagramSvg, setDiagramSvg] = useState<string | null>(null);
   const scrollToSection = (id: string) => {
     // Скроллим к разделу внутри текущего документа, без смены URL-хеша
     // (чтобы не конфликтовать с роутером).
@@ -2506,29 +2518,23 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     const nodes = Array.from(root.querySelectorAll(".mermaid-host")) as HTMLElement[];
     if (nodes.length === 0) return;
     // Безопасный вызов: невалидный mermaid-синтаксис не должен ронять UI.
+    const cleanups: Array<() => void> = [];
     mermaid
       .run({ nodes })
       .then(() => {
-        // К каждой отрендеренной диаграмме добавляем кнопку «на канвасе» —
-        // открыть схему в интерактивном просмотре (масштаб/перемещение).
+        // Каждую отрендеренную диаграмму встраиваем как интерактивный канвас
+        // прямо в документ (авто-вписывание + центрирование, масштаб/панорама).
         for (const node of nodes) {
-          if (node.dataset.canvasReady || !node.querySelector("svg")) continue;
-          node.dataset.canvasReady = "1";
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "mermaid-host__expand";
-          btn.title = "Открыть на канвасе: масштаб и перемещение";
-          btn.textContent = "⤢ На канвасе";
-          btn.addEventListener("click", (event) => {
-            event.stopPropagation();
-            setDiagramSvg(node.querySelector("svg")?.outerHTML ?? null);
-          });
-          node.appendChild(btn);
+          const cleanup = attachDiagramCanvas(node);
+          if (cleanup) cleanups.push(cleanup);
         }
       })
       .catch((err) => {
         console.warn("Mermaid render failed:", err);
       });
+    return () => {
+      cleanups.forEach((c) => c());
+    };
   }, [html, mode]);
   const traceQuery = useQuery({
     queryKey: [projectId, "methodology-trace", detail.created_by_task_id],
@@ -2841,9 +2847,6 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           <EmptyState title="Provenance недоступен" description="Не удалось получить provenance для задачи-производителя." />
         )}
       </Modal>
-      {diagramSvg ? (
-        <DiagramCanvasModal svg={diagramSvg} onClose={() => setDiagramSvg(null)} />
-      ) : null}
       {mode === "doc" ? (
         feasibilityData ? (
           <FeasibilityView data={feasibilityData} />
