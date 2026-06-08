@@ -118,6 +118,34 @@ def test_unrelated_leaf_not_blocked_by_fanout() -> None:
     ) == []
 
 
+def test_topo_rank_orders_by_dependency_depth() -> None:
+    deps = {"A": [], "B": ["A"], "C": ["B"], "D": ["A"]}
+    cache: dict[str, int] = {}
+    rank = lambda x: PlanningService._topo_rank(x, deps, cache, set())  # noqa: E731
+    assert rank("A") == 0  # лист DAG — корень волны
+    assert rank("B") == 1
+    assert rank("C") == 2
+    assert rank("D") == 1
+
+
+def test_topo_rank_handles_cycles_and_external_refs() -> None:
+    deps = {"A": ["B"], "B": ["A"], "C": ["external"]}
+    # Цикл не зацикливает (guard) и даёт ограниченный неотрицательный ранг.
+    rank_a = PlanningService._topo_rank("A", deps, {}, set())
+    assert isinstance(rank_a, int) and 0 <= rank_a <= len(deps)
+    # Внешняя ссылка (нет в карте) не считается зависимостью → ранг 0.
+    assert PlanningService._topo_rank("C", deps, {}, set()) == 0
+
+
+def test_item_dependency_keys_reads_all_edge_shapes() -> None:
+    item = {
+        "consumed_interfaces": [{"component": "X", "interface": "api"}, {"interface": "z"}],
+        "dependencies": ["Y"],
+        "depends_on": ["W"],
+    }
+    assert PlanningService._item_dependency_keys(item) == ["X", "Y", "W"]
+
+
 def test_different_parent_fanout_does_not_block() -> None:
     snapshot = _snapshot()
     planner = PlanningService(None)

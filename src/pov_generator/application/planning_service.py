@@ -564,6 +564,9 @@ class PlanningService:
         completed_artifact_roles = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
         leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
         task_by_id = {task.task_id: task for task in tasks}
+        # RG-B: топо-ранг инстансов веера (волны сборки по зависимостям) —
+        # вычитается из приоритета, чтобы листья DAG исполнялись раньше зависимых.
+        fanout_ranks = self._fanout_instance_ranks(workspace, snapshot, tasks)
         # v3.1: «открытые уточнения» теперь — Decision со status="proposed".
         # Используется в _clarification_blockers для admission-check
         # blocking_clarifications.
@@ -733,7 +736,7 @@ class PlanningService:
                     title=task.title,
                     template_ref=task.template_ref,
                     admissible=admissible,
-                    score=template.planning.priority,
+                    score=template.planning.priority - fanout_ranks.get(task.task_id, 0),
                     checks=tuple(checks),
                     reasons=reasons,
                 )
@@ -818,6 +821,95 @@ class PlanningService:
             if consumed & set(child.outputs.artifact_roles):
                 blockers.append(other.title)
         return blockers
+
+    def _fanout_instance_ranks(
+        self,
+        workspace: Path,
+        snapshot: RegistrySnapshot,
+        tasks: list[TaskRecord],
+    ) -> dict[str, int]:
+        """Топо-ранг каждого инстанса веера по DAG зависимостей его источника.
+
+        Ранг 0 — у элементов без зависимостей (листья DAG), глубже — выше. Ранг
+        вычитается из приоритета инстанса, так что при серийном исполнении группы
+        компоненты собираются волнами в порядке зависимостей. Зависимости берём
+        обобщённо: ``consumed_interfaces[].component`` (модель компонентов),
+        ``dependencies``/``depends_on`` (спеки/сервисы)."""
+        instances_by_parent: dict[str, list[TaskRecord]] = {}
+        for task in tasks:
+            if (
+                task.template_type == "leaf"
+                and task.origin_kind == "fan_out_instance"
+                and task.parent_task_id
+            ):
+                instances_by_parent.setdefault(task.parent_task_id, []).append(task)
+        if not instances_by_parent:
+            return {}
+        ranks: dict[str, int] = {}
+        for wrapper in tasks:
+            if wrapper.template_type != "fan_out" or wrapper.task_id not in instances_by_parent:
+                continue
+            template = _safe_resolve_template(snapshot, wrapper.template_ref)
+            if template is None or template.fan_out_spec is None:
+                continue
+            spec = template.fan_out_spec
+            artifact = self._runtime.latest_artifact_by_role(workspace, spec.artifact_role)
+            if artifact is None:
+                continue
+            try:
+                content = json_loads(
+                    self._runtime.load_artifact_content(workspace, artifact.artifact_id)
+                )
+            except Exception:  # noqa: BLE001 — нет/битый источник: ранги нулевые
+                continue
+            array: object = content
+            for part in spec.array_path.split("."):
+                array = array.get(part, []) if isinstance(array, dict) else []
+            if not isinstance(array, list):
+                continue
+            deps_map: dict[str, list[str]] = {}
+            for item in array:
+                if isinstance(item, dict):
+                    key = str(item.get(spec.key_field, ""))
+                    if key:
+                        deps_map[key] = self._item_dependency_keys(item)
+            cache: dict[str, int] = {}
+            for inst in instances_by_parent[wrapper.task_id]:
+                ranks[inst.task_id] = self._topo_rank(
+                    inst.origin_ref or "", deps_map, cache, set()
+                )
+        return ranks
+
+    @staticmethod
+    def _item_dependency_keys(item: dict[str, object]) -> list[str]:
+        deps: list[str] = []
+        for edge in item.get("consumed_interfaces") or []:
+            if isinstance(edge, dict) and edge.get("component"):
+                deps.append(str(edge["component"]))
+        for field_name in ("dependencies", "depends_on"):
+            for dep in item.get(field_name) or []:
+                deps.append(str(dep))
+        return deps
+
+    @staticmethod
+    def _topo_rank(
+        item_id: str,
+        deps_map: dict[str, list[str]],
+        cache: dict[str, int],
+        visiting: set[str],
+    ) -> int:
+        if item_id in cache:
+            return cache[item_id]
+        if item_id in visiting or item_id not in deps_map:
+            return 0  # цикл или внешняя ссылка → корень волны
+        visiting.add(item_id)
+        best = 0
+        for dep in deps_map[item_id]:
+            if dep in deps_map:
+                best = max(best, 1 + PlanningService._topo_rank(dep, deps_map, cache, visiting))
+        visiting.discard(item_id)
+        cache[item_id] = best
+        return best
 
     def _refresh_composite_completion(self, workspace: Path) -> None:
         self._refresh_composite_completion_from_tasks(
