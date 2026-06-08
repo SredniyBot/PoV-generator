@@ -72,12 +72,39 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
   host.dataset.canvasReady = "1";
   host.classList.add("mermaid-canvas");
 
-  // Натуральный размер диаграммы из viewBox; снимаем ограничения, чтобы
-  // масштабировать вручную и точно вписать.
-  const vb = svg.viewBox?.baseVal;
-  const rect0 = svg.getBoundingClientRect();
-  const natW = vb && vb.width ? vb.width : rect0.width || 1;
-  const natH = vb && vb.height ? vb.height : rect0.height || 1;
+  // Натуральный размер диаграммы. Перекадрируем viewBox под ФАКТИЧЕСКИЕ границы
+  // содержимого (getBBox): mermaid иногда рисует за пределами исходного viewBox,
+  // из-за чего «вписать» обрезало часть по высоте/ширине. После реврейма layer
+  // точно равен содержимому → fit показывает диаграмму целиком.
+  let natW = 1;
+  let natH = 1;
+  const measure = () => {
+    const vb = svg.viewBox?.baseVal;
+    let w = vb && vb.width ? vb.width : 0;
+    let h = vb && vb.height ? vb.height : 0;
+    try {
+      const bb = svg.getBBox();
+      if (bb.width > 0 && bb.height > 0) {
+        const pad = Math.max(bb.width, bb.height) * 0.02;
+        svg.setAttribute(
+          "viewBox",
+          `${bb.x - pad} ${bb.y - pad} ${bb.width + pad * 2} ${bb.height + pad * 2}`,
+        );
+        w = bb.width + pad * 2;
+        h = bb.height + pad * 2;
+      }
+    } catch {
+      /* getBBox недоступен (svg ещё не отрисован) — остаёмся на viewBox/rect */
+    }
+    if (!w || !h) {
+      const r = svg.getBoundingClientRect();
+      w = r.width || 1;
+      h = r.height || 1;
+    }
+    natW = w;
+    natH = h;
+  };
+  measure();
   svg.removeAttribute("width");
   svg.removeAttribute("height");
   svg.style.width = `${natW}px`;
@@ -92,6 +119,7 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
   let scale = 1;
   let tx = 0;
   let ty = 0;
+  let userInteracted = false; // после ручного зума/панорамы авто-fit не вмешивается
   const apply = () => {
     layer.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
   };
@@ -99,7 +127,8 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
     const vw = host.clientWidth;
     const vh = host.clientHeight;
     if (!vw || !vh) return;
-    const s = Math.min(vw / natW, vh / natH) * 0.92;
+    // Вписать ЦЕЛИКОМ: меньший из коэффициентов по ширине и высоте + поля.
+    const s = Math.min(vw / natW, vh / natH) * 0.94;
     scale = Number.isFinite(s) && s > 0 ? Math.min(s, 2.5) : 1;
     tx = (vw - natW * scale) / 2;
     ty = (vh - natH * scale) / 2;
@@ -108,6 +137,7 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    userInteracted = true;
     const r = host.getBoundingClientRect();
     const cx = e.clientX - r.left;
     const cy = e.clientY - r.top;
@@ -122,6 +152,8 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
 
   let drag: { x: number; y: number; tx: number; ty: number } | null = null;
   const onDown = (e: PointerEvent) => {
+    e.preventDefault(); // не начинать выделение текста диаграммы при перетаскивании
+    userInteracted = true;
     host.setPointerCapture(e.pointerId);
     drag = { x: e.clientX, y: e.clientY, tx, ty };
     host.classList.add("mermaid-canvas--grabbing");
@@ -140,11 +172,21 @@ function attachDiagramCanvas(host: HTMLElement): (() => void) | null {
   host.addEventListener("pointermove", onMove);
   host.addEventListener("pointerup", onUp);
   host.addEventListener("pointerleave", onUp);
-  const onDbl = () => fit();
+  const onDbl = () => {
+    userInteracted = false;
+    fit();
+  };
   host.addEventListener("dblclick", onDbl);
 
-  requestAnimationFrame(fit);
-  const ro = new ResizeObserver(() => fit());
+  // Вписать на первый кадр и повторно (контейнер мог ещё не получить финальный
+  // размер). Авто-fit при ресайзе — только пока пользователь не взаимодействовал.
+  requestAnimationFrame(() => {
+    fit();
+    requestAnimationFrame(fit);
+  });
+  const ro = new ResizeObserver(() => {
+    if (!userInteracted) fit();
+  });
   ro.observe(host);
 
   return () => {
