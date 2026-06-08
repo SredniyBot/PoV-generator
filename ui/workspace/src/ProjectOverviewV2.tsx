@@ -219,7 +219,7 @@ export function ProjectOverviewV2({
                 className="overview-about__link"
                 onClick={onOpenInputArtifacts}
               >
-                Входные артефакты <ArrowRight size={14} />
+                Входные материалы <ArrowRight size={14} />
               </button>
             ) : null}
           </div>
