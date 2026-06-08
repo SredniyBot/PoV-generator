@@ -58,9 +58,9 @@ export function MachineRoomPage(): JSX.Element {
   return (
     <div className="llm-settings mroom">
       <header className="llm-settings__header">
-        <h1>Машинное отделение</h1>
+        <h1>Настройки окружения</h1>
         <p className="mroom__subtitle">
-          Среда исполнения узлов-агентов: готовность, текущая загрузка и выбор исполнителя.
+          Среда исполнения узлов-агентов: готовность Docker, текущая загрузка и выбор исполнителя.
         </p>
       </header>
 
@@ -150,6 +150,9 @@ function ReadinessSection({
               ))}
             </ul>
           ) : null}
+
+          {/* Подсказка по Docker (напр. «найден, но нужен Python-SDK»). */}
+          {docker?.hint ? <p className="mroom-muted mroom-fineprint">{docker.hint}</p> : null}
 
           {pull && pull.in_progress ? (
             <p className="mroom-muted">
@@ -322,15 +325,34 @@ function ExecutorSection({
       </div>
 
       <div className="mroom-form">
+        {provider === "stub" ? (
+          <p className="mroom-muted">
+            Stub ничего не требует: отдаёт детерминированные фикстуры без Docker и сети.
+            Поля образа и модели нужны только для реальных адаптеров.
+          </p>
+        ) : (
+          <p className="mroom-muted">
+            Готовых образов агентов пока нет — соберите свой (Docker-образ с установленным
+            CLI агента) либо оставьте <code>stub</code>. Креды модели не хранятся: подаются
+            в песочницу эфемерно на время прогона.
+          </p>
+        )}
         {supportsImage ? (
           <label className="mroom-field">
             <span>Docker-образ</span>
             <input
               type="text"
               value={image}
-              placeholder="напр. povgen/claude-code:latest"
+              placeholder={
+                provider === "aider" ? "напр. povgen/aider:latest" : "напр. povgen/claude-code:latest"
+              }
               onChange={(e) => setImage(e.target.value)}
             />
+            <span className="mroom-field__hint">
+              Образ контейнера, в котором установлен CLI агента
+              {provider === "claude_code" ? " (claude)" : provider === "aider" ? " (aider)" : ""}.
+              Внутри образа должны быть и зависимости агента, и доступ к модели.
+            </span>
           </label>
         ) : null}
         {supportsImage ? (
@@ -339,9 +361,18 @@ function ExecutorSection({
             <input
               type="text"
               value={model}
-              placeholder={provider === "claude_code" ? "напр. claude-opus-4-8" : "необязательно"}
+              placeholder={
+                provider === "claude_code" ? "напр. claude-opus-4-8" : "напр. gpt-4o-mini"
+              }
               onChange={(e) => setModel(e.target.value)}
             />
+            <span className="mroom-field__hint">
+              {provider === "claude_code"
+                ? "Имя модели Claude (напр. claude-opus-4-8). Необязательно — образ может задавать дефолт."
+                : provider === "aider"
+                  ? "Имя модели в формате litellm (напр. gpt-4o-mini, claude-3-5-sonnet). Гибко по цене."
+                  : "Имя модели (необязательно)."}
+            </span>
           </label>
         ) : null}
         {needsCommand ? (
@@ -353,12 +384,15 @@ function ExecutorSection({
               placeholder="напр. run-agent --task"
               onChange={(e) => setCommand(e.target.value)}
             />
+            <span className="mroom-field__hint">
+              Команда запуска вашего агент-CLI внутри контейнера (escape hatch для
+              нестандартных агентов).
+            </span>
           </label>
         ) : null}
         {activeCap?.needs_docker ? (
           <p className="mroom-muted mroom-fineprint">
-            Этому исполнителю нужен Docker. Креды модели не хранятся — подаются в песочницу
-            на время прогона.
+            Этому исполнителю нужен Docker и Python-SDK (pip install &apos;.[harness]&apos;).
           </p>
         ) : null}
       </div>

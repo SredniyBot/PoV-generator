@@ -61,6 +61,41 @@ def test_probe_docker_real_without_sdk_degrades() -> None:
         assert status.hint is not None
 
 
+def test_probe_docker_cli_fallback_detects_daemon(monkeypatch) -> None:
+    """Без SDK, но с работающим Docker Desktop: детект через CLI → available."""
+    import types
+
+    import pov_generator.infrastructure.harness.docker_env as de
+
+    def no_sdk() -> object:
+        raise ImportError("No module named 'docker'")
+
+    monkeypatch.setattr(de.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        de.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="27.5.1\n", stderr=""),
+    )
+    status = de.probe_docker(client_factory=no_sdk)
+    assert status.available is True
+    assert status.version == "27.5.1"
+    assert status.sdk_installed is False
+    assert status.hint is not None  # подсказка про pip install '.[harness]'
+
+
+def test_probe_docker_cli_fallback_no_cli(monkeypatch) -> None:
+    """Без SDK и без docker CLI на PATH → недоступен, sdk_installed=False."""
+    import pov_generator.infrastructure.harness.docker_env as de
+
+    def no_sdk() -> object:
+        raise ImportError("No module named 'docker'")
+
+    monkeypatch.setattr(de.shutil, "which", lambda name: None)
+    status = de.probe_docker(client_factory=no_sdk)
+    assert status.available is False
+    assert status.sdk_installed is False
+
+
 # --- подготовка образа -------------------------------------------------------
 
 

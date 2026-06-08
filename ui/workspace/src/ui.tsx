@@ -15,7 +15,6 @@ import {
   Plus,
   RadioTower,
   RefreshCcw,
-  Server,
   Settings,
   Sparkles,
   Trash2,
@@ -420,14 +419,7 @@ export function ProjectRail({
       {/* «Настройки» — внизу рейла. Системные настройки (LLM-провайдеры,
           модели, назначения), не связанные с конкретным проектом. */}
       <div className="project-rail__footer">
-        <Link
-          to="/machine-room"
-          className="rail-link"
-          title="Машинное отделение: среда исполнения агентов"
-        >
-          <Server size={14} /> Машинное отделение
-        </Link>
-        <Link to="/settings" className="rail-link" title="Настройки LLM-провайдеров и моделей">
+        <Link to="/settings" className="rail-link" title="Настройки: LLM и окружение">
           <Settings size={14} /> Настройки
         </Link>
       </div>

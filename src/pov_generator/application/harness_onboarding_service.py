@@ -102,11 +102,24 @@ class HarnessOnboardingService:
 
     def readiness(self) -> HarnessReadiness:
         docker = self.docker_status()
-        image_ready = self._images.is_ready(self._self_test_image) if docker.available else False
+        # Образ можно проверить только при наличии Python-SDK (image-preparer
+        # ходит в docker SDK). Если демон есть, но SDK не установлен — образ
+        # не проверяем, а блокером показываем установку SDK.
+        sdk_installed = getattr(docker, "sdk_installed", True)
+        image_ready = (
+            self._images.is_ready(self._self_test_image)
+            if (docker.available and sdk_installed)
+            else False
+        )
         pull = self.pull_progress(self._self_test_image)
         blockers: list[str] = []
         if not docker.available:
             blockers.append("Docker недоступен")
+        elif not sdk_installed:
+            blockers.append(
+                "Docker найден, но не установлен Python-SDK — выполните "
+                "pip install '.[harness]' и перезапустите сервис"
+            )
         elif not image_ready:
             blockers.append("Образ агента не подготовлен")
         return HarnessReadiness(

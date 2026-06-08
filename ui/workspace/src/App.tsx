@@ -70,6 +70,7 @@ import {
 } from "./DecisionsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { MachineRoomPage } from "./MachineRoomPage";
+import { SettingsShell } from "./SettingsShell";
 import { ProjectOverviewV2 } from "./ProjectOverviewV2";
 import { RequisitesPage } from "./RequisitesPage";
 import { ProjectsHomeDashboard } from "./ProjectsHomeDashboard";
@@ -358,8 +359,25 @@ function AppFrame() {
               )
             }
           />
-          <Route path="/settings" element={<LlmSettingsPage />} />
-          <Route path="/machine-room" element={<MachineRoomPage />} />
+          <Route path="/settings" element={<Navigate to="/settings/llm" replace />} />
+          <Route
+            path="/settings/llm"
+            element={
+              <SettingsShell section="llm">
+                <LlmSettingsPage />
+              </SettingsShell>
+            }
+          />
+          <Route
+            path="/settings/environment"
+            element={
+              <SettingsShell section="environment">
+                <MachineRoomPage />
+              </SettingsShell>
+            }
+          />
+          {/* Старый прямой путь машинного отделения → раздел «Окружение». */}
+          <Route path="/machine-room" element={<Navigate to="/settings/environment" replace />} />
           <Route path="/projects/:projectId" element={<Navigate to="overview" replace />} />
           <Route
             path="/projects/:projectId/*"

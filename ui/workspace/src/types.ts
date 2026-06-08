@@ -643,7 +643,9 @@ export interface MethodologyTraceResponse {
 export interface HarnessDockerStatus {
   available: boolean;
   version?: string | null;
-  message?: string | null;
+  error?: string | null;
+  hint?: string | null;
+  sdk_installed?: boolean;
 }
 
 export interface HarnessCapacityView {

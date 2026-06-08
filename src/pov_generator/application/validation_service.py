@@ -263,25 +263,13 @@ class ValidationService:
                     )
 
         status = "passed" if not any(item.blocking for item in findings) else "failed"
-        # v3.1: methodology emits DecisionInput directly через
-        # ExecutionResult.methodology_decisions. Регистрация через
-        # CheckpointService — единый путь для всех источников.
-        if (
-            execution_bundle.result.status == "succeeded"
-            and execution_bundle.result.methodology_decisions
-            and self._checkpoint_service is not None
-        ):
-            try:
-                meth_decisions = self._checkpoint_service.register_decision_inputs(
-                    workspace,
-                    project_id=manifest.project_id,
-                    decision_inputs=execution_bundle.result.methodology_decisions,
-                )
-                clarification_candidate_ids.extend(d.decision_id for d in meth_decisions)
-            except Exception:
-                # Fail-safe: ошибка регистрации кандидата не должна валить
-                # валидацию основного артефакта.
-                pass
+        # Решения методологических правил (ambiguous_choice/low_overall_confidence/
+        # empty_goal) НЕ заносим в реестр решений: это метаинформация о процессе
+        # рассуждения (близкие confidence, выбор формата артефакта и т.п.), а не
+        # решения по проекту. Они засоряли леджер псевдо-решениями («Расширенный
+        # набор полей» и пр.). Аудит этих правил сохраняется в methodology_trace
+        # (rules_evaluated / candidates_emitted). Проектные решения приходят из
+        # identification (пред-полётное выявление) и emergent (самоотчёт модели).
 
         validation_run = ValidationRun(
             validation_run_id=str(uuid.uuid4()),
