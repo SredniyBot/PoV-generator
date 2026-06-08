@@ -438,12 +438,17 @@ export function ProjectRail({
 export function WorkspaceTabs({
   projectId,
   pendingDecisionsCount,
+  pendingRequisitesCount,
 }: {
   projectId: string;
   // Счётчик открытых решений — бейдж на вкладке «Решения». Заменяет прежнюю
   // кнопку «Решения ждут: N», которая жила в шапке и была удалена вместе с
   // блоком objective-чипов. Источник — App.tsx (headerCheckpointsQuery).
   pendingDecisionsCount?: number;
+  // Ф6: счётчик непредоставленных реквизитов — бейдж на вкладке «Реквизиты».
+  // Вместе с решениями образует pull-инбокс «что нужно от вас»; появляется в
+  // момент, когда реквизиты стали известны (задача-потребитель до них дошла).
+  pendingRequisitesCount?: number;
 }) {
   // 5 вкладок проекта. «⚙ Настройки» убран — он создавал путаницу с
   // root-level страницей `/settings` (LLM-провайдеры). Содержимое
@@ -455,8 +460,18 @@ export function WorkspaceTabs({
   const tabs = [
     { to: `/projects/${projectId}/overview`, label: "Проект" },
     { to: `/projects/${projectId}/artifacts`, label: "Артефакты" },
-    { to: `/projects/${projectId}/decisions`, label: "Решения", badge: pendingDecisionsCount },
-    { to: `/projects/${projectId}/requisites`, label: "Реквизиты" },
+    {
+      to: `/projects/${projectId}/decisions`,
+      label: "Решения",
+      badge: pendingDecisionsCount,
+      badgeTitle: "Открытые решения ждут ответа",
+    },
+    {
+      to: `/projects/${projectId}/requisites`,
+      label: "Реквизиты",
+      badge: pendingRequisitesCount,
+      badgeTitle: "Данные, которые нужно предоставить",
+    },
     { to: `/projects/${projectId}/task-graph`, label: "Задачи" },
     { to: `/projects/${projectId}/methodology`, label: "Методология" },
   ];
@@ -466,7 +481,7 @@ export function WorkspaceTabs({
         <NavLink key={tab.to} to={tab.to} className={({ isActive }) => cx("tabs__item", isActive && "tabs__item--active")}>
           {tab.label}
           {tab.badge && tab.badge > 0 ? (
-            <span className="tabs__badge" title="Открытые решения ждут ответа">
+            <span className="tabs__badge" title={tab.badgeTitle}>
               {tab.badge}
             </span>
           ) : null}

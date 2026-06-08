@@ -514,6 +514,22 @@ function WorkspaceRoute({
     queryFn: () => api.getArtifacts(projectId),
     enabled: Boolean(projectId),
   });
+  // Ф6: счётчик непредоставленных реквизитов — бейдж на вкладке «Реквизиты»
+  // (pull-инбокс «что нужно от вас»). Инвалидируется вместе с реквизитами
+  // (предоставление в RequisitesPage сбрасывает этот ключ).
+  const requisitesQuery = useQuery({
+    queryKey: ["project", projectId, "requisites"],
+    queryFn: () => api.getRequisites(projectId),
+    enabled: Boolean(projectId),
+    // Реквизиты становятся известны по ходу прогона (после оценки реализуемости/
+    // модели компонентов) — пока run активен, подтягиваем, чтобы бейдж появился
+    // в нужный момент, а не только при ручном обновлении.
+    refetchInterval: runActive ? 5000 : false,
+  });
+  const pendingRequisitesCount =
+    requisitesQuery.data?.status === "ready"
+      ? requisitesQuery.data.items.filter((item) => item.status !== "provided").length
+      : 0;
 
   const commandRequest = async (promiseFactory: () => Promise<CommandResultView>) => {
     setCommandBusy(true);
@@ -672,6 +688,7 @@ function WorkspaceRoute({
       <WorkspaceTabs
         projectId={projectId}
         pendingDecisionsCount={headerCheckpointsQuery.data?.pending_count}
+        pendingRequisitesCount={pendingRequisitesCount}
       />
       <Routes>
         <Route
