@@ -9,9 +9,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ...common.errors import ConflictError
+
+# Встроенные в проект Dockerfile'ы агентов (лежат пакетными данными рядом).
+# Образ «портирован» в репозиторий: пользователю не нужно ничего тянуть/писать —
+# онбординг собирает его локально из этих Dockerfile'ов.
+_DOCKERFILES_DIR = Path(__file__).resolve().parent / "dockerfiles"
+_BUNDLED_IMAGES: dict[str, str] = {
+    "povgen/aider:latest": "aider.Dockerfile",
+    "povgen/claude-code:latest": "claude-code.Dockerfile",
+}
 
 # Колбэк прогресса: словарь как у docker pull (status/progress/id) — пробрасываем
 # наверх (онбординг агрегирует в наблюдаемое состояние).
@@ -78,11 +88,28 @@ class DockerImagePreparer:
 
     def prepare(self, image: str, on_progress: ProgressSink | None = None) -> ImageStatus:
         client = self._docker_client()
+        dockerfile = _BUNDLED_IMAGES.get(image)
         try:
-            # low-level API даёт построчный прогресс (decode=True → dict'ы).
-            for line in client.api.pull(image, stream=True, decode=True):
-                if on_progress and isinstance(line, dict):
-                    on_progress(line)
+            if dockerfile is not None:
+                # Образ агента встроен в проект: собираем локально из bundled
+                # Dockerfile (а не тянем из registry). Контекст — каталог с
+                # Dockerfile'ами; сами Dockerfile самодостаточны.
+                for line in client.api.build(
+                    path=str(_DOCKERFILES_DIR),
+                    dockerfile=dockerfile,
+                    tag=image,
+                    rm=True,
+                    decode=True,
+                ):
+                    if on_progress and isinstance(line, dict):
+                        msg = line.get("stream") or line.get("status")
+                        if msg and str(msg).strip():
+                            on_progress({"status": str(msg).strip()})
+            else:
+                # Прочие образы (напр. busybox для self-test) — обычный pull.
+                for line in client.api.pull(image, stream=True, decode=True):
+                    if on_progress and isinstance(line, dict):
+                        on_progress(line)
         except Exception as exc:  # noqa: BLE001
             return ImageStatus(
                 image=image,

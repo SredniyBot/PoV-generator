@@ -26,10 +26,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./api";
-import type {
-  HarnessAdapterCapability,
-  HarnessSelfTestView,
-} from "./types";
+import type { HarnessSelfTestView } from "./types";
 
 const PROVIDER_ORDER = ["claude_code", "aider", "command", "stub"] as const;
 
@@ -260,6 +257,9 @@ function ExecutorSection({
   const [command, setCommand] = useState<string>("");
   const [seeded, setSeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [building, setBuilding] = useState(false);
+
+  const caps = adaptersQuery.data?.capabilities ?? {};
 
   // Засеваем форму сохранённым подключением один раз при загрузке.
   const conn = connectionQuery.data;
@@ -272,6 +272,17 @@ function ExecutorSection({
       setSeeded(true);
     }
   }, [conn, seeded]);
+
+  // Выбор адаптера подставляет его дефолты (образ/модель встроены в проект) —
+  // пользователю не нужно ничего вписывать вручную.
+  const chooseAdapter = (p: string) => {
+    setProvider(p);
+    const cap = caps[p];
+    setImage(cap?.default_image ?? "");
+    setModel(cap?.default_model ?? "");
+    if (p !== "command") setCommand("");
+    setBuilding(false);
+  };
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -288,9 +299,25 @@ function ExecutorSection({
     onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   });
 
-  const caps = adaptersQuery.data?.capabilities ?? {};
+  // Сборка образа агента из встроенного Dockerfile: запуск + опрос прогресса.
+  const buildProgress = useQuery({
+    queryKey: ["harness", "image-progress", image],
+    queryFn: () => api.getHarnessImageProgress(image),
+    enabled: building && Boolean(image.trim()),
+    refetchInterval: building ? 2500 : false,
+  });
+  useEffect(() => {
+    const p = buildProgress.data;
+    if (building && p && !p.in_progress && (p.ready || p.error)) setBuilding(false);
+  }, [buildProgress.data, building]);
+  const startBuild = () => {
+    if (!image.trim()) return;
+    setBuilding(true);
+    void api.prepareHarnessImage(image.trim());
+  };
+  const build = buildProgress.data;
+
   const orderedProviders = PROVIDER_ORDER.filter((p) => p in caps);
-  const activeCap: HarnessAdapterCapability | undefined = caps[provider];
   const needsCommand = provider === "command";
   const supportsImage = provider !== "stub";
 
@@ -308,99 +335,70 @@ function ExecutorSection({
             <button
               key={p}
               type="button"
-              className={
-                "mroom-adapter" + (provider === p ? " mroom-adapter--active" : "")
-              }
-              onClick={() => setProvider(p)}
+              className={"mroom-adapter" + (provider === p ? " mroom-adapter--active" : "")}
+              onClick={() => chooseAdapter(p)}
             >
               <span className="mroom-adapter__title">{cap.title}</span>
-              <span className="mroom-adapter__meta">
-                {cap.autonomy !== "none" ? `автономность: ${cap.autonomy}` : "без автономности"}
-                {cap.git_native ? " · git-native" : ""}
-              </span>
               <span className="mroom-adapter__best">{cap.best_for}</span>
             </button>
           );
         })}
       </div>
 
-      <div className="mroom-form">
-        {provider === "stub" ? (
-          <p className="mroom-muted">
-            Stub ничего не требует: отдаёт детерминированные фикстуры без Docker и сети.
-            Поля образа и модели нужны только для реальных адаптеров.
-          </p>
-        ) : (
-          <p className="mroom-muted">
-            Готовых образов агентов пока нет — соберите свой (Docker-образ с установленным
-            CLI агента) либо оставьте <code>stub</code>. Креды модели не хранятся: подаются
-            в песочницу эфемерно на время прогона.
-          </p>
-        )}
-        {supportsImage ? (
+      {supportsImage ? (
+        <div className="mroom-form">
           <label className="mroom-field">
             <span>Docker-образ</span>
             <input
               type="text"
               value={image}
-              placeholder={
-                provider === "aider" ? "напр. povgen/aider:latest" : "напр. povgen/claude-code:latest"
-              }
+              placeholder="povgen/aider:latest"
               onChange={(e) => setImage(e.target.value)}
             />
-            <span className="mroom-field__hint">
-              Образ контейнера, в котором установлен CLI агента
-              {provider === "claude_code" ? " (claude)" : provider === "aider" ? " (aider)" : ""}.
-              Внутри образа должны быть и зависимости агента, и доступ к модели.
-            </span>
           </label>
-        ) : null}
-        {supportsImage ? (
           <label className="mroom-field">
-            <span>Модель {provider === "aider" ? "(litellm)" : ""}</span>
+            <span>Модель</span>
             <input
               type="text"
               value={model}
-              placeholder={
-                provider === "claude_code" ? "напр. claude-opus-4-8" : "напр. gpt-4o-mini"
-              }
+              placeholder={provider === "aider" ? "gpt-4o-mini" : "claude-opus-4-8"}
               onChange={(e) => setModel(e.target.value)}
             />
-            <span className="mroom-field__hint">
-              {provider === "claude_code"
-                ? "Имя модели Claude (напр. claude-opus-4-8). Необязательно — образ может задавать дефолт."
-                : provider === "aider"
-                  ? "Имя модели в формате litellm (напр. gpt-4o-mini, claude-3-5-sonnet). Гибко по цене."
-                  : "Имя модели (необязательно)."}
-            </span>
           </label>
-        ) : null}
-        {needsCommand ? (
-          <label className="mroom-field">
-            <span>Команда агента</span>
-            <input
-              type="text"
-              value={command}
-              placeholder="напр. run-agent --task"
-              onChange={(e) => setCommand(e.target.value)}
-            />
-            <span className="mroom-field__hint">
-              Команда запуска вашего агент-CLI внутри контейнера (escape hatch для
-              нестандартных агентов).
-            </span>
-          </label>
-        ) : null}
-        {activeCap?.needs_docker ? (
-          <p className="mroom-muted mroom-fineprint">
-            Этому исполнителю нужен Docker и Python-SDK (pip install &apos;.[harness]&apos;).
-          </p>
-        ) : null}
-      </div>
+          {needsCommand ? (
+            <label className="mroom-field">
+              <span>Команда</span>
+              <input
+                type="text"
+                value={command}
+                placeholder="run-agent --task"
+                onChange={(e) => setCommand(e.target.value)}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <p className="mroom-result mroom-result--err">
           <XCircle size={13} /> {error}
         </p>
+      ) : null}
+
+      {build && supportsImage ? (
+        build.error ? (
+          <p className="mroom-result mroom-result--err">
+            <XCircle size={13} /> Сборка не удалась: {build.error}
+          </p>
+        ) : build.ready ? (
+          <p className="mroom-result mroom-result--ok">
+            <CheckCircle2 size={13} /> Образ собран
+          </p>
+        ) : building ? (
+          <p className="mroom-muted">
+            <Loader2 size={13} className="spin" /> Сборка образа: {build.status ?? "…"}
+          </p>
+        ) : null
       ) : null}
 
       <div className="mroom-actions">
@@ -411,12 +409,19 @@ function ExecutorSection({
           onClick={() => saveMutation.mutate()}
         >
           {saveMutation.isPending ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-          Сохранить исполнителя
+          Сохранить
         </button>
-        {connectionQuery.data && connectionQuery.data.source !== "user" ? (
-          <span className="mroom-muted">
-            Текущий выбор — по умолчанию ({connectionQuery.data.source}).
-          </span>
+        {supportsImage ? (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            disabled={building || !image.trim()}
+            onClick={startBuild}
+            title="Собрать образ агента из встроенного Dockerfile"
+          >
+            {building ? <Loader2 size={14} className="spin" /> : <Box size={14} />}
+            Собрать образ
+          </button>
         ) : null}
       </div>
     </section>

@@ -709,6 +709,8 @@ export interface HarnessAdapterCapability {
   git_native: boolean;
   needs_docker: boolean;
   best_for: string;
+  default_image?: string;
+  default_model?: string;
 }
 
 export interface HarnessAdaptersView {

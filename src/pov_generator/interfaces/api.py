@@ -393,6 +393,11 @@ def create_app(
             "pull": to_primitive(harness_onboarding.pull_progress(image)),
         }
 
+    @app.get("/api/harness/image-progress")
+    def harness_image_progress(image: str | None = None) -> Any:
+        # Прогресс сборки/тяги конкретного образа (для кнопки «Собрать образ»).
+        return to_primitive(harness_onboarding.pull_progress(image))
+
     @app.post("/api/harness/self-test")
     def harness_self_test(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
         image = _optional_str(payload, "image")

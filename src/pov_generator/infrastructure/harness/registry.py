@@ -65,6 +65,8 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "git_native": False,
         "needs_docker": False,
         "best_for": "Тесты и CI без Docker и сети.",
+        "default_image": "",
+        "default_model": "",
     },
     "claude_code": {
         "title": "Claude Code",
@@ -73,6 +75,8 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "git_native": False,
         "needs_docker": True,
         "best_for": "Сложное многофайловое «построй X» с разведкой.",
+        "default_image": _DEFAULT_IMAGES["claude_code"],
+        "default_model": "claude-opus-4-8",
     },
     "aider": {
         "title": "Aider",
@@ -81,6 +85,8 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "git_native": True,
         "needs_docker": True,
         "best_for": "Точные правки по спеке, контроль стоимости, чистый diff.",
+        "default_image": _DEFAULT_IMAGES["aider"],
+        "default_model": "gpt-4o-mini",
     },
     "command": {
         "title": "Generic command",
@@ -89,6 +95,8 @@ ADAPTER_CAPABILITIES: dict[str, dict[str, object]] = {
         "git_native": False,
         "needs_docker": True,
         "best_for": "Escape hatch: произвольный агент-CLI.",
+        "default_image": _DEFAULT_IMAGES["command"],
+        "default_model": "",
     },
 }
 

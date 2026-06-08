@@ -26,6 +26,11 @@ dependencies = [
   # Cyrillic): pypdf for .pdf text layer, python-docx for .docx.
   "pypdf>=6.0,<7.0",
   "python-docx>=1.1,<2.0",
+  # Harness-агенты в Docker-песочнице (Ф2+). Сам SDK — чистый Python и ставится
+  # кросс-платформенно (без запущенного Docker); проект разворачивается «из
+  # коробки» с поддержкой harness. Реальный прогон требует ещё демона Docker и
+  # образа агента — без них система работает на LLM-пути и stub-harness.
+  "docker>=7,<8",
 ]
 
 [project.optional-dependencies]
@@ -36,9 +41,8 @@ dev = [
   "ruff>=0.15,<1.0",
   "uv>=0.11,<1.0",
 ]
-# Harness-агенты в Docker-песочнице (Ф2+). Опционально: без docker система
-# полностью работает (LLM-путь, stub-harness), CI зелёный без Docker.
-# Лениво импортируется в DockerSandboxRuntime; отсутствие → понятная ошибка.
+# Совместимость: extra `[harness]` сохранён как алиас (docker теперь в основных
+# зависимостях). Существующие инструкции `pip install '.[harness]'` работают.
 harness = [
   "docker>=7,<8",
 ]
@@ -52,6 +56,11 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Встроенные Dockerfile'ы агентов едут в wheel — образ собирается локально на
+# любом окружении без ручного указания.
+"pov_generator.infrastructure.harness" = ["dockerfiles/*.Dockerfile"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

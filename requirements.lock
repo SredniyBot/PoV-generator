@@ -40,6 +40,10 @@ claude-agent-sdk==0.1.80
     # via pov-generator (pyproject.toml)
 click==8.3.3
     # via uvicorn
+colorama==0.4.6
+    # via
+    #   click
+    #   pytest
 cryptography==48.0.0
     # via
     #   pyhanko
@@ -49,6 +53,8 @@ cssselect2==0.9.0
     # via svglib
 distro==1.9.0
     # via anthropic
+docker==7.1.0
+    # via pov-generator (pyproject.toml)
 docstring-parser==0.18.0
     # via anthropic
 execnet==2.1.2
@@ -146,6 +152,10 @@ python-dotenv==1.2.2
     # via pydantic-settings
 python-multipart==0.0.28
     # via mcp
+pywin32==312
+    # via
+    #   docker
+    #   mcp
 pyyaml==6.0.3
     # via
     #   pov-generator (pyproject.toml)
@@ -160,6 +170,7 @@ reportlab==4.5.1
     #   xhtml2pdf
 requests==2.34.2
     # via
+    #   docker
     #   pyhanko
     #   pyhanko-certvalidator
 rlpycairo==0.4.0
@@ -192,11 +203,13 @@ tinycss2==1.5.1
 typing-extensions==4.15.0
     # via
     #   anthropic
+    #   anyio
     #   fastapi
     #   mcp
     #   pydantic
     #   pydantic-core
     #   python-docx
+    #   referencing
     #   typing-inspection
 typing-inspection==0.4.2
     # via
@@ -204,12 +217,16 @@ typing-inspection==0.4.2
     #   mcp
     #   pydantic
     #   pydantic-settings
+tzdata==2026.2
+    # via tzlocal
 tzlocal==5.3.1
     # via pyhanko
 uritools==6.1.0
     # via pyhanko-certvalidator
 urllib3==2.7.0
-    # via requests
+    # via
+    #   docker
+    #   requests
 uv==0.11.13
     # via pov-generator (pyproject.toml)
 uvicorn==0.46.0
