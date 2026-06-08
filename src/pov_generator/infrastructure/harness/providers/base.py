@@ -108,8 +108,14 @@ class SandboxHarnessProvider:
                 if spec.limits and spec.limits.wall_clock_s
                 else self._default_timeout_s
             )
+            # Эфемерные креды LLM-подключения (api_key/base_url) — в env exec
+            # агента (нигде не персистятся; в транскрипт/бриф не попадают).
             result = self._sandbox.exec(
-                handle, argv, timeout_s=timeout_s, on_log=logs.append
+                handle,
+                argv,
+                env=spec.env or None,
+                timeout_s=timeout_s,
+                on_log=logs.append,
             )
             transcript = "".join(logs)
             if result.timed_out:

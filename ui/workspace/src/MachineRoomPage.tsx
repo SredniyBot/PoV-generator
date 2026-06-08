@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -260,11 +261,47 @@ function ExecutorSection({
 
   const orderedProviders = PROVIDER_ORDER.filter((p) => p in caps);
 
+  // Связка LLM↔агент: агент берёт креды и модель из настроенного LLM-провайдера
+  // проекта (единый источник истины). Показываем явно, чтобы пользователь видел
+  // связь и при необходимости перешёл в «Настройки → LLM».
+  const llmQuery = useQuery({
+    queryKey: ["harness", "llm"],
+    queryFn: () => api.getHarnessLlm(),
+  });
+  const llm = llmQuery.data;
+  const usesHostSession = engine === "host";
+
   return (
     <section className="mroom-card">
       <h2 className="mroom-card__title">
         <Cpu size={16} /> Исполнитель
       </h2>
+
+      <div className="mroom-llm">
+        {usesHostSession ? (
+          <p className="mroom-muted mroom-fineprint">
+            На хосте агент использует вашу залогиненную сессию claude CLI — креды
+            из настроек LLM не требуются.
+          </p>
+        ) : llm?.configured ? (
+          <p className="mroom-muted mroom-fineprint">
+            Модель и ключ агент берёт из ваших настроек LLM:{" "}
+            <strong>{llm.provider}</strong>
+            {llm.model ? (
+              <>
+                {" "}· модель <strong>{llm.model}</strong>
+              </>
+            ) : null}
+            . <Link to="/settings/llm">Настройки LLM</Link>
+          </p>
+        ) : (
+          <p className="mroom-result mroom-result--err">
+            <AlertCircle size={13} /> LLM-провайдер для агента не настроен — без
+            него агент в docker не сможет вызвать модель и написать код.{" "}
+            <Link to="/settings/llm">Настроить LLM</Link>
+          </p>
+        )}
+      </div>
 
       <div className="mroom-adapters">
         {orderedProviders.map((p) => {

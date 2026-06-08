@@ -196,6 +196,7 @@ class HarnessExecutionService:
         build_group: str | None = None,
         inputs: dict[str, str] | None = None,
         harvest_path: str | None = None,
+        credentials_env: dict[str, str] | None = None,
     ) -> HarnessOutcome:
         """Запустить дефолтный harness и собрать выход роли.
 
@@ -228,6 +229,7 @@ class HarnessExecutionService:
             volume=build_group,
             inputs=dict(inputs) if inputs else {},
             harvest_path=harvest_path,
+            env=dict(credentials_env) if credentials_env else {},
         )
         provider = self._registry.resolve_default()
         # Класс конкуррентности: занимаем слот на время прогона (бэкпрешер —

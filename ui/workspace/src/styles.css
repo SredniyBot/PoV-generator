@@ -6846,6 +6846,10 @@ code {
 
 /* ── Движок исполнения (Docker / хост) + режим безопасности ────────────────── */
 
+.mroom-llm {
+  margin: 0.2rem 0 0.8rem;
+}
+
 .mroom-engine {
   display: flex;
   flex-direction: column;

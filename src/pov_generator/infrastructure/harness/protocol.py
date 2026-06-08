@@ -63,6 +63,10 @@ class HarnessRunSpec:
     # только свою зону сервиса (напр. ``/work/services/<id>``), а не весь общий
     # том; каркас/интеграция/проверка — весь ``/work``. None → ``/work``.
     harvest_path: str | None = None
+    # Эфемерные переменные окружения прогона: креды LLM-подключения проекта
+    # (api_key/base_url), подаются в exec агента на время прогона и нигде не
+    # персистятся (правило «секреты не хранятся»). По умолчанию пусто.
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

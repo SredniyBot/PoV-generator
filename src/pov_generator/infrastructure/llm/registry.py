@@ -339,6 +339,40 @@ class LLMProviderRegistry:
         assert last_error is not None
         raise last_error
 
+    def resolve_connection_for_purpose(
+        self,
+        purpose: str,
+        *,
+        complexity: str | None = None,
+        override_model: str | None = None,
+    ) -> tuple[ProviderConnection | None, str | None]:
+        """Подключение + имя модели для сценария — БЕЗ построения LLM-провайдера.
+
+        Используется harness-слоем, чтобы взять креды (api_key/base_url) и модель
+        из того же настроенного подключения, что и обычное исполнение (единый
+        источник истины LLM↔агент). Мягкий резолв: при любой нерешённости
+        (нет store/назначения/маршрута/подключения) → ``(None, None)`` —
+        агент тогда работает на своих дефолтах образа/сессии, не падая.
+        """
+        if self._store is None:
+            return None, None
+        try:
+            model_name = override_model
+            if model_name is None:
+                assignment = self._store.get_assignment(
+                    _resolve_purpose_key(purpose, complexity)
+                )
+                if assignment is None:
+                    return None, None
+                model_name = assignment.model_name
+            for routing in self._store.list_routings_for_model(model_name):
+                connection = self._store.get_connection(routing.connection_id)
+                if connection is not None:
+                    return connection, model_name
+            return None, model_name
+        except Exception:  # noqa: BLE001 — резолв кредов агента не должен ронять узел
+            return None, None
+
     def _build_from_connection(
         self,
         connection: ProviderConnection,

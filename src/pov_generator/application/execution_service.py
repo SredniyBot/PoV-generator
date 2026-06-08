@@ -19,6 +19,10 @@ from ..domain.decisions import SOURCE_IDENTIFICATION, Decision
 from ..domain.execution import ExecutionOutput, ExecutionRequest, ExecutionResult, ExecutionTrace
 from ..domain.llm_usage import LLMUsageRecord
 from ..domain.registry import CapabilityProfileSpec, MethodologyPackSpec, RegistrySnapshot
+from ..infrastructure.harness.credentials import (
+    HarnessCredentials,
+    credentials_from_connection,
+)
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
@@ -245,6 +249,26 @@ class ExecutionService:
         """
         return self._harness.runtime_status()
 
+    def harness_llm_status(self) -> dict[str, object]:
+        """Какое LLM-подключение проекта использует агент (связка LLM↔harness).
+
+        Агент берёт креды и модель из настроенного execution-подключения — это
+        показываем в «Настройках окружения», чтобы пользователь видел связь и мог
+        перейти в «Настройки → LLM». ``configured=False`` → агент не сможет
+        вызвать LLM (нужно настроить провайдер)."""
+        for complexity in ("complex", "standard", "trivial", None):
+            connection, model = self._llm.resolve_connection_for_purpose(
+                "execution", complexity=complexity
+            )
+            if connection is not None:
+                return {
+                    "configured": True,
+                    "provider": connection.display_name,
+                    "provider_type": connection.provider_type,
+                    "model": model,
+                }
+        return {"configured": False, "provider": None, "provider_type": None, "model": None}
+
     def execute_task(
         self,
         workspace: Path,
@@ -342,9 +366,20 @@ class ExecutionService:
         non_llm_path = is_harness or active_provider == "stub" or (
             template.merge is not None and template.merge.strategy == "structural"
         )
+        harness_creds = HarnessCredentials()
         if is_harness:
             active_provider = self._harness.default_provider_name()
-            active_model = model or ""
+            # Креды и модель агента — из настроенного execution-подключения LLM
+            # (единый источник истины LLM↔агент). Мягко: нет настроек → пусто,
+            # агент работает на дефолтах образа/сессии. Ключ эфемерен (в env
+            # прогона), нигде не персистится.
+            llm_connection, resolved_model = self._llm.resolve_connection_for_purpose(
+                "execution", complexity=complexity_value, override_model=model
+            )
+            active_model = model or resolved_model or ""
+            harness_creds = credentials_from_connection(
+                llm_connection, model=active_model, adapter=active_provider
+            )
         elif non_llm_path:
             active_model = model or _fallback_model_for_meta(active_provider or "stub", complexity_value)
         elif active_provider in {"openrouter", "claude_sdk", "claude_subscription"}:
@@ -513,7 +548,8 @@ class ExecutionService:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 output_kind="bundle" if bundle_output else "structured",
-                model_hint=model or None,
+                # Модель агента: префикснутая под адаптер (litellm) из LLM-настроек.
+                model_hint=harness_creds.model or model or None,
                 gates=template.harness_gates,
                 build_group=build_group,
                 # Ф5b: предоставленные реквизиты компонента → файлы в /work узла.
@@ -523,6 +559,8 @@ class ExecutionService:
                 harvest_path=(
                     self._resolve_harvest_path(workspace, task) if bundle_output else None
                 ),
+                # Эфемерные креды LLM-подключения проекта → env песочницы.
+                credentials_env=harness_creds.env or None,
             )
             active_provider = outcome.provider_name
             active_model = outcome.model or active_model

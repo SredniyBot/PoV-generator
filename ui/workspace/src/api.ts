@@ -268,6 +268,14 @@ export const api = {
     request<import("./types").HarnessRuntimeStatusView>("/api/harness/runtime"),
   getHarnessAdapters: () =>
     request<import("./types").HarnessAdaptersView>("/api/harness/adapters"),
+  // Связка LLM↔агент: какое LLM-подключение проекта использует агент.
+  getHarnessLlm: () =>
+    request<{
+      configured: boolean;
+      provider: string | null;
+      provider_type: string | null;
+      model: string | null;
+    }>("/api/harness/llm"),
   getHarnessConnection: () =>
     request<import("./types").HarnessConnectionView>("/api/harness/connection"),
   setHarnessConnection: (payload: {

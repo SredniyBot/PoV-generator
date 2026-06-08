@@ -366,6 +366,12 @@ def create_app(
             "capabilities": to_primitive(_HARNESS_ADAPTER_CAPABILITIES),
         }
 
+    @app.get("/api/harness/llm")
+    def harness_llm() -> Any:
+        # Связка LLM↔агент: какое настроенное LLM-подключение проекта использует
+        # агент (креды + модель). Для панели «Настройки окружения».
+        return app.state.execution_service.harness_llm_status()
+
     @app.get("/api/harness/connection")
     def harness_connection() -> Any:
         # Ф7d: активное harness-подключение (нечувствительный выбор исполнителя).
