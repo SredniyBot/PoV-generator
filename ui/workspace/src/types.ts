@@ -515,6 +515,9 @@ export interface WorkflowStepView {
   sequence: number;
   task_id: string | null;
   task_key: string | null;
+  // Человеческое имя задачи (обогащается API из задач всех гейтов). Лента
+  // показывает его вместо id для шагов прошлых/будущих гейтов.
+  task_title?: string | null;
   selected_step_id: string | null;
   planning_outcome: string;
   validation_status: string | null;

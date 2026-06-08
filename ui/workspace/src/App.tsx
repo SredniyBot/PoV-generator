@@ -1033,6 +1033,7 @@ function RunActivitySection({
                 rawFailed && taskDone ? "passed" : step.validation_status;
               const viz = stepStatusVisual(effectiveValidation, step.planning_outcome);
               const name =
+                step.task_title ||
                 (step.task_id ? titleById.get(step.task_id) : null) ||
                 step.task_key ||
                 step.selected_step_id ||

@@ -73,8 +73,13 @@ stages:
         nullable: true
         description: Идентификатор кандидата уточнения, если выбор эскалирован.
     rules:
+      # Эскалируем ТОЛЬКО когда модель сама НЕ выбрала лидера (chosen_option_id
+      # пуст). Если модель уверенно выбрала вариант — близкие «сырые» confidence
+      # не должны порождать решение (иначе реестр засоряется псевдо-решениями по
+      # тривиальным near-ties). Совпадает с описанием стадии: «явный лидер →
+      # выбрать; сопоставимы → эскалировать».
       - id: ambiguous_choice
-        if: max(option_generation.options[*].confidence) - second(option_generation.options[*].confidence) < 0.15
+        if: max(option_generation.options[*].confidence) - second(option_generation.options[*].confidence) < 0.15 and is_null(decision.chosen_option_id)
         emit_candidate:
           severity: high
           need: Варианты сопоставимы по уверенности — нужно решение.

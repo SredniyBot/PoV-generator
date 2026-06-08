@@ -1050,12 +1050,20 @@ class WorkspaceQueryService:
         snapshot = context.snapshot
         active_ref = manifest.objective_ref
 
-        # 1. Упорядоченная цепочка этапов.
-        ordered: list[tuple[str, str]] = [
-            (ref, "done") for ref in manifest.objective_history
-        ]
+        # 1. Упорядоченная цепочка этапов. Дедуп: цель не может быть
+        # одновременно «выполненной» и «активной». По контракту
+        # objective_history не содержит active_ref, но после кросс-objective
+        # отката там могла остаться запись восстановленного гейта — без дедупа
+        # подвкладка/этап гейта задваивается (наблюдалось после rollback).
+        ordered: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for ref in manifest.objective_history:
+            if ref == active_ref or ref in seen:
+                continue
+            ordered.append((ref, "done"))
+            seen.add(ref)
         ordered.append((active_ref, "active"))
-        seen = {ref for ref, _ in ordered}
+        seen.add(active_ref)
         cursor = active_ref
         while True:
             try:

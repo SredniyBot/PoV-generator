@@ -104,10 +104,17 @@ class RollbackService:
         # гейта (включая его самого как «завершённый»), больше не done —
         # иначе гейт оказался бы одновременно в истории и активным.
         restored_objective = earliest.objective_ref
-        if restored_objective != manifest.objective_ref:
-            history = list(manifest.objective_history or ())
-            if restored_objective in history:
-                history = history[: history.index(restored_objective)]
+        # Восстанавливаемый гейт и всё после него больше не «выполнены».
+        # Нормализуем историю ВСЕГДА (а не только при смене objective): инвариант
+        # «active не входит в objective_history» должен держаться даже при
+        # внутри-objective откате — иначе подвкладка/этап гейта задваивается.
+        history = list(manifest.objective_history or ())
+        if restored_objective in history:
+            history = history[: history.index(restored_objective)]
+        if (
+            restored_objective != manifest.objective_ref
+            or tuple(history) != tuple(manifest.objective_history or ())
+        ):
             self._runtime.update_manifest(
                 workspace,
                 replace(

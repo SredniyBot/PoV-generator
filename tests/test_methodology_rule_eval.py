@@ -185,6 +185,41 @@ def test_ambiguous_choice_fires_on_close_confidences_via_real_methodology() -> N
     assert "ambiguous_choice" in fired_rules
 
 
+def test_ambiguous_choice_silent_when_model_chose_leader() -> None:
+    """Если модель уверенно выбрала вариант (chosen_option_id задан), близкие
+    confidence НЕ должны порождать решение — иначе реестр засоряется
+    псевдо-решениями по тривиальным near-ties (баг из отчёта пользователя)."""
+    snapshot, _ = RegistryService(FilesystemRegistryLoader(REPO_ROOT / "templates")).validate()
+    methodology = snapshot.resolve_methodology_pack("process.lean_jtbd@1.0.0")
+    reasoning = {
+        "stages": [
+            {"stage_id": "goal_framing", "outputs": {"declared_goal": "Цель."}},
+            {
+                "stage_id": "option_generation",
+                "outputs": {
+                    "options": [
+                        {"label": "Расширенный набор полей", "confidence": 0.7},
+                        {"label": "Минимальный набор полей", "confidence": 0.65},
+                    ]
+                },
+            },
+            # Модель сама выбрала лидера — эскалации быть не должно.
+            {"stage_id": "decision", "outputs": {"chosen_option_id": "opt-0"}},
+        ]
+    }
+
+    evaluation = evaluate_methodology_rules(
+        methodology=methodology,
+        complexity="standard",
+        reasoning=reasoning,
+        project_id="proj-1",
+        task_id="task-3",
+    )
+
+    fired = {o.rule_id for o in evaluation.rule_outcomes if o.fired}
+    assert "ambiguous_choice" not in fired
+
+
 def test_methodology_rules_silent_on_incomplete_reasoning() -> None:
     """Acceptance #2 из BACKLOG #7: при отсутствующем `option_generation`
     правила не должны падать — просто молча не срабатывают."""

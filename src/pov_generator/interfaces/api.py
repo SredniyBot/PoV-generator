@@ -1351,17 +1351,46 @@ def create_app(
         cancelled = workflow_runner_service.cancel_run(workspace_ref.workspace, run_id)
         return {"status": "accepted" if cancelled else "not_found", "run_id": run_id}
 
+    def _runs_with_task_titles(workspace: Path, payload: Any) -> Any:
+        """Обогатить шаги прогона человеческим именем задачи по task_id.
+
+        Имена берём из ВСЕХ задач workspace (включая прошлые/будущие гейты),
+        поэтому лента «В работе/Выполнено» показывает названия задач любого
+        гейта, а не только активного (иначе шаги прошлых гейтов отображались
+        бы как id).
+        """
+        if payload is None:
+            return None
+        try:
+            titles = {t.task_id: t.title for t in runtime.list_tasks(workspace)}
+        except Exception:  # noqa: BLE001 — обогащение best-effort
+            return payload
+        runs = payload if isinstance(payload, list) else [payload]
+        for run in runs:
+            for step in run.get("steps", []) or []:
+                tid = step.get("task_id")
+                if tid and titles.get(tid):
+                    step["task_title"] = titles[tid]
+        return payload
+
     @app.get("/api/projects/{project_id}/workflow-runs/active")
     def workflow_runs_active(project_id: str) -> Any:
         workspace_ref = catalog.resolve_workspace(project_id)
         record = workflow_runner_service.latest_active_run(workspace_ref.workspace, project_id)
-        return to_primitive(record) if record is not None else None
+        return _runs_with_task_titles(
+            workspace_ref.workspace, to_primitive(record) if record is not None else None
+        )
 
     @app.get("/api/projects/{project_id}/workflow-runs")
     def workflow_runs_list(project_id: str, limit: int = 20) -> Any:
         workspace_ref = catalog.resolve_workspace(project_id)
-        return to_primitive(
-            workflow_runner_service.list_runs(workspace_ref.workspace, project_id=project_id, limit=limit)
+        return _runs_with_task_titles(
+            workspace_ref.workspace,
+            to_primitive(
+                workflow_runner_service.list_runs(
+                    workspace_ref.workspace, project_id=project_id, limit=limit
+                )
+            ),
         )
 
     @app.get("/api/projects/{project_id}/workflow-runs/{run_id}")
@@ -1370,7 +1399,7 @@ def create_app(
         record = workflow_runner_service.get_run(workspace_ref.workspace, run_id)
         if record is None:
             return JSONResponse(status_code=404, content={"error": "run_not_found"})
-        return to_primitive(record)
+        return _runs_with_task_titles(workspace_ref.workspace, to_primitive(record))
 
     @app.post("/api/projects/{project_id}/commands/retry-task")
     def retry_task(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
