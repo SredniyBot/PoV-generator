@@ -46,10 +46,20 @@ export const api = {
     objective_ref: string;
     request_text: string;
     domain_pack_refs: string[];
+    // true → отложить авто-подбор пакетов и разворот графа до finalize-setup
+    // (после загрузки вложений), чтобы подбор увидел и запрос, и файлы.
+    defer_setup?: boolean;
   }) =>
     request<ProjectCreatedView>("/api/projects", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  // Завершить отложенный setup: подбор пакетов по запросу + вложениям и
+  // разворот графа. Вызывается после загрузки входных файлов.
+  finalizeProjectSetup: (projectId: string) =>
+    request<ProjectCreatedView>(`/api/projects/${projectId}/finalize-setup`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   deleteProject: (projectId: string) =>
     request<{ status: string; project_id: string }>(`/api/projects/${projectId}`, {
@@ -93,10 +103,14 @@ export const api = {
     projectId: string,
     file: File,
     purpose: "input" | "requisite" = "input",
+    sync = false,
   ): Promise<{ attachment_id: string; original_filename: string; extraction_status: string }> => {
     const form = new FormData();
     form.append("file", file);
     form.append("purpose", purpose);
+    // sync=true → backend извлечёт текст синхронно (нужно при создании проекта,
+    // чтобы подбор пакетов в finalize-setup увидел текст файлов).
+    if (sync) form.append("sync", "true");
     // FormData задаёт multipart boundary сам — Content-Type не выставляем.
     const response = await fetch(`${API_BASE}/api/projects/${projectId}/attachments`, {
       method: "POST",

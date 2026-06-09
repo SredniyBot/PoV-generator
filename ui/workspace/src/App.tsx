@@ -420,16 +420,27 @@ function AppFrame() {
       files: File[];
     }) => {
       const { files, ...createPayload } = payload;
-      const created = await api.createProject(createPayload);
+      // Если включён авто-подбор пакетов (явные не выбраны) и есть файлы —
+      // откладываем setup: создаём проект без графа, грузим файлы синхронно
+      // (текст извлечётся сразу), затем finalize — подбор увидит и запрос, и
+      // вложения. Без файлов или при ручном выборе пакетов — обычный путь.
+      const autoSelect = createPayload.domain_pack_refs.length === 0;
+      const defer = autoSelect && files.length > 0;
+      const created = await api.createProject({ ...createPayload, defer_setup: defer });
       // Файлы грузим после создания проекта (project_id уже есть). Сбой
       // загрузки одного файла не валит создание проекта.
       const failed: string[] = [];
       for (const file of files) {
         try {
-          await api.uploadAttachment(created.project_id, file);
+          await api.uploadAttachment(created.project_id, file, "input", defer);
         } catch {
           failed.push(file.name);
         }
+      }
+      // Завершаем отложенный setup: подбор пакетов по запросу + вложениям,
+      // разворот графа. Идемпотентно на стороне backend.
+      if (created.setup_pending) {
+        await api.finalizeProjectSetup(created.project_id);
       }
       return { created, attachedCount: files.length - failed.length, failed };
     },

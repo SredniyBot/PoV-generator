@@ -651,6 +651,22 @@ def create_app(
                 domain_pack_refs=tuple(_required_string_list(domain_pack_refs, "domain_pack_refs")),
                 selection_provider=_optional_str(payload, "selection_provider"),
                 selection_model=_optional_str(payload, "selection_model"),
+                defer_setup=bool(payload.get("defer_setup")),
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/finalize-setup")
+    def finalize_project_setup(
+        project_id: str, payload: dict[str, object] = Body(default_factory=dict)
+    ) -> Any:
+        """Завершить отложенный setup: подбор доменных пакетов по запросу И
+        загруженным вложениям + разворот графа. Вызывается клиентом после
+        загрузки входных файлов (см. create_project defer_setup)."""
+        return to_primitive(
+            command_service.finalize_project_setup(
+                project_id,
+                selection_provider=_optional_str(payload, "selection_provider"),
+                selection_model=_optional_str(payload, "selection_model"),
             )
         )
 
@@ -1222,6 +1238,7 @@ def create_app(
         project_id: str,
         file: UploadFile = File(...),
         purpose: str = Form("input"),
+        sync: bool = Form(False),
     ) -> Any:
         """Загрузить файл проекта (multipart).
 
@@ -1229,6 +1246,10 @@ def create_app(
         «Входных материалах»); ``requisite`` — файл, предоставленный в ответ на
         реквизит (отдельный бакет, в «Реквизиты»). Сохраняет со статусом
         ``pending`` и ставит извлечение текста в фон; отвечает быстро.
+
+        ``sync=true`` — извлечь текст синхронно (вернуть после извлечения). Нужно
+        при создании проекта: подбор доменных пакетов в finalize-setup должен
+        увидеть текст вложений, а не гонку с фоновым извлечением.
         """
         workspace = catalog.resolve_workspace(project_id).workspace
         # Размер ограничиваем при чтении потока, а не после полной материализации:
@@ -1255,6 +1276,7 @@ def create_app(
             content=content,
             mime_type=file.content_type,
             purpose="requisite" if purpose == "requisite" else "input",
+            extract_in_background=not sync,
         )
         return {
             "attachment_id": record.attachment_id,

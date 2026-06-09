@@ -154,7 +154,9 @@ class AttachmentService:
                     daemon=True,
                 ).start()
             else:
-                self.extract(workspace, attachment_id)
+                # Синхронное извлечение: возвращаем обновлённую запись с
+                # финальным статусом, а не pending-черновик до извлечения.
+                return self.extract(workspace, attachment_id)
         return record
 
     # --- извлечение текста --------------------------------------------------

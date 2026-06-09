@@ -455,12 +455,21 @@ class WorkspaceCommandService:
         domain_pack_refs: tuple[str, ...] = (),
         selection_provider: str | None = None,
         selection_model: str | None = None,
+        defer_setup: bool = False,
     ) -> ProjectCreatedView:
         snapshot = self._validated_snapshot()
         objective_object_ref = ObjectRef.parse(objective_ref)
+        # Отложенный setup нужен ТОЛЬКО для авто-подбора: подбор должен видеть и
+        # запрос, и вложения, а вложения грузятся уже после создания проекта.
+        # При явном выборе пакетов вложения на выбор не влияют — setup сразу.
+        deferred = defer_setup and not domain_pack_refs
         if domain_pack_refs:
             resolved_pack_refs = tuple(sorted(set(domain_pack_refs)))
             packs = tuple(snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref)) for pack_ref in resolved_pack_refs)
+        elif deferred:
+            # Подбор пакетов и разворот графа откладываем до finalize-setup.
+            resolved_pack_refs = ()
+            packs = ()
         else:
             selection = self._domain_pack_selection_service.select_for_request(
                 snapshot,
@@ -492,9 +501,11 @@ class WorkspaceCommandService:
         # утекал в «Контекст проекта» каждой задачи как 🔵 факт «из запроса» и
         # уводил ранние задачи в мета-рассуждение о самой системе подбора
         # (разбор инцидента РТК). Обоснование выбора — в логах селектора.
-        self._planning_service.expand_graph(workspace, snapshot)
+        if not deferred:
+            self._planning_service.expand_graph(workspace, snapshot)
         logger.info(
-            f"проект создан «{bootstrap.manifest.name}»",
+            f"проект создан «{bootstrap.manifest.name}»"
+            + (" (setup отложен до загрузки вложений)" if deferred else ""),
             objective=bootstrap.manifest.objective_ref.split("@")[0],
         )
         return ProjectCreatedView(
@@ -503,7 +514,104 @@ class WorkspaceCommandService:
             objective_ref=bootstrap.manifest.objective_ref,
             domain_pack_refs=resolved_pack_refs,
             workspace_path=str(workspace),
+            setup_pending=deferred,
         )
+
+    def finalize_project_setup(
+        self,
+        project_id: str,
+        *,
+        selection_provider: str | None = None,
+        selection_model: str | None = None,
+    ) -> ProjectCreatedView:
+        """Завершить отложенный setup: подобрать доменные пакеты по запросу И
+        загруженным вложениям, активировать их и развернуть граф.
+
+        Идемпотентно: если граф уже развёрнут (есть задачи), повторный вызов
+        ничего не меняет — возвращает текущее состояние. Подбор видит полный
+        входной корпус (бизнес-запрос + извлечённый текст вложений из слоя A),
+        поэтому большая часть контекста из файлов влияет на выбор пакетов.
+        """
+        workspace_ref = self._catalog.resolve_workspace(project_id)
+        workspace = workspace_ref.workspace
+        snapshot = self._validated_snapshot()
+        runtime = self._project_service.runtime
+        manifest = self._project_service.load_manifest(workspace)
+        objective_object_ref = ObjectRef.parse(manifest.objective_ref)
+
+        # Идемпотентность: setup уже выполнен (граф развёрнут) — выходим.
+        existing_tasks = runtime.list_tasks(workspace)
+        if existing_tasks:
+            state = self._project_service.load_project_state(workspace)
+            return ProjectCreatedView(
+                project_id=manifest.project_id,
+                name=manifest.name,
+                objective_ref=manifest.objective_ref,
+                domain_pack_refs=tuple(sorted(state.process.active_domain_pack_records.keys())),
+                workspace_path=str(workspace),
+                setup_pending=False,
+            )
+
+        selection_text = self._selection_corpus(workspace, manifest.business_request)
+        selection = self._domain_pack_selection_service.select_for_request(
+            snapshot,
+            objective_ref=objective_object_ref.as_string(),
+            request_text=selection_text,
+            provider=selection_provider,
+            model=selection_model,
+        )
+        for pack_ref in selection.selected_pack_refs:
+            pack = snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref))
+            self._project_service.enable_domain_pack(
+                workspace,
+                pack,
+                actor="system",
+                reason="auto-selected from request + attachments",
+            )
+        self._planning_service.expand_graph(workspace, snapshot)
+        logger.info(
+            f"setup проекта завершён «{manifest.name}»",
+            packs=len(selection.selected_pack_refs),
+        )
+        return ProjectCreatedView(
+            project_id=manifest.project_id,
+            name=manifest.name,
+            objective_ref=manifest.objective_ref,
+            domain_pack_refs=selection.selected_pack_refs,
+            workspace_path=str(workspace),
+            setup_pending=False,
+        )
+
+    # Бюджет корпуса для подбора пакетов: запрос + вложения. Подбор — задача
+    # «понять домен», полный текст не нужен; ограничиваем, чтобы не раздувать
+    # промпт селектора, но даём вложениям весомую долю контекста.
+    _SELECTION_CORPUS_CHAR_LIMIT = 60_000
+
+    def _selection_corpus(self, workspace: Path, business_request: str) -> str:
+        """Корпус для подбора пакетов: бизнес-запрос + извлечённый текст входных
+        вложений (положения слоя A ``attachment.*``). Без вложений = только запрос."""
+        from .attachment_service import ATTACHMENT_POSITION_PREFIX
+
+        parts: list[str] = []
+        request = (business_request or "").strip()
+        if request:
+            parts.append(f"Бизнес-запрос:\n{request}")
+        state = self._project_service.load_project_state(workspace)
+        for position in state.knowledge.active():
+            if position.type != "fact" or not position.identifier.startswith(
+                ATTACHMENT_POSITION_PREFIX
+            ):
+                continue
+            text = (position.statement or "").strip()
+            if text:
+                parts.append(text)
+        corpus = "\n\n".join(parts)
+        if len(corpus) > self._SELECTION_CORPUS_CHAR_LIMIT:
+            corpus = (
+                corpus[: self._SELECTION_CORPUS_CHAR_LIMIT].rstrip()
+                + "\n\n… [входной корпус обрезан для подбора пакетов]"
+            )
+        return corpus
 
     def _validated_snapshot(self):
         snapshot, report = self._registry_service.validate()

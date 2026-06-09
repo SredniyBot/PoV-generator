@@ -38,6 +38,10 @@ class ProjectCreatedView:
     objective_ref: str
     domain_pack_refs: tuple[str, ...]
     workspace_path: str
+    # True → авто-подбор доменных пакетов и разворот графа отложены: проект
+    # создан без графа, клиент должен догрузить вложения и вызвать finalize-setup
+    # (подбор увидит и запрос, и вложения). False → setup выполнен при создании.
+    setup_pending: bool = False
     changed_projections: tuple[str, ...] = field(
         default_factory=lambda: (
             "shell",

@@ -57,6 +57,8 @@ export interface ProjectCreatedView {
   objective_ref: string;
   domain_pack_refs: string[];
   workspace_path: string;
+  /** true → setup отложен: клиент грузит вложения и вызывает finalize-setup. */
+  setup_pending?: boolean;
   changed_projections: ProjectionName[];
 }
 

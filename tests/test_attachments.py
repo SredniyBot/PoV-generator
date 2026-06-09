@@ -490,3 +490,75 @@ def test_api_download_unknown_attachment_returns_404(tmp_path: Path) -> None:
     project_id = _create_project(client)
     response = client.get(f"/api/projects/{project_id}/attachments/does-not-exist/download")
     assert response.status_code == 404
+
+
+def test_finalize_setup_selects_packs_from_attachment_text(tmp_path: Path) -> None:
+    """Подбор доменных пакетов при отложенном setup учитывает ТЕКСТ вложений,
+    а не только бизнес-запрос (разбор инцидента РТК: запрос «РТК», весь контекст
+    — в приложенных файлах)."""
+    client = _api_client(tmp_path)
+    minimal_request = "Нужен пилот."
+    rich = (
+        "Нужен PoV по предиктивной аналитике оттока на ML. "
+        "Источники: 1С и корпоративный портал. "
+        "Нужны API-обновления, on-prem, персональные данные, BI и веб-интерфейс."
+    )
+
+    # Контроль: тот же скудный запрос БЕЗ вложений — подбор почти ничего не даёт.
+    control = client.post(
+        "/api/projects",
+        json={
+            "name": "control",
+            "objective_ref": OBJECTIVE_REF,
+            "request_text": minimal_request,
+            "domain_pack_refs": [],
+            "selection_provider": "stub",
+        },
+    )
+    assert control.status_code == 200, control.text
+    control_packs = set(control.json()["domain_pack_refs"])
+
+    # 1. Создаём с отложенным setup и тем же скудным запросом.
+    created = client.post(
+        "/api/projects",
+        json={
+            "name": "deferred",
+            "objective_ref": OBJECTIVE_REF,
+            "request_text": minimal_request,
+            "domain_pack_refs": [],
+            "selection_provider": "stub",
+            "defer_setup": True,
+        },
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["setup_pending"] is True
+    assert body["domain_pack_refs"] == []  # подбор отложен
+    project_id = body["project_id"]
+
+    # 2. Грузим вложение с доменными сигналами (синхронное извлечение).
+    upload = client.post(
+        f"/api/projects/{project_id}/attachments",
+        files={"file": ("brief.txt", rich.encode("utf-8"), "text/plain")},
+        data={"sync": "true"},
+    )
+    assert upload.status_code == 200, upload.text
+    assert upload.json()["extraction_status"] == "succeeded"
+
+    # 3. finalize → подбор по запросу + вложению.
+    finalize = client.post(
+        f"/api/projects/{project_id}/finalize-setup",
+        json={"selection_provider": "stub"},
+    )
+    assert finalize.status_code == 200, finalize.text
+    final_body = finalize.json()
+    assert final_body["setup_pending"] is False
+    final_packs = set(final_body["domain_pack_refs"])
+
+    # Вложение реально повлияло на выбор: пакетов стало больше, чем по запросу.
+    assert final_packs > control_packs
+    assert "ml.predictive_analytics@1.0.0" in final_packs
+
+    # Граф развёрнут только после finalize (есть задачи).
+    graph = client.get(f"/api/projects/{project_id}/task-graph").json()
+    assert graph["nodes"], "после finalize граф должен быть развёрнут"
