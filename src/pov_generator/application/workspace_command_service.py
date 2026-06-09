@@ -461,7 +461,6 @@ class WorkspaceCommandService:
         if domain_pack_refs:
             resolved_pack_refs = tuple(sorted(set(domain_pack_refs)))
             packs = tuple(snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref)) for pack_ref in resolved_pack_refs)
-            selection_summary = "Использован явный ручной выбор доменных пакетов."
         else:
             selection = self._domain_pack_selection_service.select_for_request(
                 snapshot,
@@ -472,11 +471,6 @@ class WorkspaceCommandService:
             )
             resolved_pack_refs = selection.selected_pack_refs
             packs = tuple(snapshot.resolve_domain_pack(ObjectRef.parse(pack_ref)) for pack_ref in resolved_pack_refs)
-            selection_summary = (
-                f"Автоматический модуль подбора доменных пакетов ({selection.provider}) выбрал: "
-                f"{', '.join(selection.selected_pack_refs) if selection.selected_pack_refs else 'ничего'}. "
-                f"Обоснование: {selection.rationale}"
-            )
         workspace = self._allocate_workspace(name)
         objective_spec = snapshot.resolve_objective(objective_object_ref)
         methodology_ref = (
@@ -492,13 +486,12 @@ class WorkspaceCommandService:
             domain_packs=packs,
             default_methodology_pack_ref=methodology_ref,
         )
-        self._project_service.add_fact(
-            workspace,
-            identifier="domain_pack_selection",
-            statement=selection_summary,
-            source="system",
-            taken_by_label="domain_pack_selector",
-        )
+        # Выбор доменных пакетов — внутреннее системное решение (process-слой:
+        # активированные паки). НЕ записываем его как факт знаний: иначе текст
+        # «Автоматический модуль подбора доменных пакетов (openrouter) выбрал…»
+        # утекал в «Контекст проекта» каждой задачи как 🔵 факт «из запроса» и
+        # уводил ранние задачи в мета-рассуждение о самой системе подбора
+        # (разбор инцидента РТК). Обоснование выбора — в логах селектора.
         self._planning_service.expand_graph(workspace, snapshot)
         logger.info(
             f"проект создан «{bootstrap.manifest.name}»",

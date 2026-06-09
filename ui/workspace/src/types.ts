@@ -251,6 +251,8 @@ export interface ArtifactDetailView {
   is_bundle?: boolean;
   bundle_kind?: string | null;
   bundle_files?: BundleFileView[];
+  /** Дебаг-поле: собранный контекст (запрос к LLM) задачи-производителя. */
+  context_content?: string | null;
 }
 
 export interface ReviewIssueView {

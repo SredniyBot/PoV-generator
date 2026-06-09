@@ -802,7 +802,35 @@ class WorkspaceQueryService:
             is_bundle=is_bundle,
             bundle_kind=bundle_kind,
             bundle_files=bundle_files,
+            context_content=self._artifact_context_content(context.workspace, artifact),
         )
+
+    def _artifact_context_content(self, workspace: Path, artifact) -> str | None:
+        """Собранный контекст (запрос к LLM) задачи, создавшей артефакт.
+
+        Реконструируется из записанного context-манифеста той же задачи —
+        в порядке убывания приоритета элементов, тем же склеиванием, что подаётся
+        провайдеру. Используется дебаг-полем «Контекст» в окне артефакта.
+        """
+        task_id = artifact.created_by_task_id
+        if not task_id:
+            return None
+        manifests = [
+            m
+            for m in self._runtime.list_context_manifests(workspace)
+            if m.task_id == task_id
+        ]
+        if not manifests:
+            return None
+        manifest = max(manifests, key=lambda m: m.created_at or "")
+        sections: list[str] = []
+        for item in manifest.items:
+            title = (item.title or "").strip()
+            body = (item.content or "").strip()
+            if not body:
+                continue
+            sections.append(f"### {title}\n\n{body}" if title else body)
+        return "\n\n".join(sections) if sections else None
 
     def bundle_file_text(
         self, project_id: str, artifact_id: str, path: str
@@ -2404,10 +2432,18 @@ class WorkspaceQueryService:
         }
         if not order:
             return None
+        # Только АКТИВНЫЙ дилеверабл считается ключевым: list_artifacts уже
+        # исключает откаченные (rolled_back_by), а здесь дополнительно отсекаем
+        # superseded. Иначе при откате повторного прогона «воскресал» прежний
+        # superseded-, но всё ещё signed_off-артефакт, и гейт продолжал считаться
+        # согласованным, хотя актуального согласованного документа нет (разбор
+        # инцидента с откатом аппрува).
         candidates = [
             artifact
             for artifact in self._runtime.list_artifacts(context.workspace)
-            if artifact.artifact_role in order and artifact.artifact_kind == "primary"
+            if artifact.artifact_role in order
+            and artifact.artifact_kind == "primary"
+            and not artifact.is_superseded
         ]
         if not candidates:
             return None

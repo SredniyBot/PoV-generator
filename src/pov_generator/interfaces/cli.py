@@ -149,23 +149,10 @@ def _dispatch(
                 default_methodology_pack_ref=methodology_ref,
             )
             planning_service.expand_graph(Path(args.workspace), snapshot)
-            project_service.add_fact(
-                Path(args.workspace),
-                identifier="domain_pack_selection",
-                statement=(
-                    "Автоматический selector domain pack выбрал: "
-                    f"{', '.join(enabled_pack_refs) if enabled_pack_refs else 'ничего'}. "
-                    f"Обоснование: {selection_payload['rationale']}"
-                    if selection_payload["mode"] == "auto"
-                    else "Использован явный ручной выбор domain pack."
-                ),
-                source="system" if selection_payload["mode"] == "auto" else "user",
-                taken_by_label=(
-                    "domain_pack_selector"
-                    if selection_payload["mode"] == "auto"
-                    else "operator"
-                ),
-            )
+            # Выбор доменных пакетов НЕ записываем как факт знаний (см. разбор в
+            # workspace_command_service.create_project): иначе он утекает в
+            # «Контекст проекта» каждой задачи как факт «из запроса». Обоснование
+            # отдаём в выводе команды (selection_payload) и в логах селектора.
             print(
                 json_dumps(
                     {

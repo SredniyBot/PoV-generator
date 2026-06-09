@@ -209,6 +209,7 @@ import {
   DecisionsRegistryPage,
   PendingDecisionsPage,
 } from "./DecisionsPage";
+import { GeneralSettingsPage } from "./GeneralSettingsPage";
 import { LlmSettingsPage } from "./LlmSettingsPage";
 import { MachineRoomPage } from "./MachineRoomPage";
 import { SettingsShell } from "./SettingsShell";
@@ -500,7 +501,15 @@ function AppFrame() {
               )
             }
           />
-          <Route path="/settings" element={<Navigate to="/settings/llm" replace />} />
+          <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
+          <Route
+            path="/settings/general"
+            element={
+              <SettingsShell section="general">
+                <GeneralSettingsPage />
+              </SettingsShell>
+            }
+          />
           <Route
             path="/settings/llm"
             element={
@@ -2606,8 +2615,24 @@ function BundleViewer({ projectId, detail }: { projectId: string; detail: Artifa
 
 function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView; projectId: string }) {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"doc" | "reasoning" | "validations" | "decisions" | "versions">("doc");
+  const [mode, setMode] = useState<
+    "doc" | "reasoning" | "validations" | "decisions" | "versions" | "json" | "context"
+  >("doc");
   const [provenanceOpen, setProvenanceOpen] = useState(false);
+  // Режим «дебаг» (раздел настроек «Общие»): открывает технические поля окна
+  // артефакта — Проверки/Provenance/JSON/Контекст и «Предыдущие версии».
+  const appSettingsQuery = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: () => api.getAppSettings(),
+    staleTime: 60_000,
+  });
+  const debugEnabled = appSettingsQuery.data?.debug ?? false;
+  // Если дебаг выключили, а активна техническая вкладка — возвращаемся к документу.
+  useEffect(() => {
+    if (!debugEnabled && (mode === "validations" || mode === "versions" || mode === "json" || mode === "context")) {
+      setMode("doc");
+    }
+  }, [debugEnabled, mode]);
   // За один разбор: рендерим markdown → HTML, проставляем стабильные id на
   // заголовки и собираем кликабельное оглавление. DOMParser — нативный, без
   // зависимостей; mermaid-host блоки переживают re-serialize.
@@ -2743,17 +2768,22 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
             Рассуждение
           </button>
         ) : null}
-        <button
-          className={cx("segmented__item", mode === "validations" && "segmented__item--active")}
-          onClick={() => setMode("validations")}
-          type="button"
-        >
-          Проверки
-        </button>
+        {/* Технические вкладки (Проверки/Provenance/JSON/Контекст и «Предыдущие
+            версии») показываем только в режиме «дебаг» (настройки → Общие).
+            Без дебага окно артефакта чистое: Документ / Рассуждение / Решения. */}
+        {debugEnabled ? (
+          <button
+            className={cx("segmented__item", mode === "validations" && "segmented__item--active")}
+            onClick={() => setMode("validations")}
+            type="button"
+          >
+            Проверки
+          </button>
+        ) : null}
         {/* Прошлые версии артефакта (прошлые запуски / неудачные / заменённые,
             включая заархивированные откатом). Вкладка появляется только если
             такие версии есть. */}
-        {(detail.previous_versions?.length ?? 0) > 0 ? (
+        {debugEnabled && (detail.previous_versions?.length ?? 0) > 0 ? (
           <button
             className={cx("segmented__item", mode === "versions" && "segmented__item--active")}
             onClick={() => setMode("versions")}
@@ -2772,7 +2802,29 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
         >
           Решения{decisionsCount > 0 ? ` (${decisionsCount})` : ""}
         </button>
-        {detail.created_by_task_id ? (
+        {/* JSON — сырой выход задачи; Контекст — запрос к LLM, поданный задаче.
+            Дополнительная техническая информация, видна только в дебаге. */}
+        {debugEnabled && !detail.is_bundle && detail.json_content ? (
+          <button
+            className={cx("segmented__item", mode === "json" && "segmented__item--active")}
+            onClick={() => setMode("json")}
+            type="button"
+            title="Сырой выход задачи (JSON)"
+          >
+            JSON
+          </button>
+        ) : null}
+        {debugEnabled && detail.context_content ? (
+          <button
+            className={cx("segmented__item", mode === "context" && "segmented__item--active")}
+            onClick={() => setMode("context")}
+            type="button"
+            title="Контекст (запрос), поданный задаче в LLM"
+          >
+            Контекст
+          </button>
+        ) : null}
+        {debugEnabled && detail.created_by_task_id ? (
           <button
             className="segmented__item"
             onClick={() => setProvenanceOpen(true)}
@@ -3085,6 +3137,20 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           loading={decisionsQuery.isLoading}
         />
       ) : null}
+      {mode === "json" ? (
+        detail.json_content ? (
+          <pre className="artifact-rawtext">{prettyJson(detail.json_content)}</pre>
+        ) : (
+          <EmptyState title="JSON недоступен" description="У этого артефакта нет структурного выхода." />
+        )
+      ) : null}
+      {mode === "context" ? (
+        detail.context_content ? (
+          <pre className="artifact-rawtext">{detail.context_content}</pre>
+        ) : (
+          <EmptyState title="Контекст недоступен" description="Для задачи-производителя не записан контекст-манифест." />
+        )
+      ) : null}
     </div>
   );
 }
@@ -3178,6 +3244,16 @@ function formatTimeOnly(iso: string): string {
 // Чистит "(integration_operating_model)"-суффикс в названии артефакта.
 // Backend новые артефакты так не маркирует, но в старых записях БД
 // техническое имя роли всё ещё внутри title.
+// Красивый вывод JSON для дебаг-вкладки: парсим и форматируем с отступами;
+// если строка — не валидный JSON, показываем как есть.
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 function stripRoleSuffix(title: string, role: string): string {
   if (!title || !role) return title;
   const trimmed = title.trim();

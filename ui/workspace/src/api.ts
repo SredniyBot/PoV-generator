@@ -417,6 +417,14 @@ export const api = {
 
   // --- Settings: LLM providers / models / assignments --------------------
   listPurposes: () => request<{ id: string; label: string }[]>("/api/settings/purposes"),
+  // Общие настройки приложения (раздел «Общие»). debug → открывает в окне
+  // артефакта поля Проверки/Provenance/JSON/Контекст.
+  getAppSettings: () => request<{ debug: boolean }>("/api/settings/app"),
+  setAppSettings: (payload: { debug?: boolean }) =>
+    request<{ debug: boolean }>("/api/settings/app", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   listProviders: () => request<import("./types").ProviderConnectionView[]>("/api/settings/providers"),
   createProvider: (payload: {
     provider_type: "openrouter" | "anthropic" | "claude_cli";

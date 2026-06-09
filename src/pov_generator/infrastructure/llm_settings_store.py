@@ -371,6 +371,30 @@ class SqliteSettingsStore:
             for row in rows
         )
 
+    # --- Общие настройки приложения (key-value) -----------------------------
+
+    def get_app_setting(self, key: str) -> str | None:
+        """Значение общей настройки приложения или ``None`` (тогда дефолт UI)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "select value from app_settings where key = ?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def set_app_setting(self, key: str, value: str) -> None:
+        """UPSERT общей настройки приложения. ``key`` — первичный ключ."""
+        if not key.strip():
+            raise ValidationError("Пустой ключ настройки.")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into app_settings(key, value) values (?, ?)
+                on conflict(key) do update set value = excluded.value
+                """,
+                (key, value),
+            )
+            conn.commit()
+
     # --- Internals -----------------------------------------------------------
 
     def _connection_from_row(self, row: sqlite3.Row) -> ProviderConnection:
@@ -447,6 +471,11 @@ class SqliteSettingsStore:
             create table if not exists model_context_limits (
                 model_name text primary key,
                 context_limit_tokens integer not null
+            );
+
+            create table if not exists app_settings (
+                key text primary key,
+                value text not null
             );
             """
         )

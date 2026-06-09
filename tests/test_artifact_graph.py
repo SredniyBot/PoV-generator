@@ -185,6 +185,53 @@ def test_artifacts_using_position_returns_only_active_users(tmp_path: Path) -> N
     assert runtime.artifacts_using_position(workspace, "project.goal") == []
 
 
+# --- 3b. Снятие согласования при архивации/замене версии --------------------
+
+
+def test_signoff_cleared_when_artifact_superseded(tmp_path: Path) -> None:
+    """Замена версии снимает sign-off: аппрув относится к конкретной версии,
+    а не к роли. Иначе устаревшая, но согласованная версия держала бы гейт."""
+    runtime = SqliteRuntime()
+    workspace = tmp_path / "case"
+    runtime.store_artifact(workspace, artifact=_make_artifact("art-sup"), content="{}")
+    runtime.mark_artifact_signed_off(
+        workspace, "art-sup", signed_off=True, signed_off_at="2026-06-09T10:00:00+00:00"
+    )
+    assert runtime.load_artifact(workspace, "art-sup").signed_off is True
+
+    runtime.mark_artifact_superseded(workspace, "art-sup")
+    reloaded = runtime.load_artifact(workspace, "art-sup")
+    assert reloaded.is_superseded is True
+    assert reloaded.signed_off is False
+    assert reloaded.signed_off_at is None
+
+
+def test_signoff_cleared_when_artifact_rolled_back(tmp_path: Path) -> None:
+    """Откат архивирует артефакт и снимает с него sign-off: согласованного
+    документа в активном состоянии больше нет → гейт не должен числиться пройден."""
+    runtime = SqliteRuntime()
+    workspace = tmp_path / "case"
+    # _make_artifact задаёт created_by_task_id = "task-<id>".
+    runtime.store_artifact(workspace, artifact=_make_artifact("art-rb"), content="{}")
+    runtime.mark_artifact_signed_off(
+        workspace, "art-rb", signed_off=True, signed_off_at="2026-06-09T10:00:00+00:00"
+    )
+
+    archived = runtime.archive_artifacts_for_tasks(workspace, ("task-art-rb",), "rb-1")
+    assert archived == ["art-rb"]
+
+    # Из активных исключён; в архиве виден, но уже без аппрува.
+    assert all(a.artifact_id != "art-rb" for a in runtime.list_artifacts(workspace))
+    archived_rec = next(
+        a
+        for a in runtime.list_artifacts(workspace, include_rolled_back=True)
+        if a.artifact_id == "art-rb"
+    )
+    assert archived_rec.rolled_back_by == "rb-1"
+    assert archived_rec.signed_off is False
+    assert archived_rec.signed_off_at is None
+
+
 # --- 4. Интеграционный тест: used_position_ids проросло из контекста --------
 
 

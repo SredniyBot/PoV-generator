@@ -402,6 +402,10 @@ class ArtifactDetailView:
     is_bundle: bool = False
     bundle_kind: str | None = None
     bundle_files: tuple["BundleFileView", ...] = ()
+    # Дебаг-поле: собранный контекст (запрос к LLM), который подавался задаче,
+    # создавшей артефакт. Реконструируется из записанного context-манифеста.
+    # Показывается в окне артефакта только при включённом режиме «дебаг».
+    context_content: str | None = None
 
 
 @dataclass(frozen=True)

@@ -445,6 +445,18 @@ def create_app(
             for purpose in ALL_PURPOSES
         ]
 
+    @app.get("/api/settings/app")
+    def settings_get_app() -> Any:
+        """Общие настройки приложения (раздел «Общие»). Сейчас: режим «дебаг»,
+        который открывает в окне артефакта поля Проверки/Provenance/JSON/Контекст."""
+        return {"debug": (settings_store.get_app_setting("debug") == "1")}
+
+    @app.put("/api/settings/app")
+    def settings_update_app(payload: dict[str, object] = Body(default_factory=dict)) -> Any:
+        if "debug" in payload:
+            settings_store.set_app_setting("debug", "1" if bool(payload.get("debug")) else "0")
+        return {"debug": (settings_store.get_app_setting("debug") == "1")}
+
     @app.get("/api/settings/providers")
     def settings_list_providers() -> Any:
         return [_provider_connection_to_dict(c) for c in provider_settings_service.list_connections()]

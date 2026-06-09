@@ -1012,9 +1012,13 @@ class PlanningService:
                 # отдельным решением в реестре. Поэтому, пока артефакт нужной
                 # роли не согласован, планировщик возвращает blocked.
                 required_roles = set(getattr(gate, "required_artifact_roles", ()) or ())
+                # Согласование считается только по АКТИВНОМУ артефакту: откаченные
+                # уже отфильтрованы в list_artifacts, superseded отсекаем здесь —
+                # иначе устаревшая, но signed_off-версия держала бы гейт открытым.
                 signed = any(
                     art.artifact_kind == "primary"
                     and art.signed_off
+                    and not art.is_superseded
                     and (not required_roles or art.artifact_role in required_roles)
                     for art in all_artifacts
                 )

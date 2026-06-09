@@ -57,6 +57,25 @@ def test_list_purposes_returns_canonical_set(tmp_path: Path, monkeypatch) -> Non
         assert item["label"]
 
 
+def test_app_settings_debug_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    """Раздел «Общие»: дефолт debug=False; PUT сохраняет; GET читает."""
+    client = _build_client(tmp_path, monkeypatch)
+    initial = client.get("/api/settings/app")
+    assert initial.status_code == 200
+    assert initial.json() == {"debug": False}
+
+    updated = client.put("/api/settings/app", json={"debug": True})
+    assert updated.status_code == 200
+    assert updated.json() == {"debug": True}
+
+    # Значение персистится в settings.db (новый клиент того же runtime его видит).
+    again = client.get("/api/settings/app")
+    assert again.json() == {"debug": True}
+
+    off = client.put("/api/settings/app", json={"debug": False})
+    assert off.json() == {"debug": False}
+
+
 def test_create_provider_returns_masked_key(tmp_path: Path, monkeypatch) -> None:
     client = _build_client(tmp_path, monkeypatch)
     response = client.post(

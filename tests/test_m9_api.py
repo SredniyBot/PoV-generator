@@ -403,12 +403,16 @@ def test_api_create_project_can_auto_select_domain_packs(tmp_path: Path) -> None
         "security.enterprise_compliance@1.0.0",
     ]
 
+    # Выбор доменных пакетов отражается в активных паках (выше), но НЕ
+    # записывается как факт знаний: иначе строка «Автоматический модуль подбора
+    # доменных пакетов (openrouter)…» утекала в «Контекст проекта» каждой задачи
+    # как факт «из запроса» и уводила ранние задачи в мета-рассуждение о самой
+    # системе подбора (разбор инцидента РТК).
     state = client.get(f"/api/projects/{created['project_id']}/state")
     assert state.status_code == 200
     state_payload = state.json()
-    assert any(
+    assert not any(
         str(item.get("identifier", "")) == "domain_pack_selection"
-        and "подбора доменных пакетов" in str(item.get("statement", "")).lower()
         for item in state_payload["known_facts"]
     )
 

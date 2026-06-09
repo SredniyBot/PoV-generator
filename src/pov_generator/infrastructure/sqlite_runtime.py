@@ -1038,8 +1038,11 @@ class SqliteRuntime:
                 tuple(task_ids),
             ).fetchall()
             archived = [row["artifact_id"] for row in rows]
+            # Снимаем согласование: заархивированный откатом артефакт не несёт
+            # живого аппрува (он больше не актуальный дилеверабл). Иначе гейт мог
+            # бы числиться согласованным по документу из архива.
             connection.execute(
-                f"update artifacts set rolled_back_by = ? "
+                f"update artifacts set rolled_back_by = ?, signed_off = 0, signed_off_at = null "
                 f"where created_by_task_id in ({placeholders}) and rolled_back_by is null",
                 (rollback_id, *task_ids),
             )
@@ -1744,8 +1747,11 @@ class SqliteRuntime:
         Используется при retry-task создании новой версии того же role.
         """
         with self._connect(workspace) as connection:
+            # Заодно снимаем согласование: аппрув относится к конкретной версии;
+            # как только она заменена новой, прежний sign-off не действует.
             connection.execute(
-                "update artifacts set is_superseded = 1 where artifact_id = ?",
+                "update artifacts set is_superseded = 1, signed_off = 0, signed_off_at = null "
+                "where artifact_id = ?",
                 (artifact_id,),
             )
             connection.commit()

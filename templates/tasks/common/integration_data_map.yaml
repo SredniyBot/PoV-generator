@@ -13,10 +13,13 @@ decision_identification: false
 requires:
   state: [business_request]
   artifacts:
-    required: []
+    # normalized_request — каноническая модель проекта: без неё задача стартует
+    # на пустом контексте (тот же дефект преждевременного запуска, что у
+    # problem_statement). Делаем обязательным входом.
+    required:
+      - common.normalized_request@1.0.0
     optional:
       - common.problem_statement@1.0.0
-      - common.normalized_request@1.0.0
       - common.scope_boundary_matrix@1.0.0
 produces:
   artifact: common.integration_data_map@1.0.0

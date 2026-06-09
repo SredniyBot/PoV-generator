@@ -16,9 +16,13 @@ decision_identification: false
 requires:
   state: [business_request]
   artifacts:
-    required: []
-    optional:
+    # normalized_request — каноническая модель проекта; БЕЗ неё задача стартовала
+    # параллельно с интерпретаторами и формулировала проблему из пустого
+    # контекста (бизнес-запрос «РТК» + системный шум) → галлюцинация. Делаем
+    # обязательным входом: планировщик блокирует задачу до готовности понимания.
+    required:
       - common.normalized_request@1.0.0
+    optional:
       - common.goal_hypothesis@1.0.0
 produces:
   artifact: common.problem_statement@1.0.0
