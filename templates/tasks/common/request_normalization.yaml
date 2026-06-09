@@ -13,15 +13,20 @@ methodology: minimal
 requires:
   state: [business_request]
   artifacts:
+    # Нормализованный запрос ОПИРАЕТСЯ на сформулированную проблему (а не
+    # наоборот): problem_statement задаёт, ЧТО за проблему решаем, и нормализация
+    # собирает каноническую модель уже вокруг неё. Поэтому problem_statement —
+    # обязательный вход, и нормализация идёт после него (priority ниже).
     required:
       - common.goal_hypothesis@1.0.0
       - common.constraint_inventory@1.0.0
+      - common.problem_statement@1.0.0
 produces:
   artifact: common.normalized_request@1.0.0
 context:
   max_tokens: 24000
 planning:
-  priority: 900
+  priority: 880
 effects:
   readiness:
     set:
@@ -35,7 +40,8 @@ summary: |
   • найди неоднозначности и пробелы (ambiguous_points) — что непонятно/не задано;
   • зафиксируй рабочие допущения по пробелам (safe_assumptions) — осторожно,
     только разумные, без выдуманных чисел/сроков;
-  • опираясь на гипотезу цели и ограничения (upstream), собери остальную модель.
+  • опираясь на сформулированную проблему (problem_statement), гипотезу цели и
+    ограничения (upstream), собери остальную модель ВОКРУГ этой проблемы.
   Это базовый артефакт, на который опираются все последующие задачи.
 
   Структура (включай те секции, для которых есть содержание):
