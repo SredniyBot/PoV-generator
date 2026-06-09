@@ -279,20 +279,28 @@ function ExecutorSection({
     queryFn: () => api.listModels(),
   });
   const configuredModels = (modelsQuery.data ?? []).map((m) => m.model_name);
+  // #3: устаревший override модели (нет в каталоге настроенных LLM, напр. старый
+  // выдуманный gpt-4o-mini) сбрасываем в «по умолчанию» — он невалиден (нет
+  // маршрута). Только после загрузки каталога и засева формы.
+  useEffect(() => {
+    if (seeded && modelsQuery.data && model && !configuredModels.includes(model)) {
+      setModel("");
+    }
+  }, [seeded, modelsQuery.data, model, configuredModels]);
   const renderModelSelect = () => (
     <label className="mroom-field">
       <span>Модель агента</span>
-      <select value={model} onChange={(e) => setModel(e.target.value)}>
+      <select
+        className="mroom-select"
+        value={configuredModels.includes(model) ? model : ""}
+        onChange={(e) => setModel(e.target.value)}
+      >
         <option value="">По умолчанию (модель проекта из настроек LLM)</option>
         {configuredModels.map((m) => (
           <option key={m} value={m}>
             {m}
           </option>
         ))}
-        {/* Сохранённый override, которого уже нет в каталоге — не теряем выбор. */}
-        {model && !configuredModels.includes(model) ? (
-          <option value={model}>{model} (не в каталоге)</option>
-        ) : null}
       </select>
     </label>
   );

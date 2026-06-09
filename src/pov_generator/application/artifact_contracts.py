@@ -1590,6 +1590,11 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "summary": {"type": "string"},
                 "components": {
                     "type": "array",
+                    # Архитектура ОБЯЗАНА выделить ≥1 компонент: пустая модель
+                    # «собираема в ничто» — гейт реализации развернул бы пустой
+                    # веер. Пустой список → блокирующая schema-ошибка (узел падает
+                    # с понятной причиной, а не молча уходит в пустую сборку).
+                    "minItems": 1,
                     "items": {
                         "type": "object",
                         "required": [
@@ -2177,6 +2182,11 @@ def validate_json_schema(value: Any, schema: JSONSchema, path: str = "$") -> Non
     if schema_type == "array":
         if not isinstance(value, list):
             raise ValidationError(f"{path}: ожидался список")
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            raise ValidationError(
+                f"{path}: список короче минимума ({len(value)} < {min_items})"
+            )
         item_schema = schema.get("items")
         if item_schema is not None:
             for index, item in enumerate(value):

@@ -258,7 +258,9 @@ class ExecutionService:
         вызвать LLM (нужно настроить провайдер)."""
         for complexity in ("complex", "standard", "trivial", None):
             connection, model = self._llm.resolve_connection_for_purpose(
-                "execution", complexity=complexity
+                "execution",
+                complexity=complexity,
+                exclude_provider_types=("claude_cli",),
             )
             if connection is not None:
                 return {
@@ -374,7 +376,12 @@ class ExecutionService:
             # агент работает на дефолтах образа/сессии. Ключ эфемерен (в env
             # прогона), нигде не персистится.
             llm_connection, resolved_model = self._llm.resolve_connection_for_purpose(
-                "execution", complexity=complexity_value, override_model=model
+                "execution",
+                complexity=complexity_value,
+                override_model=model,
+                # claude_cli (локальная сессия) непригоден для docker-агента:
+                # нет api_key для инъекции. host-режим использует сессию напрямую.
+                exclude_provider_types=("claude_cli",),
             )
             active_model = model or resolved_model or ""
             harness_creds = credentials_from_connection(

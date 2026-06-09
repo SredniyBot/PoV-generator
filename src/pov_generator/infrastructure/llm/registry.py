@@ -345,6 +345,7 @@ class LLMProviderRegistry:
         *,
         complexity: str | None = None,
         override_model: str | None = None,
+        exclude_provider_types: tuple[str, ...] = (),
     ) -> tuple[ProviderConnection | None, str | None]:
         """Подключение + имя модели для сценария — БЕЗ построения LLM-провайдера.
 
@@ -353,6 +354,10 @@ class LLMProviderRegistry:
         источник истины LLM↔агент). Мягкий резолв: при любой нерешённости
         (нет store/назначения/маршрута/подключения) → ``(None, None)`` —
         агент тогда работает на своих дефолтах образа/сессии, не падая.
+
+        ``exclude_provider_types`` пропускает подключения этих типов (harness в
+        docker задаёт ``claude_cli`` — у локальной CLI-сессии нет api_key для
+        инъекции в контейнер; такое подключение для docker-агента непригодно).
         """
         if self._store is None:
             return None, None
@@ -367,8 +372,11 @@ class LLMProviderRegistry:
                 model_name = assignment.model_name
             for routing in self._store.list_routings_for_model(model_name):
                 connection = self._store.get_connection(routing.connection_id)
-                if connection is not None:
-                    return connection, model_name
+                if connection is None:
+                    continue
+                if connection.provider_type in exclude_provider_types:
+                    continue
+                return connection, model_name
             return None, model_name
         except Exception:  # noqa: BLE001 — резолв кредов агента не должен ронять узел
             return None, None
