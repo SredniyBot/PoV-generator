@@ -2243,6 +2243,31 @@ code {
   flex-wrap: wrap;
 }
 
+/* #2: в дебаге вкладок больше (Проверки/Provenance/JSON/Контекст/Версии) —
+   уменьшаем текст и отступы вкладок и держим строку в одну линию, чтобы
+   сегменты + кнопки загрузки (MD/PDF) влезали вместе. Сегменты при крайней
+   нехватке ширины скроллятся по горизонтали, не сталкивая кнопки на новую строку. */
+.artifact-detail__toolbar--debug {
+  flex-wrap: nowrap;
+}
+
+.artifact-detail__toolbar--debug .segmented {
+  min-width: 0;
+  gap: 2px;
+  padding: 3px;
+  overflow-x: auto;
+}
+
+.artifact-detail__toolbar--debug .segmented__item {
+  padding: 5px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.artifact-detail__toolbar--debug .artifact-detail__downloads {
+  flex: 0 0 auto;
+}
+
 .artifact-detail__download {
   display: inline-flex;
   align-items: center;

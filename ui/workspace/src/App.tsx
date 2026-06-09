@@ -2293,10 +2293,9 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
 
   return (
     <div className="artifacts-page">
-      <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
-      <div className="artifacts-column">
-      {/* #3: подвкладки категорий + архив + экспорт — единой верхней панелью
-          (как «Реестр»/«Открытые» в решениях), без заголовка «Артефакты проекта». */}
+      {/* #1: панель категорий/архива/экспорта — полноширинная строка НАД
+          двухколоночным макетом, чтобы колонка артефакта была под ней, а не
+          справа от неё. (Подвкладки как «Реестр»/«Открытые» в решениях.) */}
       <div className="artifacts-toolbar">
         {presentCategories.length > 0 ? (
           <nav className="entity-tabs" aria-label="Категории артефактов">
@@ -2336,6 +2335,8 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
           ) : null}
         </div>
       </div>
+      <div className={cx("artifacts-layout", (artifactId || selectedAttachment) && "artifacts-layout--focused")}>
+      <div className="artifacts-column">
       {showArchived && archivedQuery.isLoading ? (
         <p className="muted">Загрузка архива…</p>
       ) : artifacts.length === 0 ? (
@@ -2638,9 +2639,11 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     staleTime: 60_000,
   });
   const debugEnabled = appSettingsQuery.data?.debug ?? false;
-  // Если дебаг выключили, а активна техническая вкладка — возвращаемся к документу.
+  // Если дебаг выключили, а активна техническая вкладка — возвращаемся к
+  // документу. «Предыдущие версии» — НЕ техническая, доступна всем, поэтому
+  // здесь её нет.
   useEffect(() => {
-    if (!debugEnabled && (mode === "validations" || mode === "versions" || mode === "json" || mode === "context")) {
+    if (!debugEnabled && (mode === "validations" || mode === "json" || mode === "context")) {
       setMode("doc");
     }
   }, [debugEnabled, mode]);
@@ -2762,7 +2765,10 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
 
   return (
     <div className="artifact-detail">
-      <div className="artifact-detail__toolbar">
+      {/* #2: в дебаге вкладок больше (Проверки/Provenance/JSON/Контекст) —
+          модификатор уменьшает текст вкладок, чтобы строка с кнопками загрузки
+          влезала в одну линию. */}
+      <div className={cx("artifact-detail__toolbar", debugEnabled && "artifact-detail__toolbar--debug")}>
         <div className="segmented">
         <button className={cx("segmented__item", mode === "doc" && "segmented__item--active")} onClick={() => setMode("doc")} type="button">
           Документ
@@ -2792,9 +2798,9 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           </button>
         ) : null}
         {/* Прошлые версии артефакта (прошлые запуски / неудачные / заменённые,
-            включая заархивированные откатом). Вкладка появляется только если
-            такие версии есть. */}
-        {debugEnabled && (detail.previous_versions?.length ?? 0) > 0 ? (
+            включая заархивированные откатом). Доступна всем (не только в дебаге):
+            появляется, если такие версии есть. */}
+        {(detail.previous_versions?.length ?? 0) > 0 ? (
           <button
             className={cx("segmented__item", mode === "versions" && "segmented__item--active")}
             onClick={() => setMode("versions")}
