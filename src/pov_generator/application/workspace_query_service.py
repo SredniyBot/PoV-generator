@@ -1180,6 +1180,7 @@ class WorkspaceQueryService:
             progress = self._objective_progress(context, spec)
             key_artifact_id = self._objective_key_artifact_id(context, spec)
             stage_signed_off = self._human_approval_gate_signed_off(context, spec)
+            stage_requires_signoff = self._objective_requires_signoff(context, spec)
             failed_count = 0
             blocked_count = 0
             awaiting_signoff = 0
@@ -1236,6 +1237,7 @@ class WorkspaceQueryService:
                     pending_decisions=tuple(pending_decisions),
                     key_artifact_id=key_artifact_id,
                     signed_off=stage_signed_off,
+                    requires_signoff=stage_requires_signoff,
                 )
             )
 
@@ -2029,6 +2031,28 @@ class WorkspaceQueryService:
                     related_id=decision.decision_id,
                 )
             )
+        # #2: пока РЕАЛЬНО идут задачи (status=in_progress), проект «в работе» —
+        # это приоритетнее устаревшей ошибки прошлого прогона и не даёт показать
+        # «Готово»/«Ошибка», когда часть шагов выполняется. После ретрая задача
+        # становится in_progress → пилюля сразу отражает работу.
+        in_progress = [task for task in tasks if task.status == "in_progress"]
+        if in_progress:
+            running = in_progress[0]
+            extra = f" (+{len(in_progress) - 1})" if len(in_progress) > 1 else ""
+            return ProjectSituationView(
+                project_id=context.manifest.project_id,
+                status_label="Идёт работа",
+                headline=f"Выполняется: {running.title}{extra}",
+                summary="Система выполняет задачи. Можно подождать результата.",
+                blocking=False,
+                primary_action=ActionDescriptor(
+                    kind="open_task_graph",
+                    label="Открыть граф задач",
+                    description="Посмотреть, что выполняется сейчас.",
+                    target_view="task_graph",
+                ),
+                blockers=tuple(blockers),
+            )
         if failed or blockers:
             clarification_first = next((blocker for blocker in blockers if blocker.kind == "clarification"), None)
             return ProjectSituationView(
@@ -2389,6 +2413,22 @@ class WorkspaceQueryService:
             return None
         candidates.sort(key=lambda a: (order[a.artifact_role], a.created_at))
         return candidates[-1].artifact_id
+
+    def _objective_requires_signoff(self, context: ProjectContext, objective) -> bool:
+        """Есть ли у цели human_approval-гейт (требуется ручное согласование).
+
+        Только такие этапы показывают тумблер согласования и гейтят «Следующий
+        этап» по sign-off. Этапы без human-гейта (архитектура/реализация) ручного
+        подтверждения НЕ требуют — leftover «подтверждения документа» не будет.
+        """
+        for gate_ref in getattr(objective, "done_gate_refs", ()) or ():
+            try:
+                gate = context.snapshot.resolve_quality_gate(gate_ref)
+            except Exception:  # noqa: BLE001 — дрейф реестра: пропускаем
+                continue
+            if gate.check_type == "human_approval":
+                return True
+        return False
 
     def _human_approval_gate_signed_off(self, context: ProjectContext, objective) -> bool:
         """human_approval-гейты цели пройдены, если её итоговый артефакт

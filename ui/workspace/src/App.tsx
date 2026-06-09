@@ -2717,8 +2717,11 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     queryKey: projectionKey(projectId, "stages"),
     queryFn: () => api.getStages(projectId),
   });
+  // Тумблер согласования — только на ключевом артефакте этапа, у которого ЕСТЬ
+  // human_approval-гейт (requires_signoff). Этапы без него (архитектура,
+  // реализация) ручного подтверждения не требуют — лишнего «согласования» нет.
   const isKeyArtifact = (stagesQuery.data?.stages ?? []).some(
-    (s) => s.key_artifact_id === detail.artifact_id,
+    (s) => s.key_artifact_id === detail.artifact_id && s.requires_signoff,
   );
 
   return (

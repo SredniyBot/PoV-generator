@@ -581,7 +581,16 @@ class PlanningService:
         process = state.process
         candidates: list[CandidateEvaluation] = []
         completed_artifact_roles = {artifact.artifact_role for artifact in self._runtime.list_artifacts(workspace)}
-        leaf_tasks = [task for task in tasks if task.template_type == "leaf"]
+        # Гейт — СТРОГИЙ барьер: к исполнению допускаются только листья АКТИВНОЙ
+        # цели. Задачи следующих гейтов (созданные/предпросмотр) не запускаются,
+        # пока пользователь явно не активирует следующий objective. Прошлые гейты
+        # уже completed и кандидатами не становятся (фильтр статуса ниже).
+        active_objective_ref = state.manifest.objective_ref
+        leaf_tasks = [
+            task
+            for task in tasks
+            if task.template_type == "leaf" and task.objective_ref == active_objective_ref
+        ]
         task_by_id = {task.task_id: task for task in tasks}
         # RG-B: топо-ранг инстансов веера (волны сборки по зависимостям) —
         # вычитается из приоритета, чтобы листья DAG исполнялись раньше зависимых.

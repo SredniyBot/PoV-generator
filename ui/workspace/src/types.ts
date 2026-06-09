@@ -472,6 +472,9 @@ export interface StageView {
   /** Ф3: итоговый артефакт этапа согласован с заказчиком. Активный этап с
    *  готовыми артефактами, но signed_off=false → жёлтый + блок «Следующий этап». */
   signed_off?: boolean;
+  /** Требует ли этап согласования заказчиком (есть human_approval-гейт). Без
+   *  него тумблер согласования не показываем (архитектура/реализация). */
+  requires_signoff?: boolean;
 }
 
 export interface ProjectStagesView {

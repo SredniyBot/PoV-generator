@@ -193,10 +193,17 @@ function edgeColorForOrigin(origin: string): string {
 // Заголовок теперь показываем целиком, поэтому высоту оцениваем по числу строк
 // (~22 символа на строку при ширине 180) — чтобы dagre зарезервировал место и
 // узлы не налезали друг на друга.
+// Узлы failed И blocked несут причину: failed — ошибку, blocked — чего ждёт
+// (нет артефакта/реквизита/незавершён веер). Бэкенд кладёт её в status_summary.
+function reasonNote(task: TaskNodeView): string | null {
+  if (task.status !== "failed" && task.status !== "blocked") return null;
+  return task.error_message || task.status_summary || null;
+}
+
 function nodeHeight(task: TaskNodeView): number {
   if (task.template_type === "fan_out") return 124;
   const lines = Math.max(1, Math.ceil((task.title?.length ?? 0) / 22));
-  const errorH = task.status === "failed" && (task.error_message || task.status_summary) ? 18 : 0;
+  const errorH = reasonNote(task) ? 18 : 0;
   return Math.max(NODE_HEIGHT, 38 + lines * 17 + errorH);
 }
 
@@ -292,12 +299,12 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         )}
       </div>
       <div className="tg-node__title" title={task.title}>{task.title}</div>
-      {task.status === "failed" && (task.error_message || task.status_summary) ? (
+      {reasonNote(task) ? (
         <div
-          className="tg-node__error"
-          title={task.error_message || task.status_summary || undefined}
+          className={task.status === "failed" ? "tg-node__error" : "tg-node__blocked"}
+          title={reasonNote(task) ?? undefined}
         >
-          {task.error_message || task.status_summary}
+          {reasonNote(task)}
         </div>
       ) : null}
       {hasActions && actions ? (
@@ -382,12 +389,12 @@ function FanOutCardNode({ data }: NodeProps<Node<FanOutCardData>>) {
           </div>
         </div>
       ) : null}
-      {task.status === "failed" && (task.error_message || task.status_summary) ? (
+      {reasonNote(task) ? (
         <div
-          className="tg-node__error"
-          title={task.error_message || task.status_summary || undefined}
+          className={task.status === "failed" ? "tg-node__error" : "tg-node__blocked"}
+          title={reasonNote(task) ?? undefined}
         >
-          {task.error_message || task.status_summary}
+          {reasonNote(task)}
         </div>
       ) : null}
       {meta != null && meta.total_instances > 4 ? (

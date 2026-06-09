@@ -4182,6 +4182,16 @@ code {
   margin-top: -0.15rem;
 }
 
+/* Причина блокировки (чего ждёт задача) — спокойный warning-тон, не ошибка. */
+.tg-node__blocked {
+  font-size: 0.68rem;
+  color: var(--warning, #d6ad59);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: -0.15rem;
+}
+
 /* ── Панель подробностей задачи (drawer графа, задача 4) ──────────────── */
 .task-detail {
   display: flex;
@@ -6857,7 +6867,8 @@ code {
   color: var(--text-secondary, #9aa4b2);
 }
 
-.mroom-field input {
+.mroom-field input,
+.mroom-field select {
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
   border-radius: var(--radius-sm, 6px);

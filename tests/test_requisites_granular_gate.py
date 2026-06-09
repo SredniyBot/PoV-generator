@@ -86,7 +86,9 @@ def _setup(tmp_path: Path):
         TaskRecord(
             task_id="fo-comp",
             project_id=runtime.load_manifest(ws).project_id,
-            objective_ref="implementation.build_plan@1.0.0",
+            # Гейт — строгий барьер: планировщик допускает только задачи активной
+            # цели, поэтому objective_ref веера = активная цель проекта.
+            objective_ref="common.requirements_specification@1.0.0",
             parent_task_id=None,
             template_ref="implementation.component_build_fanout@1.0.0",
             template_type="fan_out",

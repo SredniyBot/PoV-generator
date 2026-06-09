@@ -272,6 +272,30 @@ function ExecutorSection({
     queryFn: () => api.getHarnessLlm(),
   });
   const llm = llmQuery.data;
+  // #1: модель агента выбирается из НАСТРОЕННЫХ моделей LLM (а не свободным
+  // вводом). Пустое значение = «модель проекта» (берётся из настроек LLM).
+  const modelsQuery = useQuery({
+    queryKey: ["settings", "models"],
+    queryFn: () => api.listModels(),
+  });
+  const configuredModels = (modelsQuery.data ?? []).map((m) => m.model_name);
+  const renderModelSelect = () => (
+    <label className="mroom-field">
+      <span>Модель агента</span>
+      <select value={model} onChange={(e) => setModel(e.target.value)}>
+        <option value="">По умолчанию (модель проекта из настроек LLM)</option>
+        {configuredModels.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+        {/* Сохранённый override, которого уже нет в каталоге — не теряем выбор. */}
+        {model && !configuredModels.includes(model) ? (
+          <option value={model}>{model} (не в каталоге)</option>
+        ) : null}
+      </select>
+    </label>
+  );
   const usesHostSession = engine === "host";
 
   return (
@@ -427,20 +451,8 @@ function ExecutorSection({
         </div>
       ) : null}
 
-      {/* На хосте образ не нужен — только модель claude. */}
-      {isHost ? (
-        <div className="mroom-form">
-          <label className="mroom-field">
-            <span>Модель</span>
-            <input
-              type="text"
-              value={model}
-              placeholder="claude-opus-4-8"
-              onChange={(e) => setModel(e.target.value)}
-            />
-          </label>
-        </div>
-      ) : null}
+      {/* На хосте образ не нужен — только модель агента (из настроек LLM). */}
+      {isHost ? <div className="mroom-form">{renderModelSelect()}</div> : null}
 
       {supportsImage ? (
         <div className="mroom-form">
@@ -453,15 +465,7 @@ function ExecutorSection({
               onChange={(e) => setImage(e.target.value)}
             />
           </label>
-          <label className="mroom-field">
-            <span>Модель</span>
-            <input
-              type="text"
-              value={model}
-              placeholder={provider === "aider" ? "gpt-4o-mini" : "claude-opus-4-8"}
-              onChange={(e) => setModel(e.target.value)}
-            />
-          </label>
+          {renderModelSelect()}
           {needsCommand ? (
             <label className="mroom-field">
               <span>Команда</span>

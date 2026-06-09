@@ -29,23 +29,26 @@ function pluralRu(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-// Ф3: активный этап, у которого все артефакты готовы, но итоговый ещё не
-// согласован с заказчиком. Такой этап красим жёлтым и приглашаем нажать —
-// согласование закрывает этап и открывает «Следующий этап».
+// Ф3: активный этап С human_approval-гейтом (requires_signoff), у которого все
+// артефакты готовы, но итоговый ещё не согласован. Красим жёлтым и приглашаем
+// нажать — согласование закрывает этап и открывает «Следующий этап». Этапы без
+// гейта согласования (архитектура/реализация) сюда НЕ попадают.
 function awaitingSignoff(stage: StageView): boolean {
-  return (
-    stage.state === "active" &&
-    stage.artifacts_required > 0 &&
-    stage.artifacts_ready >= stage.artifacts_required &&
-    !stage.signed_off
+  return Boolean(
+    stage.requires_signoff &&
+      stage.state === "active" &&
+      stage.artifacts_required > 0 &&
+      stage.artifacts_ready >= stage.artifacts_required &&
+      !stage.signed_off,
   );
 }
 
-// #5: активный этап с готовыми и СОГЛАСОВАННЫМ итоговым артефактом — зелёный
+// #5: активный этап С гейтом согласования, готовый и СОГЛАСОВАННЫЙ — зелёный
 // (пройден) сразу после согласования, не дожидаясь активации следующего гейта.
 function signedOffComplete(stage: StageView): boolean {
   return Boolean(
-    stage.state === "active" &&
+    stage.requires_signoff &&
+      stage.state === "active" &&
       stage.artifacts_required > 0 &&
       stage.artifacts_ready >= stage.artifacts_required &&
       stage.signed_off,
