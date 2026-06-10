@@ -102,3 +102,61 @@ def test_user_stories_validation_still_rejects_malformed_items() -> None:
         validate_json_schema([{"actor": "X"}], schema)  # нет обязательного goal
     with pytest.raises(ValidationError):
         validate_json_schema([123], schema)  # не объект и не строка
+
+
+def _phased_plan_schema() -> dict:
+    return artifact_schema("requirements_spec", ())["properties"]["phased_plan"]
+
+
+def test_phased_plan_validation_accepts_object_and_string_forms() -> None:
+    """Тот же класс инцидента на следующем поле: после починки user_stories
+    прогон ТЗ падал уже на `$.phased_plan[0]: ожидалась строка` (модель отдала
+    фазы объектами). Схема теперь принимает и объект (предпочтительно), и строку."""
+    schema = _phased_plan_schema()
+    validate_json_schema(
+        [{"phase": "Фаза 0", "objective": "Согласовать выгрузку", "milestone": "Допуск ИБ", "depends_on": []}],
+        schema,
+    )
+    validate_json_schema(["Фаза 0. Подготовка и согласования."], schema)
+    # без сроков/дат — но если модель добавит чужой ключ, это всё ещё ошибка.
+    with pytest.raises(ValidationError):
+        validate_json_schema([{"phase": "Ф", "duration_weeks": 2}], schema)
+
+
+def test_phased_plan_renders_structured_blocks_and_tolerates_strings() -> None:
+    md = render_markdown(
+        "requirements_spec",
+        {
+            "title": "ТЗ",
+            "business_goal": "Цель",
+            "phased_plan": [
+                {"phase": "Фаза 0. Подготовка", "objective": "Согласовать выгрузку",
+                 "milestone": "Получен допуск ИБ", "depends_on": ["Юр. заключение"]},
+                "Свободная фаза без структуры",
+            ],
+        },
+    )
+    assert "### Фаза 0. Подготовка" in md
+    assert "**Цель.** Согласовать выгрузку" in md
+    assert "**Контрольная точка.** Получен допуск ИБ" in md
+    assert "**Зависит от:** Юр. заключение" in md
+    assert "- Свободная фаза без структуры" in md
+
+
+def test_renderer_does_not_crash_on_malformed_domain_fields() -> None:
+    """Защита рендерера: доменные поля, пришедшие НЕ объектом (напр. списком
+    строк — это и валило прежний прогон крашем `frontend.get` на list), не должны
+    ронять рендер. Поле просто пропускается, документ строится."""
+    md = render_markdown(
+        "requirements_spec",
+        {
+            "title": "ТЗ",
+            "business_goal": "Цель",
+            "frontend_requirements": ["роняло раньше"],
+            "ml_requirements": ["и это"],
+            "integration_model": ["и это"],
+            "security_constraints_detail": ["и это"],
+            "privacy_impact": ["и это"],
+        },
+    )
+    assert "# ТЗ" in md or "ТЗ" in md  # документ построен, без исключения

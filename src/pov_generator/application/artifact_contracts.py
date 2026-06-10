@@ -554,7 +554,32 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "security_requirements": _string_array_schema(),
         "deployment_requirements": _string_array_schema(),
         "delivery_artifacts": _string_array_schema(),
-        "phased_plan": _string_array_schema(),
+        # phased_plan — как и user_stories, поле, которое модель в большом ТЗ
+        # естественно отдаёт СТРУКТУРОЙ (фаза + цель + контрольная точка +
+        # зависимости), а не плоской строкой. Жёсткий string-array валил весь
+        # артефакт на `$.phased_plan[0]: ожидалась строка`. anyOf согласует
+        # валидатор с рендерером: объект — предпочтительная форма (порядок и
+        # зависимости БЕЗ сроков), строка — устойчивый fallback.
+        "phased_plan": {
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "required": ["phase"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "phase": {"type": "string", "description": "Название фазы."},
+                            "objective": {"type": "string", "description": "Цель фазы."},
+                            "result": {"type": "string", "description": "Проверяемый результат фазы."},
+                            "milestone": {"type": "string", "description": "Контрольное событие фазы (не дата)."},
+                            "depends_on": _string_array_schema(),
+                        },
+                    },
+                    {"type": "string"},
+                ],
+            },
+        },
         # Расширенные разделы — необязательные. Если в upstream активны
         # соответствующие задачи (glossary_drafting / deployment_topology /
         # project_risk_register / privacy_impact_assessment), то их вклад
@@ -2307,6 +2332,45 @@ def _render_user_scenarios(lines: list[str], scenarios: list[Any]) -> None:
                 lines.append("")
 
 
+def _render_phased_plan(lines: list[str], phases: list[Any]) -> None:
+    """Render the implementation phases.
+
+    Like ``user_stories``, a phase is naturally structured — name, objective,
+    a checkpoint event and dependencies (NOT durations: schedule estimates are
+    out of scope). Modelling it as ``{phase, objective, result, milestone,
+    depends_on[]}`` lets us render readable blocks. Resilience: a plain-string
+    item still renders as a single bullet, so legacy/flat answers never break.
+    """
+    index = 0
+    for raw in phases:
+        if isinstance(raw, dict):
+            index += 1
+            name = str(raw.get("phase") or "").strip() or f"Фаза {index}"
+            lines.append(f"### {name}")
+            lines.append("")
+            objective = str(raw.get("objective") or "").strip()
+            if objective:
+                lines.append(f"**Цель.** {objective}")
+                lines.append("")
+            result = str(raw.get("result") or "").strip()
+            if result:
+                lines.append(f"**Результат.** {result}")
+                lines.append("")
+            milestone = str(raw.get("milestone") or "").strip()
+            if milestone:
+                lines.append(f"**Контрольная точка.** {milestone}")
+                lines.append("")
+            depends_on = [str(dep).strip() for dep in (raw.get("depends_on") or []) if str(dep).strip()]
+            if depends_on:
+                lines.append(f"**Зависит от:** {'; '.join(depends_on)}")
+                lines.append("")
+        else:
+            text = str(raw).strip()
+            if text:
+                lines.append(f"- {text}")
+                lines.append("")
+
+
 def _intro_for(label: str, count: int) -> str:
     """Короткая вводная фраза перед буллетным списком, чтобы документ читался
     как текст с логикой, а не как набор отдельных списков. Цель — связность.
@@ -2491,7 +2555,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
 
     # ----- Доменные расширения ------------------------------------------------
     frontend = payload.get("frontend_requirements")
-    if frontend:
+    if isinstance(frontend, dict):
         lines.append("---")
         lines.append("")
         lines.append("## Требования к интерфейсу")
@@ -2534,7 +2598,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             lines.append("")
 
     ml_requirements = payload.get("ml_requirements")
-    if ml_requirements:
+    if isinstance(ml_requirements, dict):
         lines.append("---")
         lines.append("")
         lines.append("## ML-задача и данные")
@@ -2573,7 +2637,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             lines.append("")
 
     security_detail = payload.get("security_constraints_detail")
-    if security_detail:
+    if isinstance(security_detail, dict):
         lines.append("---")
         lines.append("")
         lines.append("## Детальные ограничения ИБ и комплаенса")
@@ -2610,7 +2674,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
             lines.append("")
 
     integration_model = payload.get("integration_model")
-    if integration_model:
+    if isinstance(integration_model, dict):
         lines.append("---")
         lines.append("")
         lines.append("## Интеграционная модель")
@@ -2702,7 +2766,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
 
     # ----- DPIA / Оценка воздействия на персональные данные ------------------
     privacy_impact = payload.get("privacy_impact") or {}
-    if privacy_impact:
+    if isinstance(privacy_impact, dict) and privacy_impact:
         lines.append("---")
         lines.append("")
         lines.append("## Оценка воздействия на персональные данные (DPIA)")
@@ -2804,11 +2868,11 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         lines.append("## Этапы реализации")
         lines.append("")
         lines.append(
-            "Крупная декомпозиция работы по фазам. Конкретные сроки и "
-            "состав работ внутри фаз уточняются на этапе подготовки контракта."
+            "Крупная декомпозиция работы по фазам в порядке выполнения. Состав "
+            "работ внутри фаз уточняется на этапе подготовки контракта."
         )
         lines.append("")
-        _render_bulleted(lines, phased)
+        _render_phased_plan(lines, phased)
         lines.append("")
 
     # ----- Альтернативы, допущения, риски, открытые вопросы ------------------
