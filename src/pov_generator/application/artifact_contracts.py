@@ -2264,6 +2264,141 @@ def validate_json_schema(value: Any, schema: JSONSchema, path: str = "$") -> Non
     raise ValidationError(f"{path}: неподдерживаемый тип схемы '{schema_type}'")
 
 
+def collect_schema_errors(value: Any, schema: JSONSchema, path: str = "$") -> list[str]:
+    """Собрать ВСЕ нарушения схемы (validate_json_schema падает на первом).
+
+    Нужно для двух вещей: (1) точечного self-repair — модели отдаётся полный
+    список проблем, а не одна; (2) сравнения «стало ли лучше» после починки.
+    Никогда не бросает — возвращает список сообщений (пустой = валидно.)
+    """
+    errors: list[str] = []
+    any_of = schema.get("anyOf")
+    if any_of:
+        for sub_schema in any_of:
+            if not collect_schema_errors(value, sub_schema, path):
+                return []
+        return [f"{path}: не подходит ни под одну из допустимых форм"]
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if not isinstance(value, dict):
+            return [f"{path}: ожидался объект"]
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}: отсутствует обязательное поле '{key}'")
+        properties = schema.get("properties", {})
+        if not schema.get("additionalProperties", True):
+            unknown = sorted(set(value) - set(properties))
+            if unknown:
+                errors.append(f"{path}: неизвестные поля {unknown}")
+        for key, prop_schema in properties.items():
+            if key in value:
+                errors.extend(collect_schema_errors(value[key], prop_schema, f"{path}.{key}"))
+        return errors
+    if schema_type == "array":
+        if not isinstance(value, list):
+            return [f"{path}: ожидался список"]
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            for index, item in enumerate(value):
+                errors.extend(collect_schema_errors(item, item_schema, f"{path}[{index}]"))
+        return errors
+    if schema_type == "string":
+        if not isinstance(value, str):
+            return [f"{path}: ожидалась строка"]
+        allowed = schema.get("enum")
+        if allowed and value not in allowed:
+            return [f"{path}: недопустимое значение '{value}'"]
+        return []
+    if schema_type == "number":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return [f"{path}: ожидалось число"]
+        return []
+    if schema_type == "boolean":
+        if not isinstance(value, bool):
+            return [f"{path}: ожидалось логическое значение"]
+        return []
+    return []
+
+
+def normalize_to_schema(value: Any, schema: JSONSchema) -> Any:
+    """Детерминированно (без LLM) починить МЕХАНИЧЕСКУЮ форму значения под схему.
+
+    Огромный артефакт ТЗ (десятки полей, ~8 строгих вложенных схем) модель в один
+    проход не выдаёт идеально — каждый прогон отклоняется на РАЗНОМ подмножестве
+    полей одной и той же природы: не тот тип (объект/список/строка), лишние ключи.
+    Это чинится без модели и без потери содержания:
+
+      • лишние ключи в строгом объекте (additionalProperties:false) — отбрасываются;
+      • строка/число там, где ждут список — заворачиваются в список;
+      • dict там, где ждут массив строк — разворачивается в ["ключ: значение", …];
+      • список/dict там, где ждут строку — склеиваются в читаемую строку;
+      • элементы массива/поля объекта — рекурсивно.
+
+    Что НЕЛЬЗЯ восстановить детерминированно (объект вместо списка строк;
+    отсутствует обязательный ключ) — оставляется как есть; этим займётся точечный
+    self-repair. Функция никогда не бросает и не выдумывает содержание.
+    """
+    any_of = schema.get("anyOf")
+    if any_of:
+        # Берём первую подсхему, под которую значение валидно после нормализации.
+        for sub_schema in any_of:
+            candidate = normalize_to_schema(value, sub_schema)
+            if not collect_schema_errors(candidate, sub_schema):
+                return candidate
+        return value
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if not isinstance(value, dict):
+            return value  # список/строку → объект детерминированно не привести
+        properties = schema.get("properties", {})
+        allow_additional = schema.get("additionalProperties", True)
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in properties:
+                out[key] = normalize_to_schema(item, properties[key])
+            elif allow_additional:
+                out[key] = item
+            # иначе — лишний ключ в строгом объекте: отбрасываем
+        return out
+    if schema_type == "array":
+        item_schema = schema.get("items")
+        if not isinstance(value, list):
+            if value is None:
+                return value
+            if isinstance(value, dict):
+                # dict → массив строк "ключ: значение" (частый случай: модель
+                # отдала операционную модель / требования объектом вместо списка).
+                value = [f"{k}: {_stringify_scalar(v)}" for k, v in value.items()]
+            else:
+                value = [value]
+        if item_schema is not None:
+            return [normalize_to_schema(item, item_schema) for item in value]
+        return value
+    if schema_type == "string":
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return value  # bool→str было бы искажением; пусть валидатор отметит
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, list):
+            return "; ".join(_stringify_scalar(x) for x in value)
+        if isinstance(value, dict):
+            return "; ".join(f"{k}: {_stringify_scalar(v)}" for k, v in value.items())
+        return value
+    return value
+
+
+def _stringify_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return ", ".join(_stringify_scalar(x) for x in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_stringify_scalar(v)}" for k, v in value.items())
+    return str(value)
+
+
 def schema_instruction(role: str, domain_pack_refs: tuple[str, ...]) -> str:
     schema = artifact_schema(role, domain_pack_refs)
     return (

@@ -12,6 +12,8 @@ import pytest
 
 from pov_generator.application.artifact_contracts import (
     artifact_schema,
+    collect_schema_errors,
+    normalize_to_schema,
     render_markdown,
     validate_json_schema,
 )
@@ -160,3 +162,73 @@ def test_renderer_does_not_crash_on_malformed_domain_fields() -> None:
         },
     )
     assert "# ТЗ" in md or "ТЗ" in md  # документ построен, без исключения
+
+
+# --- детерминированная нормализация формы под схему ------------------------
+
+_OBJ_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name"],
+    "properties": {
+        "name": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"},
+    },
+}
+
+
+def test_normalize_drops_unknown_keys_in_strict_object() -> None:
+    """privacy_impact падал на лишних ключах — нормализация их выкидывает."""
+    out = normalize_to_schema({"name": "X", "лишний": 1, "tags": ["a"]}, _OBJ_SCHEMA)
+    assert out == {"name": "X", "tags": ["a"]}
+    assert collect_schema_errors(out, _OBJ_SCHEMA) == []
+
+
+def test_normalize_coerces_scalar_and_dict_into_array() -> None:
+    """delivery_pattern ждали списком, модель давала строку/объект."""
+    arr = {"type": "array", "items": {"type": "string"}}
+    assert normalize_to_schema("одна строка", arr) == ["одна строка"]
+    # dict → ["ключ: значение", …] (operating_model объектом вместо списка)
+    assert normalize_to_schema({"роль": "оператор", "sla": "8x5"}, arr) == [
+        "роль: оператор",
+        "sla: 8x5",
+    ]
+
+
+def test_normalize_stringifies_dict_and_list_where_string_expected() -> None:
+    """actors[i] ждали строкой, модель давала объекты."""
+    s = {"type": "string"}
+    assert normalize_to_schema(["a", "b"], s) == "a; b"
+    assert normalize_to_schema({"k": "v", "k2": "v2"}, s) == "k: v; k2: v2"
+
+
+def test_normalize_array_items_dict_to_string() -> None:
+    arr = {"type": "array", "items": {"type": "string"}}
+    out = normalize_to_schema([{"actor": "HR", "goal": "видеть прогноз"}], arr)
+    assert out == ["actor: HR; goal: видеть прогноз"]
+    assert collect_schema_errors(out, arr) == []
+
+
+def test_normalize_leaves_unrepairable_for_self_repair() -> None:
+    """Объект вместо списка строк и пропуск обязательного ключа детерминированно
+    не чинятся — нормализация их НЕ ломает дальше, оставляет self-repair'у."""
+    # объект ждут, пришёл список — оставляем как есть (потом self-repair)
+    out = normalize_to_schema(["строка"], _OBJ_SCHEMA)
+    assert out == ["строка"]
+    assert collect_schema_errors(out, _OBJ_SCHEMA)  # всё ещё невалидно
+
+
+def test_normalize_idempotent_on_valid_payload() -> None:
+    """На валидном payload нормализация — no-op (важно: stub/валидные ответы
+    не должны меняться)."""
+    valid = {"name": "X", "tags": ["a", "b"], "note": "n"}
+    assert normalize_to_schema(valid, _OBJ_SCHEMA) == valid
+
+
+def test_collect_schema_errors_returns_all_not_just_first() -> None:
+    bad = {"tags": "не список", "note": 5}  # нет name, tags не список, note не строка
+    errs = collect_schema_errors(bad, _OBJ_SCHEMA)
+    assert len(errs) == 3
+    joined = " | ".join(errs)
+    assert "name" in joined and "tags" in joined and "note" in joined

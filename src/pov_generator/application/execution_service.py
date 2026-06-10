@@ -25,7 +25,13 @@ from ..infrastructure.harness.credentials import (
 )
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
 from ..infrastructure.sqlite_runtime import SqliteRuntime
-from .artifact_contracts import artifact_schema, render_markdown, schema_instruction
+from .artifact_contracts import (
+    artifact_schema,
+    collect_schema_errors,
+    normalize_to_schema,
+    render_markdown,
+    schema_instruction,
+)
 from .checkpoint_service import CheckpointService
 from .complexity_selector_service import select_complexity
 from .context_service import ContextService
@@ -693,6 +699,24 @@ class ExecutionService:
                         decisions_schema_def=decisions_schema_def,
                     )
                 )
+            # Форма-нормализация (детерминированно) + точечный self-repair.
+            # Огромный артефакт (ТЗ: десятки полей, ~8 строгих вложенных схем)
+            # модель в один проход не выдаёт идеально под схему — каждый прогон
+            # отклонялся на РАЗНОМ подмножестве полей. Сначала чиним механику
+            # формы без LLM и без потери содержания (normalize_to_schema), затем
+            # оставшиеся содержательные пробелы — точечным LLM-вызовом ТОЛЬКО по
+            # провалившимся полям (дёшево относительно полной перегенерации).
+            # На валидном payload оба шага — no-op, поэтому stub/валидные ответы
+            # не затрагиваются.
+            payload = normalize_to_schema(payload, primary_schema)
+            payload, repair_usages = self._repair_payload_to_schema(
+                llm=llm_provider,
+                payload=payload,
+                primary_schema=primary_schema,
+                artifact_role=artifact_role,
+            )
+            if repair_usages:
+                llm_usages = [*llm_usages, *repair_usages]
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
         # self_reported_decisions заполняет только LLM-ветка (идея А);
@@ -1538,6 +1562,105 @@ class ExecutionService:
             "cache_write_tokens": 0,
             "total_tokens": int(usage.total_tokens),
         }
+
+    @staticmethod
+    def _top_level_field(error: str) -> str:
+        """Из сообщения вида ``$.ml_requirements: ...`` / ``$.actors[0]: ...``
+        вытащить имя верхнеуровневого поля (``ml_requirements`` / ``actors``)."""
+        head = error.split(":", 1)[0]
+        if head.startswith("$."):
+            head = head[2:]
+        for sep in (".", "[", " "):
+            head = head.split(sep, 1)[0]
+        return head
+
+    def _repair_payload_to_schema(
+        self,
+        *,
+        llm: LLMProvider,
+        payload: dict,
+        primary_schema: dict,
+        artifact_role: str,
+        max_iters: int = 2,
+    ) -> tuple[dict, list[tuple[str | None, LLMUsage | None]]]:
+        """Точечный self-repair формы артефакта под строгую схему.
+
+        После детерминированной ``normalize_to_schema`` остаются СОДЕРЖАТЕЛЬНЫЕ
+        несоответствия (нет обязательного ключа, другой вокабуляр ключей) — без
+        модели их не починить. Здесь LLM отдаются ТОЛЬКО провалившиеся
+        верхнеуровневые поля (текущее содержимое + их схема + ошибки) с просьбой
+        переложить смысл в правильную форму. Дёшево относительно полной
+        перегенерации (несколько полей, не весь артефакт). Результат принимается
+        только если ошибок стало меньше; иначе откат. На валидном payload —
+        мгновенный no-op (нет ошибок → нет вызова).
+        """
+        properties = primary_schema.get("properties", {})
+        usages: list[tuple[str | None, LLMUsage | None]] = []
+        if not properties:
+            return payload, usages
+        for _ in range(max_iters):
+            errors = collect_schema_errors(payload, primary_schema)
+            if not errors:
+                break
+            failing = sorted({self._top_level_field(e) for e in errors} & set(properties))
+            if not failing:
+                break  # ошибки не привязаны к известным полям — чинить нечем
+            sub_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": failing,
+                "properties": {field: properties[field] for field in failing},
+            }
+            current = {field: payload.get(field) for field in failing}
+            repair_system = (
+                "Ты — строгий нормализатор JSON. Тебе дают фрагмент артефакта, "
+                "который НЕ прошёл валидацию по схеме, список ошибок и требуемую "
+                "JSON Schema. Верни ИСПРАВЛЕННЫЙ фрагмент: те же ключи верхнего "
+                "уровня, строго по схеме (правильные типы, все обязательные ключи, "
+                "никаких лишних ключей). ГЛАВНОЕ: сохрани уже имеющееся содержание "
+                "— переложи его в правильную форму (например, переименуй ключи под "
+                "схему, оберни строку в список, собери объект из плоских строк). "
+                "НЕ выдумывай новых фактов и НЕ оценивай сроки/деньги. Если для "
+                "обязательного ключа данных реально нет — поставь краткое нейтральное "
+                "значение, выведенное из уже имеющегося текста, а не выдумку."
+            )
+            repair_user = (
+                f"Артефакт: {artifact_role}\n\nОШИБКИ ВАЛИДАЦИИ:\n"
+                + "\n".join(errors)
+                + "\n\nТЕКУЩИЙ ФРАГМЕНТ (JSON):\n"
+                + json_dumps(current)
+                + "\n\nТРЕБУЕМАЯ СХЕМА (JSON Schema):\n"
+                + json_dumps(sub_schema)
+            )
+            try:
+                result = llm.chat_json(
+                    system_prompt=repair_system, user_prompt=repair_user, schema=sub_schema
+                )
+            except Exception as exc:  # noqa: BLE001 — self-repair не должен ронять задачу
+                logger.warning(f"self-repair: вызов LLM не удался ({artifact_role}): {exc}")
+                break
+            usages.append(("self_repair", result.usage))
+            fixed = result.payload if isinstance(result.payload, dict) else {}
+            merged = dict(payload)
+            for field in failing:
+                if field in fixed:
+                    merged[field] = normalize_to_schema(fixed[field], properties[field])
+            if len(collect_schema_errors(merged, primary_schema)) < len(errors):
+                payload = merged
+            else:
+                break  # не стало лучше — прекращаем, не зацикливаемся
+        if usages:  # репорт только если реально чинили (на валидном payload — тихо)
+            residual = collect_schema_errors(payload, primary_schema)
+            if residual:
+                logger.warning(
+                    f"self-repair: у '{artifact_role}' осталось {len(residual)} "
+                    f"несоответствий схеме после починки"
+                )
+            else:
+                logger.info(
+                    f"self-repair: '{artifact_role}' приведён к схеме за {len(usages)} вызов(а)"
+                )
+        return payload, usages
 
     def _execute_single_call(
         self,
