@@ -505,24 +505,34 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "user_stories": {
             "type": "array",
             "description": (
-                "Пользовательские сценарии. Для каждой ключевой роли — её цель "
-                "и упорядоченные шаги взаимодействия с решением. Шаги задаются "
-                "массивом steps (по одному действию на шаг), а НЕ нумерацией "
-                "внутри одной строки."
+                "Пользовательские сценарии. ПРЕДПОЧТИТЕЛЬНО — объект "
+                "{actor, goal, steps[]}: для каждой ключевой роли её цель и "
+                "упорядоченные шаги (по одному действию на шаг, массивом steps, "
+                "а НЕ нумерацией внутри одной строки). Допускается и плоская "
+                "строка — она будет отрендерена как есть."
             ),
+            # anyOf, а не строгий объект: рендерер (_render_user_scenarios) умеет
+            # и объект, и строку. Раньше схема была строже рендерера, и плоская
+            # строка от модели валила весь артефакт ТЗ. Объект — предпочтительная
+            # форма (даёт нумерованные шаги), строка — устойчивый fallback.
             "items": {
-                "type": "object",
-                "required": ["actor", "goal"],
-                "additionalProperties": False,
-                "properties": {
-                    "actor": {"type": "string", "description": "Роль или действующее лицо сценария."},
-                    "goal": {"type": "string", "description": "Что роль хочет получить в этом сценарии."},
-                    "steps": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Упорядоченные шаги сценария, по одному действию на шаг.",
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "required": ["actor", "goal"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "actor": {"type": "string", "description": "Роль или действующее лицо сценария."},
+                            "goal": {"type": "string", "description": "Что роль хочет получить в этом сценарии."},
+                            "steps": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Упорядоченные шаги сценария, по одному действию на шаг.",
+                            },
+                        },
                     },
-                },
+                    {"type": "string"},
+                ],
             },
         },
         "functional_requirements": _string_array_schema(),
@@ -2162,6 +2172,25 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
 
 
 def validate_json_schema(value: Any, schema: JSONSchema, path: str = "$") -> None:
+    # anyOf: значение валидно, если соответствует ХОТЯ БЫ ОДНОЙ подсхеме.
+    # Нужно для «документарных» полей, где модель естественно отдаёт либо
+    # структурированный объект, либо плоскую строку, А РЕНДЕРЕР УМЕЕТ ОБА
+    # (напр. user_stories: {actor, goal, steps[]} ИЛИ строка). Раньше валидатор
+    # был строже рендерера — строка валила весь (огромный, дорогой) артефакт ТЗ
+    # на `$.user_stories[0]: ожидался объект`. anyOf согласует валидатор с
+    # устойчивым рендерером и убирает этот класс ложных отказов.
+    any_of = schema.get("anyOf")
+    if any_of:
+        errors: list[str] = []
+        for sub_schema in any_of:
+            try:
+                validate_json_schema(value, sub_schema, path)
+                return
+            except ValidationError as exc:  # noqa: PERF203 — нужен текст каждой ветки
+                errors.append(str(exc))
+        raise ValidationError(
+            f"{path}: не подходит ни под одну из допустимых форм ({'; '.join(errors)})"
+        )
     schema_type = schema.get("type")
     if schema_type == "object":
         if not isinstance(value, dict):

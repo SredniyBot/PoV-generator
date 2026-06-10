@@ -212,7 +212,7 @@ summary: |
 
   • БОГАТЫЕ ПУНКТЫ СПИСКА (массивы success_criteria, functional_requirements,
     non_functional_requirements, risks, assumptions, alternatives_considered,
-    user_stories, target_outcomes, acceptance_criteria, delivery_artifacts,
+    target_outcomes, acceptance_criteria, delivery_artifacts,
     integration_requirements, security_requirements, deployment_requirements,
     phased_plan, stakeholders, open_questions): каждый item — НЕ короткая фраза,
     а развёрнутая формулировка из 1-3 предложений: с контекстом, с цифрами, с
@@ -223,6 +223,15 @@ summary: |
     пунктов — основной экономический эффект, на который рассчитан проект; цифра
     подтверждается на валидационной выборке заказчика и переводится в денежный
     эквивалент через стандартную стоимость замены сотрудника.»
+
+  • USER_STORIES — ЭТО МАССИВ ОБЪЕКТОВ, НЕ СТРОК. Каждый элемент:
+    {actor, goal, steps[]}, где actor — роль; goal — что роль хочет получить;
+    steps — упорядоченные шаги (массив строк, по одному действию на шаг). Это
+    единственный объектный массив среди списков ТЗ — НЕ пиши его плоскими
+    строками вида «Как X, я хочу Y». Пример одного элемента:
+    {"actor": "HR-аналитик", "goal": "увидеть прогноз оттока по подразделению",
+    "steps": ["Открывает дашборд", "Выбирает подразделение и период",
+    "Видит список сотрудников с риском и факторами"]}.
 
   • РИСКИ — формат «Категория. Описание. Митигация:». Пример:
     «Качество данных. Низкая полнота НСИ в источниках приведёт к падению
