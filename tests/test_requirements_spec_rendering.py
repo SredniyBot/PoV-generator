@@ -70,6 +70,30 @@ def test_requirements_spec_headers_have_no_emoji() -> None:
         assert emoji not in md, f"в документе остался эмодзи {emoji!r}"
 
 
+def test_acceptance_criteria_require_method_and_render_it() -> None:
+    """П.4: критерий приёмки — объект с ОБЯЗАТЕЛЬНЫМ методом проверки, чтобы
+    «≥80%» не оставалось без «как меряется». Рендер несёт метод; legacy-строки
+    всё ещё рендерятся."""
+    schema = artifact_schema("requirements_spec", ())["properties"]["acceptance_criteria"]
+    crit = [
+        {
+            "criterion": "Релевантность подсказки не ниже 80%",
+            "verification_method": "Оценка аналитиком качества на выборке из ≥100 диалогов",
+            "fit_criterion": "доля «релевантно» ≥ 80%",
+        }
+    ]
+    validate_json_schema(crit, schema)  # объект с методом — валиден
+    with pytest.raises(ValidationError):  # без метода — отклоняется (гарантия полноты)
+        validate_json_schema([{"criterion": "≥80%"}], schema)
+
+    md = render_markdown("requirements_spec", {"title": "ТЗ", "acceptance_criteria": crit})
+    assert "Релевантность подсказки не ниже 80%" in md
+    assert "Как проверяется:" in md
+    # Устойчивость к старым плоским строкам.
+    md_legacy = render_markdown("requirements_spec", {"title": "ТЗ", "acceptance_criteria": ["Старый критерий"]})
+    assert "Старый критерий" in md_legacy
+
+
 def _user_stories_schema() -> dict:
     return artifact_schema("requirements_spec", ())["properties"]["user_stories"]
 

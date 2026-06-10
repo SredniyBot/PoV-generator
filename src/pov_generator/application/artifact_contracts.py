@@ -540,7 +540,30 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
         "assumptions": _string_array_schema(),
         "risks": _string_array_schema(),
         "alternatives_considered": _string_array_schema(),
-        "acceptance_criteria": _string_array_schema(),
+        # Критерий приёмки — структурный объект, а НЕ плоская строка: иначе при
+        # финальной сборке ТЗ терялся метод проверки (model писала «≥80%» без
+        # «как именно меряется»). Обязательны criterion + verification_method —
+        # это и гарантирует полноту (см. user_stories/phased_plan, тот же приём).
+        "acceptance_criteria": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["criterion", "verification_method"],
+                "additionalProperties": False,
+                "properties": {
+                    "criterion": {"type": "string", "description": "Измеримое условие успеха."},
+                    "verification_method": {
+                        "type": "string",
+                        "description": (
+                            "Как именно проверяется: метод (демо / тест / документ / "
+                            "интервью) и чем / на каких данных."
+                        ),
+                    },
+                    "fit_criterion": {"type": "string", "description": "Точный проверяемый порог."},
+                    "source": {"type": "string", "description": "Из какой цели/требования вытекает."},
+                },
+            },
+        },
         "open_questions": _string_array_schema(),
         "executive_summary": {"type": "string"},
         "business_context": {"type": "string"},
@@ -2467,6 +2490,32 @@ def _render_user_scenarios(lines: list[str], scenarios: list[Any]) -> None:
                 lines.append("")
 
 
+def _render_acceptance_criteria(lines: list[str], items: list[Any]) -> None:
+    """Render acceptance criteria. Предпочтительная форма — объект с методом
+    проверки (чтобы критерий не был «голым порогом» без «как меряется»).
+    Устойчиво к legacy-строкам (старые артефакты)."""
+    for raw in items:
+        if isinstance(raw, dict):
+            criterion = str(raw.get("criterion") or "").strip()
+            if not criterion:
+                continue
+            parts = [criterion if criterion.endswith(".") else criterion + "."]
+            fit = str(raw.get("fit_criterion") or "").strip()
+            if fit:
+                parts.append(f"Порог: {fit}.")
+            method = str(raw.get("verification_method") or "").strip()
+            if method:
+                parts.append(f"Как проверяется: {method}.")
+            source = str(raw.get("source") or "").strip()
+            if source:
+                parts.append(f"Источник: {source}.")
+            lines.append(f"- {' '.join(parts)}")
+        else:
+            text = str(raw).strip()
+            if text:
+                lines.append(f"- {text}")
+
+
 def _render_phased_plan(lines: list[str], phases: list[Any]) -> None:
     """Render the implementation phases.
 
@@ -2992,7 +3041,7 @@ def _render_requirements_spec(payload: dict[str, Any]) -> str:
         if acceptance:
             lines.append("### Критерии приёмки")
             lines.append("")
-            _render_bulleted(lines, acceptance)
+            _render_acceptance_criteria(lines, acceptance)
             lines.append("")
 
     # ----- План этапов --------------------------------------------------------
