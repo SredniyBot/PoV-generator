@@ -7,8 +7,11 @@ from typing import Any
 
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
-from ...claude_sdk_client import ClaudeSdkClient, ClaudeSdkConfig, model_for_complexity
 from ..protocol import LLMResult
+
+# Плоский клиент импортируется лениво в методах — иначе цикл импорта
+# flat-client → пакет ``.llm`` → ``registry`` → этот адаптер → flat-client
+# (см. подробный комментарий в providers/claude_subscription.py).
 
 
 class ClaudeSdkProvider:
@@ -27,6 +30,8 @@ class ClaudeSdkProvider:
         model: str,
         max_tokens: int = 8192,
     ) -> None:
+        from ...claude_sdk_client import ClaudeSdkClient, ClaudeSdkConfig
+
         if not api_key:
             raise ConflictError("Не задан API key для провайдера claude_sdk.")
         self.model = model
@@ -41,6 +46,8 @@ class ClaudeSdkProvider:
         model: str | None = None,
         complexity: str | None = None,
     ) -> "ClaudeSdkProvider":
+        from ...claude_sdk_client import model_for_complexity
+
         api_key = os.environ.get("POV_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ConflictError(
@@ -58,6 +65,8 @@ class ClaudeSdkProvider:
         model: str | None = None,
         complexity: str | None = None,
     ) -> "ClaudeSdkProvider":
+        from ...claude_sdk_client import model_for_complexity
+
         if connection.provider_type != "anthropic":
             raise ConflictError(
                 f"ClaudeSdkProvider требует connection типа 'anthropic', получен '{connection.provider_type}'."

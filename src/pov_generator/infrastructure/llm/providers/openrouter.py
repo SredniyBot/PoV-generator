@@ -7,8 +7,11 @@ from typing import Any
 
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
-from ...openrouter_client import OpenRouterClient, OpenRouterConfig
 from ..protocol import LLMResult
+
+# Плоский клиент импортируется лениво в __init__ — иначе цикл импорта
+# flat-client → пакет ``.llm`` → ``registry`` → этот адаптер → flat-client
+# (см. подробный комментарий в providers/claude_subscription.py).
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _DEFAULT_MODEL = "openai/gpt-4.1-mini"
@@ -34,6 +37,8 @@ class OpenRouterProvider:
         model: str,
         base_url: str = _DEFAULT_BASE_URL,
     ) -> None:
+        from ...openrouter_client import OpenRouterClient, OpenRouterConfig
+
         if not api_key:
             raise ConflictError("Не задан API key для провайдера openrouter.")
         self.model = model

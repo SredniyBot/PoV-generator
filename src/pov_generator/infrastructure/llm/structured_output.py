@@ -45,6 +45,28 @@ from typing import Any
 # валидацию. Вычищаются там, где размер схемы критичен (CLI-аргумент).
 _GUIDANCE_KEYS = ("description",)
 
+# Ключевые слова JSON Schema, КОТОРЫЕ OpenAI/OpenRouter strict structured-outputs
+# НЕ принимают: при их наличии API возвращает HTTP 400 и strict-режим тихо
+# отваливается в json_object (т.е. enforcement теряется именно там, где схема
+# строгая). Эти ограничения и так перепроверяются нашим валидатором
+# (validate_json_schema), поэтому в strict-копию их безопасно НЕ включать —
+# форму гарантирует strict, а доп. ограничения (minItems и т.п.) — слой
+# валидации ниже. Список — консервативное надмножество запрещённого в strict.
+_FORBIDDEN_STRICT_KEYS = frozenset(
+    {
+        "minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
+        "minLength", "maxLength", "pattern", "format",
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        "minProperties", "maxProperties", "patternProperties", "propertyNames",
+        "default", "examples",
+    }
+)
+
+
+def _strict_base(schema: dict[str, Any]) -> dict[str, Any]:
+    """Копия узла схемы без запрещённых в strict-режиме ключевых слов."""
+    return {key: value for key, value in schema.items() if key not in _FORBIDDEN_STRICT_KEYS}
+
 
 def to_strict_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
     """Привести схему к strict-подмножеству OpenAI structured outputs.
@@ -79,7 +101,8 @@ def _to_strict_node(schema: dict[str, Any]) -> dict[str, Any] | None:
             if converted is None:
                 return None
             branches.append(converted)
-        out = {key: value for key, value in schema.items() if key != "anyOf"}
+        out = _strict_base(schema)
+        out.pop("anyOf", None)
         out["anyOf"] = branches
         return out
 
@@ -98,14 +121,14 @@ def _to_strict_node(schema: dict[str, Any]) -> dict[str, Any] | None:
                 # Опциональное поле → nullable-обязательное (см. docstring).
                 converted = {"anyOf": [converted, {"type": "null"}]}
             new_properties[key] = converted
-        out = dict(schema)
+        out = _strict_base(schema)
         out["properties"] = new_properties
         out["required"] = sorted(properties)
         out["additionalProperties"] = False
         return out
 
     if schema_type == "array":
-        out = dict(schema)
+        out = _strict_base(schema)
         item_schema = schema.get("items")
         if item_schema is not None:
             converted = _to_strict_node(item_schema)
@@ -115,7 +138,7 @@ def _to_strict_node(schema: dict[str, Any]) -> dict[str, Any] | None:
         return out
 
     if schema_type in ("string", "number", "boolean", "integer", "null"):
-        return dict(schema)
+        return _strict_base(schema)
 
     # oneOf / $ref / allOf и прочее мы не используем; встретили — не рискуем.
     return None

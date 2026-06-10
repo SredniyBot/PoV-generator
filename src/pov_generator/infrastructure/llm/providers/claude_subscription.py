@@ -6,12 +6,12 @@ from typing import Any
 
 from ....common.errors import ConflictError
 from ....domain.llm_settings import ProviderConnection
-from ...claude_subscription_client import (
-    ClaudeSubscriptionClient,
-    ClaudeSubscriptionConfig,
-    model_for_complexity,
-)
 from ..protocol import LLMResult
+
+# Плоский клиент импортируется ЛЕНИВО внутри методов (не на уровне модуля),
+# чтобы разорвать цикл импорта: flat-client → пакет ``.llm`` (через сабмодуль
+# ``.llm.protocol``) → ``registry`` → этот адаптер → flat-client. При ленивом
+# импорте к моменту конструирования адаптера пакет ``.llm`` уже инициализирован.
 
 
 class ClaudeSubscriptionProvider:
@@ -29,6 +29,8 @@ class ClaudeSubscriptionProvider:
         model: str | None = None,
         max_turns: int = 1,
     ) -> None:
+        from ...claude_subscription_client import ClaudeSubscriptionClient, ClaudeSubscriptionConfig
+
         self.model = model
         # cli_path / load_timeout_ms резолвятся внутри
         # ``ClaudeSubscriptionClient.__init__`` через _resolve_* helpers —
@@ -44,6 +46,8 @@ class ClaudeSubscriptionProvider:
         model: str | None = None,
         complexity: str | None = None,
     ) -> "ClaudeSubscriptionProvider":
+        from ...claude_subscription_client import model_for_complexity
+
         resolved_model = model or model_for_complexity(complexity)
         # ClaudeSubscriptionClient.from_env читает POV_CLAUDE_MAX_TURNS и пр.,
         # но конструктор-логику оставим единой через прямой конструктор.
@@ -69,6 +73,8 @@ class ClaudeSubscriptionProvider:
                 f"ClaudeSubscriptionProvider требует connection типа 'claude_cli', "
                 f"получен '{connection.provider_type}'."
             )
+        from ...claude_subscription_client import model_for_complexity
+
         resolved_model = model or model_for_complexity(complexity)
         max_turns_raw = connection.extras.get("max_turns", "1")
         try:

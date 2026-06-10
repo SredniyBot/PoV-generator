@@ -143,10 +143,10 @@ def _make_structured_sdk(structured_payload: Any, captured_options: list[Any]):
     return fake_sdk
 
 
-def _make_subscription_client(mod: Any, fake_sdk: Any):
+def _make_subscription_client(mod: Any, fake_sdk: Any, cli_path: str = "/fake/claude"):
     with patch.dict("sys.modules", {"claude_agent_sdk": fake_sdk}):
         client = mod.ClaudeSubscriptionClient(
-            mod.ClaudeSubscriptionConfig(model="claude-sonnet-4-6", max_turns=1)
+            mod.ClaudeSubscriptionConfig(model="claude-sonnet-4-6", max_turns=1, cli_path=cli_path)
         )
     client._sdk = fake_sdk
     client._sdk_supports_output_format = "output_format" in getattr(
@@ -185,9 +185,9 @@ def test_claude_subscription_uses_native_structured_output() -> None:
     assert sent["schema"]["required"] == ["declared_goal"]
 
 
-def test_claude_subscription_downgrades_structured_mode_on_error() -> None:
-    """Ошибка структурного режима → немедленный повтор без него (downgrade);
-    итог берётся из текстового ответа. Enforcement ниже по конвейеру."""
+def test_claude_subscription_downgrades_on_schema_specific_error() -> None:
+    """SCHEMA-специфичная ошибка (схему отверг структурный режим) → немедленный
+    повтор без него в той же попытке; итог из текстового ответа."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
     captured: list[Any] = []
@@ -197,7 +197,7 @@ def test_claude_subscription_downgrades_structured_mode_on_error() -> None:
     async def _query(prompt: str, options: Any):  # noqa: ARG001
         captured.append(options)
         if getattr(options, "output_format", None) is not None:
-            raise RuntimeError("Command failed with exit code 1")
+            raise RuntimeError("error: invalid json schema for --json-schema")
         yield SimpleNamespace(
             structured_output=None,
             content=[SimpleNamespace(text='{"declared_goal": "beta"}')],
@@ -213,17 +213,60 @@ def test_claude_subscription_downgrades_structured_mode_on_error() -> None:
     )
 
     assert result.payload == {"declared_goal": "beta"}
-    # Первая попытка — структурная, вторая — без output_format.
+    # Первая попытка — структурная, вторая (тот же attempt) — без output_format.
     assert getattr(captured[0], "output_format", None) is not None
     assert getattr(captured[1], "output_format", None) is None
 
 
-def test_claude_subscription_unknown_option_disables_flag_for_process(monkeypatch) -> None:
-    """«unknown option --json-schema» — точный диагноз старого CLI: флаг
-    кэшируется выключенным на весь процесс (следующие задачи не пробуют)."""
+def test_claude_subscription_transient_keeps_structured_mode(monkeypatch) -> None:
+    """Транзиентный сбой CLI в структурном режиме НЕ должен отключать enforcement
+    (главный баг): повтор идёт СО схемой, а не деградирует навсегда."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
-    monkeypatch.setattr(mod, "_JSON_SCHEMA_FLAG_SUPPORTED", None)
+    monkeypatch.setenv("POV_CLAUDE_MAX_RETRIES", "2")
+    monkeypatch.setattr(mod, "_FLAG_UNSUPPORTED_CLIS", set())  # изоляция от порядка тестов
+    # chat_json делает `import time as _time; _time.sleep(...)` для backoff —
+    # патчим сам модуль time, чтобы тест не ждал реально.
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
+    calls = {"n": 0}
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Транзиент (не schema-специфичный) на первой структурной попытке.
+            raise RuntimeError("Command failed with exit code 1")
+        yield SimpleNamespace(structured_output={"declared_goal": "gamma"}, content=None)
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    result = client.chat_json(
+        system_prompt="sys",
+        user_prompt="user",
+        schema={"type": "object", "properties": {"declared_goal": {"type": "string"}}},
+    )
+
+    assert result.payload == {"declared_goal": "gamma"}
+    # ОБЕ попытки — структурные: транзиент не сбросил enforcement.
+    assert getattr(captured[0], "output_format", None) is not None
+    assert getattr(captured[1], "output_format", None) is not None
+    assert client._structured_disabled is False
+
+
+def test_claude_subscription_unknown_option_disables_flag_per_cli_path(monkeypatch) -> None:
+    """«unknown option --json-schema» — точный диагноз старого CLI: флаг
+    кэшируется выключенным НА ЭТОТ cli_path до конца процесса (другие задачи на
+    том же бинарнике не пробуют; другой бинарник — независим)."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    monkeypatch.setattr(mod, "_FLAG_UNSUPPORTED_CLIS", set())
     captured: list[Any] = []
     fake_sdk = MagicMock()
     fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
@@ -238,16 +281,21 @@ def test_claude_subscription_unknown_option_disables_flag_for_process(monkeypatc
         )
 
     fake_sdk.query = _query
-    client = _make_subscription_client(mod, fake_sdk)
+    client = _make_subscription_client(mod, fake_sdk, cli_path="/old/claude")
     result = client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
 
     assert result.payload == {"ok": True}
-    assert mod._JSON_SCHEMA_FLAG_SUPPORTED is False
-    # Новый клиент в том же процессе сразу идёт промпт-путём.
+    assert "/old/claude" in mod._FLAG_UNSUPPORTED_CLIS
+    # Новый клиент на ТОМ ЖЕ бинарнике сразу идёт промпт-путём.
     captured.clear()
-    client2 = _make_subscription_client(mod, fake_sdk)
+    client2 = _make_subscription_client(mod, fake_sdk, cli_path="/old/claude")
     client2.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
     assert getattr(captured[0], "output_format", None) is None
+    # А ДРУГОЙ бинарник кэшем не задет — пробует структурный режим.
+    captured.clear()
+    client3 = _make_subscription_client(mod, fake_sdk, cli_path="/new/claude")
+    client3.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+    assert getattr(captured[0], "output_format", None) is not None
 
 
 def test_claude_subscription_oversized_schema_skips_structured_mode() -> None:
