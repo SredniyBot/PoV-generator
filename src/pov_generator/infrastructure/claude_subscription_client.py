@@ -16,9 +16,17 @@ bundled CLI НЕ авторизован — он не знает про сесс
 передаём его в ``ClaudeAgentOptions.cli_path``. Если ни системный,
 ни override-путь не найдены — fail fast с понятным сообщением.
 
-Ограничение: structured output через tool-use здесь не используется
-(это сложно реализовать через агентскую SDK). Вместо этого мы просим
-модель вернуть строго JSON и затем извлекаем его из ответа.
+Structured output: SDK поддерживает нативное соблюдение схемы —
+``ClaudeAgentOptions.output_format = {"type": "json_schema", "schema": …}``
+транслируется в флаг CLI ``--json-schema``, и готовый payload приходит в
+``ResultMessage.structured_output`` (уже распарсенный dict, без хрупкого
+извлечения JSON из текста). Схема для CLI очищается от ``description``
+(структуре enforcement'а описания не нужны, а аргумент командной строки
+ограничен ~32К символов на Windows) — полная схема с описаниями остаётся
+в промпте как guidance. Деградация: CLI без поддержки флага / слишком
+большая схема / ошибка структурного режима → прежний путь «схема текстом
+в промпте + извлечение JSON из ответа» (downstream-слои нормализации и
+self-repair гарантируют контракт; см. ``llm/structured_output.py``).
 """
 
 from __future__ import annotations
@@ -36,7 +44,21 @@ from typing import Any
 
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
+from ..common.logging import get_logger
 from .llm.protocol import LLMResult, LLMUsage
+from .llm.structured_output import strip_descriptions, strip_nulls
+
+logger = get_logger("llm")
+
+# Бюджет на сериализованную схему в аргументе CLI. Полный лимит командной
+# строки Windows — 32767 символов; оставляем запас на путь к CLI, флаги и
+# путь к файлу system-prompt.
+_CLI_SCHEMA_MAX_CHARS = 24_000
+
+# Поддерживает ли установленный CLI флаг ``--json-schema`` — выясняется по
+# факту первого отказа («unknown option») и кэшируется на весь процесс,
+# чтобы каждая задача не повторяла обречённую попытку.
+_JSON_SCHEMA_FLAG_SUPPORTED: bool | None = None
 
 
 def _usage_from_subscription(raw: dict[str, Any] | None) -> LLMUsage | None:
@@ -146,6 +168,14 @@ class ClaudeSubscriptionClient:
                 "и убедитесь, что CLI 'claude' установлен и выполнен 'claude login'."
             ) from exc
         self._sdk = claude_agent_sdk
+        # Нативный structured output появился в SDK как поле options —
+        # детектируем по датаклассу (детерминированно, без TypeError-проб).
+        self._sdk_supports_output_format = "output_format" in getattr(
+            self._sdk.ClaudeAgentOptions, "__dataclass_fields__", {}
+        )
+        # Структурный режим этого инстанса: False после первой ошибки в нём
+        # (downgrade-политика, см. chat_json).
+        self._structured_disabled = False
 
     @classmethod
     def from_env(cls, *, model: str | None = None) -> "ClaudeSubscriptionClient":
@@ -168,6 +198,26 @@ class ClaudeSubscriptionClient:
     def model(self) -> str:
         return self._config.model or "claude-code-default"
 
+    def _cli_schema(self, schema: dict[str, Any]) -> dict[str, Any] | None:
+        """Схема для флага ``--json-schema`` или None = структурный режим недоступен.
+
+        None при: SDK без поля output_format / процесс уже выяснил, что CLI не
+        знает флаг / этот инстанс деградировал после ошибки структурного режима /
+        схема даже без описаний не влезает в лимит командной строки.
+        """
+        if not self._sdk_supports_output_format or self._structured_disabled:
+            return None
+        if _JSON_SCHEMA_FLAG_SUPPORTED is False:
+            return None
+        lean = strip_descriptions(schema)
+        if len(json.dumps(lean, ensure_ascii=False)) > _CLI_SCHEMA_MAX_CHARS:
+            logger.info(
+                "claude_subscription: схема больше лимита CLI-аргумента — "
+                "structured output пропущен, используется schema-в-промпте"
+            )
+            return None
+        return lean
+
     def chat_json(
         self,
         *,
@@ -175,6 +225,10 @@ class ClaudeSubscriptionClient:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> LLMResult:
+        global _JSON_SCHEMA_FLAG_SUPPORTED
+        # Схема дублируется в промпте независимо от структурного режима:
+        # descriptions в ней — guidance по СОДЕРЖАНИЮ полей, а enforcement
+        # (--json-schema) гарантирует только форму.
         full_prompt = (
             user_prompt
             + "\n\n---\n"
@@ -196,13 +250,19 @@ class ClaudeSubscriptionClient:
         # поэтому отмена не попадает в retry-ветку и всплывает сразу.
         token = current_cancellation()
         for attempt in range(1, attempts + 1):
+            cli_schema = self._cli_schema(schema)
             try:
                 # Сбор — через нашу cancellable-обёртку (форсированный обрыв),
-                # которая прокидывает (text, raw_usage) из _collect.
-                text, raw_usage = asyncio.run(
-                    self._collect_cancellable(system_prompt, full_prompt, token)
+                # которая прокидывает (text, raw_usage, structured) из _collect.
+                text, raw_usage, structured = asyncio.run(
+                    self._collect_cancellable(system_prompt, full_prompt, cli_schema, token)
                 )
-                payload = self._extract_json(text)
+                if isinstance(structured, dict):
+                    # Нативный structured output: payload уже распарсен CLI —
+                    # без regex-извлечения. null = «не заполнено» → каноника.
+                    payload = strip_nulls(structured)
+                else:
+                    payload = self._extract_json(text)
                 # Факт из ResultMessage; если SDK его не отдал (старые версии) —
                 # оценка по длине (source=estimated).
                 usage = _usage_from_subscription(raw_usage) or LLMUsage.estimated(
@@ -210,19 +270,52 @@ class ClaudeSubscriptionClient:
                 )
                 return LLMResult(payload=payload, usage=usage)
             except ConflictError as exc:
-                if not _is_transient_cli_error(str(exc)) or attempt == attempts:
+                message = str(exc)
+                if cli_schema is not None:
+                    # Downgrade-политика структурного режима: ЛЮБАЯ ошибка
+                    # в нём → этот инстанс продолжает без enforcement (повтор
+                    # сразу, без backoff-паузы). Мы не можем надёжно отличить
+                    # «CLI не знает флаг» от транзиента по тексту, а застрять
+                    # на обречённом режиме дороже, чем разово потерять
+                    # enforcement: форму гарантируют нормализация + self-repair
+                    # + валидация ниже по конвейеру.
+                    last_exc = exc
+                    self._structured_disabled = True
+                    if "unknown option" in message.lower() or "--json-schema" in message:
+                        # Точный диагноз: флаг не поддержан этим CLI — кэш на
+                        # весь процесс, чтобы следующие задачи не пробовали.
+                        _JSON_SCHEMA_FLAG_SUPPORTED = False
+                        logger.warning(
+                            "claude_subscription: CLI не поддерживает --json-schema — "
+                            "structured output отключён до конца процесса"
+                        )
+                    else:
+                        logger.warning(
+                            f"claude_subscription: ошибка структурного режима — "
+                            f"повтор без него ({message[:120]})"
+                        )
+                    continue
+                if not _is_transient_cli_error(message) or attempt == attempts:
                     raise
                 last_exc = exc
                 # 1s, 2s, 4s, ... backoff
                 import time as _time
                 _time.sleep(2 ** (attempt - 1))
-        # Недостижимо — последний attempt в except поднимает.
-        assert last_exc is not None
-        raise last_exc
+        # Сюда доходим только если последняя попытка ушла в continue
+        # (downgrade структурного режима на финальном attempt).
+        if last_exc is not None:
+            raise last_exc
+        raise ConflictError(
+            "Claude CLI: попытки исчерпаны после деградации структурного режима."
+        )
 
     async def _collect_cancellable(
-        self, system_prompt: str, user_prompt: str, token: CancellationToken | None
-    ) -> tuple[str, dict[str, Any] | None]:
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        cli_schema: dict[str, Any] | None,
+        token: CancellationToken | None,
+    ) -> tuple[str, dict[str, Any] | None, Any]:
         """Запустить ``_collect`` с возможностью форсированной отмены.
 
         Без токена — обычный await. С токеном — оборачиваем сбор в asyncio-
@@ -234,11 +327,11 @@ class ClaudeSubscriptionClient:
         дожидаясь завершения.
         """
         if token is None:
-            return await self._collect(system_prompt, user_prompt)
+            return await self._collect(system_prompt, user_prompt, cli_schema)
 
         loop = asyncio.get_running_loop()
-        collect_task: asyncio.Task[tuple[str, dict[str, Any] | None]] = asyncio.ensure_future(
-            self._collect(system_prompt, user_prompt)
+        collect_task: asyncio.Task[tuple[str, dict[str, Any] | None, Any]] = asyncio.ensure_future(
+            self._collect(system_prompt, user_prompt, cli_schema)
         )
         unregister = token.register(
             lambda: loop.call_soon_threadsafe(collect_task.cancel)
@@ -252,7 +345,9 @@ class ClaudeSubscriptionClient:
         finally:
             unregister()
 
-    async def _collect(self, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any] | None]:
+    async def _collect(
+        self, system_prompt: str, user_prompt: str, cli_schema: dict[str, Any] | None = None
+    ) -> tuple[str, dict[str, Any] | None, Any]:
         # ClaudeAgentOptions может не иметь поля `model` в старых версиях SDK.
         # cli_path обязателен — он направляет SDK на залогиненный системный CLI
         # вместо bundled (см. docstring модуля).
@@ -281,6 +376,10 @@ class ClaudeSubscriptionClient:
         }
         if self._config.model:
             options_kwargs["model"] = self._config.model
+        if cli_schema is not None:
+            # Нативный structured output: SDK передаст схему CLI-флагом
+            # ``--json-schema``, payload вернётся в ResultMessage.structured_output.
+            options_kwargs["output_format"] = {"type": "json_schema", "schema": cli_schema}
         try:
             options = self._sdk.ClaudeAgentOptions(**options_kwargs)
         except TypeError:
@@ -303,6 +402,7 @@ class ClaudeSubscriptionClient:
 
         chunks: list[str] = []
         raw_usage: dict[str, Any] | None = None
+        structured_output: Any = None
         try:
             async for message in self._sdk.query(prompt=user_prompt, options=options):
                 # ResultMessage в конце стрима несёт фактический usage и
@@ -314,6 +414,11 @@ class ClaudeSubscriptionClient:
                         "usage": message_usage,
                         "total_cost_usd": getattr(message, "total_cost_usd", None),
                     }
+                # Structured output (если запрошен через --json-schema) — тоже
+                # на ResultMessage: уже распарсенный объект по схеме.
+                message_structured = getattr(message, "structured_output", None)
+                if message_structured is not None:
+                    structured_output = message_structured
                 content = getattr(message, "content", None)
                 if not content:
                     continue
@@ -361,7 +466,7 @@ class ClaudeSubscriptionClient:
                     sp_tmpfile.unlink(missing_ok=True)
                 except OSError:
                     pass
-        return "".join(chunks), raw_usage
+        return "".join(chunks), raw_usage, structured_output
 
     @staticmethod
     def _format_load_timeout_msg(seconds: int) -> str:  # for tests

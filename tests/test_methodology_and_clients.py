@@ -110,3 +110,286 @@ def test_claude_subscription_client_extracts_json_from_text_response(
         )
 
     assert result.payload == expected
+
+
+# --- ClaudeSubscriptionClient: нативный structured output ------------------
+
+
+def _options_factory_with_output_format():
+    """Фабрика опций, имитирующая SDK с поддержкой output_format
+    (датакласс-поле детектируется клиентом по __dataclass_fields__)."""
+
+    def factory(**kw: Any) -> SimpleNamespace:
+        return SimpleNamespace(**kw)
+
+    factory.__dataclass_fields__ = {  # type: ignore[attr-defined]
+        "system_prompt": None,
+        "output_format": None,
+    }
+    return factory
+
+
+def _make_structured_sdk(structured_payload: Any, captured_options: list[Any]):
+    """SDK-мок: query отдаёт ResultMessage-подобное сообщение со
+    structured_output и без текстового контента."""
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured_options.append(options)
+        yield SimpleNamespace(structured_output=structured_payload, content=None)
+
+    fake_sdk.query = _query
+    return fake_sdk
+
+
+def _make_subscription_client(mod: Any, fake_sdk: Any):
+    with patch.dict("sys.modules", {"claude_agent_sdk": fake_sdk}):
+        client = mod.ClaudeSubscriptionClient(
+            mod.ClaudeSubscriptionConfig(model="claude-sonnet-4-6", max_turns=1)
+        )
+    client._sdk = fake_sdk
+    client._sdk_supports_output_format = "output_format" in getattr(
+        fake_sdk.ClaudeAgentOptions, "__dataclass_fields__", {}
+    )
+    return client
+
+
+def test_claude_subscription_uses_native_structured_output() -> None:
+    """Схема уходит в options.output_format (без description — лимит CLI-арга),
+    payload берётся из ResultMessage.structured_output, null'ы канонизируются."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    structured = {"declared_goal": "alpha", "optional_note": None}
+    fake_sdk = _make_structured_sdk(structured, captured)
+    client = _make_subscription_client(mod, fake_sdk)
+
+    schema = {
+        "type": "object",
+        "required": ["declared_goal"],
+        "properties": {
+            "declared_goal": {"type": "string", "description": "Цель из запроса."},
+            "optional_note": {"type": "string"},
+        },
+    }
+    result = client.chat_json(system_prompt="sys", user_prompt="user", schema=schema)
+
+    # payload — из structured_output, null вычищен (= «не заполнено»).
+    assert result.payload == {"declared_goal": "alpha"}
+    # Схема передана в output_format и очищена от description.
+    assert len(captured) == 1
+    sent = captured[0].output_format
+    assert sent["type"] == "json_schema"
+    assert "description" not in sent["schema"]["properties"]["declared_goal"]
+    assert sent["schema"]["required"] == ["declared_goal"]
+
+
+def test_claude_subscription_downgrades_structured_mode_on_error() -> None:
+    """Ошибка структурного режима → немедленный повтор без него (downgrade);
+    итог берётся из текстового ответа. Enforcement ниже по конвейеру."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        if getattr(options, "output_format", None) is not None:
+            raise RuntimeError("Command failed with exit code 1")
+        yield SimpleNamespace(
+            structured_output=None,
+            content=[SimpleNamespace(text='{"declared_goal": "beta"}')],
+        )
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    result = client.chat_json(
+        system_prompt="sys",
+        user_prompt="user",
+        schema={"type": "object", "properties": {"declared_goal": {"type": "string"}}},
+    )
+
+    assert result.payload == {"declared_goal": "beta"}
+    # Первая попытка — структурная, вторая — без output_format.
+    assert getattr(captured[0], "output_format", None) is not None
+    assert getattr(captured[1], "output_format", None) is None
+
+
+def test_claude_subscription_unknown_option_disables_flag_for_process(monkeypatch) -> None:
+    """«unknown option --json-schema» — точный диагноз старого CLI: флаг
+    кэшируется выключенным на весь процесс (следующие задачи не пробуют)."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    monkeypatch.setattr(mod, "_JSON_SCHEMA_FLAG_SUPPORTED", None)
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        if getattr(options, "output_format", None) is not None:
+            raise RuntimeError("error: unknown option '--json-schema'")
+        yield SimpleNamespace(
+            structured_output=None,
+            content=[SimpleNamespace(text='{"ok": true}')],
+        )
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+    result = client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+
+    assert result.payload == {"ok": True}
+    assert mod._JSON_SCHEMA_FLAG_SUPPORTED is False
+    # Новый клиент в том же процессе сразу идёт промпт-путём.
+    captured.clear()
+    client2 = _make_subscription_client(mod, fake_sdk)
+    client2.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+    assert getattr(captured[0], "output_format", None) is None
+
+
+def test_claude_subscription_oversized_schema_skips_structured_mode() -> None:
+    """Схема больше лимита CLI-аргумента → структурный режим пропускается
+    (одна попытка, сразу промпт-путь)."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = _options_factory_with_output_format()
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        yield SimpleNamespace(
+            structured_output=None,
+            content=[SimpleNamespace(text='{"ok": true}')],
+        )
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    huge_schema = {
+        "type": "object",
+        "properties": {f"field_{i}": {"type": "string"} for i in range(1200)},
+    }
+    result = client.chat_json(system_prompt="s", user_prompt="u", schema=huge_schema)
+
+    assert result.payload == {"ok": True}
+    assert len(captured) == 1
+    assert getattr(captured[0], "output_format", None) is None
+
+
+# --- OpenRouterClient: structured output ------------------------------------
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: dict[str, Any]) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        import json as _json
+
+        return _json.dumps(self._body).encode("utf-8")
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+
+def _openrouter_response(content: str) -> dict[str, Any]:
+    return {
+        "choices": [{"message": {"content": content}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+
+def test_openrouter_sends_strict_schema_and_strips_nulls(monkeypatch) -> None:
+    """Схема трансформируется в strict-подмножество (все поля required,
+    опциональные — nullable), а null'ы ответа вычищаются."""
+    import json as _json
+
+    from pov_generator.infrastructure import openrouter_client as mod
+
+    bodies: list[dict[str, Any]] = []
+
+    def fake_urlopen(http_request: Any, timeout: int = 0):  # noqa: ARG001
+        bodies.append(_json.loads(http_request.data.decode("utf-8")))
+        return _FakeHttpResponse(_openrouter_response('{"name": "X", "note": null}'))
+
+    monkeypatch.setattr(mod.request, "urlopen", fake_urlopen)
+    client = mod.OpenRouterClient(mod.OpenRouterConfig(api_key="k", model="openai/gpt-4.1-mini"))
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}, "note": {"type": "string"}},
+    }
+    result = client.chat_json(system_prompt="sys json", user_prompt="user", schema=schema)
+
+    assert result.payload == {"name": "X"}  # null вычищен
+    sent = bodies[0]["response_format"]
+    assert sent["type"] == "json_schema"
+    assert sent["json_schema"]["strict"] is True
+    strict_schema = sent["json_schema"]["schema"]
+    assert strict_schema["required"] == ["name", "note"]
+    assert strict_schema["additionalProperties"] is False
+    assert {"type": "null"} in strict_schema["properties"]["note"]["anyOf"]
+
+
+def test_openrouter_open_schema_uses_json_object_mode(monkeypatch) -> None:
+    """«Unstructured» контракт (additionalProperties: true) не выражается в
+    strict — первая же попытка идёт в json_object."""
+    import json as _json
+
+    from pov_generator.infrastructure import openrouter_client as mod
+
+    bodies: list[dict[str, Any]] = []
+
+    def fake_urlopen(http_request: Any, timeout: int = 0):  # noqa: ARG001
+        bodies.append(_json.loads(http_request.data.decode("utf-8")))
+        return _FakeHttpResponse(_openrouter_response('{"anything": 1}'))
+
+    monkeypatch.setattr(mod.request, "urlopen", fake_urlopen)
+    client = mod.OpenRouterClient(mod.OpenRouterConfig(api_key="k", model="m"))
+    result = client.chat_json(
+        system_prompt="sys json",
+        user_prompt="user",
+        schema={"type": "object", "additionalProperties": True},
+    )
+
+    assert result.payload == {"anything": 1}
+    assert bodies[0]["response_format"] == {"type": "json_object"}
+
+
+def test_openrouter_degrades_on_http_400_and_parses_fenced(monkeypatch) -> None:
+    """HTTP 400 на json_schema → json_object → без response_format; в финальном
+    режиме модель может обернуть ответ в ```json``` — парсинг терпим."""
+    import io
+    import json as _json
+    from urllib import error as _error
+
+    from pov_generator.infrastructure import openrouter_client as mod
+
+    bodies: list[dict[str, Any]] = []
+
+    def fake_urlopen(http_request: Any, timeout: int = 0):  # noqa: ARG001
+        body = _json.loads(http_request.data.decode("utf-8"))
+        bodies.append(body)
+        if body.get("response_format") is not None:
+            raise _error.HTTPError(
+                "url", 400, "Bad Request", None, io.BytesIO(b"response_format unsupported")
+            )
+        return _FakeHttpResponse(_openrouter_response('```json\n{"name": "Y"}\n```'))
+
+    monkeypatch.setattr(mod.request, "urlopen", fake_urlopen)
+    client = mod.OpenRouterClient(mod.OpenRouterConfig(api_key="k", model="m"))
+    schema = {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}
+    result = client.chat_json(system_prompt="sys json", user_prompt="user", schema=schema)
+
+    assert result.payload == {"name": "Y"}
+    modes = [
+        (body.get("response_format") or {}).get("type", "none") for body in bodies
+    ]
+    assert modes == ["json_schema", "json_object", "none"]
