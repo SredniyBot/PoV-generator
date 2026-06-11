@@ -33,7 +33,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { AlertTriangle, Bot, ChevronDown, ChevronRight, FileText, Layers, Split, Undo2 } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ChevronRight, FileText, Layers, Split, Undo2 } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 
@@ -261,6 +261,8 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         (task.is_current ? " tg-node--current" : "") +
         (task.available === false ? " tg-node--locked" : "") +
         (task.is_harness ? " tg-node--harness" : "") +
+        // Агентский узел с ненастроенным окружением — подсвечиваем: он не поедет.
+        (task.is_harness && task.env_ready === false ? " tg-node--env-blocked" : "") +
         (rbState ? ` tg-node--rb-${rbState}` : "")
       }
       style={{ borderLeftColor: meta.color }}
@@ -299,6 +301,16 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         )}
       </div>
       <div className="tg-node__title" title={task.title}>{task.title}</div>
+      {/* #2: для агентских узлов — наглядно, готово ли окружение к запуску. */}
+      {task.is_harness && task.env_ready === false ? (
+        <div className="tg-node__env tg-node__env--blocked" title={task.env_reason || undefined}>
+          <AlertTriangle size={12} /> Окружение агента не настроено
+        </div>
+      ) : task.is_harness && task.env_ready === true ? (
+        <div className="tg-node__env tg-node__env--ok">
+          <CheckCircle2 size={11} /> окружение готово
+        </div>
+      ) : null}
       {reasonNote(task) ? (
         <div
           className={task.status === "failed" ? "tg-node__error" : "tg-node__blocked"}

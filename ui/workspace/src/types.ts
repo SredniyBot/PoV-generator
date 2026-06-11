@@ -109,6 +109,11 @@ export interface TaskNodeView {
   /** #2: задача исполняется автономным агентом (executor: harness) — граф
    *  выделяет такие узлы отдельной иконкой/рамкой. */
   is_harness?: boolean;
+  /** Готово ли окружение запустить агентскую задачу (только для is_harness):
+   *  null/undefined — неприменимо; true — настроено; false — не запустится. */
+  env_ready?: boolean | null;
+  /** Причина, почему агентское окружение не готово (когда env_ready=false). */
+  env_reason?: string;
 }
 
 export interface ProjectTaskGraphView {
@@ -752,9 +757,21 @@ export interface HarnessAdapterCapability {
   supports_host?: boolean;
 }
 
+/** Совместимость адаптера (из единой capability-матрицы бэкенда). */
+export interface HarnessAdapterCompatibility {
+  /** Допустимые движки для адаптера (R1). */
+  valid_engines: string[];
+  /** Совместимые типы LLM-провайдера по движку (R2/R3). */
+  compatible_provider_types: Record<string, string[]>;
+}
+
 export interface HarnessAdaptersView {
   active: string;
   capabilities: Record<string, HarnessAdapterCapability>;
+  /** Матрица совместимости адаптер→{движки, типы провайдера}. */
+  compatibility: Record<string, HarnessAdapterCompatibility>;
+  /** Типы LLM-провайдеров с рабочим подключением (для проверки готовности). */
+  configured_provider_types: string[];
 }
 
 export interface HarnessConnectionView {

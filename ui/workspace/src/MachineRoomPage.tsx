@@ -278,10 +278,26 @@ function ExecutorSection({
     queryKey: ["settings", "models"],
     queryFn: () => api.listModels(),
   });
-  const configuredModels = (modelsQuery.data ?? []).map((m) => m.model_name);
-  // #3: устаревший override модели (нет в каталоге настроенных LLM, напр. старый
-  // выдуманный gpt-4o-mini) сбрасываем в «по умолчанию» — он невалиден (нет
-  // маршрута). Только после загрузки каталога и засева формы.
+  const allConfiguredModels = (modelsQuery.data ?? []).map((m) => m.model_name);
+  // Совместимость из единой capability-матрицы бэкенда.
+  const compatibility = adaptersQuery.data?.compatibility ?? {};
+  const configuredProviderTypes = adaptersQuery.data?.configured_provider_types ?? [];
+  const compatProviders = compatibility[provider]?.compatible_provider_types?.[engine] ?? [];
+  // Семья модели по имени (зеркало backend model_provider_family): "/" →
+  // openrouter; "claude…" → claude (anthropic/claude_cli). Скоупим пикер моделей
+  // совместимыми семьями (R5/M) — не предлагаем заведомо несовместимое.
+  const providerFamily = (pt: string) => (pt === "openrouter" ? "openrouter" : "claude");
+  const modelFamily = (name: string) =>
+    name.includes("/") ? "openrouter" : name.toLowerCase().startsWith("claude") ? "claude" : "any";
+  const compatFamilies = new Set(compatProviders.map(providerFamily));
+  const configuredModels =
+    compatProviders.length === 0
+      ? allConfiguredModels
+      : allConfiguredModels.filter((m) => {
+          const f = modelFamily(m);
+          return f === "any" || compatFamilies.has(f);
+        });
+  // #3: устаревший/несовместимый override модели сбрасываем в «по умолчанию».
   useEffect(() => {
     if (seeded && modelsQuery.data && model && !configuredModels.includes(model)) {
       setModel("");
@@ -305,6 +321,10 @@ function ExecutorSection({
     </label>
   );
   const usesHostSession = engine === "host";
+  // Несовместимость настроек (R2/R3): docker-агенту нужен совместимый LLM-провайдер.
+  const needsCompatibleProvider = provider !== "stub" && !usesHostSession && compatProviders.length > 0;
+  const hasCompatibleProvider = compatProviders.some((pt) => configuredProviderTypes.includes(pt));
+  const incompatible = needsCompatibleProvider && !hasCompatibleProvider;
 
   return (
     <section className="mroom-card">
@@ -317,6 +337,13 @@ function ExecutorSection({
           <p className="mroom-muted mroom-fineprint">
             На хосте агент использует вашу залогиненную сессию claude CLI — креды
             из настроек LLM не требуются.
+          </p>
+        ) : incompatible ? (
+          <p className="mroom-result mroom-result--err">
+            <AlertCircle size={13} /> Несовместимо: агенту «{provider}» нужен
+            LLM-провайдер {compatProviders.join(" или ")}, а настроен{" "}
+            {configuredProviderTypes.length ? configuredProviderTypes.join(", ") : "ни один"}.
+            Эта связка не запустится. <Link to="/settings/llm">Настроить LLM</Link>
           </p>
         ) : llm?.configured ? (
           <p className="mroom-muted mroom-fineprint">
