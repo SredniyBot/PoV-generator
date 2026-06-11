@@ -1,4 +1,23 @@
-"""Клиент Claude через подписку Claude Code.
+"""Claude через подписку — в роли **LLM-провайдера** (completion).
+
+ДВЕ РОЛИ ОДНОГО CLI. Локальный ``claude`` (подписка, ``claude login``)
+используется системой в двух ортогональных сценариях, и это РАЗНЫЕ роли с
+разной конфигурацией. Делит их только аутентификация (сессия ``~/.claude``):
+
+* **Completion-роль (этот модуль)** — порт :class:`LLMProvider.chat_json`.
+  Задача: «ответь JSON/текстом». Инструменты ОТКЛЮЧЕНЫ (``tools=[]`` →
+  ``--tools ""``), потому что это обычное завершение, а не агент. Без
+  инструментов ответ укладывается в один ход — отсюда малый ``max_turns``.
+  Транспорт: Python-биндинг ``claude-agent-sdk`` (``query()``).
+* **Агентская роль** — порт ``HarnessProvider`` в
+  ``infrastructure/harness/providers/claude_code.py``. Задача: «собери
+  артефакты по спеке». Инструменты ВКЛЮЧЕНЫ, агент многоходовый и автономный,
+  пишет файлы. Транспорт: ``claude -p`` в песочнице (docker/host).
+
+Смешивать их нельзя: агентская конфигурация (инструменты + 1 ход) и была
+причиной ложной ошибки «Reached maximum number of turns (1)» — модель тратила
+единственный ход на tool-use. Лечение — не поднимать лимит ходов, а вернуть
+этому клиенту его роль: completion без инструментов.
 
 Использует библиотеку `claude-agent-sdk`, которая запускает локальный CLI
 `claude` (он должен быть установлен и залогинен через `claude login`).
@@ -54,6 +73,18 @@ logger = get_logger("llm")
 # строки Windows — 32767 символов; оставляем запас на путь к CLI, флаги и
 # путь к файлу system-prompt.
 _CLI_SCHEMA_MAX_CHARS = 24_000
+
+# Лимит ходов диалога ДЛЯ COMPLETION-РОЛИ. Инструменты здесь отключены
+# (``tools=[]`` в ``_collect``), поэтому модели нечем потратить ход, кроме как
+# на сам ответ — нормальное завершение это один ход. Небольшой запас оставлен
+# только на внутреннюю «дошлифовку» под ``--json-schema`` внутри самого CLI
+# (логика в bundled JS, аудиту извне не поддаётся), чтобы структурный режим не
+# срывался в промпт-fallback на каждом вызове. Запас БЕЗОПАСЕН: без инструментов
+# зацикливаться не на чем, поэтому потолок ограничивает лишь эту служебную
+# дошлифовку, а не «агентскую» работу. Переопределяется ``POV_CLAUDE_MAX_TURNS``.
+# (Агентская роль — отдельный адаптер harness/providers/claude_code.py — задаёт
+# свой, большой лимит ходов; этот к ней отношения не имеет.)
+_COMPLETION_MAX_TURNS = 8
 
 # CLI-бинарники (по пути), которые НЕ знают флаг ``--json-schema``. Узнаётся по
 # факту первого отказа «unknown option» и кэшируется НА ВЕСЬ ПРОЦЕСС, но с
@@ -114,7 +145,7 @@ def _usage_from_subscription(raw: dict[str, Any] | None) -> LLMUsage | None:
 @dataclass(frozen=True)
 class ClaudeSubscriptionConfig:
     model: str | None
-    max_turns: int = 1
+    max_turns: int = _COMPLETION_MAX_TURNS
     # Путь к ``claude`` CLI. None → попытаемся найти через PATH. Если и
     # этого нет — поднимаем ConflictError (НЕ используем bundled CLI,
     # потому что он не залогинен).
@@ -201,7 +232,7 @@ class ClaudeSubscriptionClient:
     @classmethod
     def from_env(cls, *, model: str | None = None) -> "ClaudeSubscriptionClient":
         active_model = model or os.environ.get("POV_CLAUDE_MODEL") or None
-        max_turns_raw = os.environ.get("POV_CLAUDE_MAX_TURNS", "1")
+        max_turns_raw = os.environ.get("POV_CLAUDE_MAX_TURNS", str(_COMPLETION_MAX_TURNS))
         try:
             max_turns = int(max_turns_raw)
         except ValueError as exc:
@@ -343,9 +374,9 @@ class ClaudeSubscriptionClient:
                     continue
                 # 3) Попытки исчерпаны / ошибка не транзиентная. Если всё ещё были
                 #    в структурном режиме — ПОСЛЕДНИЙ шанс БЕЗ enforcement: получить
-                #    ответ важнее, чем enforcement на этом вызове (например, схема
-                #    требует больше ходов, чем даёт max_turns). Структурный режим
-                #    при этом НЕ гасим навсегда — для будущих задач он остаётся;
+                #    ответ важнее, чем enforcement на этом вызове (например, CLI
+                #    отверг схему уже на этапе генерации). Структурный режим при
+                #    этом НЕ гасим навсегда — для будущих задач он остаётся;
                 #    форму этого ответа добьют нормализация + self-repair +
                 #    валидация выше по конвейеру.
                 if cli_schema is not None and not self._structured_disabled:
@@ -398,6 +429,33 @@ class ClaudeSubscriptionClient:
         finally:
             unregister()
 
+    def _build_options(self, options_kwargs: dict[str, Any]) -> Any:
+        """Сконструировать ``ClaudeAgentOptions``, устойчиво к версии SDK.
+
+        Если какое-то НЕОБЯЗАТЕЛЬНОЕ поле не знает установленная версия SDK
+        (``TypeError`` в конструкторе) — отбрасываем его и пробуем снова, в
+        порядке убывания «неважности». ``system_prompt``/``max_turns``/
+        ``permission_mode`` сохраняем всегда; ``tools`` отбрасываем в последнюю
+        очередь (на новых SDK именно оно лечит «Reached maximum number of turns»).
+        """
+        droppable = ("output_format", "load_timeout_ms", "model", "cli_path", "tools")
+        attempt = dict(options_kwargs)
+        while True:
+            try:
+                return self._sdk.ClaudeAgentOptions(**attempt)
+            except TypeError:
+                for key in droppable:
+                    if key in attempt:
+                        attempt.pop(key)
+                        break
+                else:
+                    # Отбрасывать больше нечего — минимально достаточный набор.
+                    return self._sdk.ClaudeAgentOptions(
+                        system_prompt=options_kwargs.get("system_prompt", ""),
+                        max_turns=options_kwargs.get("max_turns", _COMPLETION_MAX_TURNS),
+                        permission_mode="bypassPermissions",
+                    )
+
     async def _collect(
         self, system_prompt: str, user_prompt: str, cli_schema: dict[str, Any] | None = None
     ) -> tuple[str, dict[str, Any] | None, Any]:
@@ -424,6 +482,14 @@ class ClaudeSubscriptionClient:
             "system_prompt": sp_for_options,
             "max_turns": self._config.max_turns,
             "permission_mode": "bypassPermissions",
+            # COMPLETION-РОЛЬ: пустой список → CLI-флаг ``--tools ""`` → все
+            # встроенные инструменты (Read/Write/Bash/…) выключены. Это и есть
+            # суть роли: здесь нужен ответ, а не агент. С инструментами CLI
+            # тратил единственный ход на tool-use и падал с «Reached maximum
+            # number of turns» — лечение в возврате роли, а не в раздувании
+            # лимита. Агентская роль (с инструментами) — отдельный адаптер
+            # harness/providers/claude_code.py, этого клиента не касается.
+            "tools": [],
             "cli_path": self._config.cli_path,
             "load_timeout_ms": self._config.load_timeout_ms,
         }
@@ -433,25 +499,7 @@ class ClaudeSubscriptionClient:
             # Нативный structured output: SDK передаст схему CLI-флагом
             # ``--json-schema``, payload вернётся в ResultMessage.structured_output.
             options_kwargs["output_format"] = {"type": "json_schema", "schema": cli_schema}
-        try:
-            options = self._sdk.ClaudeAgentOptions(**options_kwargs)
-        except TypeError:
-            # Если какое-то поле не поддерживается старой версией SDK —
-            # последовательно отбрасываем малозначимые и пробуем снова.
-            for fallback_key in ("load_timeout_ms", "model", "cli_path"):
-                options_kwargs.pop(fallback_key, None)
-                try:
-                    options = self._sdk.ClaudeAgentOptions(**options_kwargs)
-                    break
-                except TypeError:
-                    continue
-            else:
-                # Последняя попытка с минимальным набором.
-                options = self._sdk.ClaudeAgentOptions(
-                    system_prompt=system_prompt,
-                    max_turns=self._config.max_turns,
-                    permission_mode="bypassPermissions",
-                )
+        options = self._build_options(options_kwargs)
 
         chunks: list[str] = []
         raw_usage: dict[str, Any] | None = None
@@ -500,6 +548,18 @@ class ClaudeSubscriptionClient:
                     "• Временный сбой claude.ai (5xx) — повторите через минуту.\n"
                     "• Превышен rate-limit подписки.\n"
                     "• Антивирус прибивает CLI subprocess.\n"
+                    f"Диагностика: {msg[:200]}"
+                ) from exc
+            if "maximum number of turns" in msg.lower():
+                raise ConflictError(
+                    "Claude CLI исчерпал лимит ходов диалога, не успев выдать ответ "
+                    f"(max_turns={self._config.max_turns}). Этот клиент используется "
+                    "как LLM-провайдер, инструменты отключены (tools=[]) — ответ должен "
+                    "укладываться в один ход. Если ошибка повторяется:\n"
+                    "• Проверьте POV_CLAUDE_MAX_TURNS — значение 1 слишком мало; "
+                    "уберите override или поставьте ≥ 4.\n"
+                    "• Возможно, установленная версия claude-agent-sdk не поддерживает "
+                    "отключение инструментов (поле `tools`) — обновите SDK.\n"
                     f"Диагностика: {msg[:200]}"
                 ) from exc
             if "returned an error result" in msg:
@@ -642,10 +702,17 @@ def _is_transient_cli_error(message: str) -> bool:
     * "Не задан POV_..." — конфигурация пустая.
     * "У connection пустой API key" — нужен ввод от админа.
     * "Не удалось извлечь JSON" — ответ модели не парсится, retry не поможет.
+    * "maximum number of turns" — детерминированный исход при текущем
+      max_turns/tools; повтор с той же конфигурацией не изменит результат.
     """
     if not message:
         return False
     msg = message.lower()
+    # Max-turns — детерминированная (не транзиентная) ошибка конфигурации, хотя
+    # формально приходит внутри "returned an error result". Проверяем раньше,
+    # чтобы не попасть в общий транзиентный маркёр ниже и не ретраить впустую.
+    if "maximum number of turns" in msg:
+        return False
     transient_markers = (
         "command failed with exit code",
         "control request timeout",

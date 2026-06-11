@@ -328,6 +328,83 @@ def test_claude_subscription_oversized_schema_skips_structured_mode() -> None:
     assert getattr(captured[0], "output_format", None) is None
 
 
+def test_claude_subscription_completion_role_disables_tools() -> None:
+    """Completion-роль (не кодовый агент): инструменты отключены (tools=[]).
+
+    Это корневое лекарство от «Reached maximum number of turns»: без
+    инструментов модель не может потратить ход на tool-use и отвечает за один
+    ход. Агентская роль (с инструментами) — отдельный harness-провайдер."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        yield SimpleNamespace(structured_output=None, content=[SimpleNamespace(text='{"ok": true}')])
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+    client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+
+    assert len(captured) == 1
+    assert captured[0].tools == []  # все встроенные инструменты выключены
+
+
+def test_claude_subscription_completion_default_max_turns() -> None:
+    """Дефолт max_turns для completion-роли — единый источник правды (датакласс).
+
+    Значение > 1 — безопасный запас на служебную дошлифовку CLI под
+    ``--json-schema`` (инструменты выключены, агентского зацикливания нет).
+    Провайдер-адаптер, не получив max_turns, обязан брать ровно этот дефолт."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+    from pov_generator.infrastructure.llm.providers.claude_subscription import (
+        ClaudeSubscriptionProvider,
+    )
+
+    assert mod._COMPLETION_MAX_TURNS > 1
+    assert mod.ClaudeSubscriptionConfig(model="m").max_turns == mod._COMPLETION_MAX_TURNS
+    # Адаптер без явного max_turns не дублирует число, а опирается на дефолт.
+    provider = ClaudeSubscriptionProvider(model="m")
+    assert provider._client._config.max_turns == mod._COMPLETION_MAX_TURNS
+
+
+def test_max_turns_error_is_not_transient() -> None:
+    """Исчерпание ходов — детерминированный исход, а не транзиент: НЕ ретраим
+    (повтор с той же конфигурацией бессмысленен), даём точный диагноз."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    msg = "Claude Code returned an error result: Reached maximum number of turns (1)"
+    assert mod._is_transient_cli_error(msg) is False
+
+
+def test_claude_subscription_max_turns_message_is_actionable(monkeypatch) -> None:
+    """При исчерпании ходов сообщение указывает на max_turns/tools, а не на
+    обманчивый «противоречивый ответ подписки»."""
+    from pov_generator.common.errors import ConflictError
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    monkeypatch.setattr(mod, "_FLAG_UNSUPPORTED_CLIS", set())
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        raise RuntimeError("Claude Code returned an error result: Reached maximum number of turns (1)")
+        yield  # pragma: no cover — делает функцию async-генератором
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    with pytest.raises(ConflictError) as excinfo:
+        client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+
+    text = str(excinfo.value)
+    assert "лимит ходов" in text
+    assert "POV_CLAUDE_MAX_TURNS" in text
+    assert "противоречив" not in text  # не должно деградировать в старый диагноз
+
+
 # --- OpenRouterClient: structured output ------------------------------------
 
 

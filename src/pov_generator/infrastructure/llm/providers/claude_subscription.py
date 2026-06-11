@@ -1,4 +1,9 @@
-"""Адаптер Claude через подписку (локальный CLI) под :class:`LLMProvider`."""
+"""Адаптер Claude-подписки под :class:`LLMProvider` — COMPLETION-роль.
+
+Это «ответь JSON/текстом» поверх локального ``claude`` CLI. Агентская
+(многоходовая, с инструментами) роль того же CLI — отдельный harness-провайдер
+``infrastructure/harness/providers/claude_code.py``; здесь инструменты всегда
+выключены (см. ``ClaudeSubscriptionClient._collect``)."""
 
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ class ClaudeSubscriptionProvider:
         self,
         *,
         model: str | None = None,
-        max_turns: int = 1,
+        max_turns: int | None = None,
     ) -> None:
         from ...claude_subscription_client import ClaudeSubscriptionClient, ClaudeSubscriptionConfig
 
@@ -35,9 +40,12 @@ class ClaudeSubscriptionProvider:
         # cli_path / load_timeout_ms резолвятся внутри
         # ``ClaudeSubscriptionClient.__init__`` через _resolve_* helpers —
         # см. docstring claude_subscription_client.py.
-        self._client = ClaudeSubscriptionClient(
-            ClaudeSubscriptionConfig(model=model, max_turns=max_turns)
-        )
+        # max_turns=None → НЕ передаём поле, чтобы применился дефолт датакласса
+        # (_COMPLETION_MAX_TURNS). Источник правды по дефолту — один, в клиенте.
+        config_kwargs: dict[str, Any] = {"model": model}
+        if max_turns is not None:
+            config_kwargs["max_turns"] = max_turns
+        self._client = ClaudeSubscriptionClient(ClaudeSubscriptionConfig(**config_kwargs))
 
     @classmethod
     def from_env(
@@ -53,11 +61,14 @@ class ClaudeSubscriptionProvider:
         # но конструктор-логику оставим единой через прямой конструктор.
         import os as _os
 
-        max_turns_raw = _os.environ.get("POV_CLAUDE_MAX_TURNS", "1")
+        # Не задано → None: применится единый дефолт completion-роли
+        # (_COMPLETION_MAX_TURNS, дефолт датакласса конфига).
+        max_turns_raw = _os.environ.get("POV_CLAUDE_MAX_TURNS")
+        max_turns: int | None
         try:
-            max_turns = int(max_turns_raw)
+            max_turns = int(max_turns_raw) if max_turns_raw is not None else None
         except (TypeError, ValueError):
-            max_turns = 1
+            max_turns = None
         return cls(model=resolved_model, max_turns=max_turns)
 
     @classmethod
@@ -76,11 +87,14 @@ class ClaudeSubscriptionProvider:
         from ...claude_subscription_client import model_for_complexity
 
         resolved_model = model or model_for_complexity(complexity)
-        max_turns_raw = connection.extras.get("max_turns", "1")
+        # Не задано → None: применится единый дефолт completion-роли
+        # (_COMPLETION_MAX_TURNS, дефолт датакласса конфига).
+        max_turns_raw = connection.extras.get("max_turns")
+        max_turns: int | None
         try:
-            max_turns = int(max_turns_raw)
+            max_turns = int(max_turns_raw) if max_turns_raw is not None else None
         except (TypeError, ValueError):
-            max_turns = 1
+            max_turns = None
         return cls(model=resolved_model, max_turns=max_turns)
 
     def chat_json(
