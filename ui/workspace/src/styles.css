@@ -1996,6 +1996,31 @@ code {
   background: var(--surface-tertiary);
 }
 
+/* Ключевой дилеверабл этапа (ТЗ/Архитектура/…) — выделяем акцентной полосой
+   слева и лёгкой подложкой, чтобы он читался как «главный» в списке. */
+.artifact-list__item--key {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.artifact-list__key-icon {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* Ожидание согласования заказчиком — более заметная (предупреждающая) подсветка;
+   перекрывает «ключевую», т.к. требует действия. */
+.artifact-list__item--awaiting {
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+}
+
+.artifact-list__tag--awaiting {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: var(--warning-border);
+}
+
 /* Подраздел списка артефактов (Текущие / Архив). */
 .artifacts-subnav {
   margin-bottom: var(--space-3);

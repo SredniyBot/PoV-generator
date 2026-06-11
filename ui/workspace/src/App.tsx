@@ -28,6 +28,7 @@ import {
   RefreshCcw,
   ShieldAlert,
   Sparkles,
+  Star,
   TerminalSquare,
   Trash2,
   Undo2,
@@ -2221,6 +2222,21 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     queryFn: () => api.getArtifactDetail(projectId, artifactId!),
     enabled: Boolean(artifactId),
   });
+  // Этапы дают два сигнала для подсветки в списке: ключевой артефакт этапа
+  // (главный дилеверабл — ТЗ/Архитектура/…) и ожидание согласования заказчиком.
+  const stagesQuery = useQuery({
+    queryKey: projectionKey(projectId, "stages"),
+    queryFn: () => api.getStages(projectId),
+  });
+  const stages = stagesQuery.data?.stages ?? [];
+  const keyArtifactIds = new Set(
+    stages.map((s) => s.key_artifact_id).filter((id): id is string => Boolean(id)),
+  );
+  const awaitingSignoffIds = new Set(
+    stages
+      .filter((s) => s.requires_signoff && !s.signed_off && s.key_artifact_id)
+      .map((s) => s.key_artifact_id as string),
+  );
 
   if (artifactsQuery.isLoading) {
     return <LoadingPanel title="Загрузка артефактов…" />;
@@ -2247,8 +2263,11 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
     data: "Данные",
     other: "Прочее",
   };
-  const presentCategories = CATEGORY_ORDER.filter((c) =>
-    combined.some((a) => (a.category ?? "documents") === c),
+  // Подвкладка «Код» присутствует ВСЕГДА (даже без код-артефактов — тогда
+  // список пустой): чтобы место для кода было предсказуемым. Прочие категории —
+  // только непустые.
+  const presentCategories = CATEGORY_ORDER.filter(
+    (c) => c === "code" || combined.some((a) => (a.category ?? "documents") === c),
   );
   const activeCategory = presentCategories.includes(category)
     ? category
@@ -2257,12 +2276,19 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
 
   // Элемент списка артефактов: только русское название + дата/время (без
   // английской роли). Для архива — метка происхождения.
-  const renderArtifactItem = (artifact: ArtifactSummaryView) => (
+  const renderArtifactItem = (artifact: ArtifactSummaryView) => {
+    const isKey = keyArtifactIds.has(artifact.artifact_id);
+    const isAwaiting = awaitingSignoffIds.has(artifact.artifact_id);
+    return (
     <button
       key={artifact.artifact_id}
       type="button"
       className={cx(
         "artifact-list__item",
+        // Ключевой дилеверабл этапа — выделяем; ожидание согласования —
+        // отдельная (более заметная) подсветка. Архив не подсвечиваем.
+        !artifact.archived && isKey && "artifact-list__item--key",
+        !artifact.archived && isAwaiting && "artifact-list__item--awaiting",
         !selectedAttachment && artifactId === artifact.artifact_id && "artifact-list__item--active",
       )}
       onClick={() => {
@@ -2271,7 +2297,13 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
       }}
     >
       <div className="artifact-list__title">
+        {!artifact.archived && isKey ? (
+          <Star size={12} className="artifact-list__key-icon" aria-label="Ключевой документ этапа" />
+        ) : null}
         <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
+        {!artifact.archived && isAwaiting ? (
+          <span className="artifact-list__tag artifact-list__tag--awaiting">ждёт согласования</span>
+        ) : null}
         {artifact.is_low_confidence ? (
           <span className="artifact-lowconf-badge">
             <AlertTriangle size={11} /> система не уверена
@@ -2289,7 +2321,8 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
         <ChevronRight size={14} />
       </div>
     </button>
-  );
+    );
+  };
 
   return (
     <div className="artifacts-page">
