@@ -472,3 +472,55 @@ def test_escape_mermaid_label_handles_quotes_and_newlines() -> None:
     assert _escape_mermaid_label('say "hi"') == "say #quot;hi#quot;"
     assert _escape_mermaid_label("multi\nline") == "multi line"
     assert _escape_mermaid_label(None) == ""
+
+
+# --- design_document: профессиональные виды архитектуры -------------------
+
+
+def test_design_document_renders_architecture_views() -> None:
+    """Задача 3: арх-документ должен включать архитектурные решения, архитектуру
+    данных/безопасности/операционную как разделы (раньше они не были входами
+    синтеза и терялись)."""
+    payload = {
+        "title": "Система X",
+        "executive_summary": "Кратко о системе.",
+        "architecture_decisions": {
+            "decisions": [
+                {"id": "ADR-1", "title": "Хранилище", "decision": "PostgreSQL",
+                 "context": "нужна реляционка"}
+            ]
+        },
+        "data_architecture": {"entities": [{"name": "Заявка", "description": "входная заявка"}]},
+        "security_architecture": {"authentication": "OAuth2 через корпоративный IdP"},
+        "operational_architecture": {"observability": ["структурные логи", "метрики Prometheus"]},
+    }
+    md = render_markdown("design_document", payload)
+    assert "Архитектурные решения" in md
+    assert "ADR-1" in md
+    assert "Архитектура данных" in md and "Заявка" in md
+    assert "Архитектура безопасности" in md and "OAuth2" in md
+    assert "Операционная архитектура" in md and "Prometheus" in md
+
+
+def test_design_synthesis_requires_architecture_views() -> None:
+    """Синтез теперь ДОЖИДАЕТСЯ профессиональных видов (они в required), а не
+    собирает документ параллельно с ними."""
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[1]
+    spec = yaml.safe_load(
+        (repo_root / "templates" / "tasks" / "architecture" / "design_synthesis.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    required = set(spec["requires"]["artifacts"]["required"])
+    for ref in (
+        "architecture.architecture_decisions@1.0.0",
+        "architecture.security_architecture@1.0.0",
+        "architecture.data_architecture@1.0.0",
+        "architecture.operational_architecture@1.0.0",
+        "architecture.deployment_map@1.0.0",
+    ):
+        assert ref in required, f"{ref} должен быть обязательным входом синтеза"

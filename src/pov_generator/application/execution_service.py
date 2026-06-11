@@ -2549,6 +2549,16 @@ class ExecutionService:
                 }
             if isinstance(deployment, dict) and deployment:
                 result["deployment"] = deployment
+            # Профессиональные виды архитектуры — passthrough как есть (без confidence).
+            for field_name, *titles in (
+                ("architecture_decisions", "Зафиксировать архитектурные решения"),
+                ("data_architecture", "Описать архитектуру данных"),
+                ("security_architecture", "Описать архитектуру безопасности"),
+                ("operational_architecture", "Описать операционную архитектуру"),
+            ):
+                view = self._find_payload(parsed_inputs, *titles)
+                if isinstance(view, dict) and view:
+                    result[field_name] = {k: v for k, v in view.items() if k != "confidence"}
             if isinstance(risk_register, dict) and risk_register.get("risks"):
                 result["risks"] = risk_register["risks"]
             return result

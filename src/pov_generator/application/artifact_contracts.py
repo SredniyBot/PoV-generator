@@ -1541,6 +1541,12 @@ def artifact_schema(artifact_role: str, domain_pack_refs: tuple[str, ...] = ()) 
                 "components": {"type": "object", "additionalProperties": True},
                 "interactions": {"type": "object", "additionalProperties": True},
                 "deployment": {"type": "object", "additionalProperties": True},
+                # Профессиональные виды архитектуры — passthrough из соответствующих
+                # upstream-артефактов (рендерятся их же рендерерами как разделы).
+                "architecture_decisions": {"type": "object", "additionalProperties": True},
+                "data_architecture": {"type": "object", "additionalProperties": True},
+                "security_architecture": {"type": "object", "additionalProperties": True},
+                "operational_architecture": {"type": "object", "additionalProperties": True},
                 "risks": {
                     "type": "array",
                     "items": {"type": "object", "additionalProperties": True},
@@ -4188,6 +4194,21 @@ def _render_ui_design(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _demote_markdown_headings(md: str) -> str:
+    """Понизить уровень всех markdown-заголовков на один (# → ##, ## → ###).
+
+    Нужно для вставки документа-вида целиком как РАЗДЕЛА арх-документа: его
+    собственный H1-заголовок становится H2, подразделы — H3. Трогаем только
+    строки-заголовки вида ``^#{1,5} ``."""
+    out: list[str] = []
+    for line in md.split("\n"):
+        if re.match(r"^#{1,5} ", line):
+            out.append("#" + line)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _render_design_document(payload: dict[str, Any]) -> str:
     title = payload.get("title", "Архитектурный документ")
     lines = [f"# {title}"]
@@ -4321,6 +4342,19 @@ def _render_design_document(payload: dict[str, Any]) -> str:
             if deployment.get("deployment_flow"):
                 lines.append("\n**Процесс развёртывания:**")
                 lines.append(deployment["deployment_flow"])
+
+    # Профессиональные виды архитектуры — passthrough-секции: рендерим каждый
+    # его же рендерером (по роли) и понижаем уровни заголовков на один, чтобы
+    # заголовок вида стал разделом документа (H1→H2), а его подразделы — H3.
+    for section_key in (
+        "architecture_decisions",
+        "data_architecture",
+        "security_architecture",
+        "operational_architecture",
+    ):
+        section = payload.get(section_key) or {}
+        if isinstance(section, dict) and section:
+            lines.append("\n" + _demote_markdown_headings(render_markdown(section_key, section)))
 
     risks = payload.get("risks") or []
     if risks:
