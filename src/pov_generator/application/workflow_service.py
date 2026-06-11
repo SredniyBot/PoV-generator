@@ -115,27 +115,10 @@ class WorkflowService:
             cancellation=cancellation,
         )
 
-    def retry_task(
-        self,
-        workspace: Path,
-        snapshot,
-        *,
-        task_id: str,
-        provider: str | None = None,
-        model: str | None = None,
-    ) -> WorkflowStepResult:
-        task = self._runtime.get_task(workspace, task_id)
-        self._planning_service.transition_task(workspace, task_id, "retry")
-        return self._execute_existing_task(
-            workspace,
-            snapshot,
-            task_id=task_id,
-            planning_outcome="retried",
-            selected_step_id=task.task_key,
-            provider=provider,
-            model=model,
-            reasons=("Шаг запущен повторно после ошибки.",),
-        )
+    # retry_task удалён: повтор задачи теперь оркеструется WorkflowRunnerService
+    # (failed → ready + активный прогон), а не исполняется здесь синхронно. Сам
+    # повторный прогон идёт через execute_step внутри пула runner'а — единый путь
+    # исполнения, учтённый в concurrency.
 
     def _execute_existing_task(
         self,

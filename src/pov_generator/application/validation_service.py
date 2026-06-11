@@ -5,7 +5,6 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..common.errors import ValidationError
 from ..common.logging import get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.artifacts import LOW_CONFIDENCE_THRESHOLD
@@ -16,10 +15,47 @@ from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import (
     artifact_schema,
     check_component_model_consistency,
-    validate_json_schema,
+    collect_schema_errors,
+    render_markdown,
 )
 from .checkpoint_service import CheckpointService
 from .methodology_rules import evaluate_methodology_rules
+
+# Ключи артефакта, которые НЕ являются содержанием (метаданные процесса). При
+# проверке «пригодности» они не считаются за содержательное наполнение.
+_NON_CONTENT_KEYS = frozenset({"confidence", "reasoning", "methodology_trace"})
+
+# Минимальная длина отрендеренного документа, ниже которой считаем артефакт
+# пустым (один заголовок без тела). Порог намеренно низкий — ловим только
+# действительно вырожденные случаи, а не короткие, но осмысленные документы.
+_MIN_RENDERED_CHARS = 24
+
+
+def _artifact_is_usable(artifact_role: str, payload: object) -> tuple[bool, str]:
+    """Пригоден ли артефакт как дилеверабл: есть содержание И он рендерится.
+
+    Это ЕДИНСТВЕННЫЙ жёсткий критерий формы. Строгое соответствие схеме —
+    качество, а не пригодность: рендерер и downstream-потребители толерантны
+    (см. ``llm/structured_output.py`` — цепочка гарантий). Поэтому расхождения
+    схемы трактуются как НЕблокирующие замечания, а ``failed`` остаётся только
+    для действительно непригодных артефактов.
+    """
+    if not isinstance(payload, dict):
+        return False, "Артефакт не является JSON-объектом."
+    has_substance = any(
+        value not in (None, "", [], {})
+        for key, value in payload.items()
+        if key not in _NON_CONTENT_KEYS
+    )
+    if not has_substance:
+        return False, "Артефакт пуст: ни одного содержательного поля."
+    try:
+        rendered = render_markdown(artifact_role, payload)
+    except Exception as exc:  # noqa: BLE001 — любой сбой рендера = непригоден
+        return False, f"Артефакт не удаётся отрендерить в документ: {exc}"
+    if len(rendered.strip()) < _MIN_RENDERED_CHARS:
+        return False, "Артефакт рендерится в пустой документ."
+    return True, ""
 
 if TYPE_CHECKING:
     from .execution_service import ExecutionBundle
@@ -191,19 +227,56 @@ class ValidationService:
                 artifact = self._runtime.load_artifact(workspace, output.artifact_id)
                 try:
                     payload = json.loads(self._runtime.load_artifact_content(workspace, artifact.artifact_id))
-                    validate_json_schema(payload, artifact_schema(output.artifact_role, active_domain_refs))
-                except (json.JSONDecodeError, ValidationError) as exc:
+                except json.JSONDecodeError as exc:
                     findings.append(
                         ValidationFinding(
                             finding_id=str(uuid.uuid4()),
-                            finding_type="schema_error",
-                            severity="error",
+                            finding_type="artifact_unreadable",
+                            severity="critical",
                             blocking=True,
-                            message=str(exc),
+                            message=f"Артефакт не читается как JSON: {exc}",
                             related_artifact_ids=(artifact.artifact_id,),
                         )
                     )
                     continue
+
+                # Жёсткий гейт — ПРИГОДНОСТЬ (есть содержание + рендерится). Иначе
+                # — задача действительно провалена.
+                usable, usability_reason = _artifact_is_usable(output.artifact_role, payload)
+                if not usable:
+                    findings.append(
+                        ValidationFinding(
+                            finding_id=str(uuid.uuid4()),
+                            finding_type="unusable_artifact",
+                            severity="critical",
+                            blocking=True,
+                            message=usability_reason,
+                            related_artifact_ids=(artifact.artifact_id,),
+                        )
+                    )
+                    continue
+
+                # Расхождения со строгой схемой — НЕблокирующее замечание (зона
+                # роста): артефакт пригоден, форму добивают normalize/self-repair,
+                # downstream толерантен. Так корректный документ больше не висит
+                # «ошибка» из-за косметики формы.
+                schema_errors = collect_schema_errors(
+                    payload, artifact_schema(output.artifact_role, active_domain_refs)
+                )
+                if schema_errors:
+                    shown = "; ".join(schema_errors[:5])
+                    if len(schema_errors) > 5:
+                        shown += f" … (+{len(schema_errors) - 5})"
+                    findings.append(
+                        ValidationFinding(
+                            finding_id=str(uuid.uuid4()),
+                            finding_type="schema_drift",
+                            severity="warning",
+                            blocking=False,
+                            message=f"Артефакт отклоняется от схемы (на пригодность не влияет): {shown}",
+                            related_artifact_ids=(artifact.artifact_id,),
+                        )
+                    )
 
                 semantic_findings, decision_inputs = self._semantic_analysis(
                         artifact_role=output.artifact_role,
@@ -255,8 +328,8 @@ class ValidationService:
                         ValidationFinding(
                             finding_id=str(uuid.uuid4()),
                             finding_type="domain_pack_expectation",
-                            severity="error",
-                            blocking=True,
+                            severity="warning",
+                            blocking=False,
                             message="Для активного пакета интерфейса в ТЗ отсутствует раздел требований к интерфейсу.",
                             related_artifact_ids=(artifact.artifact_id,),
                         )

@@ -1524,14 +1524,19 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/commands/retry-task")
     def retry_task(project_id: str, payload: dict[str, object] = Body(default_factory=dict)) -> Any:
-        return to_primitive(
-            command_service.retry_task(
-                project_id,
-                task_id=_required_str(payload, "task_id"),
-                provider=_optional_str(payload, "provider"),
-                model=_optional_str(payload, "model"),
-            )
+        # Повтор идёт ЧЕРЕЗ runner (единый оркестратор): сбрасывает задачу в
+        # ready и обеспечивает активный прогон, который подхватит её в пределах
+        # concurrency и продолжит конвейер. Возвращает запись прогона (как
+        # run-until-blocked) — UI слушает прогресс через workflow-runs/active.
+        workspace_ref = catalog.resolve_workspace(project_id)
+        record = workflow_runner_service.retry_task(
+            workspace_ref.workspace,
+            project_id,
+            _required_str(payload, "task_id"),
+            provider=_optional_str(payload, "provider"),
+            model=_optional_str(payload, "model"),
         )
+        return _runs_with_task_titles(workspace_ref.workspace, to_primitive(record))
 
     @app.get("/api/projects/{project_id}/rollback/preview")
     def rollback_preview(project_id: str, target_task_id: str) -> Any:

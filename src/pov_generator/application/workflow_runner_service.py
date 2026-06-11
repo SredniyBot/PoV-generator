@@ -246,6 +246,51 @@ class WorkflowRunnerService:
     def latest_active_run(self, workspace: Path, project_id: str) -> WorkflowRunRecord | None:
         return self._runtime.latest_active_workflow_run(workspace, project_id)
 
+    def retry_task(
+        self,
+        workspace: Path,
+        project_id: str,
+        task_id: str,
+        *,
+        provider: str | None,
+        model: str | None,
+        max_steps: int = 1000,
+    ) -> WorkflowRunRecord:
+        """Повтор задачи — ЧЕРЕЗ оркестратор, а не в обход него.
+
+        Раньше retry исполнялся синхронно в HTTP-потоке, мимо runner'а: не
+        учитывался в concurrency и не продолжал конвейер. Теперь retry =
+        «сбросить упавшую задачу в ready + обеспечить активный прогон»:
+
+        * упавшую задачу возвращаем в ``ready`` (планировщик снова её допустит);
+        * если прогон УЖЕ идёт — он подхватит готовую задачу на следующем
+          раунде, строго в пределах concurrency (двух пулов не бывает);
+        * если активного прогона нет — стартуем новый, который выполнит задачу
+          и продолжит пайплайн дальше.
+
+        Так задача всегда исполняется внутри пула runner'а (учтена в
+        параллелизме), статус становится «идёт прогон», а после успеха конвейер
+        продолжается сам. Возвращает активный/новый прогон.
+        """
+        ensure_project_unlocked(self._runtime, workspace)
+        task = self._runtime.get_task(workspace, task_id)
+        # failed → ready (attempt += 1). Только из failed: для прочих статусов
+        # retry бессмыслен (UI предлагает повтор лишь у упавших), а ре-планирование
+        # обеспечит активный прогон ниже.
+        if task is not None and task.status == "failed":
+            self._planning_service.transition_task(workspace, task_id, "retry")
+        active = self.latest_active_run(workspace, project_id)
+        if active is not None:
+            # Идущий runner сам подхватит готовую задачу в пределах concurrency.
+            return active
+        return self.start_run_until_blocked(
+            workspace,
+            project_id,
+            provider=provider,
+            model=model,
+            max_steps=max_steps,
+        )
+
     # ---- internals -------------------------------------------------------
 
     def _run_loop(

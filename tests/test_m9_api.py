@@ -345,17 +345,32 @@ def test_api_retry_task_reexecutes_failed_task(tmp_path: Path) -> None:
     assert failed_node["status"] == "failed"
     assert failed_node["retryable"] is True
 
+    # Повтор теперь асинхронный (через runner): endpoint возвращает запись
+    # прогона, задача исполняется в фоне и конвейер продолжается.
     retry = client.post(
         f"/api/projects/{project_id}/commands/retry-task",
         json={"task_id": task_id, "provider": "stub"},
     )
-    assert retry.status_code == 200
-    assert retry.json()["status"] == "accepted"
+    assert retry.status_code == 200, retry.text
+    run_id = retry.json()["run_id"]
+    assert run_id
+    assert retry.json()["status"] in ("pending", "running", "completed")
+
+    # Ждём завершения прогона повтора (stub быстрый).
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        run = client.get(f"/api/projects/{project_id}/workflow-runs/{run_id}").json()
+        if run["status"] not in ("pending", "running"):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("прогон повтора не завершился в отведённое время")
 
     after = client.get(f"/api/projects/{project_id}/task-graph")
     assert after.status_code == 200
     completed_node = find_task_node(after.json()["nodes"], task_id)
     assert completed_node is not None
+    # Повторённая задача исполнена (не осталась в failed).
     assert completed_node["status"] == "completed"
     assert completed_node["retryable"] is False
 

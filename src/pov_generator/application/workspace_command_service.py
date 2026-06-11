@@ -101,37 +101,9 @@ class WorkspaceCommandService:
             changed_projections=GRAPH_PROJECTIONS,
         )
 
-    def retry_task(
-        self,
-        project_id: str,
-        *,
-        task_id: str,
-        provider: str | None = None,
-        model: str | None = None,
-    ) -> CommandResultView:
-        workspace_ref = self._catalog.resolve_workspace(project_id)
-        ensure_project_unlocked(self._project_service.runtime, workspace_ref.workspace)
-        snapshot = self._validated_snapshot()
-        result = self._workflow_service.retry_task(
-            workspace_ref.workspace,
-            snapshot,
-            task_id=task_id,
-            provider=provider,
-            model=model,
-        )
-        if result.validation_status == "passed":
-            status = "accepted"
-            summary = f"Задача '{result.selected_step_id or task_id}' успешно выполнена повторно."
-        else:
-            status = "warning"
-            summary = result.reasons[0] if result.reasons else "Повторный запуск задачи завершился с ошибкой."
-        return CommandResultView(
-            status=status,
-            command_name="retry-task",
-            summary=summary,
-            changed_projections=GRAPH_PROJECTIONS,
-            resource_id=task_id,
-        )
+    # retry_task перенесён в WorkflowRunnerService.retry_task: повтор идёт через
+    # единый оркестратор (учитывается в concurrency, продолжает конвейер), а не
+    # синхронным side-channel'ом мимо runner'а. API-эндпоинт вызывает runner.
 
     def set_goal(self, project_id: str, *, text: str) -> CommandResultView:
         workspace_ref = self._catalog.resolve_workspace(project_id)
