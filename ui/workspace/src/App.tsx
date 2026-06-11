@@ -28,7 +28,6 @@ import {
   RefreshCcw,
   ShieldAlert,
   Sparkles,
-  Star,
   TerminalSquare,
   Trash2,
   Undo2,
@@ -2297,9 +2296,6 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
       }}
     >
       <div className="artifact-list__title">
-        {!artifact.archived && isKey ? (
-          <Star size={12} className="artifact-list__key-icon" aria-label="Ключевой документ этапа" />
-        ) : null}
         <strong>{stripRoleSuffix(artifact.title, artifact.artifact_role)}</strong>
         {!artifact.archived && isAwaiting ? (
           <span className="artifact-list__tag artifact-list__tag--awaiting">ждёт согласования</span>

@@ -2003,11 +2003,6 @@ code {
   background: var(--accent-soft);
 }
 
-.artifact-list__key-icon {
-  color: var(--accent);
-  flex: 0 0 auto;
-}
-
 /* Ожидание согласования заказчиком — более заметная (предупреждающая) подсветка;
    перекрывает «ключевую», т.к. требует действия. */
 .artifact-list__item--awaiting {
