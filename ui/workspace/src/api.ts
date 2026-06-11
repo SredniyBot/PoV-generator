@@ -173,8 +173,10 @@ export const api = {
     request<WorkflowRunView>(`/api/projects/${projectId}/workflow-runs/${runId}`),
   listWorkflowRuns: (projectId: string, limit = 20) =>
     request<WorkflowRunView[]>(`/api/projects/${projectId}/workflow-runs?limit=${limit}`),
+  // Повтор задачи теперь идёт через runner (асинхронно): endpoint возвращает
+  // запись прогона (как run-until-blocked), прогресс — через workflow-runs/active.
   retryTask: (projectId: string, taskId: string, provider: string, model: string) =>
-    request<CommandResultView>(`/api/projects/${projectId}/commands/retry-task`, {
+    request<WorkflowRunView>(`/api/projects/${projectId}/commands/retry-task`, {
       method: "POST",
       body: JSON.stringify({
         task_id: taskId,

@@ -249,7 +249,7 @@ import {
   prettyLabel,
 } from "./ui";
 import { StageStatusBar, shortStageLabel } from "./StageStatusBar";
-import { runStatusVisual, stepStatusVisual, taskStatusVisual } from "./workflowStatus";
+import { runStatusVisual, situationVisual, stepStatusVisual, taskStatusVisual } from "./workflowStatus";
 
 const REALTIME_PROJECTIONS: ProjectionName[] = [
   "shell",
@@ -742,7 +742,23 @@ function WorkspaceRoute({
           })
           .finally(() => setCommandBusy(false));
       },
-      retryTask: (taskId: string) => void commandRequest(() => api.retryTask(projectId, taskId, provider, model)),
+      retryTask: (taskId: string) => {
+        // Повтор идёт через runner (асинхронно, как run-until-blocked): задача
+        // исполняется в пуле (учтена в concurrency), статус становится «идёт
+        // работа», конвейер продолжается сам. commandRequest не подходит — он
+        // ждёт синхронный CommandResultView; слушаем прогресс активного прогона.
+        setCommandBusy(true);
+        api
+          .retryTask(projectId, taskId, provider, model)
+          .then(() => {
+            notify("success", "Задача перезапущена", "Повтор и продолжение конвейера запущены.");
+            void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+          })
+          .catch((error) => {
+            notify("danger", "Не удалось перезапустить задачу", error instanceof Error ? error.message : "Неизвестная ошибка");
+          })
+          .finally(() => setCommandBusy(false));
+      },
       setGoal: (text: string) => void commandRequest(() => api.setGoal(projectId, text)),
       closeGap: (gapId: string) => void commandRequest(() => api.closeGap(projectId, gapId)),
       setReadiness: (payload) => void commandRequest(() => api.setReadiness(projectId, payload)),
@@ -980,21 +996,29 @@ function HeaderRunStatus({ projectId }: { projectId: string }) {
     queryFn: () => api.getActiveWorkflowRun(projectId),
     refetchInterval: activeRunRefetchInterval,
   });
-  const recentQuery = useQuery({
-    queryKey: [projectId, "workflow-runs"],
-    queryFn: () => api.listWorkflowRuns(projectId, 100),
+  // Когда активного прогона нет — текущий статус берём из «ситуации» (живое,
+  // task-derived), а НЕ из последнего завершённого прогона. Иначе пилюля
+  // зависала на устаревшем stop_reason (напр. «остановлено», хотя задачу уже
+  // перезапустили). Завершённые прогоны живут в ленте/истории.
+  const situationQuery = useQuery({
+    queryKey: projectionKey(projectId, "situation"),
+    queryFn: () => api.getSituation(projectId),
   });
   const active = activeQuery.data ?? null;
-  const display = active ?? recentQuery.data?.[0] ?? null;
   // Граф нужен только для счётчика «N в работе» и только во время прогона.
   const taskGraphQuery = useQuery({
     queryKey: projectionKey(projectId, "task_graph"),
     queryFn: () => api.getTaskGraph(projectId),
     enabled: Boolean(active),
   });
-  if (!display) return null;
-  const viz = runStatusVisual(display.status, display.stop_reason);
-  const summary = cleanStepSummary(display.last_step_summary);
+  const situation = situationQuery.data ?? null;
+  if (!active && !situation) return null;
+  const viz = active
+    ? runStatusVisual(active.status, active.stop_reason)
+    : situationVisual(situation!);
+  const summary = active
+    ? cleanStepSummary(active.last_step_summary)
+    : situation?.headline ?? null;
   let inProgress = 0;
   if (active && taskGraphQuery.data) {
     const walk = (nodes: TaskNodeView[]) => {
@@ -3466,6 +3490,12 @@ function TaskGraphPage({ projectId }: { projectId: string }) {
   });
   const retryMutation = useMutation({
     mutationFn: (taskId: string) => api.retryTask(projectId, taskId, provider, model),
+    // Повтор асинхронный (через runner): подсветим активный прогон сразу, дальше
+    // граф/статусы обновит WS-брокаст по мере шагов.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [projectId, "workflow-run-active"] });
+      void queryClient.invalidateQueries({ queryKey: projectionKey(projectId, "task_graph") });
+    },
   });
   // Превью отката — чистое чтение; запускается только когда выбрана цель.
   const previewQuery = useQuery({

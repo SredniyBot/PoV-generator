@@ -87,6 +87,29 @@ export function runStatusVisual(
 }
 
 /**
+ * Текущее состояние проекта из «ситуации» (task-derived, живое) — для пилюли
+ * в шапке, когда активного прогона нет. Источник правды для «что сейчас» — это
+ * ситуация, а НЕ статус последнего завершённого прогона (тот уходит в историю
+ * ленты). Так пилюля не «зависает» на устаревшем stop_reason.
+ */
+export function situationVisual(situation: {
+  status_label: string;
+  blocking: boolean;
+  blockers?: { severity?: string }[];
+}): { label: string; tone: WorkflowTone } {
+  const label = situation.status_label || "Состояние проекта";
+  if (situation.blocking) {
+    const hasError = (situation.blockers ?? []).some(
+      (b) => b.severity === "error" || b.severity === "critical",
+    );
+    return { label, tone: hasError ? "danger" : "warning" };
+  }
+  if (/идёт|идет|работ/i.test(label)) return { label, tone: "active" };
+  if (/готов|заверш|успе/i.test(label)) return { label, tone: "success" };
+  return { label, tone: "neutral" };
+}
+
+/**
  * Шаг ленты: пара (validation_status, planning_outcome) → подпись + тон,
  * в едином стиле со статусами задач.
  */
