@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import html as _html
 import re
 from typing import Any
 
@@ -4124,6 +4126,141 @@ def render_markdown(artifact_role: str, payload: dict[str, Any]) -> str:
     return f"# {artifact_role}\n\n```json\n{_json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n"
 
 
+_HEX6_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_HEX3_RE = re.compile(r"^#[0-9a-fA-F]{3}$")
+
+
+def _safe_hex(value: object, fallback: str) -> str:
+    """Валидный #RRGGBB или fallback (svglib не прощает кривой цвет)."""
+    text = str(value or "").strip()
+    if _HEX6_RE.match(text):
+        return text
+    if _HEX3_RE.match(text):
+        return "#" + "".join(ch * 2 for ch in text[1:])
+    return fallback
+
+
+def _pick_palette_color(palette: list[dict[str, Any]], keywords: tuple[str, ...], fallback: str) -> str:
+    """Подобрать цвет из палитры по ключевым словам роли/имени/применения."""
+    for entry in palette:
+        haystack = " ".join(
+            str(entry.get(field, "")) for field in ("role", "name", "usage")
+        ).lower()
+        if any(keyword in haystack for keyword in keywords):
+            return _safe_hex(entry.get("hex"), fallback)
+    return fallback
+
+
+def _readable_on(hex_color: str) -> str:
+    """Контрастный цвет текста (белый/тёмный) на фоне hex — по яркости."""
+    try:
+        r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return "#ffffff"
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "#1f2430" if luminance > 0.6 else "#ffffff"
+
+
+def _build_ui_preview_svg(payload: dict[str, Any]) -> str | None:
+    """Детерминированный SVG-мокап стиля интерфейса из дизайн-системы артефакта.
+
+    Не выдумка и не оценка: использует РЕАЛЬНЫЕ цвета палитры/типографику и
+    показывает, как выглядят окно и базовые элементы (кнопки, поле ввода,
+    карточка, типографика). svglib-безопасен (rect/text/circle, без градиентов/
+    фильтров/foreignObject) — рендерится и на сайте, и в PDF (как mermaid)."""
+    palette = [c for c in (payload.get("color_palette") or []) if isinstance(c, dict)]
+    if not palette:
+        return None
+    surface = _pick_palette_color(palette, ("поверхн", "surface", "card", "карточ"), "#ffffff")
+    background = _pick_palette_color(palette, ("фон", "background", "bg"), "#f4f6f9")
+    primary = _pick_palette_color(palette, ("акцент", "основн", "primary", "accent", "брен"), "#3b6ef5")
+    text_color = _pick_palette_color(palette, ("текст", "text", "контент"), "#1f2430")
+    border = _pick_palette_color(palette, ("границ", "border", "разделит", "обвод"), "#d9dee7")
+    muted = "#8b93a3"
+    on_primary = _readable_on(primary)
+    typo = [t for t in (payload.get("typography") or []) if isinstance(t, dict)]
+    font = "Inter, Segoe UI, system-ui, sans-serif"
+    for entry in typo:
+        if entry.get("font"):
+            font = f"{entry['font']}, {font}"
+            break
+
+    esc = _html.escape
+    parts: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="660" height="430" '
+        f'viewBox="0 0 660 430" font-family="{esc(font)}">',
+        f'<rect x="8" y="8" width="644" height="414" rx="12" fill="{background}" '
+        f'stroke="{border}" stroke-width="1"/>',
+        # Заголовок окна
+        f'<rect x="8" y="8" width="644" height="36" rx="12" fill="{surface}" '
+        f'stroke="{border}" stroke-width="1"/>',
+        '<circle cx="30" cy="26" r="5" fill="#e06c6c"/>',
+        '<circle cx="48" cy="26" r="5" fill="#e0b86c"/>',
+        '<circle cx="66" cy="26" r="5" fill="#7bc488"/>',
+        f'<text x="92" y="31" font-size="13" fill="{text_color}">Превью интерфейса</text>',
+    ]
+    # Палитра — свотчи.
+    parts.append(f'<text x="28" y="74" font-size="12" fill="{muted}">ПАЛИТРА</text>')
+    for index, entry in enumerate(palette[:6]):
+        x = 28 + index * 96
+        swatch = _safe_hex(entry.get("hex"), border)
+        name = esc(str(entry.get("name") or entry.get("role") or "")[:14])
+        parts.append(
+            f'<rect x="{x}" y="84" width="84" height="34" rx="7" fill="{swatch}" '
+            f'stroke="{border}" stroke-width="1"/>'
+        )
+        parts.append(f'<text x="{x}" y="134" font-size="10" fill="{muted}">{esc(swatch)}</text>')
+        parts.append(f'<text x="{x}" y="148" font-size="10" fill="{text_color}">{name}</text>')
+    # Компоненты — кнопки, поле ввода.
+    parts.append(f'<text x="28" y="182" font-size="12" fill="{muted}">ЭЛЕМЕНТЫ</text>')
+    parts.append(
+        f'<rect x="28" y="194" width="150" height="40" rx="9" fill="{primary}"/>'
+        f'<text x="103" y="219" font-size="14" fill="{on_primary}" text-anchor="middle">Действие</text>'
+    )
+    parts.append(
+        f'<rect x="190" y="194" width="150" height="40" rx="9" fill="{surface}" '
+        f'stroke="{primary}" stroke-width="1.5"/>'
+        f'<text x="265" y="219" font-size="14" fill="{primary}" text-anchor="middle">Отмена</text>'
+    )
+    parts.append(
+        f'<rect x="28" y="248" width="312" height="40" rx="9" fill="{surface}" '
+        f'stroke="{border}" stroke-width="1"/>'
+        f'<text x="44" y="273" font-size="13" fill="{muted}">Введите значение…</text>'
+    )
+    # Карточка.
+    parts.append(
+        f'<rect x="360" y="170" width="272" height="160" rx="11" fill="{surface}" '
+        f'stroke="{border}" stroke-width="1"/>'
+    )
+    parts.append(f'<text x="380" y="200" font-size="15" fill="{text_color}" font-weight="600">Карточка</text>')
+    parts.append(f'<rect x="380" y="216" width="232" height="8" rx="4" fill="{border}"/>')
+    parts.append(f'<rect x="380" y="234" width="200" height="8" rx="4" fill="{border}"/>')
+    parts.append(
+        f'<rect x="380" y="282" width="120" height="32" rx="8" fill="{primary}"/>'
+        f'<text x="440" y="303" font-size="12" fill="{on_primary}" text-anchor="middle">Открыть</text>'
+    )
+    # Типографика.
+    parts.append(f'<text x="28" y="320" font-size="22" fill="{text_color}" font-weight="700">Заголовок раздела</text>')
+    parts.append(f'<text x="28" y="348" font-size="13" fill="{text_color}">Основной текст — как выглядит контент в интерфейсе.</text>')
+    parts.append(f'<text x="28" y="372" font-size="11" fill="{muted}">Вторичная подпись · вспомогательная информация</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _ui_preview_markdown(payload: dict[str, Any]) -> str | None:
+    """SVG-превью стиля как inline-img c data-URI: рендерится и на сайте (marked
+    пропускает raw HTML), и в PDF (xhtml2pdf+svglib, как mermaid-картинки)."""
+    svg = _build_ui_preview_svg(payload)
+    if svg is None:
+        return None
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '<div class="ui-preview">'
+        f'<img src="data:image/svg+xml;base64,{encoded}" alt="Превью стиля интерфейса" />'
+        "</div>"
+    )
+
+
 def _render_ui_design(payload: dict[str, Any]) -> str:
     """Профессиональный UI/UX дизайн-документ: палитра, типографика, экраны,
     навигация, формы, компоненты, взаимодействие с API — в виде раздела."""
@@ -4132,6 +4269,12 @@ def _render_ui_design(payload: dict[str, Any]) -> str:
         lines += ["", str(payload["summary"])]
     if payload.get("design_principles"):
         lines += ["", "## Принципы", *[f"- {p}" for p in payload["design_principles"]]]
+
+    # Наглядное превью стиля (окно + базовые элементы) из дизайн-системы —
+    # ведёт документ, чтобы сразу показать, КАК выглядит интерфейс.
+    preview = _ui_preview_markdown(payload)
+    if preview:
+        lines += ["", "## Превью стиля", "", preview]
 
     palette = [c for c in (payload.get("color_palette") or []) if isinstance(c, dict)]
     if palette:

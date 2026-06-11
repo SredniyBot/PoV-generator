@@ -1341,6 +1341,15 @@ def _build_base_css(
             max-width: 100%;
             height: auto;
         }}
+        /* Превью стиля UI (SVG-мокап из дизайн-системы) — как mermaid-картинка. */
+        .ui-preview {{
+            margin: 8pt 0;
+            text-align: center;
+        }}
+        .ui-preview img {{
+            max-width: 100%;
+            height: auto;
+        }}
         /* ITMO-брендинг — шапка/подвал документа. Намеренно ненавязчивые:
            серый цвет, мелкий шрифт, отделены тонкой линией. */
         .doc-header {{

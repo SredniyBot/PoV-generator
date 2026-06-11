@@ -57,6 +57,10 @@ interface TaskGraphActions {
   retryingTaskId: string | null;
   rollbackTargetId: string | null;
   rollbackAffectedIds: Set<string>;
+  // Дип-линк из overview: задача, на которую перешли — временно подсвечена «как
+  // при наведении» (видно меню перехода на артефакт / откат / повтор), пока
+  // пользователь не сфокусируется на другой.
+  highlightedTaskId: string | null;
 }
 
 const TaskGraphActionsCtx = createContext<TaskGraphActions | null>(null);
@@ -263,6 +267,8 @@ function TaskCardNode({ data }: { data: TaskNodeCardData }) {
         (task.is_harness ? " tg-node--harness" : "") +
         // Агентский узел с ненастроенным окружением — подсвечиваем: он не поедет.
         (task.is_harness && task.env_ready === false ? " tg-node--env-blocked" : "") +
+        // Дип-линк: подсветка задачи, на которую перешли (показывает меню).
+        (actions?.highlightedTaskId === task.task_id ? " tg-node--highlight" : "") +
         (rbState ? ` tg-node--rb-${rbState}` : "")
       }
       style={{ borderLeftColor: meta.color }}
@@ -565,9 +571,13 @@ function TaskGraphCanvasInner({
     );
   }, [currentTaskId, layout.nodes, setCenter]);
 
-  // Центрирование на focusTaskId (дип-линк из статус-бара): зависит от nodes,
-  // поэтому перезапускается после лэйаута/WS-рефреша; на ещё не появившийся
-  // узел — no-op до его появления.
+  // Дип-линк из overview: задача, на которую перешли, временно подсвечена «как
+  // при наведении» (видно меню перехода на артефакт / откат / повтор), пока
+  // пользователь не сфокусируется на другой задаче.
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+
+  // Центрирование + подсветка на focusTaskId. Зависит от nodes, поэтому
+  // перезапускается после лэйаута/WS-рефреша; на ещё не появившийся узел — no-op.
   useEffect(() => {
     if (!focusTaskId) return;
     const node = nodes.find((n) => n.id === focusTaskId);
@@ -576,6 +586,11 @@ function TaskGraphCanvasInner({
       zoom: 1.2,
       duration: 600,
     });
+    setHighlightId(focusTaskId);
+    // Подсветка не висит вечно: снимаем по таймеру (или раньше — при клике по
+    // другой задаче/полю, см. onNodeClick/onPaneClick).
+    const timer = window.setTimeout(() => setHighlightId(null), 12000);
+    return () => window.clearTimeout(timer);
   }, [focusTaskId, nodes, setCenter]);
 
   const rollbackAffectedSet = useMemo(
@@ -591,8 +606,9 @@ function TaskGraphCanvasInner({
       retryingTaskId,
       rollbackTargetId,
       rollbackAffectedIds: rollbackAffectedSet,
+      highlightedTaskId: highlightId,
     }),
-    [onRetry, onOpenArtifacts, onGoToDecisions, onRollback, retryingTaskId, rollbackTargetId, rollbackAffectedSet],
+    [onRetry, onOpenArtifacts, onGoToDecisions, onRollback, retryingTaskId, rollbackTargetId, rollbackAffectedSet, highlightId],
   );
 
   return (
@@ -613,8 +629,11 @@ function TaskGraphCanvasInner({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={(_, node) => {
+            // Фокус на другой задаче снимает дип-линк-подсветку.
+            if (node.id !== highlightId) setHighlightId(null);
             if (onSelectNode) onSelectNode((node.data as { task: TaskNodeView }).task);
           }}
+          onPaneClick={() => setHighlightId(null)}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}

@@ -2387,6 +2387,18 @@ code {
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
   border-radius: 10px;
 }
+/* Превью стиля UI (SVG-мокап из дизайн-системы) — наглядно, как выглядит
+   интерфейс. Светлая подложка: мокап обычно в светлой теме проекта. */
+.document-surface .ui-preview {
+  margin: 1em 0;
+  text-align: center;
+}
+.document-surface .ui-preview img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
 /* Краткий момент до инициализации канваса — обычный центрированный SVG. */
 .document-surface .mermaid-host:not(.mermaid-canvas) {
   padding: 12px;
@@ -4100,8 +4112,21 @@ code {
 }
 
 .tg-node:hover .tg-node__actions,
-.react-flow__node.selected .tg-node__actions {
+.react-flow__node.selected .tg-node__actions,
+.tg-node--highlight .tg-node__actions {
   opacity: 1;
+}
+
+/* Дип-линк из overview: задача, на которую перешли, подсвечена «как при
+   наведении» — акцентное кольцо + видимое меню действий. Поднимаем узел над
+   соседями, чтобы оверлей меню (bottom: -2rem) не перекрывался. */
+.tg-node--highlight {
+  outline: 2px solid var(--accent, rgba(120, 184, 201, 0.95));
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px rgba(120, 184, 201, 0.18);
+}
+.react-flow__node:has(.tg-node--highlight) {
+  z-index: 10;
 }
 
 /* Поднимаем узел при наведении/выделении, чтобы оверлей действий был поверх соседей. */
