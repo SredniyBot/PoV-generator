@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
+from ..domain.environment_compatibility import model_belongs_to
 from ..domain.llm_settings import (
     ALL_PURPOSES,
     PURPOSE_COMPLEXITY_SELECTOR,
@@ -269,15 +270,25 @@ class ProviderSettingsService:
         existing = self._store.get_connection(connection_id)
         if existing is None:
             raise ValidationError(f"Connection '{connection_id}' не найден.")
+        clean_model = model_name.strip()
+        if not clean_model:
+            raise ValidationError("Имя модели не может быть пустым.")
+        # Правило M: модель принадлежит ровно одной семье провайдеров. Не даём
+        # привязать openrouter-модель (vendor/model) к claude_cli/anthropic и
+        # наоборот — это заведомо нерабочий маршрут.
+        if not model_belongs_to(clean_model, existing.provider_type):
+            raise ValidationError(
+                f"Модель «{clean_model}» несовместима с провайдером "
+                f"«{existing.provider_type}»: она из другой семьи моделей. "
+                "Добавьте её к подключению соответствующего провайдера."
+            )
         routing = ModelRouting(
             routing_id=str(uuid.uuid4()),
             connection_id=connection_id,
-            model_name=model_name.strip(),
+            model_name=clean_model,
             priority=priority,
             enabled=True,
         )
-        if not routing.model_name:
-            raise ValidationError("Имя модели не может быть пустым.")
         self._store.add_routing(routing)
         return routing
 

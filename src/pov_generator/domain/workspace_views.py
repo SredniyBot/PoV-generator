@@ -116,6 +116,11 @@ class TaskNodeView:
     # #2: задача исполняется автономным агентом (executor: harness) — граф
     # выделяет такие узлы (иконка/рамка), они работают иначе, чем LLM-узлы.
     is_harness: bool = False
+    # Готово ли окружение запустить агентскую задачу (только для is_harness):
+    # None — неприменимо (не harness); True — окружение настроено; False — не
+    # запустится, причина в env_reason. См. domain/environment_compatibility.
+    env_ready: bool | None = None
+    env_reason: str = ""
 
 
 @dataclass(frozen=True)

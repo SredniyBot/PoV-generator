@@ -13,6 +13,7 @@ import os
 
 from ..common.errors import ValidationError
 from ..common.serialization import utc_now_iso
+from ..domain.environment_compatibility import valid_engines
 from ..domain.harness_settings import (
     HARNESS_ENGINES,
     HARNESS_HOST_SECURITY,
@@ -79,13 +80,19 @@ class HarnessSettingsService:
                 f"Неизвестный сетевой режим: '{network}'. "
                 f"Допустимы: {', '.join(HARNESS_NETWORK)}."
             )
-        # host-движок переиспользует залогиненную сессию claude CLI — он осмыслен
-        # только для адаптера claude_code; для прочих принудительно docker.
-        if engine == "host" and provider != "claude_code":
+        # Совместимость адаптер×движок (R1) — из единой capability-матрицы.
+        # stub не привязан к движку; для остальных движок обязан быть допустим.
+        if provider != "stub" and engine not in valid_engines(provider):
+            allowed = ", ".join(valid_engines(provider)) or "—"
+            if engine == "host":
+                raise ValidationError(
+                    "Исполнение на хосте доступно только для адаптера claude_code "
+                    "(переиспользует залогиненную сессию claude CLI). "
+                    "Для остальных адаптеров используйте docker."
+                )
             raise ValidationError(
-                "Исполнение на хосте доступно только для адаптера claude_code "
-                "(переиспользует залогиненную сессию claude CLI). "
-                "Для остальных адаптеров используйте docker."
+                f"Движок «{engine}» несовместим с адаптером «{provider}». "
+                f"Допустимы: {allowed}."
             )
         settings = HarnessConnectionSettings(
             provider=provider,  # type: ignore[arg-type]  — проверено выше

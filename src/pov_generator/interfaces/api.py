@@ -43,6 +43,12 @@ from ..common.env import load_repo_env
 from ..common.errors import NotFoundError, PovGeneratorError, ValidationError
 from ..common.logging import bind, configure_logging, get_logger, new_request_id
 from ..common.serialization import to_primitive, utc_now_iso
+from ..domain.environment_compatibility import (
+    AgentEnvReadiness,
+    agent_environment_readiness,
+    compatible_provider_types,
+    valid_engines,
+)
 from ..domain.llm_settings import ALL_PURPOSES
 from ..infrastructure.filesystem_registry import (
     CachingRegistryLoader,
@@ -236,8 +242,34 @@ def create_app(
     )
     catalog = WorkspaceCatalog(resolved_runtime_root, runtime)
     attachment_service = AttachmentService(runtime)
+    def _configured_llm_provider_types() -> frozenset[str]:
+        """Типы LLM-провайдеров с РАБОЧИМ подключением (для готовности агента).
+
+        openrouter/anthropic учитываются только при наличии API-ключа (без него
+        агент в docker не вызовет модель); claude_cli — без ключа (сессия)."""
+        types: set[str] = set()
+        for connection in provider_settings_service.list_connections():
+            if connection.provider_type == "claude_cli":
+                types.add("claude_cli")
+            elif (connection.credentials.api_key or "").strip():
+                types.add(connection.provider_type)
+        return frozenset(types)
+
+    def _agent_env_readiness() -> AgentEnvReadiness:
+        conn = harness_settings_service.resolve_runtime_connection()
+        return agent_environment_readiness(
+            adapter=conn.provider,
+            engine=conn.engine,
+            configured_provider_types=_configured_llm_provider_types(),
+        )
+
     query_service = WorkspaceQueryService(
-        catalog, registry_service, runtime, planning_service, registry_resolver
+        catalog,
+        registry_service,
+        runtime,
+        planning_service,
+        registry_resolver,
+        agent_env_readiness=_agent_env_readiness,
     )
     domain_pack_selection_service = DomainPackSelectionService(llm_registry=llm_registry)
     command_service = WorkspaceCommandService(
@@ -361,9 +393,23 @@ def create_app(
         # Ф7c: матрица возможностей адаптеров (для выбора в настройках) +
         # текущий выбранный исполнитель. Характеристики инструмента, не оценки.
         active = app.state.execution_service.harness_runtime_status().provider_name
+        # Матрица совместимости (единый источник правды) — чтобы UI скоупил
+        # опции: допустимые движки и совместимые типы LLM-провайдера по движку.
+        compatibility = {
+            adapter: {
+                "valid_engines": list(valid_engines(adapter)),
+                "compatible_provider_types": {
+                    engine: list(compatible_provider_types(adapter, engine))
+                    for engine in valid_engines(adapter)
+                },
+            }
+            for adapter in _HARNESS_ADAPTER_CAPABILITIES
+        }
         return {
             "active": active,
             "capabilities": to_primitive(_HARNESS_ADAPTER_CAPABILITIES),
+            "compatibility": compatibility,
+            "configured_provider_types": sorted(_configured_llm_provider_types()),
         }
 
     @app.get("/api/harness/llm")

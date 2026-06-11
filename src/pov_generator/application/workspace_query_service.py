@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
 from ..common.errors import ConflictError
 from ..common.serialization import to_primitive
+from ..domain.environment_compatibility import AgentEnvReadiness
 from ..domain.project_state import ProjectManifest, ProjectState
 from ..domain.registry import RegistrySnapshot
 from ..domain.tasks import TaskRecord
@@ -109,6 +111,7 @@ class WorkspaceQueryService:
         runtime: SqliteRuntime,
         planning_service: PlanningService,
         registry_resolver: "ProjectRegistryResolver | None" = None,
+        agent_env_readiness: "Callable[[], AgentEnvReadiness] | None" = None,
     ) -> None:
         self._catalog = catalog
         self._registry_service = registry_service
@@ -117,6 +120,10 @@ class WorkspaceQueryService:
         # Закреплённый граф проекта (Ф-pin): per-project просмотр идёт на снимке
         # реестра проекта. None — fallback на живой реестр (тесты/CLI).
         self._registry_resolver = registry_resolver
+        # Готовность агентского окружения (system-wide) — инъекция (DIP): query
+        # service не знает про harness/LLM-настройки, ему дают чистую функцию.
+        # None (тесты/CLI без настроек) → бейдж готовности на графе не считаем.
+        self._agent_env_readiness = agent_env_readiness
 
     def list_projects(self) -> tuple[ProjectListItemView, ...]:
         """Список всех проектов воркспейса.
@@ -1954,6 +1961,10 @@ class WorkspaceQueryService:
             except Exception:  # noqa: BLE001 — нерезолвимый шаблон → не harness
                 return False
 
+        # Готовность агентского окружения (system-wide) считаем один раз на граф
+        # и вешаем на harness-узлы. None → ресолвер не внедрён (тесты/CLI).
+        agent_env = self._agent_env_readiness() if self._agent_env_readiness else None
+
         def build(task: TaskRecord) -> TaskNodeView:
             fan_out_meta = None
             if task.template_type == "fan_out" and snapshot is not None:
@@ -1970,6 +1981,12 @@ class WorkspaceQueryService:
                         )
                 except Exception:
                     pass
+            harness = _is_harness(task)
+            env_ready: bool | None = None
+            env_reason = ""
+            if harness and agent_env is not None:
+                env_ready = agent_env.ok
+                env_reason = agent_env.reason
             return TaskNodeView(
                 task_id=task.task_id,
                 task_key=task.task_key,
@@ -1990,7 +2007,9 @@ class WorkspaceQueryService:
                 children=tuple(build(child) for child in sorted(children_by_parent.get(task.task_id, []), key=lambda item: item.created_at)),
                 fan_out_meta=fan_out_meta,
                 available=available,
-                is_harness=_is_harness(task),
+                is_harness=harness,
+                env_ready=env_ready,
+                env_reason=env_reason,
             )
 
         return tuple(build(task) for task in sorted(children_by_parent.get(None, []), key=lambda item: item.created_at))
