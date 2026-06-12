@@ -76,15 +76,16 @@ _CLI_SCHEMA_MAX_CHARS = 24_000
 
 # Лимит ходов диалога ДЛЯ COMPLETION-РОЛИ. Инструменты здесь отключены
 # (``tools=[]`` в ``_collect``), поэтому модели нечем потратить ход, кроме как
-# на сам ответ — нормальное завершение это один ход. Небольшой запас оставлен
-# только на внутреннюю «дошлифовку» под ``--json-schema`` внутри самого CLI
-# (логика в bundled JS, аудиту извне не поддаётся), чтобы структурный режим не
-# срывался в промпт-fallback на каждом вызове. Запас БЕЗОПАСЕН: без инструментов
-# зацикливаться не на чем, поэтому потолок ограничивает лишь эту служебную
-# дошлифовку, а не «агентскую» работу. Переопределяется ``POV_CLAUDE_MAX_TURNS``.
+# на сам ответ — нормальное завершение это один ход. Небольшой запас (на
+# служебную «дошлифовку» под ``--json-schema`` внутри CLI). НЕ задираем: при
+# strict-structured на слабой модели каждый лишний ход — это ещё одна полная
+# (бесплодная) попытка генерации; раньше было 8 → CLI подолгу бился над схемой,
+# которую модель не тянет. 3 хватает на честный ответ + 1-2 дошлифовки, а при
+# реальной неспособности уложиться в схему мы быстро деградируем на schema-в-
+# промпте (см. _is_schema_mode_error). Переопределяется ``POV_CLAUDE_MAX_TURNS``.
 # (Агентская роль — отдельный адаптер harness/providers/claude_code.py — задаёт
 # свой, большой лимит ходов; этот к ней отношения не имеет.)
-_COMPLETION_MAX_TURNS = 8
+_COMPLETION_MAX_TURNS = 3
 
 # Глубина «думанья» (extended thinking) ДЛЯ COMPLETION-РОЛИ — через флаг CLI
 # ``--effort`` ПО УРОВНЯМ СЛОЖНОСТИ задачи (тот же сигнал, что выбирает модель,
@@ -187,6 +188,15 @@ def _is_schema_mode_error(message: str) -> bool:
     Транзиентные сбои CLI (см. ``_is_transient_cli_error``) сюда НЕ относятся —
     их нельзя путать с «CLI не умеет --json-schema», иначе сетевой сбой
     навсегда лишал бы задачи enforcement'а (разбор инцидента: см. историю).
+
+    Сюда же — «failed to provide valid structured output after N attempts»:
+    модель НЕ смогла уложиться в strict-схему (CLI сам перепробовал N раз). Это
+    ДЕТЕРМИНИРОВАННЫЙ сбой структурного режима для данной модели+схемы (типично
+    для слабых моделей на сложных вложенных схемах, напр. haiku на схеме
+    решений), а НЕ транзиент: повторять в strict-режиме бессмысленно — надо
+    сразу деградировать на schema-в-промпте (его добьют normalize + self-repair).
+    Раньше это ошибочно считалось транзиентом → 3 retry × 5 внутренних попыток
+    CLI = этап «выявление решений» по 15-19 мин.
     """
     low = message.lower()
     return (
@@ -195,6 +205,7 @@ def _is_schema_mode_error(message: str) -> bool:
         or "json-schema" in low
         or "invalid schema" in low
         or "invalid json schema" in low
+        or "valid structured output" in low
     )
 
 
@@ -789,14 +800,17 @@ def _is_transient_cli_error(message: str) -> bool:
     * "Не удалось извлечь JSON" — ответ модели не парсится, retry не поможет.
     * "maximum number of turns" — детерминированный исход при текущем
       max_turns/tools; повтор с той же конфигурацией не изменит результат.
+    * "failed to provide valid structured output" — модель не уложилась в
+      strict-схему (это schema-mode, деградация на prompt, а не транзит-retry).
     """
     if not message:
         return False
     msg = message.lower()
-    # Max-turns — детерминированная (не транзиентная) ошибка конфигурации, хотя
-    # формально приходит внутри "returned an error result". Проверяем раньше,
-    # чтобы не попасть в общий транзиентный маркёр ниже и не ретраить впустую.
-    if "maximum number of turns" in msg:
+    # Детерминированные (НЕ транзиентные) исходы, хотя формально приходят внутри
+    # "returned an error result". Проверяем раньше общего маркёра, чтобы не
+    # ретраить впустую: max-turns — конфигурация; structured-output failure —
+    # модель не тянет схему (обрабатывается деградацией, см. _is_schema_mode_error).
+    if "maximum number of turns" in msg or "valid structured output" in msg:
         return False
     transient_markers = (
         "command failed with exit code",

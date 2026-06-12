@@ -480,6 +480,20 @@ def test_max_turns_error_is_not_transient() -> None:
     assert mod._is_transient_cli_error(msg) is False
 
 
+def test_structured_output_failure_is_schema_mode_not_transient() -> None:
+    """«failed to provide valid structured output» — модель не уложилась в strict-
+    схему: это schema-mode (деградация на schema-в-промпте), а НЕ транзиент.
+
+    Регрессия инцидента: раньше это считалось транзиентом (есть «returned an
+    error result») → 3 retry × 5 внутренних попыток CLI = этап «выявление
+    решений» по 15-19 мин на слабой модели (haiku) со сложной схемой."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    msg = "Claude Code returned an error result: Failed to provide valid structured output after 5 attempts"
+    assert mod._is_schema_mode_error(msg) is True
+    assert mod._is_transient_cli_error(msg) is False
+
+
 def test_claude_subscription_max_turns_message_is_actionable(monkeypatch) -> None:
     """При исчерпании ходов сообщение указывает на max_turns/tools, а не на
     обманчивый «противоречивый ответ подписки»."""
