@@ -145,11 +145,17 @@ def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str
     payload (при structured-режиме ``text`` пуст), иначе сырой ``text``.
 
     Считаем только для ``source="actual"`` (для оценочного usage output и так
-    равен длине ответа → размышление вышло бы 0, что вводит в заблуждение)."""
+    равен длине ответа → размышление вышло бы 0, что вводит в заблуждение).
+
+    Размер ответа берём как МАКСИМУМ из сырого текста и сериализованного
+    payload: в структурном режиме ``text`` может быть пустым/обрывочным, а ответ
+    лежит в payload — если взять только text, оценка размышления завысится."""
     if usage.source != "actual" or usage.reasoning_tokens is not None:
         return usage
-    answer = text if text.strip() else json.dumps(payload, ensure_ascii=False)
-    answer_tokens = estimate_token_count(answer)
+    answer_tokens = max(
+        estimate_token_count(text),
+        estimate_token_count(json.dumps(payload, ensure_ascii=False)),
+    )
     reasoning = max(0, usage.output_tokens - answer_tokens)
     return dataclasses.replace(usage, reasoning_tokens=reasoning)
 
@@ -161,6 +167,17 @@ def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str
 # глобальный bool был бы слишком грубым. Запись «только добавление» — гонок,
 # меняющих смысл, нет (множество лишь растёт одним и тем же значением).
 _FLAG_UNSUPPORTED_CLIS: set[str] = set()
+
+
+def _classification_text(exc: BaseException) -> str:
+    """Текст для КЛАССИФИКАЦИИ ошибки (schema-mode / transient), а не для UI.
+
+    ``ConflictError`` из ``_collect`` теперь несёт КРАТКОЕ сообщение для
+    пользователя — по нему классифицировать нельзя (технических маркеров вроде
+    «unknown option» в нём нет). Берём оригинальное сообщение SDK из
+    ``__cause__`` — там эти маркеры есть. Без cause падаем на сам текст."""
+    cause = exc.__cause__
+    return str(cause) if cause is not None else str(exc)
 
 
 def _is_schema_mode_error(message: str) -> bool:
@@ -429,7 +446,9 @@ class ClaudeSubscriptionClient:
             try:
                 return self._attempt(system_prompt, full_prompt, cli_schema, token)
             except ConflictError as exc:
-                message = str(exc)
+                # Классифицируем по ОРИГИНАЛУ SDK (__cause__), а не по краткому
+                # user-сообщению ConflictError — иначе теряются техн. маркеры.
+                message = _classification_text(exc)
                 # 1) Schema-специфичная ошибка (CLI не знает флаг / схему отверг
                 #    структурный режим) → отключаем enforcement и тут же
                 #    повторяем БЕЗ схемы в этой же попытке.
@@ -438,7 +457,8 @@ class ClaudeSubscriptionClient:
                     try:
                         return self._attempt(system_prompt, full_prompt, None, token)
                     except ConflictError as exc_plain:
-                        exc, message = exc_plain, str(exc_plain)  # дальше — как обычная ошибка
+                        # дальше — как обычная ошибка (классификация по cause)
+                        exc, message = exc_plain, _classification_text(exc_plain)
                 # 2) Транзиент и есть ещё попытки → backoff и повтор. Структурный
                 #    режим СОХРАНЯЕТСЯ: сетевая флуктуация не повод терять
                 #    enforcement (это и был главный баг).
@@ -608,51 +628,9 @@ class ClaudeSubscriptionClient:
                     if isinstance(text, str):
                         chunks.append(text)
         except Exception as exc:  # pragma: no cover
-            msg = str(exc)
-            if "Control request timeout" in msg and "initialize" in msg:
-                raise ConflictError(
-                    "Claude CLI не отвечает на initialize-запрос. Возможные причины:\n"
-                    "• CLI не залогинен — выполните `claude login`.\n"
-                    "• SDK использует bundled CLI вместо системного — задайте "
-                    "POV_CLAUDE_CLI_PATH (см. `where claude`).\n"
-                    "• Сильно медленный старт CLI (антивирус, диск). Увеличьте "
-                    "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (мс).\n"
-                    f"Диагностика: cli_path={self._config.cli_path or '<не задан>'}; "
-                    f"system_prompt={len(system_prompt)} chars (file mode)."
-                ) from exc
-            if "Command failed with exit code" in msg:
-                raise ConflictError(
-                    "Claude CLI завершился с ошибкой (exit code != 0). Это часто "
-                    "транзиентный сбой подписочного API или процесса. После 3 retry "
-                    "ничего не помогло. Возможные причины:\n"
-                    "• Временный сбой claude.ai (5xx) — повторите через минуту.\n"
-                    "• Превышен rate-limit подписки.\n"
-                    "• Антивирус прибивает CLI subprocess.\n"
-                    f"Диагностика: {msg[:200]}"
-                ) from exc
-            if "maximum number of turns" in msg.lower():
-                raise ConflictError(
-                    "Claude CLI исчерпал лимит ходов диалога, не успев выдать ответ "
-                    f"(max_turns={self._config.max_turns}). Этот клиент используется "
-                    "как LLM-провайдер, инструменты отключены (tools=[]) — ответ должен "
-                    "укладываться в один ход. Если ошибка повторяется:\n"
-                    "• Проверьте POV_CLAUDE_MAX_TURNS — значение 1 слишком мало; "
-                    "уберите override или поставьте ≥ 4.\n"
-                    "• Возможно, установленная версия claude-agent-sdk не поддерживает "
-                    "отключение инструментов (поле `tools`) — обновите SDK.\n"
-                    f"Диагностика: {msg[:200]}"
-                ) from exc
-            if "returned an error result" in msg:
-                raise ConflictError(
-                    "Claude CLI отдал result с пометкой error, но без конкретных "
-                    "сообщений (часто subtype=success — противоречивый ответ "
-                    "подписки). После 3 retry ничего не изменилось. Возможные причины:\n"
-                    "• Транзиентный баг claude.ai — повторите через минуту.\n"
-                    "• Истёк токен сессии — попробуйте `claude login` ещё раз.\n"
-                    "• Превышен rate-limit подписки.\n"
-                    f"Диагностика: {msg[:200]}"
-                ) from exc
-            raise ConflictError(f"Ошибка при обращении к Claude через подписку: {exc}") from exc
+            # Наружу — одна понятная фраза (помещается в UI); полная техническая
+            # диагностика уходит в лог (см. _user_error_message).
+            raise ConflictError(self._user_error_message(exc)) from exc
         finally:
             if sp_tmpfile is not None:
                 try:
@@ -660,6 +638,33 @@ class ClaudeSubscriptionClient:
                 except OSError:
                     pass
         return "".join(chunks), raw_usage, structured_output
+
+    def _user_error_message(self, exc: Exception) -> str:
+        """Короткое человекочитаемое сообщение об ошибке CLI — для UI.
+
+        Принцип: пользователю — ОДНА понятная фраза с действием (помещается в
+        интерфейс), разработчику — полная диагностика в ЛОГ. Технические детали
+        (cli_path, exit code, сырое сообщение SDK) в текст ошибки НЕ кладём —
+        раньше это давало многострочные «простыни», которые не влезали в UI."""
+        msg = str(exc)
+        low = msg.lower()
+        logger.warning(
+            "claude_subscription: ошибка CLI-вызова "
+            f"(cli_path={self._config.cli_path or '<auto>'}, "
+            f"model={self._config.model or '<session>'}, "
+            f"effort={self._config.effort or '<default>'}): {msg[:500]}"
+        )
+        if "control request timeout" in low and "initialize" in low:
+            return "Claude CLI не отвечает при запуске — проверьте, что выполнен `claude login`."
+        if "maximum number of turns" in low:
+            return "Claude CLI исчерпал лимит ходов диалога — проверьте POV_CLAUDE_MAX_TURNS."
+        if any(k in low for k in ("rate limit", "rate-limit", "too many requests", "429")):
+            return "Превышен лимит запросов Claude — повторите через минуту."
+        if "command failed with exit code" in low:
+            return "Claude CLI прервался — вероятно, временный сбой подписки. Повторите через минуту."
+        if "returned an error result" in low:
+            return "Сервис Claude временно недоступен (сбой или лимит подписки). Повторите через минуту."
+        return "Не удалось получить ответ от Claude (подписка). Подробности — в логах сервера."
 
     @staticmethod
     def _format_load_timeout_msg(seconds: int) -> str:  # for tests
