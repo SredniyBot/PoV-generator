@@ -104,16 +104,21 @@ class StructuredAssembler:
                 sub_plan, run, seed={}, label=f"{label} → «{name}»", ancestor=child_ancestor or None
             )
             result[name] = value
-        # 2) скаляры — одним вызовом ПОСЛЕ структурных (видят их в скелете).
-        if plan.scalar_schema is not None:
-            focus = set(su.object_properties(plan.scalar_schema).keys())
+        # 2) простые поля — БАТЧАМИ, каждый отдельным вызовом ПОСЛЕ структурных
+        #    (каждый батч видит уже собранное в скелете → согласованность).
+        for index, group_schema in enumerate(plan.scalar_groups):
+            focus = set(su.object_properties(group_schema).keys())
             skeleton = self._object_skeleton(plan.schema, result, focus=focus)
-            scalars = self._gen_value(
-                plan.scalar_schema, run, skeleton=skeleton, label=f"{label}: основные поля",
-                seed={}, ancestor=ancestor,
+            group_label = (
+                f"{label}: поля ({', '.join(sorted(focus))})"
+                if len(plan.scalar_groups) > 1
+                else f"{label}: основные поля"
             )
-            if isinstance(scalars, dict):
-                result.update(scalars)
+            part = self._gen_value(
+                group_schema, run, skeleton=skeleton, label=group_label, seed={}, ancestor=ancestor
+            )
+            if isinstance(part, dict):
+                result.update(part)
         return result
 
     def _build_array(

@@ -41,12 +41,11 @@ def _name_tokens(name: str) -> set[str]:
     return set(name.lower().split("_"))
 # Дефолтный потолок числа элементов массива, если в схеме не задан maxItems.
 _DEFAULT_ARRAY_MAX = 8
-# Порог сложности ЭЛЕМЕНТА массива, выше которого массив собираем «каркас →
-# наполнение» (по фрагменту на элемент). Ниже — массив простых элементов отдаём
-# одним вызовом (дробить незачем). Подобран так, чтобы «тяжёлый» элемент (объект
-# с многими полями / вложенным массивом, напр. решение) разворачивался, а
-# тривиальный (пара скаляров, напр. альтернатива) — нет.
-_ITEM_EXPAND_THRESHOLD = 8
+# Бюджет сложности на ОДИН батч простых полей объекта. Плоский объект с многими
+# полями strict не берёт за раз — режем его на батчи в пределах этого бюджета,
+# каждый из которых модель надёжно отдаёт одним ходом. ~6 ≈ объект из 4-5
+# простых полей (на таком strict стабильно проходит; на cx≥8 уже штормит).
+_SCALAR_GROUP_BUDGET = 6
 
 
 @runtime_checkable
@@ -74,34 +73,71 @@ class SchemaTreeDecomposer:
         for name, sub in su.object_properties(schema).items():
             sub_plan = self.decompose(sub)
             if isinstance(sub_plan, LeafPlan):
-                # Простое поле (скаляр или объект/массив, не требующий дробления)
-                # — собираем вместе с прочими скалярами одним вызовом.
+                # Простое поле (скаляр / массив скаляров / простой объект) —
+                # пойдёт в батчи простых полей.
                 simple_fields[name] = sub
             else:
                 structural.append((name, sub_plan))
-        if not structural:
-            # Нечего декомпозировать — весь объект отдаём за один проход.
+        groups = self._batch_fields(schema, simple_fields)
+        # Нечего дробить: нет структурных полей И простые влезают в один батч —
+        # отдаём весь объект одним проходом (strict его возьмёт).
+        if not structural and len(groups) <= 1:
             return LeafPlan(schema)
-        scalar_schema = self._subset_schema(schema, simple_fields) if simple_fields else None
-        return ObjectPlan(schema=schema, structural=tuple(structural), scalar_schema=scalar_schema)
+        return ObjectPlan(schema=schema, structural=tuple(structural), scalar_groups=tuple(groups))
+
+    def _batch_fields(
+        self, parent: JSONSchema, fields: dict[str, JSONSchema]
+    ) -> list[JSONSchema]:
+        """Разбить простые поля объекта на батчи в пределах бюджета сложности.
+
+        Жадно копим поля, пока суммарная сложность батча не превысит бюджет —
+        тогда начинаем новый. Так каждый батч остаётся достаточно простым, чтобы
+        strict взял его одним ходом. Поле, само превышающее бюджет, занимает
+        отдельный батч."""
+        groups: list[JSONSchema] = []
+        current: dict[str, JSONSchema] = {}
+        current_cx = 0
+        for name, sub in fields.items():
+            field_cx = schema_complexity(sub) + 1  # +1 за само поле
+            if current and current_cx + field_cx > _SCALAR_GROUP_BUDGET:
+                groups.append(self._subset_schema(parent, current))
+                current, current_cx = {}, 0
+            current[name] = sub
+            current_cx += field_cx
+        if current:
+            groups.append(self._subset_schema(parent, current))
+        return groups
 
     # --- array of objects ---------------------------------------------------
 
     def _array(self, schema: JSONSchema) -> FieldPlan:
         item = su.array_item_schema(schema)
         assert item is not None  # гарантировано array_of_objects
-        if schema_complexity(item) < _ITEM_EXPAND_THRESHOLD:
-            # Элемент тривиален — дробить массив на каркас+наполнение незачем,
-            # модель отдаёт такой список за один проход.
+        if not self._item_worth_expanding(item):
+            # Тривиальный элемент (пара скаляров: {label,description},
+            # {term,definition}) — дробить массив незачем, модель отдаёт такой
+            # список за один проход.
             return LeafPlan(schema)
-        # Каждый элемент собираем отдельным фрагментом (его план может быть и
-        # листом — тогда это один фокусный вызов на элемент; главный выигрыш —
-        # развернуть массив, а не генерировать N тяжёлых элементов разом).
+        # Многопольный/вложенный элемент: разворачиваем «каркас → наполнение»,
+        # фрагмент на элемент (иначе весь массив таких объектов тяжёл для strict).
         return ArrayPlan(
             schema=schema,
             outline_schema=self._outline_schema(schema, item),
             item_plan=self.decompose(item),
         )
+
+    @staticmethod
+    def _item_worth_expanding(item: JSONSchema) -> bool:
+        """Стоит ли разворачивать массив таких элементов по фрагменту на элемент.
+
+        Тривиальная пара скаляров (≤2 скаляр-поля: {label,description},
+        {term,definition}) — нет (массив берётся одним ходом). Многопольный
+        объект (>2 поля) ИЛИ объект с вложенной структурой — да (иначе весь
+        массив тяжёл для strict-coercion)."""
+        props = su.object_properties(item)
+        if len(props) > 2:
+            return True
+        return any(not su.is_scalar_schema(sub) for sub in props.values())
 
     # --- helpers ------------------------------------------------------------
 

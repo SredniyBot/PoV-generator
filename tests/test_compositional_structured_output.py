@@ -118,8 +118,9 @@ def test_assemble_decision_produces_valid_whole() -> None:
     assert isinstance(value["decisions"], list) and value["decisions"]
     # Каждое решение содержит вложенный массив альтернатив (собран в фрагменте).
     assert all("alternatives" in d for d in value["decisions"])
-    # Вызовов больше одного (каркас + по фрагменту на решение) — массив развёрнут.
-    assert len(fake.calls) == 1 + len(value["decisions"])
+    # Массив развёрнут «каркас → наполнение», каждое решение собрано из фрагментов
+    # (поля решения батчатся) — вызовов как минимум по одному на решение + каркас.
+    assert len(fake.calls) >= 1 + len(value["decisions"])
     # usage агрегируется по всем фрагментам.
     assert len(usages) == len(fake.calls)
 
@@ -170,6 +171,45 @@ def test_provider_reactive_assembly_when_single_pass_invalid(monkeypatch) -> Non
     result = provider.chat_json(system_prompt="s", user_prompt="u", schema=schema)
     assert matches_schema(result.payload, schema)  # собрано валидно несмотря на провал прохода
     assert len(fake.calls) > 1  # один проход + фрагменты сборки
+
+
+def test_flat_object_is_split_into_field_batches() -> None:
+    """Плоский объект с многими полями (как артефактные схемы) дробится на БАТЧИ
+    простых полей — иначе strict штормит на нём целиком. Каждый батч простой."""
+    from pov_generator.infrastructure.llm.compositional.plan import ObjectPlan
+
+    # 10 полей-массивов-строк (типично для артефакта) — плоский, без вложенных
+    # объектов: раньше это был один тяжёлый лист.
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [f"f{i}" for i in range(10)],
+        "properties": {f"f{i}": {"type": "array", "items": {"type": "string"}} for i in range(10)},
+    }
+    plan = SchemaTreeDecomposer().decompose(schema)
+    assert isinstance(plan, ObjectPlan)
+    assert len(plan.scalar_groups) >= 2, "10 полей должны разбиться на несколько батчей"
+    # Каждый батч заметно ниже «линии шторма» (cx>=8) — strict возьмёт одним ходом.
+    assert all(schema_complexity(g) < 8 for g in plan.scalar_groups)
+    # Сборка фейком даёт валидное целое.
+    fake = _FakeProvider()
+    provider = CompositionalLLMProvider(fake)
+    result = provider.chat_json(system_prompt="s", user_prompt="u", schema=schema)
+    assert matches_schema(result.payload, schema)
+    assert len(fake.calls) == len(plan.scalar_groups)  # по вызову на батч
+
+
+def test_array_of_multifield_objects_is_expanded() -> None:
+    """Массив МНОГОПОЛЬНЫХ объектов разворачивается (каркас+наполнение), а массив
+    тривиальных пар {label,description} — нет."""
+    from pov_generator.infrastructure.llm.compositional.plan import ArrayPlan, LeafPlan
+
+    multi = {"type": "array", "items": {"type": "object", "required": ["a", "b", "c"],
+             "properties": {"a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"}}}}
+    pair = {"type": "array", "items": {"type": "object", "required": ["label", "description"],
+            "properties": {"label": {"type": "string"}, "description": {"type": "string"}}}}
+    assert isinstance(SchemaTreeDecomposer().decompose(multi), ArrayPlan)
+    assert isinstance(SchemaTreeDecomposer().decompose(pair), LeafPlan)
 
 
 def test_provider_plain_mode_skips_decomposition() -> None:
