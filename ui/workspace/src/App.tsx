@@ -2465,6 +2465,16 @@ function ArtifactsPage({ projectId }: { projectId: string }) {
  * рендерим вовсе. Внизу — итог по всем стадиям с подсветкой «дорого/средне/дёшево»
  * для быстрого поиска прожор.
  */
+// Человекочитаемая метка стадии сборки артефакта (общая для таблиц токенов и
+// запусков). v3.10: pre_flight_planning → decision_identification (старый ключ
+// оставлен для legacy-артефактов).
+function stageUsageLabel(k: string): string {
+  if (k === "decision_identification" || k === "pre_flight_planning") return "Выявление решений";
+  if (k === "primary_generation") return "Основная сборка";
+  if (k.startsWith("methodology_stage:")) return `Стадия методологии · ${k.slice("methodology_stage:".length)}`;
+  return k;
+}
+
 function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types").TokenUsageStage> }) {
   const stages = Object.entries(usage).filter(
     ([, v]) => (v?.total_tokens ?? 0) > 0 || (v?.input_tokens ?? 0) > 0 || (v?.output_tokens ?? 0) > 0,
@@ -2472,14 +2482,7 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
   if (stages.length === 0) {
     return null;
   }
-  const stageLabel = (k: string): string => {
-    // v3.10: pre_flight_planning → decision_identification (старый ключ
-    // оставлен для legacy-артефактов).
-    if (k === "decision_identification" || k === "pre_flight_planning") return "Выявление решений";
-    if (k === "primary_generation") return "Основная сборка";
-    if (k.startsWith("methodology_stage:")) return `Стадия методологии · ${k.slice("methodology_stage:".length)}`;
-    return k;
-  };
+  const stageLabel = stageUsageLabel;
   const totalInput = stages.reduce((s, [, v]) => s + (v.input_tokens || 0), 0);
   const totalOutput = stages.reduce((s, [, v]) => s + (v.output_tokens || 0), 0);
   const totalCacheRead = stages.reduce((s, [, v]) => s + (v.cache_read_tokens || 0), 0);
@@ -2564,6 +2567,59 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
             <td>
               <strong>{fmt(grandTotal)}</strong>
             </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+// Debug-only: разбивка ЗАПУСКОВ LLM по стадиям сборки (подзадачи + повторы).
+// Показывается под таблицей токенов только при включённом debug.
+function ArtifactLaunchUsage({ usage }: { usage: Record<string, import("./types").TokenUsageStage> }) {
+  const stages = Object.entries(usage).filter(([, v]) => (v?.call_count ?? 0) > 0);
+  if (stages.length === 0) {
+    return null;
+  }
+  const fmt = (n: number) => n.toLocaleString("ru-RU");
+  const totalLaunches = stages.reduce((s, [, v]) => s + (v.call_count || 0), 0);
+  const totalRetries = stages.reduce((s, [, v]) => s + (v.retry_count || 0), 0);
+  return (
+    <div className="artifact-tokens">
+      <div className="artifact-tokens__head">
+        <strong>Запуски LLM</strong>
+        <span className="artifact-tokens__total">всего {fmt(totalLaunches)}</span>
+        {totalRetries > 0 ? (
+          <span className="artifact-tokens__total">из них повторных {fmt(totalRetries)}</span>
+        ) : null}
+      </div>
+      <table className="artifact-tokens__table">
+        <thead>
+          <tr>
+            <th>Стадия</th>
+            <th title="Фактических обращений к LLM (подзадач сборки) на стадии.">Запусков</th>
+            <th title="Из них повторных: retry / деградация strict / пересборка.">↳ повторных</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map(([key, val]) => {
+            const retries = val.retry_count || 0;
+            return (
+              <tr key={key} className={retries > 0 ? "artifact-tokens__row--heavy" : undefined}>
+                <td>{stageUsageLabel(key)}</td>
+                <td>{fmt(val.call_count || 0)}</td>
+                <td className="artifact-tokens__reasoning">{fmt(retries)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Итого</td>
+            <td>
+              <strong>{fmt(totalLaunches)}</strong>
+            </td>
+            <td className="artifact-tokens__reasoning">{fmt(totalRetries)}</td>
           </tr>
         </tfoot>
       </table>
@@ -2725,6 +2781,11 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
     staleTime: 60_000,
   });
   const debugEnabled = appSettingsQuery.data?.debug ?? false;
+  // Суммарно по стадиям сборки: запусков LLM (подзадач) и из них повторных.
+  const usageStages = Object.values(detail.token_usage ?? {});
+  const totalLaunches = usageStages.reduce((s, v) => s + (v.call_count ?? 0), 0);
+  const totalRetries = usageStages.reduce((s, v) => s + (v.retry_count ?? 0), 0);
+  const hasLaunchData = usageStages.some((v) => (v.call_count ?? 0) > 0);
   // Если дебаг выключили, а активна техническая вкладка — возвращаемся к
   // документу. «Предыдущие версии» — НЕ техническая, доступна всем, поэтому
   // здесь её нет.
@@ -3090,6 +3151,22 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
               <strong>{prettyLabel(detail.complexity)}</strong>
             </div>
           ) : null}
+          {hasLaunchData ? (
+            <div>
+              <span title="Сколько фактических обращений к LLM (подзадач сборки) ушло на этот артефакт.">
+                Запусков LLM
+              </span>
+              <strong>{totalLaunches.toLocaleString("ru-RU")}</strong>
+            </div>
+          ) : null}
+          {hasLaunchData ? (
+            <div>
+              <span title="Сколько из запусков были повторными (retry/деградация strict/пересборка).">
+                Повторных попыток
+              </span>
+              <strong>{totalRetries.toLocaleString("ru-RU")}</strong>
+            </div>
+          ) : null}
           {detail.merge_strategy ? (
             <div>
               <span>Стратегия слияния</span>
@@ -3126,6 +3203,7 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           ) : null}
         </div>
         <ArtifactTokenUsage usage={detail.token_usage} />
+        {debugEnabled ? <ArtifactLaunchUsage usage={detail.token_usage} /> : null}
       </details>
       {/* Блок «Развернуть provenance-ссылки» удалён: эти ссылки уже доступны
           в Provenance-модалке (segmented кнопка), а на самой страничке

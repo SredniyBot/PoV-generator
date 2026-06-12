@@ -42,6 +42,11 @@ class LLMUsage:
     # они, а не сам ответ, определяют время генерации). None = провайдер не
     # умеет/не различает thinking.
     reasoning_tokens: int | None = None
+    # Сколько фактических LLM-запусков стоит за этим usage. У простого вызова 1;
+    # у compositional-сборки — число фрагментов; у провайдера с retry — попытки.
+    call_count: int = 1
+    # Сколько из этих запусков были ПОВТОРНЫМИ (retry/деградация/пересборка).
+    retry_count: int = 0
 
     @classmethod
     def estimated(cls, *, input_text: str, output_text: str) -> "LLMUsage":

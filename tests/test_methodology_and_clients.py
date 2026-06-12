@@ -480,6 +480,20 @@ def test_max_turns_error_is_not_transient() -> None:
     assert mod._is_transient_cli_error(msg) is False
 
 
+def test_with_call_counts_stamps_launches_and_retries() -> None:
+    """Хелпер проставляет число CLI-запусков и повторов в usage результата."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+    from pov_generator.infrastructure.llm.protocol import LLMResult, LLMUsage
+
+    res = LLMResult(payload={"ok": True}, usage=LLMUsage(1, 1, 2, "actual"))
+    stamped = mod._with_call_counts(res, cli_calls=3)
+    assert stamped.usage is not None
+    assert stamped.usage.call_count == 3
+    assert stamped.usage.retry_count == 2
+    # Без usage — без изменений (не падаем).
+    assert mod._with_call_counts(LLMResult(payload={}, usage=None), 5).usage is None
+
+
 def test_structured_output_failure_is_schema_mode_not_transient() -> None:
     """«failed to provide valid structured output» — модель не уложилась в strict-
     схему: это schema-mode (деградация на schema-в-промпте), а НЕ транзиент.

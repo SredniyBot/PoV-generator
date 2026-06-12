@@ -215,6 +215,10 @@ export interface TokenUsageStage {
    *  показывается отдельно, чтобы был виден overhead на думанье. Может
    *  отсутствовать у артефактов, собранных до появления учёта. */
   reasoning_tokens?: number;
+  /** Сколько фактических LLM-запусков (подзадач сборки) на этой стадии. */
+  call_count?: number;
+  /** Сколько из них были повторными (retry/деградация/пересборка). */
+  retry_count?: number;
   total_tokens: number;
 }
 

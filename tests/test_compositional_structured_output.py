@@ -146,6 +146,8 @@ def test_provider_complex_schema_proactive_assembly() -> None:
     assert matches_schema(result.payload, schema)
     assert len(fake.calls) > 1
     assert result.usage is not None and result.usage.output_tokens > 0
+    # Запуски агрегируются: call_count = число фактических вызовов (фрагментов).
+    assert result.usage.call_count == len(fake.calls)
 
 
 class _OnePassInvalidProvider(_FakeProvider):

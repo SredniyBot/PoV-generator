@@ -164,6 +164,21 @@ def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str
     return dataclasses.replace(usage, reasoning_tokens=reasoning)
 
 
+def _with_call_counts(result: LLMResult, cli_calls: int) -> LLMResult:
+    """Проставить число фактических CLI-запусков и повторов в usage результата.
+
+    ``cli_calls`` — сколько раз дернули CLI (включая retry/деградации);
+    повторов = на единицу меньше успешного итога."""
+    if result.usage is None:
+        return result
+    return LLMResult(
+        payload=result.payload,
+        usage=dataclasses.replace(
+            result.usage, call_count=cli_calls, retry_count=max(0, cli_calls - 1)
+        ),
+    )
+
+
 # CLI-бинарники (по пути), которые НЕ знают флаг ``--json-schema``. Узнаётся по
 # факту первого отказа «unknown option» и кэшируется НА ВЕСЬ ПРОЦЕСС, но с
 # привязкой к конкретному cli_path: версия CLI стабильна в пределах процесса, а
@@ -460,10 +475,19 @@ class ClaudeSubscriptionClient:
         token = current_cancellation()
         import time as _time
 
+        # Счётчик фактических CLI-запусков (включая retry/деградации) — для
+        # видимости «запусков/повторов» в UI. Каждый self._attempt = один запуск.
+        cli_calls = 0
+
+        def _run(cli_schema_arg: dict[str, Any] | None) -> LLMResult:
+            nonlocal cli_calls
+            cli_calls += 1
+            return self._attempt(system_prompt, full_prompt, cli_schema_arg, token)
+
         for attempt in range(1, attempts + 1):
             cli_schema = self._cli_schema(schema)
             try:
-                return self._attempt(system_prompt, full_prompt, cli_schema, token)
+                return _with_call_counts(_run(cli_schema), cli_calls)
             except ConflictError as exc:
                 # Классифицируем по ОРИГИНАЛУ SDK (__cause__), а не по краткому
                 # user-сообщению ConflictError — иначе теряются техн. маркеры.
@@ -474,7 +498,7 @@ class ClaudeSubscriptionClient:
                 if cli_schema is not None and _is_schema_mode_error(message):
                     self._disable_structured(message)
                     try:
-                        return self._attempt(system_prompt, full_prompt, None, token)
+                        return _with_call_counts(_run(None), cli_calls)
                     except ConflictError as exc_plain:
                         # дальше — как обычная ошибка (классификация по cause)
                         exc, message = exc_plain, _classification_text(exc_plain)
@@ -498,7 +522,7 @@ class ClaudeSubscriptionClient:
                         f"({message[:100]}) — финальная попытка без enforcement"
                     )
                     try:
-                        return self._attempt(system_prompt, full_prompt, None, token)
+                        return _with_call_counts(_run(None), cli_calls)
                     except ConflictError:
                         pass
                 raise

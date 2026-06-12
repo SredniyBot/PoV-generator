@@ -1246,6 +1246,8 @@ class ExecutionService:
                 "cache_read_tokens": int(identification.token_usage.get("cache_read_tokens", 0) or 0),
                 "cache_write_tokens": int(identification.token_usage.get("cache_write_tokens", 0) or 0),
                 "reasoning_tokens": int(identification.token_usage.get("reasoning_tokens", 0) or 0),
+                "call_count": int(identification.token_usage.get("call_count", 0) or 0),
+                "retry_count": int(identification.token_usage.get("retry_count", 0) or 0),
                 "total_tokens": int(identification.token_usage.get("total_tokens", 0) or 0),
             }
         planning = identification  # local alias для совместимости со следующим блоком
@@ -1564,6 +1566,9 @@ class ExecutionService:
             # Токены размышления (thinking) — подмножество output. Видны в UI
             # отдельной колонкой, чтобы был понятен overhead на «думанье».
             "reasoning_tokens": int(usage.reasoning_tokens or 0),
+            # Запуски LLM (подзадачи сборки) и из них повторные — для видимости.
+            "call_count": int(usage.call_count),
+            "retry_count": int(usage.retry_count),
             "total_tokens": int(usage.total_tokens),
         }
 

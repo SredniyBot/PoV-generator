@@ -120,4 +120,8 @@ def _aggregate_usage(usages: list[LLMUsage | None]) -> LLMUsage | None:
         cache_tokens=cache or None,
         cost_usd=cost or None,
         reasoning_tokens=reasoning or None,
+        # Сборка по частям: запусков/повторов суммируем по всем фрагментам —
+        # наружу отдаём как один вызов с полным числом подзадач.
+        call_count=sum(u.call_count for u in real),
+        retry_count=sum(u.retry_count for u in real),
     )

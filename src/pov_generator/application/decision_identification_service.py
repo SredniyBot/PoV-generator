@@ -355,6 +355,8 @@ class DecisionIdentificationService:
                 "cache_read_tokens": usage.cache_tokens or 0,
                 "cache_write_tokens": 0,
                 "reasoning_tokens": usage.reasoning_tokens or 0,
+                "call_count": usage.call_count,
+                "retry_count": usage.retry_count,
                 "total_tokens": usage.total_tokens,
             }
             if usage is not None
