@@ -3884,12 +3884,17 @@ code {
   gap: 0.3rem;
   cursor: pointer;
   position: relative;
-  transition: border-color 0.2s ease;
+  transition: background-color 0.15s ease, border-color 0.2s ease;
   font-size: 0.8rem;
 }
 
+/* Наведение: мягкая подсветка ФОНА, без смены границы. Раньше менялся
+   border-color — но это (а) затирало статусный цвет левой кромки
+   (borderLeftColor задаётся по статусу в TSX) и (б) «вспыхивало» контуром,
+   из-за чего казалось, что узел сместился вверх. Фон же не рисует контур и
+   не трогает геометрию — индикация наведения остаётся, иллюзии сдвига нет. */
 .tg-node:hover {
-  border-color: rgba(120, 184, 201, 0.35);
+  background: rgba(42, 54, 62, 0.97);
 }
 
 .tg-node--current {
