@@ -44,9 +44,10 @@ def test_registry_get_openrouter_returns_adapter(monkeypatch) -> None:
 
     provider = registry.get(provider="openrouter")
 
-    # registry оборачивает провайдер в LoggingLLMProvider (единая точка
-    # логирования LLM-вызовов); конкретный адаптер — под .inner.
-    assert isinstance(provider.inner, OpenRouterProvider)
+    # registry оборачивает провайдер двумя декораторами: CompositionalLLMProvider
+    # (сборка сложных схем по частям) снаружи → LoggingLLMProvider (логирование)
+    # → конкретный адаптер. Адаптер — под .inner.inner.
+    assert isinstance(provider.inner.inner, OpenRouterProvider)
     assert provider.name == "openrouter"
     assert provider.model == "openai/gpt-4.1-mini"
     # Structural-typing protocol: обёртка тоже удовлетворяет LLMProvider.
@@ -64,8 +65,8 @@ def test_registry_get_claude_sdk_uses_complexity_to_pick_model(monkeypatch) -> N
     trivial = registry.get(provider="claude_sdk", complexity="trivial")
     complex_ = registry.get(provider="claude_sdk", complexity="complex")
 
-    assert isinstance(trivial.inner, ClaudeSdkProvider)
-    assert isinstance(complex_.inner, ClaudeSdkProvider)
+    assert isinstance(trivial.inner.inner, ClaudeSdkProvider)
+    assert isinstance(complex_.inner.inner, ClaudeSdkProvider)
     # Разные complexity дают разные модели.
     assert trivial.model != complex_.model
     assert "haiku" in (trivial.model or "")
@@ -86,7 +87,7 @@ def test_registry_get_claude_subscription_model_may_be_none(monkeypatch) -> None
 
     provider = registry.get(provider="claude_subscription")
 
-    assert isinstance(provider.inner, ClaudeSubscriptionProvider)
+    assert isinstance(provider.inner.inner, ClaudeSubscriptionProvider)
     assert provider.name == "claude_subscription"
     # model может быть None (CLI определит сам); важно, что не ошибка.
     assert provider.model is None or isinstance(provider.model, str)

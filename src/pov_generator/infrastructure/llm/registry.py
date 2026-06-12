@@ -40,12 +40,23 @@ from ...domain.llm_settings import (
     ProviderConnection,
     resolve_context_limit,
 )
+from .compositional import CompositionalLLMProvider
 from .protocol import LLMProvider, LLMResult
 from .providers.claude_sdk import ClaudeSdkProvider
 from .providers.claude_subscription import ClaudeSubscriptionProvider
 from .providers.openrouter import OpenRouterProvider
 
 _llm_logger = get_logger("llm")
+
+
+def _wrap_provider(inner: LLMProvider, *, purpose: str | None) -> LLMProvider:
+    """Стандартная обёртка провайдера, выдаваемого сервисам.
+
+    Порядок декораторов важен: ``CompositionalLLMProvider`` снаружи (оркеструет
+    сборку сложных схем по частям), ``LoggingLLMProvider`` внутри — так каждый
+    реальный вызов (целое ИЛИ отдельный фрагмент сборки) виден в логах, а наружу
+    идёт один агрегированный ``LLMResult``."""
+    return CompositionalLLMProvider(LoggingLLMProvider(inner, purpose=purpose))
 
 
 class LoggingLLMProvider:
@@ -228,7 +239,7 @@ class LLMProviderRegistry:
                 f"Неподдерживаемый LLM-провайдер: '{provider}'. "
                 f"Поддерживаются: {', '.join(self.supported_providers)}."
             )
-        return LoggingLLMProvider(builder(model, complexity), purpose=purpose)
+        return _wrap_provider(builder(model, complexity), purpose=purpose)
 
     def from_env(
         self,
@@ -403,7 +414,7 @@ class LLMProviderRegistry:
                 f"Неизвестный provider_type '{connection.provider_type}' "
                 f"у connection '{connection.display_name}'."
             )
-        return LoggingLLMProvider(inner, purpose=purpose)
+        return _wrap_provider(inner, purpose=purpose)
 
 
 def _resolve_purpose_key(purpose: str, complexity: str | None) -> str:
