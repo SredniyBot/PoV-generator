@@ -3884,12 +3884,11 @@ code {
   gap: 0.3rem;
   cursor: pointer;
   position: relative;
-  transition: transform 0.1s ease, border-color 0.2s ease;
+  transition: border-color 0.2s ease;
   font-size: 0.8rem;
 }
 
 .tg-node:hover {
-  transform: translateY(-1px);
   border-color: rgba(120, 184, 201, 0.35);
 }
 

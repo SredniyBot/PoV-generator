@@ -352,54 +352,48 @@ def test_claude_subscription_completion_role_disables_tools() -> None:
     assert captured[0].tools == []  # все встроенные инструменты выключены
 
 
-def test_thinking_config_budget_to_sdk_shape() -> None:
-    """Бюджет → корректная форма ClaudeAgentOptions.thinking. 0 = выключено."""
+_EFFORT_VARS = (
+    "POV_CLAUDE_EFFORT",
+    "POV_CLAUDE_EFFORT_TRIVIAL",
+    "POV_CLAUDE_EFFORT_STANDARD",
+    "POV_CLAUDE_EFFORT_COMPLEX",
+)
+
+
+def test_effort_by_complexity(monkeypatch) -> None:
+    """Effort соразмерен сложности; все значения — валидные уровни CLI."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
-    assert mod._thinking_config(8000) == {"type": "enabled", "budget_tokens": 8000}
-    assert mod._thinking_config(0) == {"type": "disabled"}
-    assert mod._thinking_config(-5) == {"type": "disabled"}
-
-
-def test_thinking_budget_by_complexity(monkeypatch) -> None:
-    """Бюджет thinking растёт со сложностью: trivial=0, standard<complex."""
-    from pov_generator.infrastructure import claude_subscription_client as mod
-
-    for var in (
-        "POV_CLAUDE_THINKING_BUDGET",
-        "POV_CLAUDE_THINKING_BUDGET_TRIVIAL",
-        "POV_CLAUDE_THINKING_BUDGET_STANDARD",
-        "POV_CLAUDE_THINKING_BUDGET_COMPLEX",
-    ):
+    for var in _EFFORT_VARS:
         monkeypatch.delenv(var, raising=False)
 
-    assert mod.thinking_budget_for_complexity("trivial") == 0
-    standard = mod.thinking_budget_for_complexity("standard")
-    complex_ = mod.thinking_budget_for_complexity("complex")
-    assert 0 < standard < complex_
+    assert mod.effort_for_complexity("trivial") in mod._VALID_EFFORTS
+    assert mod.effort_for_complexity("complex") in mod._VALID_EFFORTS
+    # Дефолты: trivial — самый дешёвый (low), complex — глубже trivial.
+    order = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
+    assert order[mod.effort_for_complexity("trivial")] <= order[mod.effort_for_complexity("complex")]
     # Неизвестный/None уровень → как standard.
-    assert mod.thinking_budget_for_complexity(None) == standard
-    assert mod.thinking_budget_for_complexity("bogus") == standard
+    standard = mod.effort_for_complexity("standard")
+    assert mod.effort_for_complexity(None) == standard
+    assert mod.effort_for_complexity("bogus") == standard
 
 
-def test_thinking_budget_env_overrides(monkeypatch) -> None:
-    """Per-уровень env переопределяет дефолт; глобальный рубильник бьёт всё."""
+def test_effort_env_overrides(monkeypatch) -> None:
+    """Per-уровень env переопределяет дефолт; глобальный бьёт всё; мусор — игнор."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
-    for var in (
-        "POV_CLAUDE_THINKING_BUDGET",
-        "POV_CLAUDE_THINKING_BUDGET_TRIVIAL",
-        "POV_CLAUDE_THINKING_BUDGET_STANDARD",
-        "POV_CLAUDE_THINKING_BUDGET_COMPLEX",
-    ):
+    for var in _EFFORT_VARS:
         monkeypatch.delenv(var, raising=False)
 
-    monkeypatch.setenv("POV_CLAUDE_THINKING_BUDGET_STANDARD", "1234")
-    assert mod.thinking_budget_for_complexity("standard") == 1234
-    # Глобальный рубильник перебивает per-уровень (в т.ч. 0 = выключить везде).
-    monkeypatch.setenv("POV_CLAUDE_THINKING_BUDGET", "0")
-    assert mod.thinking_budget_for_complexity("standard") == 0
-    assert mod.thinking_budget_for_complexity("complex") == 0
+    monkeypatch.setenv("POV_CLAUDE_EFFORT_STANDARD", "high")
+    assert mod.effort_for_complexity("standard") == "high"
+    # Невалидное значение игнорируется → дефолт уровня.
+    monkeypatch.setenv("POV_CLAUDE_EFFORT_TRIVIAL", "ultra")
+    assert mod.effort_for_complexity("trivial") == mod._EFFORT_BY_COMPLEXITY["trivial"]
+    # Глобальный перебивает per-уровень.
+    monkeypatch.setenv("POV_CLAUDE_EFFORT", "max")
+    assert mod.effort_for_complexity("standard") == "max"
+    assert mod.effort_for_complexity("complex") == "max"
 
 
 def test_reasoning_tokens_estimated_as_output_minus_answer() -> None:
@@ -434,9 +428,9 @@ def test_reasoning_tokens_estimated_as_output_minus_answer() -> None:
     assert result.usage.reasoning_tokens > 8000
 
 
-def test_claude_subscription_completion_caps_thinking() -> None:
-    """Completion-роль ограничивает extended thinking фиксированным бюджетом
-    (а не adaptive) — корень замедления на opus-4-8 был именно в adaptive."""
+def test_claude_subscription_completion_sets_effort() -> None:
+    """Completion-роль задаёт глубину рассуждения через --effort (SDK-поле
+    options.effort) — корень замедления opus-4-8 был в дефолтном effort=high."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
     captured: list[Any] = []
@@ -448,15 +442,15 @@ def test_claude_subscription_completion_caps_thinking() -> None:
         yield SimpleNamespace(structured_output=None, content=[SimpleNamespace(text='{"ok": true}')])
 
     fake_sdk.query = _query
-    # Явный бюджет на конфиге переопределяет env/дефолт.
+    # Явный effort на конфиге переопределяет env/дефолт.
     with patch.dict("sys.modules", {"claude_agent_sdk": fake_sdk}):
         client = mod.ClaudeSubscriptionClient(
-            mod.ClaudeSubscriptionConfig(model="m", cli_path="/fake/claude", thinking_budget=5000)
+            mod.ClaudeSubscriptionConfig(model="m", cli_path="/fake/claude", effort="low")
         )
     client._sdk = fake_sdk
     client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
 
-    assert captured[0].thinking == {"type": "enabled", "budget_tokens": 5000}
+    assert captured[0].effort == "low"
 
 
 def test_claude_subscription_completion_default_max_turns() -> None:

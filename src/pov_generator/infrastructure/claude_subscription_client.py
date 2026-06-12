@@ -86,54 +86,53 @@ _CLI_SCHEMA_MAX_CHARS = 24_000
 # свой, большой лимит ходов; этот к ней отношения не имеет.)
 _COMPLETION_MAX_TURNS = 8
 
-# Бюджет «расширенного мышления» (extended thinking) ДЛЯ COMPLETION-РОЛИ, в
-# токенах — ПО УРОВНЯМ СЛОЖНОСТИ задачи (тот же сигнал, что выбирает модель,
-# см. model_for_complexity). Зачем потолок и почему он привязан к сложности:
-# opus 4.6+ по умолчанию использует ADAPTIVE thinking («модель сама решает,
-# сколько думать»), и на opus-4-8 это разогналось до десятков тысяч токенов
-# thinking даже на простой экстракции — а thinking входит в output и генерится
-# последовательно, поэтому именно он, а не сам ответ, и есть главная статья
-# времени (задачи по 5-30 мин). Правильная стратегия — не «больше думать
-# везде», а думать соразмерно сложности:
-#   • trivial  — извлечение/нормализация, рассуждать не над чем → thinking ВЫКЛ.
-#   • standard — типовая задача → короткое рассуждение (хватает на проверку
-#                себя, но не разгоняется).
-#   • complex  — синтез/решение/архитектура → ощутимый бюджет, ради качества.
-# Бюджет ФИКСИРОВАННЫЙ (не adaptive — именно adaptive и разгонялся). Каждый
-# уровень переопределяется ``POV_CLAUDE_THINKING_BUDGET_{TRIVIAL,STANDARD,COMPLEX}``;
-# глобальный ``POV_CLAUDE_THINKING_BUDGET`` (если задан) перебивает все уровни —
-# это «общий рубильник» (в т.ч. 0 = thinking выключен везде).
-# Агентская роль (harness) свой thinking не трогает — она и должна рассуждать.
-_THINKING_BUDGET_BY_COMPLEXITY = {"trivial": 0, "standard": 2048, "complex": 8192}
+# Глубина «думанья» (extended thinking) ДЛЯ COMPLETION-РОЛИ — через флаг CLI
+# ``--effort`` ПО УРОВНЯМ СЛОЖНОСТИ задачи (тот же сигнал, что выбирает модель,
+# см. model_for_complexity).
+#
+# Почему именно ``effort``, а не ``--max-thinking-tokens``: проверено на реальном
+# CLI (claude 2.1.175) — флаг ``--max-thinking-tokens`` им НЕ поддерживается и
+# МОЛЧА игнорируется, поэтому бюджет thinking не действовал, а opus-4-8 оставался
+# на дефолтном ``effort=high`` («Deep reasoning»), думая десятки тысяч токенов →
+# задачи по 25-50 мин. Управление глубиной в Claude Code 2.x — это ``--effort``
+# (валидные: low|medium|high|xhigh|max; дефолт high). thinking входит в output и
+# генерится последовательно, поэтому именно глубина рассуждения — главная статья
+# времени. Стратегия — не «думать высоко везде», а соразмерно сложности:
+#   • trivial  — извлечение/нормализация, рассуждать не над чем → low (быстро).
+#   • standard — типовая задача → low (большинство задач; скорость в приоритете).
+#   • complex  — синтез/решение/архитектура → medium (баланс качества и времени).
+# Каждый уровень переопределяется ``POV_CLAUDE_EFFORT_{TRIVIAL,STANDARD,COMPLEX}``
+# (напр., поднять complex до ``high`` ради качества критичных документов);
+# глобальный ``POV_CLAUDE_EFFORT`` перебивает все уровни. Агентская роль
+# (harness) свой effort не трогает — она и должна рассуждать глубоко.
+_EFFORT_BY_COMPLEXITY = {"trivial": "low", "standard": "low", "complex": "medium"}
+_VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
-def _coerce_budget(raw: str | None) -> int | None:
-    """env-значение бюджета → int (или None, если не задано/мусор). <0 → None."""
+def _coerce_effort(raw: str | None) -> str | None:
+    """env-значение effort → валидный уровень (или None, если не задано/мусор)."""
     if raw is None:
         return None
-    try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return val if val >= 0 else None
+    val = raw.strip().lower()
+    return val if val in _VALID_EFFORTS else None
 
 
-def thinking_budget_for_complexity(complexity: str | None) -> int:
-    """Бюджет thinking (токены) по уровню сложности задачи.
+def effort_for_complexity(complexity: str | None) -> str:
+    """Уровень ``--effort`` по сложности задачи.
 
-    Приоритет: глобальный рубильник ``POV_CLAUDE_THINKING_BUDGET`` →
-    per-уровень env ``POV_CLAUDE_THINKING_BUDGET_<LEVEL>`` → дефолт уровня.
-    Неизвестный уровень трактуется как ``standard``."""
-    glob = _coerce_budget(os.environ.get("POV_CLAUDE_THINKING_BUDGET"))
+    Приоритет: глобальный ``POV_CLAUDE_EFFORT`` → per-уровень
+    ``POV_CLAUDE_EFFORT_<LEVEL>`` → дефолт уровня. Неизвестный уровень
+    сложности трактуется как ``standard``."""
+    glob = _coerce_effort(os.environ.get("POV_CLAUDE_EFFORT"))
     if glob is not None:
         return glob
     tier = (complexity or "standard").lower()
-    if tier not in _THINKING_BUDGET_BY_COMPLEXITY:
+    if tier not in _EFFORT_BY_COMPLEXITY:
         tier = "standard"
-    env_tier = _coerce_budget(os.environ.get(f"POV_CLAUDE_THINKING_BUDGET_{tier.upper()}"))
+    env_tier = _coerce_effort(os.environ.get(f"POV_CLAUDE_EFFORT_{tier.upper()}"))
     if env_tier is not None:
         return env_tier
-    return _THINKING_BUDGET_BY_COMPLEXITY[tier]
+    return _EFFORT_BY_COMPLEXITY[tier]
 
 
 def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str) -> LLMUsage:
@@ -153,16 +152,6 @@ def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str
     answer_tokens = estimate_token_count(answer)
     reasoning = max(0, usage.output_tokens - answer_tokens)
     return dataclasses.replace(usage, reasoning_tokens=reasoning)
-
-
-def _thinking_config(budget: int) -> dict[str, Any]:
-    """Собрать ``ClaudeAgentOptions.thinking`` из бюджета токенов.
-
-    ``budget > 0`` → фиксированный бюджет (НЕ adaptive — именно adaptive на
-    opus-4-8 и разгонялся). ``budget <= 0`` → thinking выключен."""
-    if budget <= 0:
-        return {"type": "disabled"}
-    return {"type": "enabled", "budget_tokens": budget}
 
 
 # CLI-бинарники (по пути), которые НЕ знают флаг ``--json-schema``. Узнаётся по
@@ -234,11 +223,11 @@ class ClaudeSubscriptionConfig:
     # Override: POV_CLAUDE_LOAD_TIMEOUT_MS (для load) и env
     # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (для initialize SDK control).
     load_timeout_ms: int = 3_600_000
-    # Бюджет extended thinking (токены). Обычно задаётся провайдер-адаптером по
-    # уровню сложности задачи (thinking_budget_for_complexity). None → клиент
-    # сам возьмёт дефолт уровня standard в момент вызова — так прямое
-    # конструирование (from_env) тоже работает разумно.
-    thinking_budget: int | None = None
+    # Глубина рассуждения (--effort). Обычно задаётся провайдер-адаптером по
+    # уровню сложности задачи (effort_for_complexity). None → клиент сам возьмёт
+    # дефолт уровня standard в момент вызова — так прямое конструирование
+    # (from_env) тоже работает разумно.
+    effort: str | None = None
 
 
 def model_for_complexity(complexity: str | None) -> str | None:
@@ -523,7 +512,7 @@ class ClaudeSubscriptionClient:
         ``permission_mode`` сохраняем всегда; ``tools`` отбрасываем в последнюю
         очередь (на новых SDK именно оно лечит «Reached maximum number of turns»).
         """
-        droppable = ("output_format", "thinking", "load_timeout_ms", "model", "cli_path", "tools")
+        droppable = ("output_format", "effort", "load_timeout_ms", "model", "cli_path", "tools")
         attempt = dict(options_kwargs)
         while True:
             try:
@@ -575,16 +564,12 @@ class ClaudeSubscriptionClient:
             # лимита. Агентская роль (с инструментами) — отдельный адаптер
             # harness/providers/claude_code.py, этого клиента не касается.
             "tools": [],
-            # COMPLETION-РОЛЬ: ограничиваем extended thinking. opus 4.6+ по
-            # умолчанию adaptive («думает сколько хочет») — на opus-4-8 это
-            # разогналось до десятков тысяч токенов thinking на задачу, и именно
-            # это (а не сам ответ) съедало время (5-30 мин). Фиксированный бюджет
-            # держит рассуждения в рамках. budget=0 → thinking выключен.
-            "thinking": _thinking_config(
-                self._config.thinking_budget
-                if self._config.thinking_budget is not None
-                else thinking_budget_for_complexity(None)
-            ),
+            # COMPLETION-РОЛЬ: глубина рассуждения по сложности (--effort). Дефолт
+            # CLI — high («Deep reasoning»): на opus-4-8 это десятки тысяч токенов
+            # thinking на задачу, и именно они (а не сам ответ) съедали время
+            # (25-50 мин). Ставим соразмерно сложности — обычно low/medium.
+            # (--max-thinking-tokens этим CLI игнорируется, см. _EFFORT_BY_COMPLEXITY.)
+            "effort": self._config.effort or effort_for_complexity(None),
             "cli_path": self._config.cli_path,
             "load_timeout_ms": self._config.load_timeout_ms,
         }

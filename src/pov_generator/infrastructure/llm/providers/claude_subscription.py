@@ -33,7 +33,7 @@ class ClaudeSubscriptionProvider:
         *,
         model: str | None = None,
         max_turns: int | None = None,
-        thinking_budget: int | None = None,
+        effort: str | None = None,
     ) -> None:
         from ...claude_subscription_client import ClaudeSubscriptionClient, ClaudeSubscriptionConfig
 
@@ -46,11 +46,11 @@ class ClaudeSubscriptionProvider:
         config_kwargs: dict[str, Any] = {"model": model}
         if max_turns is not None:
             config_kwargs["max_turns"] = max_turns
-        # thinking_budget обычно задаётся из уровня сложности задачи
-        # (from_env/from_connection → thinking_budget_for_complexity). None →
-        # клиент возьмёт дефолт уровня standard в момент вызова.
-        if thinking_budget is not None:
-            config_kwargs["thinking_budget"] = thinking_budget
+        # effort (глубина рассуждения) обычно задаётся из уровня сложности задачи
+        # (from_env/from_connection → effort_for_complexity). None → клиент
+        # возьмёт дефолт уровня standard в момент вызова.
+        if effort is not None:
+            config_kwargs["effort"] = effort
         self._client = ClaudeSubscriptionClient(ClaudeSubscriptionConfig(**config_kwargs))
 
     @classmethod
@@ -61,8 +61,8 @@ class ClaudeSubscriptionProvider:
         complexity: str | None = None,
     ) -> "ClaudeSubscriptionProvider":
         from ...claude_subscription_client import (
+            effort_for_complexity,
             model_for_complexity,
-            thinking_budget_for_complexity,
         )
 
         resolved_model = model or model_for_complexity(complexity)
@@ -81,7 +81,7 @@ class ClaudeSubscriptionProvider:
         return cls(
             model=resolved_model,
             max_turns=max_turns,
-            thinking_budget=thinking_budget_for_complexity(complexity),
+            effort=effort_for_complexity(complexity),
         )
 
     @classmethod
@@ -98,8 +98,8 @@ class ClaudeSubscriptionProvider:
                 f"получен '{connection.provider_type}'."
             )
         from ...claude_subscription_client import (
+            effort_for_complexity,
             model_for_complexity,
-            thinking_budget_for_complexity,
         )
 
         resolved_model = model or model_for_complexity(complexity)
@@ -111,12 +111,11 @@ class ClaudeSubscriptionProvider:
             max_turns = int(max_turns_raw) if max_turns_raw is not None else None
         except (TypeError, ValueError):
             max_turns = None
-        # Бюджет thinking из уровня сложности; connection.extras может
-        # переопределить per-уровень env — но это редкий кейс, оставляем env.
+        # Глубина рассуждения (effort) из уровня сложности.
         return cls(
             model=resolved_model,
             max_turns=max_turns,
-            thinking_budget=thinking_budget_for_complexity(complexity),
+            effort=effort_for_complexity(complexity),
         )
 
     def chat_json(

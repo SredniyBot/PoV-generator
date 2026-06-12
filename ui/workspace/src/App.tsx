@@ -2483,8 +2483,16 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
   const totalInput = stages.reduce((s, [, v]) => s + (v.input_tokens || 0), 0);
   const totalOutput = stages.reduce((s, [, v]) => s + (v.output_tokens || 0), 0);
   const totalCacheRead = stages.reduce((s, [, v]) => s + (v.cache_read_tokens || 0), 0);
+  const totalCacheWrite = stages.reduce((s, [, v]) => s + (v.cache_write_tokens || 0), 0);
   const totalReasoning = stages.reduce((s, [, v]) => s + (v.reasoning_tokens || 0), 0);
-  const grandTotal = totalInput + totalOutput;
+  // «Всего» = полный объём токенов, прошедших через модель: input + output +
+  // cache-read + cache-write. Cache-read — это входные токены, прочитанные из
+  // кэша: модель их реально обрабатывает (просто биллятся дёшево, ~10% input),
+  // поэтому в объём они входят. Reasoning НЕ прибавляем — это подмножество
+  // output (иначе двойной счёт).
+  const stageVolume = (v: import("./types").TokenUsageStage) =>
+    (v.input_tokens || 0) + (v.output_tokens || 0) + (v.cache_read_tokens || 0) + (v.cache_write_tokens || 0);
+  const grandTotal = totalInput + totalOutput + totalCacheRead + totalCacheWrite;
   const hasReasoning = totalReasoning > 0;
   const fmt = (n: number) => n.toLocaleString("ru-RU");
   return (
@@ -2512,13 +2520,17 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
                 ↳ размышление
               </th>
             ) : null}
-            <th>Cache-read</th>
-            <th>Всего</th>
+            <th title="Входные токены, прочитанные из кэша. Модель их обрабатывает (входят в «Всего»), но биллятся дёшево — ~10% цены обычного input.">
+              Cache-read
+            </th>
+            <th title="Полный объём токенов через модель: input + output + cache-read + cache-write.">
+              Всего
+            </th>
           </tr>
         </thead>
         <tbody>
           {stages.map(([key, val]) => {
-            const stageTotal = (val.input_tokens || 0) + (val.output_tokens || 0);
+            const stageTotal = stageVolume(val);
             const share = grandTotal > 0 ? stageTotal / grandTotal : 0;
             const heavy = share > 0.5;
             return (
