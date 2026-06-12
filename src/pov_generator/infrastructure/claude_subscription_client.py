@@ -64,7 +64,7 @@ from typing import Any
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
 from ..common.logging import get_logger
-from .llm.protocol import LLMResult, LLMUsage
+from .llm.protocol import LLMResult, LLMUsage, estimate_token_count
 from .llm.structured_output import strip_descriptions, strip_nulls
 
 logger = get_logger("llm")
@@ -85,6 +85,85 @@ _CLI_SCHEMA_MAX_CHARS = 24_000
 # (Агентская роль — отдельный адаптер harness/providers/claude_code.py — задаёт
 # свой, большой лимит ходов; этот к ней отношения не имеет.)
 _COMPLETION_MAX_TURNS = 8
+
+# Бюджет «расширенного мышления» (extended thinking) ДЛЯ COMPLETION-РОЛИ, в
+# токенах — ПО УРОВНЯМ СЛОЖНОСТИ задачи (тот же сигнал, что выбирает модель,
+# см. model_for_complexity). Зачем потолок и почему он привязан к сложности:
+# opus 4.6+ по умолчанию использует ADAPTIVE thinking («модель сама решает,
+# сколько думать»), и на opus-4-8 это разогналось до десятков тысяч токенов
+# thinking даже на простой экстракции — а thinking входит в output и генерится
+# последовательно, поэтому именно он, а не сам ответ, и есть главная статья
+# времени (задачи по 5-30 мин). Правильная стратегия — не «больше думать
+# везде», а думать соразмерно сложности:
+#   • trivial  — извлечение/нормализация, рассуждать не над чем → thinking ВЫКЛ.
+#   • standard — типовая задача → короткое рассуждение (хватает на проверку
+#                себя, но не разгоняется).
+#   • complex  — синтез/решение/архитектура → ощутимый бюджет, ради качества.
+# Бюджет ФИКСИРОВАННЫЙ (не adaptive — именно adaptive и разгонялся). Каждый
+# уровень переопределяется ``POV_CLAUDE_THINKING_BUDGET_{TRIVIAL,STANDARD,COMPLEX}``;
+# глобальный ``POV_CLAUDE_THINKING_BUDGET`` (если задан) перебивает все уровни —
+# это «общий рубильник» (в т.ч. 0 = thinking выключен везде).
+# Агентская роль (harness) свой thinking не трогает — она и должна рассуждать.
+_THINKING_BUDGET_BY_COMPLEXITY = {"trivial": 0, "standard": 2048, "complex": 8192}
+
+
+def _coerce_budget(raw: str | None) -> int | None:
+    """env-значение бюджета → int (или None, если не задано/мусор). <0 → None."""
+    if raw is None:
+        return None
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return val if val >= 0 else None
+
+
+def thinking_budget_for_complexity(complexity: str | None) -> int:
+    """Бюджет thinking (токены) по уровню сложности задачи.
+
+    Приоритет: глобальный рубильник ``POV_CLAUDE_THINKING_BUDGET`` →
+    per-уровень env ``POV_CLAUDE_THINKING_BUDGET_<LEVEL>`` → дефолт уровня.
+    Неизвестный уровень трактуется как ``standard``."""
+    glob = _coerce_budget(os.environ.get("POV_CLAUDE_THINKING_BUDGET"))
+    if glob is not None:
+        return glob
+    tier = (complexity or "standard").lower()
+    if tier not in _THINKING_BUDGET_BY_COMPLEXITY:
+        tier = "standard"
+    env_tier = _coerce_budget(os.environ.get(f"POV_CLAUDE_THINKING_BUDGET_{tier.upper()}"))
+    if env_tier is not None:
+        return env_tier
+    return _THINKING_BUDGET_BY_COMPLEXITY[tier]
+
+
+def _with_reasoning_estimate(usage: LLMUsage, payload: dict[str, Any], text: str) -> LLMUsage:
+    """Оценить токены «размышления» (thinking) и проставить их в usage.
+
+    У Claude thinking ВХОДИТ в ``output_tokens`` (это подмножество, отдельной
+    статьи в usage нет). Поэтому честная оценка накладных расходов на
+    размышление = ``output_tokens − размер_ответа``: всё, что модель
+    сгенерировала сверх самого ответа, и есть thinking. Ответ — это итоговый
+    payload (при structured-режиме ``text`` пуст), иначе сырой ``text``.
+
+    Считаем только для ``source="actual"`` (для оценочного usage output и так
+    равен длине ответа → размышление вышло бы 0, что вводит в заблуждение)."""
+    if usage.source != "actual" or usage.reasoning_tokens is not None:
+        return usage
+    answer = text if text.strip() else json.dumps(payload, ensure_ascii=False)
+    answer_tokens = estimate_token_count(answer)
+    reasoning = max(0, usage.output_tokens - answer_tokens)
+    return dataclasses.replace(usage, reasoning_tokens=reasoning)
+
+
+def _thinking_config(budget: int) -> dict[str, Any]:
+    """Собрать ``ClaudeAgentOptions.thinking`` из бюджета токенов.
+
+    ``budget > 0`` → фиксированный бюджет (НЕ adaptive — именно adaptive на
+    opus-4-8 и разгонялся). ``budget <= 0`` → thinking выключен."""
+    if budget <= 0:
+        return {"type": "disabled"}
+    return {"type": "enabled", "budget_tokens": budget}
+
 
 # CLI-бинарники (по пути), которые НЕ знают флаг ``--json-schema``. Узнаётся по
 # факту первого отказа «unknown option» и кэшируется НА ВЕСЬ ПРОЦЕСС, но с
@@ -155,6 +234,11 @@ class ClaudeSubscriptionConfig:
     # Override: POV_CLAUDE_LOAD_TIMEOUT_MS (для load) и env
     # CLAUDE_CODE_STREAM_CLOSE_TIMEOUT (для initialize SDK control).
     load_timeout_ms: int = 3_600_000
+    # Бюджет extended thinking (токены). Обычно задаётся провайдер-адаптером по
+    # уровню сложности задачи (thinking_budget_for_complexity). None → клиент
+    # сам возьмёт дефолт уровня standard в момент вызова — так прямое
+    # конструирование (from_env) тоже работает разумно.
+    thinking_budget: int | None = None
 
 
 def model_for_complexity(complexity: str | None) -> str | None:
@@ -316,6 +400,7 @@ class ClaudeSubscriptionClient:
         usage = _usage_from_subscription(raw_usage) or LLMUsage.estimated(
             input_text=system_prompt + full_prompt, output_text=text
         )
+        usage = _with_reasoning_estimate(usage, payload, text)
         return LLMResult(payload=payload, usage=usage)
 
     def chat_json(
@@ -438,7 +523,7 @@ class ClaudeSubscriptionClient:
         ``permission_mode`` сохраняем всегда; ``tools`` отбрасываем в последнюю
         очередь (на новых SDK именно оно лечит «Reached maximum number of turns»).
         """
-        droppable = ("output_format", "load_timeout_ms", "model", "cli_path", "tools")
+        droppable = ("output_format", "thinking", "load_timeout_ms", "model", "cli_path", "tools")
         attempt = dict(options_kwargs)
         while True:
             try:
@@ -490,6 +575,16 @@ class ClaudeSubscriptionClient:
             # лимита. Агентская роль (с инструментами) — отдельный адаптер
             # harness/providers/claude_code.py, этого клиента не касается.
             "tools": [],
+            # COMPLETION-РОЛЬ: ограничиваем extended thinking. opus 4.6+ по
+            # умолчанию adaptive («думает сколько хочет») — на opus-4-8 это
+            # разогналось до десятков тысяч токенов thinking на задачу, и именно
+            # это (а не сам ответ) съедало время (5-30 мин). Фиксированный бюджет
+            # держит рассуждения в рамках. budget=0 → thinking выключен.
+            "thinking": _thinking_config(
+                self._config.thinking_budget
+                if self._config.thinking_budget is not None
+                else thinking_budget_for_complexity(None)
+            ),
             "cli_path": self._config.cli_path,
             "load_timeout_ms": self._config.load_timeout_ms,
         }

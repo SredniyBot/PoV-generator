@@ -211,6 +211,10 @@ export interface TokenUsageStage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** Токены «размышления» (extended thinking). Подмножество output_tokens —
+   *  показывается отдельно, чтобы был виден overhead на думанье. Может
+   *  отсутствовать у артефактов, собранных до появления учёта. */
+  reasoning_tokens?: number;
   total_tokens: number;
 }
 

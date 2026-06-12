@@ -2483,13 +2483,23 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
   const totalInput = stages.reduce((s, [, v]) => s + (v.input_tokens || 0), 0);
   const totalOutput = stages.reduce((s, [, v]) => s + (v.output_tokens || 0), 0);
   const totalCacheRead = stages.reduce((s, [, v]) => s + (v.cache_read_tokens || 0), 0);
+  const totalReasoning = stages.reduce((s, [, v]) => s + (v.reasoning_tokens || 0), 0);
   const grandTotal = totalInput + totalOutput;
+  const hasReasoning = totalReasoning > 0;
   const fmt = (n: number) => n.toLocaleString("ru-RU");
   return (
     <div className="artifact-tokens">
       <div className="artifact-tokens__head">
         <strong>Токены</strong>
         <span className="artifact-tokens__total">всего {fmt(grandTotal)}</span>
+        {hasReasoning ? (
+          <span
+            className="artifact-tokens__total"
+            title="Токены extended thinking — входят в Output (это его подмножество, а не отдельная статья). Именно размышление, а не сам ответ, определяет время генерации."
+          >
+            из них размышление {fmt(totalReasoning)}
+          </span>
+        ) : null}
       </div>
       <table className="artifact-tokens__table">
         <thead>
@@ -2497,6 +2507,11 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
             <th>Стадия</th>
             <th>Input</th>
             <th>Output</th>
+            {hasReasoning ? (
+              <th title="Токены extended thinking — входят в Output. Определяют время генерации.">
+                ↳ размышление
+              </th>
+            ) : null}
             <th>Cache-read</th>
             <th>Всего</th>
           </tr>
@@ -2511,6 +2526,9 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
                 <td>{stageLabel(key)}</td>
                 <td>{fmt(val.input_tokens || 0)}</td>
                 <td>{fmt(val.output_tokens || 0)}</td>
+                {hasReasoning ? (
+                  <td className="artifact-tokens__reasoning">{fmt(val.reasoning_tokens || 0)}</td>
+                ) : null}
                 <td>{fmt(val.cache_read_tokens || 0)}</td>
                 <td>
                   <strong>{fmt(stageTotal)}</strong>
@@ -2527,6 +2545,9 @@ function ArtifactTokenUsage({ usage }: { usage: Record<string, import("./types")
             <td>Итого</td>
             <td>{fmt(totalInput)}</td>
             <td>{fmt(totalOutput)}</td>
+            {hasReasoning ? (
+              <td className="artifact-tokens__reasoning">{fmt(totalReasoning)}</td>
+            ) : null}
             <td>{fmt(totalCacheRead)}</td>
             <td>
               <strong>{fmt(grandTotal)}</strong>

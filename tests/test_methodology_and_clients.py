@@ -352,6 +352,113 @@ def test_claude_subscription_completion_role_disables_tools() -> None:
     assert captured[0].tools == []  # все встроенные инструменты выключены
 
 
+def test_thinking_config_budget_to_sdk_shape() -> None:
+    """Бюджет → корректная форма ClaudeAgentOptions.thinking. 0 = выключено."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    assert mod._thinking_config(8000) == {"type": "enabled", "budget_tokens": 8000}
+    assert mod._thinking_config(0) == {"type": "disabled"}
+    assert mod._thinking_config(-5) == {"type": "disabled"}
+
+
+def test_thinking_budget_by_complexity(monkeypatch) -> None:
+    """Бюджет thinking растёт со сложностью: trivial=0, standard<complex."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    for var in (
+        "POV_CLAUDE_THINKING_BUDGET",
+        "POV_CLAUDE_THINKING_BUDGET_TRIVIAL",
+        "POV_CLAUDE_THINKING_BUDGET_STANDARD",
+        "POV_CLAUDE_THINKING_BUDGET_COMPLEX",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    assert mod.thinking_budget_for_complexity("trivial") == 0
+    standard = mod.thinking_budget_for_complexity("standard")
+    complex_ = mod.thinking_budget_for_complexity("complex")
+    assert 0 < standard < complex_
+    # Неизвестный/None уровень → как standard.
+    assert mod.thinking_budget_for_complexity(None) == standard
+    assert mod.thinking_budget_for_complexity("bogus") == standard
+
+
+def test_thinking_budget_env_overrides(monkeypatch) -> None:
+    """Per-уровень env переопределяет дефолт; глобальный рубильник бьёт всё."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    for var in (
+        "POV_CLAUDE_THINKING_BUDGET",
+        "POV_CLAUDE_THINKING_BUDGET_TRIVIAL",
+        "POV_CLAUDE_THINKING_BUDGET_STANDARD",
+        "POV_CLAUDE_THINKING_BUDGET_COMPLEX",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    monkeypatch.setenv("POV_CLAUDE_THINKING_BUDGET_STANDARD", "1234")
+    assert mod.thinking_budget_for_complexity("standard") == 1234
+    # Глобальный рубильник перебивает per-уровень (в т.ч. 0 = выключить везде).
+    monkeypatch.setenv("POV_CLAUDE_THINKING_BUDGET", "0")
+    assert mod.thinking_budget_for_complexity("standard") == 0
+    assert mod.thinking_budget_for_complexity("complex") == 0
+
+
+def test_reasoning_tokens_estimated_as_output_minus_answer() -> None:
+    """Токены размышления = output − размер ответа (thinking ⊆ output у Claude).
+
+    Имитируем actual-usage с большим output при компактном ответе → почти всё
+    это размышление."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        # Компактный ответ (~немного токенов), но usage сообщает большой output.
+        yield SimpleNamespace(
+            structured_output=None,
+            content=[SimpleNamespace(text='{"ok": true}')],
+            usage={"input_tokens": 10, "output_tokens": 9000},
+            total_cost_usd=0.5,
+        )
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+    result = client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+
+    assert result.usage is not None
+    assert result.usage.output_tokens == 9000
+    # Ответ '{"ok": true}' ≈ единицы токенов → размышление ≈ почти весь output.
+    assert result.usage.reasoning_tokens is not None
+    assert result.usage.reasoning_tokens > 8000
+
+
+def test_claude_subscription_completion_caps_thinking() -> None:
+    """Completion-роль ограничивает extended thinking фиксированным бюджетом
+    (а не adaptive) — корень замедления на opus-4-8 был именно в adaptive."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    captured: list[Any] = []
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        captured.append(options)
+        yield SimpleNamespace(structured_output=None, content=[SimpleNamespace(text='{"ok": true}')])
+
+    fake_sdk.query = _query
+    # Явный бюджет на конфиге переопределяет env/дефолт.
+    with patch.dict("sys.modules", {"claude_agent_sdk": fake_sdk}):
+        client = mod.ClaudeSubscriptionClient(
+            mod.ClaudeSubscriptionConfig(model="m", cli_path="/fake/claude", thinking_budget=5000)
+        )
+    client._sdk = fake_sdk
+    client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+
+    assert captured[0].thinking == {"type": "enabled", "budget_tokens": 5000}
+
+
 def test_claude_subscription_completion_default_max_turns() -> None:
     """Дефолт max_turns для completion-роли — единый источник правды (датакласс).
 

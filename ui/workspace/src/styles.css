@@ -4807,6 +4807,13 @@ code {
 .artifact-tokens__share {
   color: var(--text-secondary, #9aa4b2);
 }
+/* Размышление — подмножество Output: приглушаем и выделяем курсивом, чтобы
+   читалось как «из них», а не как ещё одна независимая статья. */
+.artifact-tokens__reasoning {
+  color: var(--text-secondary, #9aa4b2);
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+}
 
 .artifact-detail__provenance-collapsible summary {
   cursor: pointer;

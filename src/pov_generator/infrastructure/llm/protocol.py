@@ -36,6 +36,12 @@ class LLMUsage:
     source: UsageSource
     cache_tokens: int | None = None
     cost_usd: float | None = None
+    # Токены «расширенного мышления» (extended thinking). У Claude thinking
+    # ВХОДИТ в output_tokens — это его подмножество, а не отдельная статья.
+    # Выделяем явно, чтобы было видно накладные расходы на размышление (именно
+    # они, а не сам ответ, определяют время генерации). None = провайдер не
+    # умеет/не различает thinking.
+    reasoning_tokens: int | None = None
 
     @classmethod
     def estimated(cls, *, input_text: str, output_text: str) -> "LLMUsage":
