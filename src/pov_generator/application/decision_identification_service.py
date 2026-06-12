@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..common.errors import ConflictError
+from ..common.llm_modes import plain_json_scope
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import (
     DECISION_CATEGORIES,
@@ -204,18 +205,23 @@ _PROJECT_DECISION_DEFINITION = """\
 
 
 def _build_identification_schema() -> dict[str, Any]:
-    """JSON-schema для ответа LLM на выявлении решений.
+    """Облегчённая JSON-schema ответа LLM на выявлении решений.
 
-    v3.6: добавлено обязательное поле ``category`` (одно из
-    :data:`DECISION_CATEGORIES`). Если LLM не может уложить решение
-    в одну из категорий — структурно невозможно, что это проектное
-    решение, мы его отбросим. Это **structural anti-meta** фильтр —
-    надёжнее, чем словесный запрет в промпте.
+    Намеренно ПЛОСКАЯ. Раньше схема была глубоко вложенной и строгой
+    (alternatives с option_id/pros/cons/confidence-диапазоном, proposed_option_id
+    как кросс-ссылка, level_rationale, decision-confidence) — на дешёвой модели
+    это давало strict-coercion штормы и десятки минут на этап. Здесь оставлено
+    только то, что несёт ценность пользователю (понять и выбрать решение):
+    заголовок, описание, категория (anti-meta фильтр), варианты {label,
+    description}, рекомендация по label, обоснование, уровень.
 
-    Также жёстко ``maxItems: 5`` на decisions. Опыт показал, что
-    при большем числе LLM «генерирует чтобы заполнить», вытаскивая
-    мета и второстепенные мелочи. 5 — естественный кэп на «реально
-    важно для одной задачи».
+    Богатый domain ``Decision``/``DecisionAlternative`` заполняется маппингом в
+    :meth:`_build_single_decision`: ``option_id`` генерируем сами по индексу,
+    ``pros``/``cons`` пустые, ``confidence``/``level_rationale`` — дефолты. Так
+    упрощение схемы НЕ затрагивает domain/UI/хранилище.
+
+    ``category`` (enum) — структурный anti-meta фильтр; ``maxItems: 5`` — кэп,
+    чтобы модель не «добивала» список мелочью.
     """
     return {
         "type": "object",
@@ -225,6 +231,7 @@ def _build_identification_schema() -> dict[str, Any]:
             "decisions": {
                 "type": "array",
                 "maxItems": 5,
+                "description": "0-5 НОВЫХ проектных решений. Лучше 0, чем мета-шум.",
                 "items": {
                     "type": "object",
                     "required": [
@@ -232,54 +239,43 @@ def _build_identification_schema() -> dict[str, Any]:
                         "description",
                         "category",
                         "alternatives",
-                        "proposed_option_id",
+                        "recommended",
                         "rationale",
                         "level",
-                        "level_rationale",
-                        "confidence",
                     ],
                     "additionalProperties": False,
                     "properties": {
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
+                        "title": {"type": "string", "description": "Короткое название выбора (3-7 слов)."},
+                        "description": {"type": "string", "description": "1-3 предложения: что именно решается."},
                         "category": {
                             "type": "string",
                             "enum": list(DECISION_CATEGORIES),
+                            "description": "Категория решения (одна из перечисленных).",
                         },
                         "alternatives": {
                             "type": "array",
                             "minItems": 2,
+                            "description": "2-4 реальных, осмысленно различающихся варианта.",
                             "items": {
                                 "type": "object",
-                                "required": [
-                                    "option_id",
-                                    "label",
-                                    "description",
-                                    "confidence",
-                                ],
+                                "required": ["label", "description"],
                                 "additionalProperties": False,
                                 "properties": {
-                                    "option_id": {"type": "string"},
-                                    "label": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "pros": {"type": "array", "items": {"type": "string"}},
-                                    "cons": {"type": "array", "items": {"type": "string"}},
-                                    "confidence": {
-                                        "type": "number",
-                                        "minimum": 0.0,
-                                        "maximum": 1.0,
-                                    },
+                                    "label": {"type": "string", "description": "Короткое имя варианта."},
+                                    "description": {"type": "string", "description": "1-2 предложения о варианте."},
                                 },
                             },
                         },
-                        "proposed_option_id": {"type": "string"},
-                        "rationale": {"type": "string"},
+                        "recommended": {
+                            "type": "string",
+                            "description": "label рекомендованного по умолчанию варианта (точно из alternatives).",
+                        },
+                        "rationale": {"type": "string", "description": "Почему именно этот вариант — дефолт."},
                         "level": {
                             "type": "string",
                             "enum": ["business", "architecture", "detail"],
+                            "description": "Уровень вовлечения по критериям.",
                         },
-                        "level_rationale": {"type": "string"},
-                        "confidence": {"type": "number"},
                     },
                 },
             }
@@ -386,12 +382,17 @@ class DecisionIdentificationService:
         )
         schema = _build_identification_schema()
 
+        # Plain-режим: один проход (schema-в-промпте, без strict multi-turn
+        # coercion и без compositional-декомпозиции). Выявление решений —
+        # best-effort на дешёвой модели; форму ответа добивают tolerant-разбор и
+        # нормализация. Это убирает strict-штормы, бывшие главной статьёй времени.
         try:
-            result = llm.chat_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=schema,
-            )
+            with plain_json_scope():
+                result = llm.chat_json(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                )
         except Exception as exc:  # noqa: BLE001
             raise ConflictError(
                 f"Ошибка выявления решений через {llm.name}: {exc}"
@@ -465,16 +466,13 @@ class DecisionIdentificationService:
             "подходит — это **сигнал, что решение НЕ проектное**, не выноси.\n"
             "- alternatives: ОБЯЗАТЕЛЬНО минимум 2 и обычно 2-4 варианта. "
             "Каждый — реальный, содержательный, осмысленно отличающийся, с "
-            "label, description (1-2 предложения), обязательным confidence "
-            "(0..1) и опционально pros/cons. ЗАПРЕЩЕНО плодить заглушки "
-            "вида «принять рекомендацию», «оставить как есть».\n"
-            "- proposed_option_id: id того варианта, который ты считаешь лучшим "
-            "по умолчанию. Должен совпадать с option_id одного из alternatives.\n"
+            "label (короткое имя) и description (1-2 предложения). ЗАПРЕЩЕНО "
+            "плодить заглушки вида «принять рекомендацию», «оставить как есть».\n"
+            "- recommended: label того варианта, который ты считаешь лучшим по "
+            "умолчанию. ТОЧНО совпадает с label одного из alternatives.\n"
             "- rationale: почему именно этот вариант — дефолт. Конкретно, со "
             "ссылкой на контекст или принципы.\n"
             "- level: business / architecture / detail по критериям выше.\n"
-            "- level_rationale: 1-2 предложения, почему именно этот уровень.\n"
-            "- confidence: 0..1, насколько ты уверена в предложенном дефолте.\n"
             "</requirements>\n\n"
 
             "<dedupe>\n"
@@ -574,32 +572,29 @@ class DecisionIdentificationService:
         task_id: str,
         now: str,
     ) -> Decision:
+        # Маппинг ОБЛЕГЧЁННОЙ схемы ответа (alternatives = {label, description})
+        # в богатый domain DecisionAlternative: option_id генерируем сами по
+        # индексу (детерминированно, без машинного id от модели и кросс-ссылок),
+        # pros/cons пустые, confidence неизвестна (None). Так упрощение схемы
+        # запроса не затрагивает domain/UI/хранилище.
         raw_alts = raw.get("alternatives") or []
         alternatives = tuple(
             DecisionAlternative(
-                option_id=str(alt["option_id"]),
-                label=str(alt.get("label", "")),
+                option_id=f"opt-{index + 1}",
+                label=str(alt.get("label", "")).strip(),
                 description=str(alt.get("description", "")),
-                pros=tuple(alt.get("pros") or ()),
-                cons=tuple(alt.get("cons") or ()),
-                confidence=(
-                    float(alt["confidence"])
-                    if alt.get("confidence") is not None
-                    else None
-                ),
+                pros=(),
+                cons=(),
+                confidence=None,
             )
-            for alt in raw_alts
-            if isinstance(alt, dict) and "option_id" in alt
+            for index, alt in enumerate(raw_alts)
+            if isinstance(alt, dict) and str(alt.get("label", "")).strip()
         )
         if len(alternatives) < 2:
             raise ValueError("decision требует минимум 2 альтернативы")
-        if any(alt.confidence is None for alt in alternatives):
-            raise ValueError("decision: confidence обязателен у каждой альтернативы")
 
-        # v3.6: category обязательная. Если LLM пропустила (несмотря на
-        # schema-required) — отбрасываем. Если значение вне enum — это
-        # сигнал, что LLM пытается выдать meta-решение (структурный
-        # фильтр против meta-шума).
+        # category обязательна и из enum — структурный anti-meta фильтр. Значение
+        # вне enum трактуем как сигнал «решение не проектное» → отбрасываем.
         category = str(raw.get("category") or "").strip()
         if category not in DECISION_CATEGORIES:
             raise ValueError(
@@ -607,9 +602,13 @@ class DecisionIdentificationService:
                 f"получено {category!r}"
             )
 
-        proposed = str(raw.get("proposed_option_id") or "")
-        if proposed not in {alt.option_id for alt in alternatives}:
-            proposed = alternatives[0].option_id
+        # Рекомендация приходит как label варианта — находим его option_id;
+        # при промахе берём первый (best-effort, без кросс-ссылочной хрупкости).
+        recommended_label = str(raw.get("recommended") or "").strip()
+        chosen = next(
+            (alt.option_id for alt in alternatives if alt.label == recommended_label),
+            alternatives[0].option_id,
+        )
 
         level = raw.get("level")
         if level not in ("business", "architecture", "detail"):
@@ -623,12 +622,12 @@ class DecisionIdentificationService:
             title=str(raw.get("title") or "Untitled decision"),
             description=description,
             category=category,
-            chosen_option_id=proposed,
+            chosen_option_id=chosen,
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),
             level=level,  # type: ignore[arg-type]
-            level_rationale=str(raw.get("level_rationale") or ""),
-            confidence=float(raw.get("confidence") or 0.5),
+            level_rationale="",  # облегчённая схема не запрашивает — не критично для ценности
+            confidence=0.5,  # дефолт: уверенность отдельным полем больше не запрашиваем
             status="proposed",
             source=SOURCE_IDENTIFICATION,
             source_task_id=task_id,

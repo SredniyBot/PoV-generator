@@ -63,6 +63,7 @@ from typing import Any
 
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
 from ..common.errors import ConflictError
+from ..common.llm_modes import plain_json_preferred
 from ..common.logging import get_logger
 from .llm.protocol import LLMResult, LLMUsage, estimate_token_count
 from .llm.structured_output import strip_descriptions, strip_nulls
@@ -356,10 +357,15 @@ class ClaudeSubscriptionClient:
     def _cli_schema(self, schema: dict[str, Any]) -> dict[str, Any] | None:
         """Схема для флага ``--json-schema`` или None = структурный режим недоступен.
 
-        None при: SDK без поля output_format / этот cli_path уже выяснил, что не
-        знает флаг / этот инстанс деградировал после schema-специфичной ошибки /
-        схема даже без описаний не влезает в лимит командной строки.
+        None при: запрошен plain-режим (ambient) / SDK без поля output_format /
+        этот cli_path уже выяснил, что не знает флаг / этот инстанс деградировал
+        после schema-специфичной ошибки / схема даже без описаний не влезает в
+        лимит командной строки.
         """
+        # Plain-режим (ambient): один проход с schema-в-промпте, без strict
+        # multi-turn coercion — форму добьёт нормализация/self-repair.
+        if plain_json_preferred():
+            return None
         if not self._sdk_supports_output_format or self._structured_disabled:
             return None
         if self._config.cli_path and self._config.cli_path in _FLAG_UNSUPPORTED_CLIS:

@@ -67,34 +67,20 @@ class _StubRegistry:
 
 
 def _basic_response() -> dict[str, Any]:
+    # Облегчённый формат ответа: alternatives = {label, description},
+    # рекомендация — по label (option_id генерируется парсером по индексу).
     return {
         "decisions": [
             {
                 "title": "Выбор СУБД",
                 "description": "Какую СУБД использовать для основного сервиса",
                 "alternatives": [
-                    {
-                        "option_id": "opt-postgres",
-                        "label": "PostgreSQL",
-                        "description": "Реляционная",
-                        "pros": ["ACID"],
-                        "cons": ["оверхед на простых таблицах"],
-                        "confidence": 0.85,
-                    },
-                    {
-                        "option_id": "opt-mongo",
-                        "label": "MongoDB",
-                        "description": "Документная",
-                        "pros": ["гибкая схема"],
-                        "cons": ["слабее join'ы"],
-                        "confidence": 0.4,
-                    },
+                    {"label": "PostgreSQL", "description": "Реляционная"},
+                    {"label": "MongoDB", "description": "Документная"},
                 ],
-                "proposed_option_id": "opt-postgres",
+                "recommended": "PostgreSQL",
                 "rationale": "В контексте реляционных запросов — Postgres",
                 "level": "architecture",
-                "level_rationale": "Затрагивает несколько компонентов",
-                "confidence": 0.85,
                 "category": "tech_stack",
             }
         ]
@@ -123,11 +109,12 @@ def test_plan_returns_decisions_parsed_from_llm_response() -> None:
     assert d.source_task_id == "task-arch"
     assert d.source == "identification"
     assert d.status == "proposed"
-    assert d.chosen_option_id == "opt-postgres"
+    # option_id генерируется парсером по индексу; recommended="PostgreSQL" — первый.
+    assert d.chosen_option_id == "opt-1"
+    assert d.alternatives[0].label == "PostgreSQL"
     assert d.category == "tech_stack"
     assert d.description == "Какую СУБД использовать для основного сервиса"
     assert d.level == "architecture"
-    assert d.confidence == 0.85
     assert len(d.alternatives) == 2
 
 
@@ -197,37 +184,31 @@ def test_decision_without_alternatives_is_skipped() -> None:
                 "title": "Bad — no alternatives",
                 "description": "",
                 "alternatives": [],
-                "proposed_option_id": "x",
+                "recommended": "x",
                 "rationale": "",
                 "level": "detail",
-                "level_rationale": "",
-                "confidence": 0.5,
             },
             {
                 "title": "Bad — only one alternative",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-only", "label": "Only", "description": "", "confidence": 0.7},
+                    {"label": "Only", "description": ""},
                 ],
-                "proposed_option_id": "opt-only",
+                "recommended": "Only",
                 "rationale": "",
                 "level": "detail",
-                "level_rationale": "",
-                "confidence": 0.5,
                 "category": "tech_stack",
             },
             {
                 "title": "Good — has two alternatives",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-1", "label": "One", "description": "", "confidence": 0.7},
-                    {"option_id": "opt-2", "label": "Two", "description": "", "confidence": 0.4},
+                    {"label": "One", "description": ""},
+                    {"label": "Two", "description": ""},
                 ],
-                "proposed_option_id": "opt-1",
+                "recommended": "One",
                 "rationale": "",
                 "level": "detail",
-                "level_rationale": "",
-                "confidence": 0.5,
                 "category": "tech_stack",
             },
         ]
@@ -245,8 +226,8 @@ def test_decision_without_alternatives_is_skipped() -> None:
     assert result.decisions[0].title == "Good — has two alternatives"
 
 
-def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
-    """Если LLM указала proposed_option_id, которого нет в альтернативах —
+def test_invalid_recommended_falls_back_to_first_alternative() -> None:
+    """Если LLM указала recommended (label), которого нет в альтернативах —
     fallback на первую альтернативу. Не падаем, не теряем decision."""
     response = {
         "decisions": [
@@ -254,14 +235,12 @@ def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
                 "title": "X",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "real-1", "label": "First", "description": "", "confidence": 0.6},
-                    {"option_id": "real-2", "label": "Second", "description": "", "confidence": 0.4},
+                    {"label": "First", "description": ""},
+                    {"label": "Second", "description": ""},
                 ],
-                "proposed_option_id": "ghost-option-id",
+                "recommended": "ghost-label",
                 "rationale": "",
                 "level": "detail",
-                "level_rationale": "",
-                "confidence": 0.5,
                 "category": "tech_stack",
             }
         ]
@@ -275,7 +254,9 @@ def test_invalid_proposed_option_falls_back_to_first_alternative() -> None:
         task_summary="x",
         context_text="x",
     )
-    assert result.decisions[0].chosen_option_id == "real-1"
+    # option_id первой альтернативы генерируется как "opt-1".
+    assert result.decisions[0].chosen_option_id == "opt-1"
+    assert result.decisions[0].alternatives[0].label == "First"
 
 
 def test_invalid_level_falls_back_to_architecture() -> None:
@@ -287,14 +268,12 @@ def test_invalid_level_falls_back_to_architecture() -> None:
                 "title": "X",
                 "description": "",
                 "alternatives": [
-                    {"option_id": "opt-1", "label": "L1", "description": "", "confidence": 0.7},
-                    {"option_id": "opt-2", "label": "L2", "description": "", "confidence": 0.5},
+                    {"label": "L1", "description": ""},
+                    {"label": "L2", "description": ""},
                 ],
-                "proposed_option_id": "opt-1",
+                "recommended": "L1",
                 "rationale": "",
                 "level": "INVALID_LEVEL",
-                "level_rationale": "",
-                "confidence": 0.5,
                 "category": "tech_stack",
             }
         ]

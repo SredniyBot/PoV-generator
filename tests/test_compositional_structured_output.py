@@ -172,6 +172,20 @@ def test_provider_reactive_assembly_when_single_pass_invalid(monkeypatch) -> Non
     assert len(fake.calls) > 1  # один проход + фрагменты сборки
 
 
+def test_provider_plain_mode_skips_decomposition() -> None:
+    """В plain-режиме (ambient) декоратор НЕ декомпозирует даже сложную схему —
+    один проход (форму добивает нормализация выше по конвейеру)."""
+    from pov_generator.common.llm_modes import plain_json_scope
+
+    schema = _build_identification_schema()  # заведомо сложная (см. тест complexity)
+    fake = _FakeProvider()
+    provider = CompositionalLLMProvider(fake)
+    with plain_json_scope():
+        result = provider.chat_json(system_prompt="s", user_prompt="u", schema=schema)
+    assert len(fake.calls) == 1  # один проход, без фрагментов сборки
+    assert isinstance(result.payload, dict)
+
+
 # --- лёгкая валидация --------------------------------------------------------
 
 

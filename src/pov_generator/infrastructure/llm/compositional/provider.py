@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ....common.llm_modes import plain_json_preferred
 from ....common.logging import get_logger
 from ..protocol import LLMProvider, LLMResult, LLMUsage
 from .assembler import StructuredAssembler
@@ -69,9 +70,10 @@ class CompositionalLLMProvider:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> LLMResult:
-        # Композиция применима только к объектным схемам (артефакт/решение/ТЗ).
-        # Прочее (редко) — как есть, одним проходом.
-        if not is_object_schema(schema):
+        # Plain-режим (ambient): вызывающий просит один проход без декомпозиции
+        # (форму добьёт нормализация). Композиция применима только к объектным
+        # схемам. В обоих случаях — делегируем как есть.
+        if plain_json_preferred() or not is_object_schema(schema):
             return self._inner.chat_json(
                 system_prompt=system_prompt, user_prompt=user_prompt, schema=schema
             )
