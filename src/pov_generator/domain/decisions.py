@@ -146,6 +146,58 @@ DECISION_CATEGORIES: tuple[str, ...] = (
 )
 
 
+def light_decision_item_schema() -> dict:
+    """Облегчённая схема ОДНОГО решения — ЕДИНАЯ для обоих источников решений
+    (pre-flight ``decision_identification`` и emergent ``decision_extraction``),
+    чтобы решения в реестре были СОГЛАСОВАННЫ.
+
+    Намеренно плоская: ``alternatives`` = ``{label, description}`` (без машинных
+    ``option_id``/``pros``/``cons``/per-alt ``confidence``); рекомендация — по
+    ``label``. Богатые поля domain (``option_id`` и т.п.) заполняются маппингом
+    в парсерах сервисов (см. ``application.decision_light_parsing``) — domain/UI/
+    хранилище не меняются. Глубокая вложенность убрана: именно она давала
+    strict-coercion штормы на дешёвой модели."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "description", "category", "alternatives", "recommended", "rationale", "level"],
+        "properties": {
+            "title": {"type": "string", "description": "Короткое название выбора (3-7 слов)."},
+            "description": {"type": "string", "description": "1-3 предложения: что именно решается."},
+            "category": {
+                "type": "string",
+                "enum": list(DECISION_CATEGORIES),
+                "description": "Категория решения (одна из перечисленных).",
+            },
+            "alternatives": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 4,
+                "description": "2-4 реальных, осмысленно различающихся варианта.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["label", "description"],
+                    "properties": {
+                        "label": {"type": "string", "description": "Короткое имя варианта."},
+                        "description": {"type": "string", "description": "1-2 предложения о варианте."},
+                    },
+                },
+            },
+            "recommended": {
+                "type": "string",
+                "description": "label выбранного/рекомендованного варианта (точно из alternatives).",
+            },
+            "rationale": {"type": "string", "description": "Почему именно этот вариант."},
+            "level": {
+                "type": "string",
+                "enum": ["business", "architecture", "detail"],
+                "description": "Уровень вовлечения (business/architecture/detail).",
+            },
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Доменные структуры
 # ---------------------------------------------------------------------------

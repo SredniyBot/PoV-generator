@@ -84,4 +84,7 @@ def test_decisions_schema_is_optional_array_of_decisions() -> None:
     assert schema["type"] == "array"
     item = schema["items"]
     assert "title" in item["properties"]
-    assert "chosen_in_artifact_option_id" in item["properties"]
+    # Единая облегчённая схема: рекомендация по label (вместо машинного
+    # chosen_in_artifact_option_id), alternatives = {label, description}.
+    assert "recommended" in item["properties"]
+    assert set(item["properties"]["alternatives"]["items"]["properties"]) == {"label", "description"}

@@ -63,11 +63,12 @@ from ..domain.decisions import (
     DECISION_CATEGORIES,
     SOURCE_IDENTIFICATION,
     Decision,
-    DecisionAlternative,
+    light_decision_item_schema,
     strip_decision_category_prefix,
 )
 from ..domain.llm_settings import PURPOSE_DECISION_PLANNING
 from ..infrastructure.llm import LLMProviderRegistry
+from .decision_light_parsing import light_alternatives, resolve_recommended_option_id
 
 logger = logging.getLogger(__name__)
 
@@ -205,24 +206,11 @@ _PROJECT_DECISION_DEFINITION = """\
 
 
 def _build_identification_schema() -> dict[str, Any]:
-    """Облегчённая JSON-schema ответа LLM на выявлении решений.
+    """JSON-schema ответа выявления решений — обёртка над ЕДИНОЙ облегчённой
+    схемой решения (:func:`light_decision_item_schema`), общей с emergent-путём.
 
-    Намеренно ПЛОСКАЯ. Раньше схема была глубоко вложенной и строгой
-    (alternatives с option_id/pros/cons/confidence-диапазоном, proposed_option_id
-    как кросс-ссылка, level_rationale, decision-confidence) — на дешёвой модели
-    это давало strict-coercion штормы и десятки минут на этап. Здесь оставлено
-    только то, что несёт ценность пользователю (понять и выбрать решение):
-    заголовок, описание, категория (anti-meta фильтр), варианты {label,
-    description}, рекомендация по label, обоснование, уровень.
-
-    Богатый domain ``Decision``/``DecisionAlternative`` заполняется маппингом в
-    :meth:`_build_single_decision`: ``option_id`` генерируем сами по индексу,
-    ``pros``/``cons`` пустые, ``confidence``/``level_rationale`` — дефолты. Так
-    упрощение схемы НЕ затрагивает domain/UI/хранилище.
-
-    ``category`` (enum) — структурный anti-meta фильтр; ``maxItems: 5`` — кэп,
-    чтобы модель не «добивала» список мелочью.
-    """
+    ``maxItems: 5`` — кэп, чтобы модель не «добивала» список мелочью. Богатый
+    domain заполняется маппингом (см. ``decision_light_parsing``)."""
     return {
         "type": "object",
         "required": ["decisions"],
@@ -232,52 +220,7 @@ def _build_identification_schema() -> dict[str, Any]:
                 "type": "array",
                 "maxItems": 5,
                 "description": "0-5 НОВЫХ проектных решений. Лучше 0, чем мета-шум.",
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "title",
-                        "description",
-                        "category",
-                        "alternatives",
-                        "recommended",
-                        "rationale",
-                        "level",
-                    ],
-                    "additionalProperties": False,
-                    "properties": {
-                        "title": {"type": "string", "description": "Короткое название выбора (3-7 слов)."},
-                        "description": {"type": "string", "description": "1-3 предложения: что именно решается."},
-                        "category": {
-                            "type": "string",
-                            "enum": list(DECISION_CATEGORIES),
-                            "description": "Категория решения (одна из перечисленных).",
-                        },
-                        "alternatives": {
-                            "type": "array",
-                            "minItems": 2,
-                            "description": "2-4 реальных, осмысленно различающихся варианта.",
-                            "items": {
-                                "type": "object",
-                                "required": ["label", "description"],
-                                "additionalProperties": False,
-                                "properties": {
-                                    "label": {"type": "string", "description": "Короткое имя варианта."},
-                                    "description": {"type": "string", "description": "1-2 предложения о варианте."},
-                                },
-                            },
-                        },
-                        "recommended": {
-                            "type": "string",
-                            "description": "label рекомендованного по умолчанию варианта (точно из alternatives).",
-                        },
-                        "rationale": {"type": "string", "description": "Почему именно этот вариант — дефолт."},
-                        "level": {
-                            "type": "string",
-                            "enum": ["business", "architecture", "detail"],
-                            "description": "Уровень вовлечения по критериям.",
-                        },
-                    },
-                },
+                "items": light_decision_item_schema(),
             }
         },
     }
@@ -572,24 +515,10 @@ class DecisionIdentificationService:
         task_id: str,
         now: str,
     ) -> Decision:
-        # Маппинг ОБЛЕГЧЁННОЙ схемы ответа (alternatives = {label, description})
-        # в богатый domain DecisionAlternative: option_id генерируем сами по
-        # индексу (детерминированно, без машинного id от модели и кросс-ссылок),
-        # pros/cons пустые, confidence неизвестна (None). Так упрощение схемы
-        # запроса не затрагивает domain/UI/хранилище.
-        raw_alts = raw.get("alternatives") or []
-        alternatives = tuple(
-            DecisionAlternative(
-                option_id=f"opt-{index + 1}",
-                label=str(alt.get("label", "")).strip(),
-                description=str(alt.get("description", "")),
-                pros=(),
-                cons=(),
-                confidence=None,
-            )
-            for index, alt in enumerate(raw_alts)
-            if isinstance(alt, dict) and str(alt.get("label", "")).strip()
-        )
+        # Облегчённая схема (alternatives={label, description}) → богатый domain
+        # через ОБЩИЙ маппинг (decision_light_parsing), единый с emergent-путём:
+        # option_id=opt-N, pros/cons пустые, confidence=None.
+        alternatives = light_alternatives(raw.get("alternatives"))
         if len(alternatives) < 2:
             raise ValueError("decision требует минимум 2 альтернативы")
 
@@ -602,13 +531,7 @@ class DecisionIdentificationService:
                 f"получено {category!r}"
             )
 
-        # Рекомендация приходит как label варианта — находим его option_id;
-        # при промахе берём первый (best-effort, без кросс-ссылочной хрупкости).
-        recommended_label = str(raw.get("recommended") or "").strip()
-        chosen = next(
-            (alt.option_id for alt in alternatives if alt.label == recommended_label),
-            alternatives[0].option_id,
-        )
+        chosen = resolve_recommended_option_id(alternatives, raw.get("recommended"))
 
         level = raw.get("level")
         if level not in ("business", "architecture", "detail"):

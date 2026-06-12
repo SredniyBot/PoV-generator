@@ -41,11 +41,12 @@ from ..domain.decisions import (
     DECISION_CATEGORIES,
     SOURCE_EMERGENT,
     Decision,
-    DecisionAlternative,
+    light_decision_item_schema,
     normalized_decision_title_key,
     strip_decision_category_prefix,
 )
 from ..infrastructure.sqlite_runtime import SqliteRuntime
+from .decision_light_parsing import light_alternatives, resolve_recommended_option_id
 
 logger = logging.getLogger(__name__)
 
@@ -58,50 +59,12 @@ def decisions_schema() -> dict[str, Any]:
     решения, которые она приняла при сборке. Поле опциональное — пустой
     массив, если ярких выборов нет.
     """
+    # ЕДИНАЯ облегчённая схема решения (общая с identification-путём) — чтобы
+    # решения в реестре были согласованны независимо от источника.
     return {
         "type": "array",
         "maxItems": 3,
-        "items": {
-            "type": "object",
-            "required": [
-                "title",
-                "description",
-                "category",
-                "alternatives",
-                "chosen_in_artifact_option_id",
-                "rationale",
-                "level",
-                "confidence",
-            ],
-            "additionalProperties": False,
-            "properties": {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "category": {"type": "string", "enum": list(DECISION_CATEGORIES)},
-                "alternatives": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 4,
-                    "items": {
-                        "type": "object",
-                        "required": ["option_id", "label", "description", "confidence"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "option_id": {"type": "string"},
-                            "label": {"type": "string"},
-                            "description": {"type": "string"},
-                            "pros": {"type": "array", "items": {"type": "string"}},
-                            "cons": {"type": "array", "items": {"type": "string"}},
-                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                        },
-                    },
-                },
-                "chosen_in_artifact_option_id": {"type": "string"},
-                "rationale": {"type": "string"},
-                "level": {"type": "string", "enum": ["business", "architecture", "detail"]},
-                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            },
-        },
+        "items": light_decision_item_schema(),
     }
 
 
@@ -126,10 +89,10 @@ def decisions_instruction() -> str:
         "ярких выборов нет — верни пустой массив. От 0 до 3 на артефакт; лучше "
         "0, чем шум.\n"
         "Для каждого: title (3-7 слов), description (1-2 предложения), "
-        "category (из enum), alternatives (2-4 реальных варианта с label/"
-        "description/confidence), chosen_in_artifact_option_id (что зашито в "
-        "артефакте), rationale, level (business/architecture/detail), "
-        "confidence (0..1).\n"
+        "category (из enum), alternatives (2-4 реальных варианта, каждый с "
+        "label и description), recommended (label того варианта, что зашит в "
+        "артефакте — точно из alternatives), rationale, level "
+        "(business/architecture/detail).\n"
         "</decisions_self_report>"
     )
 
@@ -227,33 +190,18 @@ class DecisionExtractionService:
         artifact_id: str,
         now: str,
     ) -> Decision:
-        raw_alts = raw.get("alternatives") or []
-        alternatives = tuple(
-            DecisionAlternative(
-                option_id=str(alt["option_id"]),
-                label=str(alt.get("label", "")),
-                description=str(alt.get("description", "")),
-                pros=tuple(alt.get("pros") or ()),
-                cons=tuple(alt.get("cons") or ()),
-                confidence=(
-                    float(alt["confidence"]) if alt.get("confidence") is not None else None
-                ),
-            )
-            for alt in raw_alts
-            if isinstance(alt, dict) and "option_id" in alt
-        )
+        # Облегчённая схема (alternatives={label, description}) → богатый domain
+        # через ОБЩИЙ маппинг, единый с identification-путём: option_id=opt-N,
+        # pros/cons пустые, confidence=None. Источники решений однородны.
+        alternatives = light_alternatives(raw.get("alternatives"))
         if len(alternatives) < 2:
             raise ValueError("self-reported decision: need >= 2 alternatives")
-        if any(alt.confidence is None for alt in alternatives):
-            raise ValueError("self-reported decision: confidence required on alts")
 
         category = str(raw.get("category") or "").strip()
         if category not in DECISION_CATEGORIES:
             raise ValueError(f"self-reported decision: bad category {category!r}")
 
-        chosen = str(raw.get("chosen_in_artifact_option_id") or "")
-        if chosen not in {alt.option_id for alt in alternatives}:
-            chosen = alternatives[0].option_id
+        chosen = resolve_recommended_option_id(alternatives, raw.get("recommended"))
 
         level = raw.get("level")
         if level not in ("business", "architecture", "detail"):
