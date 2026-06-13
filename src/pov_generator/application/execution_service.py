@@ -11,7 +11,7 @@ from ..common.cancellation import (
     CancellationToken,
     cancellation_scope,
 )
-from ..common.errors import ConflictError
+from ..common.errors import ConflictError, ProviderExhaustedError
 from ..common.logging import get_logger
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
@@ -1210,6 +1210,10 @@ class ExecutionService:
                 context_text=context_text,
                 existing_registry_titles=existing_titles,
             )
+        except ProviderExhaustedError:
+            # Квота провайдера исчерпана — фатально для прогона: пробрасываем,
+            # чтобы раннер остановил пайплайн (а не best-effort skip).
+            raise
         except ConflictError as exc:
             msg = str(exc)
             if "Не назначена модель" in msg or "нет рабочих маршрутов" in msg:

@@ -56,7 +56,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..common.errors import ConflictError
+from ..common.errors import ConflictError, ProviderExhaustedError
 from ..common.llm_modes import plain_json_scope
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import (
@@ -336,6 +336,10 @@ class DecisionIdentificationService:
                     user_prompt=user_prompt,
                     schema=schema,
                 )
+        except ProviderExhaustedError:
+            # Исчерпание квоты — фатально для прогона: пробрасываем как есть,
+            # чтобы раннер остановил пайплайн (НЕ глушим best-effort skip'ом).
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ConflictError(
                 f"Ошибка выявления решений через {llm.name}: {exc}"

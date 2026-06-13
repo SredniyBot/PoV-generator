@@ -4818,6 +4818,13 @@ code {
   font-style: italic;
   font-variant-numeric: tabular-nums;
 }
+/* Повторная попытка = ошибка, которую надо избегать: подсвечиваем красным,
+   когда их больше нуля. */
+.usage-retry-alert {
+  color: var(--danger, #d78383);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 
 .artifact-detail__provenance-collapsible summary {
   cursor: pointer;

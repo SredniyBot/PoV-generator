@@ -180,19 +180,20 @@ def test_flat_object_is_split_into_field_batches() -> None:
     простых полей — иначе strict штормит на нём целиком. Каждый батч простой."""
     from pov_generator.infrastructure.llm.compositional.plan import ObjectPlan
 
-    # 10 полей-массивов-строк (типично для артефакта) — плоский, без вложенных
-    # объектов: раньше это был один тяжёлый лист.
+    # 20 полей-массивов-строк (типично для артефакта вроде requirements_spec) —
+    # плоский, без вложенных объектов: раньше это был один тяжёлый лист. Полей
+    # заведомо больше бюджета батча → дробится на несколько.
     schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": [f"f{i}" for i in range(10)],
-        "properties": {f"f{i}": {"type": "array", "items": {"type": "string"}} for i in range(10)},
+        "required": [f"f{i}" for i in range(20)],
+        "properties": {f"f{i}": {"type": "array", "items": {"type": "string"}} for i in range(20)},
     }
     plan = SchemaTreeDecomposer().decompose(schema)
     assert isinstance(plan, ObjectPlan)
-    assert len(plan.scalar_groups) >= 2, "10 полей должны разбиться на несколько батчей"
-    # Каждый батч заметно ниже «линии шторма» (cx>=8) — strict возьмёт одним ходом.
-    assert all(schema_complexity(g) < 8 for g in plan.scalar_groups)
+    assert len(plan.scalar_groups) >= 2, "20 полей должны разбиться на несколько батчей"
+    # Каждый батч ограничен бюджетом (ниже порога декомпозиции) — не «монстр».
+    assert all(schema_complexity(g) < decomposition_threshold() for g in plan.scalar_groups)
     # Сборка фейком даёт валидное целое.
     fake = _FakeProvider()
     provider = CompositionalLLMProvider(fake)

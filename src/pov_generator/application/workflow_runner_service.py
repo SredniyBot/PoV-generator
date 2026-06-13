@@ -50,6 +50,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..common.cancellation import CancellationError, CancellationToken
+from ..common.errors import ProviderExhaustedError
 from ..common.logging import bind, get_logger
 from ..common.serialization import utc_now_iso
 from ..domain.registry import RegistrySnapshot
@@ -410,6 +411,10 @@ class WorkflowRunnerService:
         dispatched = 0
         saw_validation_failure = False
         awaiting_checkpoint = False
+        # Сообщение об исчерпании квоты провайдера (None — не было). Если задача
+        # упала с ProviderExhaustedError — продолжать прогон бессмысленно
+        # (подписка исчерпана, фолбэк-провайдера нет): останавливаем пайплайн.
+        provider_exhausted: str | None = None
 
         with ThreadPoolExecutor(
             max_workers=concurrency, thread_name_prefix=f"wf-{run_id[:8]}"
@@ -436,6 +441,24 @@ class WorkflowRunnerService:
                         status="cancelled",
                         stop_reason="cancelled_by_user",
                         summary="Прервано пользователем: текущие шаги отменены, продолжите запуском.",
+                    )
+                    return
+
+                # --- исчерпание квоты провайдера -> стоп всего пайплайна -----
+                if provider_exhausted is not None:
+                    # Дальнейшие задачи не запускаем — подписка исчерпана. Ждём
+                    # текущие in-flight (они тоже упрутся в лимит) и финализируем
+                    # с явным сообщением пользователю.
+                    logger.error("прогон остановлен: исчерпан лимит провайдера")
+                    if in_flight:
+                        futures_wait(set(in_flight), return_when=ALL_COMPLETED)
+                    self._finalize(
+                        workspace,
+                        run_id,
+                        status="failed",
+                        stop_reason="provider_exhausted",
+                        summary=provider_exhausted,
+                        error_message=provider_exhausted,
                     )
                     return
 
@@ -511,6 +534,23 @@ class WorkflowRunnerService:
                     except CancellationError:
                         # задача отменена и сброшена в ready; на следующей
                         # итерации поймаем cancel-флаг и финализируем cancelled.
+                        continue
+                    except ProviderExhaustedError as exc:
+                        # Квота провайдера исчерпана — фатально для прогона.
+                        # Помечаем шаг failed и взводим флаг останова пайплайна
+                        # (проверяется в начале следующей итерации цикла).
+                        provider_exhausted = str(exc).strip() or "Исчерпан лимит провайдера."
+                        dur = round((time.perf_counter() - meta.started_perf) * 1000)
+                        logger.error(
+                            "шаг упал: исчерпан лимит провайдера",
+                            task=meta.task_key.split("@")[0],
+                            duration_ms=dur,
+                        )
+                        self._append_step(
+                            workspace, run_id, meta,
+                            validation_status="failed", planning_outcome="error",
+                            execution_run_id=None, reasons=(provider_exhausted,),
+                        )
                         continue
                     except Exception as exc:  # noqa: BLE001 — воркер не валит run
                         saw_validation_failure = True

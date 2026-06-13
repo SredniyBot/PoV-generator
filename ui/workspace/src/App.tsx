@@ -2590,7 +2590,7 @@ function ArtifactLaunchUsage({ usage }: { usage: Record<string, import("./types"
         <strong>Запуски LLM</strong>
         <span className="artifact-tokens__total">всего {fmt(totalLaunches)}</span>
         {totalRetries > 0 ? (
-          <span className="artifact-tokens__total">из них повторных {fmt(totalRetries)}</span>
+          <span className="usage-retry-alert">из них повторных {fmt(totalRetries)}</span>
         ) : null}
       </div>
       <table className="artifact-tokens__table">
@@ -2608,7 +2608,9 @@ function ArtifactLaunchUsage({ usage }: { usage: Record<string, import("./types"
               <tr key={key} className={retries > 0 ? "artifact-tokens__row--heavy" : undefined}>
                 <td>{stageUsageLabel(key)}</td>
                 <td>{fmt(val.call_count || 0)}</td>
-                <td className="artifact-tokens__reasoning">{fmt(retries)}</td>
+                <td className={retries > 0 ? "usage-retry-alert" : "artifact-tokens__reasoning"}>
+                  {fmt(retries)}
+                </td>
               </tr>
             );
           })}
@@ -2619,7 +2621,9 @@ function ArtifactLaunchUsage({ usage }: { usage: Record<string, import("./types"
             <td>
               <strong>{fmt(totalLaunches)}</strong>
             </td>
-            <td className="artifact-tokens__reasoning">{fmt(totalRetries)}</td>
+            <td className={totalRetries > 0 ? "usage-retry-alert" : "artifact-tokens__reasoning"}>
+              {fmt(totalRetries)}
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -3161,10 +3165,12 @@ function ArtifactDetailPanel({ detail, projectId }: { detail: ArtifactDetailView
           ) : null}
           {hasLaunchData ? (
             <div>
-              <span title="Сколько из запусков были повторными (retry/деградация strict/пересборка).">
+              <span title="Сколько из запусков были повторными (retry/деградация strict/пересборка). Повтор = ошибка, которой стараемся избегать.">
                 Повторных попыток
               </span>
-              <strong>{totalRetries.toLocaleString("ru-RU")}</strong>
+              <strong className={totalRetries > 0 ? "usage-retry-alert" : undefined}>
+                {totalRetries.toLocaleString("ru-RU")}
+              </strong>
             </div>
           ) : null}
           {detail.merge_strategy ? (

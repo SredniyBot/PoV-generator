@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Protocol, runtime_checkable
 
 from . import schema_utils as su
@@ -42,10 +43,21 @@ def _name_tokens(name: str) -> set[str]:
 # Дефолтный потолок числа элементов массива, если в схеме не задан maxItems.
 _DEFAULT_ARRAY_MAX = 8
 # Бюджет сложности на ОДИН батч простых полей объекта. Плоский объект с многими
-# полями strict не берёт за раз — режем его на батчи в пределах этого бюджета,
-# каждый из которых модель надёжно отдаёт одним ходом. ~6 ≈ объект из 4-5
-# простых полей (на таком strict стабильно проходит; на cx≥8 уже штормит).
-_SCALAR_GROUP_BUDGET = 6
+# полями режем на батчи в пределах бюджета. Компромисс: крупнее батч → меньше
+# вызовов (важно для лимитов подписки), но ближе к «линии шторма» strict. 10 ≈
+# объект из ~8 простых полей. Переопределяется POV_COMPOSITIONAL_BATCH_BUDGET.
+_DEFAULT_SCALAR_GROUP_BUDGET = 10
+
+
+def _scalar_group_budget() -> int:
+    raw = os.environ.get("POV_COMPOSITIONAL_BATCH_BUDGET")
+    if raw is None:
+        return _DEFAULT_SCALAR_GROUP_BUDGET
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SCALAR_GROUP_BUDGET
+    return value if value > 0 else _DEFAULT_SCALAR_GROUP_BUDGET
 
 
 @runtime_checkable
@@ -94,12 +106,13 @@ class SchemaTreeDecomposer:
         тогда начинаем новый. Так каждый батч остаётся достаточно простым, чтобы
         strict взял его одним ходом. Поле, само превышающее бюджет, занимает
         отдельный батч."""
+        budget = _scalar_group_budget()
         groups: list[JSONSchema] = []
         current: dict[str, JSONSchema] = {}
         current_cx = 0
         for name, sub in fields.items():
             field_cx = schema_complexity(sub) + 1  # +1 за само поле
-            if current and current_cx + field_cx > _SCALAR_GROUP_BUDGET:
+            if current and current_cx + field_cx > budget:
                 groups.append(self._subset_schema(parent, current))
                 current, current_cx = {}, 0
             current[name] = sub

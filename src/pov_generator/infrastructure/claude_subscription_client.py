@@ -62,8 +62,8 @@ from pathlib import Path
 from typing import Any
 
 from ..common.cancellation import CancellationError, CancellationToken, current_cancellation
-from ..common.errors import ConflictError
-from ..common.llm_modes import plain_json_preferred
+from ..common.errors import ConflictError, ProviderExhaustedError
+from ..common.llm_modes import current_fragment_label, plain_json_preferred
 from ..common.logging import get_logger
 from .llm.protocol import LLMResult, LLMUsage, estimate_token_count
 from .llm.structured_output import strip_descriptions, strip_nulls
@@ -197,6 +197,26 @@ def _classification_text(exc: BaseException) -> str:
     ``__cause__`` — там эти маркеры есть. Без cause падаем на сам текст."""
     cause = exc.__cause__
     return str(cause) if cause is not None else str(exc)
+
+
+def _is_provider_exhausted(message: str) -> bool:
+    """Похоже ли на исчерпание квоты/лимита подписки (а не разовый сбой).
+
+    Подписочный CLI при 429/529 возвращает is_error с subtype=success → в
+    сообщении «returned an error result: success». Плюс прямые маркеры лимита.
+    Это НЕ транзиент: повтор в окне исчерпанной квоты бессмыслен."""
+    low = message.lower()
+    return (
+        "error result: success" in low
+        or "rate limit" in low
+        or "rate-limit" in low
+        or "rate_limit" in low
+        or "overloaded" in low
+        or "usage limit" in low
+        or "quota" in low
+        or "429" in low
+        or "529" in low
+    )
 
 
 def _is_schema_mode_error(message: str) -> bool:
@@ -497,6 +517,14 @@ class ClaudeSubscriptionClient:
                 #    повторяем БЕЗ схемы в этой же попытке.
                 if cli_schema is not None and _is_schema_mode_error(message):
                     self._disable_structured(message)
+                    # Наблюдаемость «что именно ретраится»: какой фрагмент сборки
+                    # не дался strict и деградировал на plain (для диагностики
+                    # тяжёлых частей — см. метку фрагмента из ambient-скоупа).
+                    logger.warning(
+                        "claude_subscription: strict не дался — деградация на plain "
+                        f"[фрагмент: {current_fragment_label() or 'весь артефакт'}] "
+                        f"({message[:80]})"
+                    )
                     try:
                         return _with_call_counts(_run(None), cli_calls)
                     except ConflictError as exc_plain:
@@ -671,7 +699,19 @@ class ClaudeSubscriptionClient:
                     if isinstance(text, str):
                         chunks.append(text)
         except Exception as exc:  # pragma: no cover
-            # Наружу — одна понятная фраза (помещается в UI); полная техническая
+            # Исчерпание квоты/лимита подписки (rate-limit окна, 429/529) —
+            # ФАТАЛЬНО и не транзиентно: не ретраим, раннер остановит пайплайн.
+            if _is_provider_exhausted(str(exc)):
+                logger.warning(
+                    "claude_subscription: исчерпан лимит подписки "
+                    f"(model={self._config.model or '<session>'}): {str(exc)[:200]}"
+                )
+                raise ProviderExhaustedError(
+                    "Исчерпан лимит/квота подписки Claude (rate-limit окна). "
+                    "Дальнейшие задачи остановлены — повторите позже или подключите "
+                    "другого провайдера в настройках."
+                ) from exc
+            # Прочее — одна понятная фраза (помещается в UI); полная техническая
             # диагностика уходит в лог (см. _user_error_message).
             raise ConflictError(self._user_error_message(exc)) from exc
         finally:
@@ -841,8 +881,11 @@ def _is_transient_cli_error(message: str) -> bool:
     # Детерминированные (НЕ транзиентные) исходы, хотя формально приходят внутри
     # "returned an error result". Проверяем раньше общего маркёра, чтобы не
     # ретраить впустую: max-turns — конфигурация; structured-output failure —
-    # модель не тянет схему (обрабатывается деградацией, см. _is_schema_mode_error).
+    # модель не тянет схему (деградация); исчерпание квоты — фатально (повтор в
+    # исчерпанном окне бессмыслен, обрабатывается как ProviderExhaustedError).
     if "maximum number of turns" in msg or "valid structured output" in msg:
+        return False
+    if _is_provider_exhausted(msg):
         return False
     transient_markers = (
         "command failed with exit code",

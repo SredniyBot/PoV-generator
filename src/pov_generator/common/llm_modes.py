@@ -25,11 +25,30 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _prefer_plain_json: ContextVar[bool] = ContextVar("prefer_plain_json", default=False)
+# Метка текущего фрагмента сборки (compositional) — чтобы провайдер мог написать
+# в лог, КАКОЙ именно фрагмент пришлось деградировать/ретраить. Наблюдаемость
+# «что именно ретраится», без протаскивания метки через сигнатуру chat_json.
+_fragment_label: ContextVar[str | None] = ContextVar("fragment_label", default=None)
 
 
 def plain_json_preferred() -> bool:
     """Активен ли в текущем скоупе «плоский» режим structured-вывода."""
     return _prefer_plain_json.get()
+
+
+def current_fragment_label() -> str | None:
+    """Метка текущего фрагмента сборки (для диагностических логов)."""
+    return _fragment_label.get()
+
+
+@contextmanager
+def fragment_label_scope(label: str) -> Iterator[None]:
+    """Пометить текущий фрагмент сборки на время блока (для логов провайдера)."""
+    reset_token = _fragment_label.set(label)
+    try:
+        yield
+    finally:
+        _fragment_label.reset(reset_token)
 
 
 @contextmanager

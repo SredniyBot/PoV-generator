@@ -508,6 +508,46 @@ def test_structured_output_failure_is_schema_mode_not_transient() -> None:
     assert mod._is_transient_cli_error(msg) is False
 
 
+def test_provider_exhausted_classifier() -> None:
+    """Исчерпание квоты (429/529/overload) распознаётся и НЕ транзиентно."""
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    for msg in (
+        "Claude Code returned an error result: success",
+        "API error 429: rate limit exceeded",
+        "Error 529: overloaded",
+        "usage limit reached",
+    ):
+        assert mod._is_provider_exhausted(msg) is True, msg
+        assert mod._is_transient_cli_error(msg) is False, msg
+    # Обычный транзиент — не «исчерпание».
+    assert mod._is_provider_exhausted("Command failed with exit code 1") is False
+
+
+def test_quota_overload_raises_provider_exhausted_not_retried() -> None:
+    """Overload подписки → ProviderExhaustedError (НЕ ConflictError), без retry —
+    раннер на ней остановит пайплайн."""
+    from pov_generator.common.errors import ProviderExhaustedError
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+    calls = {"n": 0}
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        calls["n"] += 1
+        raise RuntimeError("Claude Code returned an error result: success")
+        yield  # pragma: no cover — делает функцию async-генератором
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    with pytest.raises(ProviderExhaustedError):
+        client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+    # Без retry: ровно один заход к провайдеру (не 3 транзит-повтора).
+    assert calls["n"] == 1
+
+
 def test_claude_subscription_max_turns_message_is_actionable(monkeypatch) -> None:
     """При исчерпании ходов сообщение указывает на max_turns/tools, а не на
     обманчивый «противоречивый ответ подписки»."""

@@ -23,6 +23,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from ....common.llm_modes import fragment_label_scope
 from ..protocol import LLMProvider, LLMUsage
 from ..structured_output import strip_nulls
 from . import schema_utils as su
@@ -182,7 +183,8 @@ class StructuredAssembler:
         )
         payload: dict[str, Any] = {}
         for _ in range(_part_retries() + 1):
-            result = self._provider.chat_json(system_prompt=system, user_prompt=user, schema=schema)
+            with fragment_label_scope(label):
+                result = self._provider.chat_json(system_prompt=system, user_prompt=user, schema=schema)
             run.usages.append(result.usage)
             payload = strip_nulls(result.payload) if isinstance(result.payload, dict) else {}
             if matches_schema(payload, schema):
