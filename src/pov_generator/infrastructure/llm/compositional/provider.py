@@ -20,7 +20,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ....common.llm_modes import plain_json_preferred
+from ....common.llm_modes import (
+    force_compositional_requested,
+    plain_json_preferred,
+    plain_json_scope,
+)
 from ....common.logging import get_logger
 from ..protocol import LLMProvider, LLMResult, LLMUsage
 from .assembler import StructuredAssembler
@@ -63,6 +67,11 @@ class CompositionalLLMProvider:
     def model(self) -> str | None:
         return self._inner.model
 
+    @property
+    def token_window_limited(self) -> bool:
+        """Проксируем cost-модель обёрнутого провайдера (см. llm_modes)."""
+        return bool(getattr(self._inner, "token_window_limited", False))
+
     def chat_json(
         self,
         *,
@@ -70,13 +79,24 @@ class CompositionalLLMProvider:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> LLMResult:
-        # Plain-режим (ambient): вызывающий просит один проход без декомпозиции
-        # (форму добьёт нормализация). Композиция применима только к объектным
-        # схемам. В обоих случаях — делегируем как есть.
-        if plain_json_preferred() or not is_object_schema(schema):
-            return self._inner.chat_json(
-                system_prompt=system_prompt, user_prompt=user_prompt, schema=schema
-            )
+        # Один проход без декомпозиции, когда:
+        #   * вызывающий явно просит plain (ambient), ИЛИ
+        #   * провайдер с лимитом окна (token_window_limited) — для него
+        #     проактивная декомпозиция на N фрагментов выжигает 5-часовое окно
+        #     (объём cache-read = вызовы × префикс); форму добьёт нормализация.
+        # Перебивается ``force_compositional`` — реактивной крайней мерой, когда
+        # плоский проход не уложился (её ставит execution_service на повторе).
+        prefer_single = (
+            plain_json_preferred() or self.token_window_limited
+        ) and not force_compositional_requested()
+        if prefer_single or not is_object_schema(schema):
+            # plain_json_scope гарантирует, что плоский провайдер (subscription)
+            # уйдёт в schema-в-промпте, а не в strict ``--json-schema`` (иначе
+            # тяжёлая схема штормит multi-turn coercion).
+            with plain_json_scope():
+                return self._inner.chat_json(
+                    system_prompt=system_prompt, user_prompt=user_prompt, schema=schema
+                )
 
         if should_decompose(schema):
             _logger.info("compositional: сложная схема → сборка по частям", mode="proactive")

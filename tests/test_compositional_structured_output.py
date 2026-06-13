@@ -242,6 +242,40 @@ def test_provider_plain_mode_skips_decomposition() -> None:
     assert isinstance(result.payload, dict)
 
 
+class _WindowLimitedProvider(_FakeProvider):
+    """Провайдер с лимитом окна (как claude_subscription): объём cache-read бьёт
+    по 5-часовому окну → проактивная декомпозиция запрещена."""
+
+    token_window_limited = True
+
+
+def test_window_limited_provider_single_pass_no_proactive_decomposition() -> None:
+    """Для провайдера с лимитом окна сложная схема идёт ОДНИМ проходом (не
+    дробится проактивно на N фрагментов) — это и есть экономия cache-read."""
+    schema = _build_identification_schema()  # заведомо сложная
+    fake = _WindowLimitedProvider()
+    provider = CompositionalLLMProvider(fake)
+    result = provider.chat_json(system_prompt="s", user_prompt="u", schema=schema)
+    assert len(fake.calls) == 1  # один проход вместо ~десятка фрагментов
+    assert isinstance(result.payload, dict)
+    # Обёртка проксирует cost-модель внутреннего провайдера.
+    assert provider.token_window_limited is True
+
+
+def test_force_compositional_overrides_window_limit() -> None:
+    """force_compositional (реактивная крайняя мера) перебивает «один проход»
+    провайдера с лимитом окна — собираем по частям, сохраняя контракт."""
+    from pov_generator.common.llm_modes import force_compositional_scope
+
+    schema = _build_identification_schema()
+    fake = _WindowLimitedProvider()
+    provider = CompositionalLLMProvider(fake)
+    with force_compositional_scope():
+        result = provider.chat_json(system_prompt="s", user_prompt="u", schema=schema)
+    assert len(fake.calls) > 1  # принудительно собрано по частям
+    assert matches_schema(result.payload, schema)
+
+
 # --- лёгкая валидация --------------------------------------------------------
 
 

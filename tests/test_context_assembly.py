@@ -94,3 +94,11 @@ def test_effective_input_budget() -> None:
     assert effective_input_budget(64000, 40_000) == 40_000 - OUTPUT_RESERVE_TOKENS
     # Ничего не задано — без лимита.
     assert effective_input_budget(None, None) is None
+    # Жёсткий потолок (провайдер с лимитом окна) срезает раздутый контекст,
+    # даже когда окно/шаблон щедрее.
+    assert effective_input_budget(None, 200_000, 48_000) == 48_000
+    assert effective_input_budget(120_000, 200_000, 48_000) == 48_000
+    # Но если шаблон/окно строже жёсткого потолка — берём строжайшее.
+    assert effective_input_budget(12_000, 200_000, 48_000) == 12_000
+    # Жёсткий потолок без прочих лимитов.
+    assert effective_input_budget(None, None, 48_000) == 48_000

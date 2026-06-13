@@ -86,6 +86,11 @@ class LoggingLLMProvider:
     def model(self) -> str | None:
         return self._inner.model
 
+    @property
+    def token_window_limited(self) -> bool:
+        """Проксируем cost-модель обёрнутого провайдера (см. llm_modes)."""
+        return bool(getattr(self._inner, "token_window_limited", False))
+
     def chat_json(
         self,
         *,

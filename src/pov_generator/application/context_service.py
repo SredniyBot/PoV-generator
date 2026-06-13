@@ -70,6 +70,7 @@ class ContextService:
         task_id: str,
         *,
         model_context_window: int | None = None,
+        input_budget_ceiling: int | None = None,
     ) -> ContextBuildResult:
         """Собрать контекст задачи.
 
@@ -82,6 +83,9 @@ class ContextService:
 
         ``model_context_window`` — окно активной модели (токены), потолок
         бюджета входа; ``None`` — для не-LLM путей (stub) и тестов.
+        ``input_budget_ceiling`` — дополнительный жёсткий потолок входа (напр.
+        для провайдера с лимитом окна, где объём токенов выжигает 5-часовое
+        окно): срезает лишь ПРОИЗВОДНЫЙ контекст, обязательное не теряется.
         """
         state = self._runtime.load_project_state(workspace)
         task = self._runtime.get_task(workspace, task_id)
@@ -204,9 +208,11 @@ class ContextService:
             )
             add(self._make_artifact_item(workspace, artifact, required=False), authority, pinned=False)
 
-        # 8. Бюджет: окно модели (потолок) ∩ намерение шаблона.
+        # 8. Бюджет: окно модели (потолок) ∩ намерение шаблона ∩ жёсткий потолок.
         template_intent = self._effective_max_tokens(template.context_policy.max_tokens)
-        budget = effective_input_budget(template_intent, model_context_window)
+        budget = effective_input_budget(
+            template_intent, model_context_window, input_budget_ceiling
+        )
 
         # 9. Укладка: pinned всегда внутри; производное — по авторитету до бюджета.
         packed = pack_context(candidates, budget)

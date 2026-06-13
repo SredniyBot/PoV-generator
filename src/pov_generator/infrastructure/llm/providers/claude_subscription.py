@@ -27,6 +27,13 @@ class ClaudeSubscriptionProvider:
     """
 
     name = "claude_subscription"
+    # Лимит подписки — 5-часовое ОКНО, считающее ОБЪЁМ токенов (включая
+    # cache-read). Prompt-caching удешевляет деньги, но не окно: N фрагментов ×
+    # префикс выжигают окно. Поэтому structured-вывод для подписки идёт ОДНИМ
+    # плоским проходом (+ нормализация/self-repair), а compositional-сборка по
+    # частям — лишь реактивная крайняя мера. Флаг читают обёртки/execution_service
+    # (см. common/llm_modes.py).
+    token_window_limited = True
 
     def __init__(
         self,

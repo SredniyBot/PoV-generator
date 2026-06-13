@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -12,6 +13,7 @@ from ..common.cancellation import (
     cancellation_scope,
 )
 from ..common.errors import ConflictError, ProviderExhaustedError
+from ..common.llm_modes import force_compositional_scope
 from ..common.logging import get_logger
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
@@ -24,6 +26,7 @@ from ..infrastructure.harness.credentials import (
     credentials_from_connection,
 )
 from ..infrastructure.llm import LLMProvider, LLMProviderRegistry, LLMUsage
+from ..infrastructure.llm.compositional.validation import matches_schema
 from ..infrastructure.sqlite_runtime import SqliteRuntime
 from .artifact_contracts import (
     artifact_schema,
@@ -47,6 +50,24 @@ from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
 logger = get_logger("execution")
+
+# Жёсткий потолок входного контекста (токены) для провайдеров с лимитом окна
+# (подписка): объём токенов выжигает 5-часовое окно, поэтому раздутый
+# ПРОИЗВОДНЫЙ контекст (до ~76k наблюдалось) срезаем по авторитету. Потолок
+# щедрый — режет лишь реальные runaway-задачи, обычные не трогает; обязательное
+# не теряется (укладчик громко падает при нехватке). Переопределяется env.
+_DEFAULT_WINDOW_LIMITED_INPUT_BUDGET = 48_000
+
+
+def _window_limited_input_budget() -> int:
+    raw = os.environ.get("POV_SUBSCRIPTION_INPUT_BUDGET")
+    if raw is None:
+        return _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
+    return value if value > 0 else _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
 
 
 def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fallback: str) -> str:
@@ -416,11 +437,19 @@ class ExecutionService:
 
         # Контекст строим ПОСЛЕ резолва модели: бюджет входа ограничен окном
         # активной модели (per-model context window из настроек UI).
+        # Провайдер с лимитом окна (подписка): дополнительно срезаем раздутый
+        # производный контекст жёстким потолком (объём токенов выжигает окно).
+        input_ceiling = (
+            _window_limited_input_budget()
+            if (llm_provider is not None and getattr(llm_provider, "token_window_limited", False))
+            else None
+        )
         context_result = self._context_service.build_for_task(
             workspace,
             snapshot,
             task_id,
             model_context_window=self._llm.context_limit_for(active_model),
+            input_budget_ceiling=input_ceiling,
         )
         context_manifest = context_result.manifest
 
@@ -675,9 +704,9 @@ class ExecutionService:
             # Каждый LLM-вызов логируется LoggingLLMProvider; usage по вызовам
             # (llm_usages) пишется в БД через _record_llm_usages ниже, а наша
             # метадата токенов артефакта строится из них же (см. ниже).
-            if _cot:
-                payload, live_reasoning, self_reported_decisions, llm_usages = (
-                    self._execute_per_stage_cot(
+            def _generate() -> tuple[dict, Any, list, list]:
+                if _cot:
+                    return self._execute_per_stage_cot(
                         llm=llm_provider,
                         base_system_prompt=system_prompt,
                         base_user_prompt=user_prompt,
@@ -686,37 +715,55 @@ class ExecutionService:
                         primary_schema=primary_schema,
                         decisions_schema_def=decisions_schema_def,
                     )
+                return self._execute_single_call(
+                    llm=llm_provider,
+                    base_system_prompt=system_prompt,
+                    base_user_prompt=user_prompt,
+                    methodology=active_methodology,
+                    complexity=complexity_value,
+                    primary_schema=primary_schema,
+                    decisions_schema_def=decisions_schema_def,
                 )
-            else:
-                payload, live_reasoning, self_reported_decisions, llm_usages = (
-                    self._execute_single_call(
-                        llm=llm_provider,
-                        base_system_prompt=system_prompt,
-                        base_user_prompt=user_prompt,
-                        methodology=active_methodology,
-                        complexity=complexity_value,
-                        primary_schema=primary_schema,
-                        decisions_schema_def=decisions_schema_def,
-                    )
+
+            def _shape(payload: dict, usages: list) -> tuple[dict, list]:
+                # Форма-нормализация (детерминированно) + точечный self-repair.
+                # Огромный артефакт (ТЗ: десятки полей, ~8 строгих вложенных схем)
+                # модель в один проход не выдаёт идеально под схему — каждый прогон
+                # отклонялся на РАЗНОМ подмножестве полей. Сначала чиним механику
+                # формы без LLM и без потери содержания (normalize_to_schema), затем
+                # оставшиеся содержательные пробелы — точечным LLM-вызовом ТОЛЬКО по
+                # провалившимся полям (дёшево относительно полной перегенерации).
+                # На валидном payload оба шага — no-op, поэтому stub/валидные ответы
+                # не затрагиваются.
+                payload = normalize_to_schema(payload, primary_schema)
+                payload, repair_usages = self._repair_payload_to_schema(
+                    llm=llm_provider,
+                    payload=payload,
+                    primary_schema=primary_schema,
+                    artifact_role=artifact_role,
                 )
-            # Форма-нормализация (детерминированно) + точечный self-repair.
-            # Огромный артефакт (ТЗ: десятки полей, ~8 строгих вложенных схем)
-            # модель в один проход не выдаёт идеально под схему — каждый прогон
-            # отклонялся на РАЗНОМ подмножестве полей. Сначала чиним механику
-            # формы без LLM и без потери содержания (normalize_to_schema), затем
-            # оставшиеся содержательные пробелы — точечным LLM-вызовом ТОЛЬКО по
-            # провалившимся полям (дёшево относительно полной перегенерации).
-            # На валидном payload оба шага — no-op, поэтому stub/валидные ответы
-            # не затрагиваются.
-            payload = normalize_to_schema(payload, primary_schema)
-            payload, repair_usages = self._repair_payload_to_schema(
-                llm=llm_provider,
-                payload=payload,
-                primary_schema=primary_schema,
-                artifact_role=artifact_role,
-            )
-            if repair_usages:
-                llm_usages = [*llm_usages, *repair_usages]
+                return payload, [*usages, *repair_usages] if repair_usages else usages
+
+            payload, live_reasoning, self_reported_decisions, llm_usages = _generate()
+            payload, llm_usages = _shape(payload, llm_usages)
+
+            # Реактивная сборка по частям — крайняя мера ТОЛЬКО для провайдера с
+            # лимитом окна (subscription идёт одним плоским проходом ради экономии
+            # cache-read). Если плоский проход + нормализация + self-repair не
+            # уложились в схему — добираем форму compositional-сборкой (дорого по
+            # вызовам, потому только при реальном провале, а не на каждой задаче).
+            if (
+                getattr(llm_provider, "token_window_limited", False)
+                and not matches_schema(payload, primary_schema)
+            ):
+                logger.warning(
+                    "execution: плоский проход не уложился в схему "
+                    f"(role={artifact_role}) → реактивная сборка по частям"
+                )
+                with force_compositional_scope():
+                    payload, live_reasoning, self_reported_decisions, fb_usages = _generate()
+                payload, fb_usages = _shape(payload, fb_usages)
+                llm_usages = [*llm_usages, *fb_usages]
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
         # self_reported_decisions заполняет только LLM-ветка (идея А);

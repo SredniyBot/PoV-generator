@@ -196,21 +196,24 @@ def pack_context(
 
 
 def effective_input_budget(
-    template_intent: int | None, model_window: int | None
+    template_intent: int | None,
+    model_window: int | None,
+    hard_ceiling: int | None = None,
 ) -> int | None:
     """Рабочий бюджет входа: намерение шаблона, ограниченное окном модели.
 
     ``model_window`` — потолок (окно модели), из него вычитаем резерв на вывод.
-    Возвращает ``None`` (без лимита) только если не заданы ни шаблон, ни окно.
-    Для больших окон (≥128k) намерение шаблона почти всегда меньше потолка —
-    поведение обычных задач не меняется; потолок защищает лишь от переполнения
-    реально маленького окна.
+    ``hard_ceiling`` — дополнительный жёсткий потолок входа (напр. для провайдера
+    с лимитом окна, где объём токенов выжигает 5-часовое окно): срезает только
+    ПРОИЗВОДНЫЙ контекст (обязательное/pinned укладчик не трогает — при нехватке
+    он громко падает, не теряет молча). Возвращает ``None`` (без лимита) только
+    если не задано НИЧЕГО. Для больших окон (≥128k) намерение шаблона почти
+    всегда меньше потолка — поведение обычных задач не меняется; потолки защищают
+    лишь от переполнения реально маленького окна / выжигания окна подписки.
     """
-    ceiling: int | None = None
+    limits = [v for v in (template_intent, hard_ceiling) if v is not None and v > 0]
     if model_window is not None and model_window > 0:
-        ceiling = max(OUTPUT_RESERVE_TOKENS, model_window - OUTPUT_RESERVE_TOKENS)
-    if template_intent is None:
-        return ceiling
-    if ceiling is None:
-        return template_intent
-    return min(template_intent, ceiling)
+        limits.append(max(OUTPUT_RESERVE_TOKENS, model_window - OUTPUT_RESERVE_TOKENS))
+    if not limits:
+        return None
+    return min(limits)
