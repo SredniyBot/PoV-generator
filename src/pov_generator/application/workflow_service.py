@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..common.cancellation import CancellationError, CancellationToken
+from ..common.errors import ProviderExhaustedError
 from ..common.serialization import utc_now_iso
 from ..domain.positions import Position
 from ..domain.process_state import CloseGapPatch, UpsertReadinessPatch
@@ -185,6 +186,17 @@ class WorkflowService:
             # записаны (отмена случилась до коммита), откатывать нечего.
             # Пробрасываем дальше — runner финализирует run как `cancelled`.
             self._planning_service.transition_task(workspace, task_id, "cancel")
+            raise
+        except ProviderExhaustedError:
+            # Квота провайдера исчерпана: помечаем задачу failed и ПРОБРАСЫВАЕМ —
+            # runner остановит весь пайплайн (дальнейшие задачи бессмысленны).
+            # Без re-raise (как у generic ниже) шаг стал бы обычным failed, и
+            # прогон продолжал бы добивать задачи в исчерпанной квоте.
+            self._planning_service.transition_task(
+                workspace, task_id, "fail",
+                payload={"error_message": "Исчерпан лимит провайдера.",
+                         "error_type": "ProviderExhaustedError"},
+            )
             raise
         except Exception as exc:
             message = str(exc).strip() or "Во время исполнения шага произошла ошибка."

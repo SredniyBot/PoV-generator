@@ -179,3 +179,34 @@ def test_latest_active_run_returns_none_when_no_active(tmp_path: Path) -> None:
     record = runner.start_run_until_blocked(workspace, project_id, provider="stub", model=None, max_steps=1)
     _wait_until_terminal(runtime, workspace, record.run_id, timeout_s=15.0)
     assert runner.latest_active_run(workspace, project_id) is None
+
+
+def test_provider_exhausted_stops_run_instead_of_grinding_through_tasks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Регрессия: при исчерпании квоты провайдера прогон ОСТАНАВЛИВАЕТСЯ, а не
+    добивает все оставшиеся задачи в исчерпанной квоте.
+
+    Раньше ProviderExhaustedError глотался в ``execute_step`` (generic
+    ``except Exception`` → failed-result), не доходил до раннера и не
+    останавливал пайплайн. Теперь он пробрасывается и финализирует прогон как
+    failed/provider_exhausted.
+    """
+    from pov_generator.common.errors import ProviderExhaustedError
+
+    workspace, project_id, runner, runtime = _bootstrap(tmp_path)
+
+    def _raise_exhausted(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise ProviderExhaustedError("Исчерпан лимит/квота подписки.")
+
+    monkeypatch.setattr(ExecutionService, "execute_task", _raise_exhausted)
+
+    record = runner.start_run_until_blocked(
+        workspace, project_id, provider="stub", model=None, max_steps=10,
+    )
+    terminal = _wait_until_terminal(runtime, workspace, record.run_id, timeout_s=30.0)
+
+    assert terminal.status == "failed"
+    assert terminal.stop_reason == "provider_exhausted"
+    # Остановились на ПЕРВОЙ же задаче — не прогрызли весь граф.
+    assert terminal.total_steps_completed == 0
