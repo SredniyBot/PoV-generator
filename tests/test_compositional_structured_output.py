@@ -192,8 +192,9 @@ def test_flat_object_is_split_into_field_batches() -> None:
     plan = SchemaTreeDecomposer().decompose(schema)
     assert isinstance(plan, ObjectPlan)
     assert len(plan.scalar_groups) >= 2, "20 полей должны разбиться на несколько батчей"
-    # Каждый батч ограничен бюджетом (ниже порога декомпозиции) — не «монстр».
-    assert all(schema_complexity(g) < decomposition_threshold() for g in plan.scalar_groups)
+    # Каждый батч проще целого (ограничен бюджетом) — не «монстр» из всех полей.
+    whole = schema_complexity(schema)
+    assert all(schema_complexity(g) < whole for g in plan.scalar_groups)
     # Сборка фейком даёт валидное целое.
     fake = _FakeProvider()
     provider = CompositionalLLMProvider(fake)
@@ -202,17 +203,29 @@ def test_flat_object_is_split_into_field_batches() -> None:
     assert len(fake.calls) == len(plan.scalar_groups)  # по вызову на батч
 
 
-def test_array_of_multifield_objects_is_expanded() -> None:
-    """Массив МНОГОПОЛЬНЫХ объектов разворачивается (каркас+наполнение), а массив
-    тривиальных пар {label,description} — нет."""
+def test_array_of_objects_expansion_policy() -> None:
+    """Разворачиваем массив, только если элемент ГЕНУИННО тяжёл: вложенная
+    структура внутри ИЛИ >4 полей. Небольшие плоские объекты — одним вызовом
+    (снимает лишние per-item вызовы, скаляры strict держит надёжно)."""
     from pov_generator.infrastructure.llm.compositional.plan import ArrayPlan, LeafPlan
 
-    multi = {"type": "array", "items": {"type": "object", "required": ["a", "b", "c"],
-             "properties": {"a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"}}}}
-    pair = {"type": "array", "items": {"type": "object", "required": ["label", "description"],
-            "properties": {"label": {"type": "string"}, "description": {"type": "string"}}}}
-    assert isinstance(SchemaTreeDecomposer().decompose(multi), ArrayPlan)
-    assert isinstance(SchemaTreeDecomposer().decompose(pair), LeafPlan)
+    def arr(item):
+        return {"type": "array", "items": item}
+
+    def obj(n, nested=False):
+        props = {f"f{i}": {"type": "string"} for i in range(n)}
+        if nested:
+            props["sub"] = {"type": "array", "items": {"type": "string"}}
+        return {"type": "object", "required": list(props), "properties": props}
+
+    dec = SchemaTreeDecomposer()
+    # Вложенная структура внутри элемента → разворачиваем.
+    assert isinstance(dec.decompose(arr(obj(2, nested=True))), ArrayPlan)
+    # Много полей (>4) → разворачиваем.
+    assert isinstance(dec.decompose(arr(obj(5))), ArrayPlan)
+    # Небольшой плоский объект (≤4 скаляр-поля) → один вызов на весь массив.
+    assert isinstance(dec.decompose(arr(obj(3))), LeafPlan)
+    assert isinstance(dec.decompose(arr(obj(2))), LeafPlan)
 
 
 def test_provider_plain_mode_skips_decomposition() -> None:

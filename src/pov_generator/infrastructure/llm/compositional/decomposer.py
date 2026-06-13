@@ -44,9 +44,12 @@ def _name_tokens(name: str) -> set[str]:
 _DEFAULT_ARRAY_MAX = 8
 # Бюджет сложности на ОДИН батч простых полей объекта. Плоский объект с многими
 # полями режем на батчи в пределах бюджета. Компромисс: крупнее батч → меньше
-# вызовов (важно для лимитов подписки), но ближе к «линии шторма» strict. 10 ≈
-# объект из ~8 простых полей. Переопределяется POV_COMPOSITIONAL_BATCH_BUDGET.
-_DEFAULT_SCALAR_GROUP_BUDGET = 10
+# вызовов (важно для лимитов подписки), но ближе к «линии шторма» strict.
+# По анализу прогона РТК ретраи приходили НЕ на скаляр-батчи (они strict берёт
+# надёжно — constraint_inventory из 6 полей идёт одним проходом), а на
+# array-of-objects фрагменты. Поэтому скаляр-бюджет можно держать крупным.
+# 14 ≈ объект из ~12 простых полей. Переопределяется POV_COMPOSITIONAL_BATCH_BUDGET.
+_DEFAULT_SCALAR_GROUP_BUDGET = 14
 
 
 def _scalar_group_budget() -> int:
@@ -143,14 +146,15 @@ class SchemaTreeDecomposer:
     def _item_worth_expanding(item: JSONSchema) -> bool:
         """Стоит ли разворачивать массив таких элементов по фрагменту на элемент.
 
-        Тривиальная пара скаляров (≤2 скаляр-поля: {label,description},
-        {term,definition}) — нет (массив берётся одним ходом). Многопольный
-        объект (>2 поля) ИЛИ объект с вложенной структурой — да (иначе весь
-        массив тяжёл для strict-coercion)."""
+        Разворачиваем массив, только если его элемент ГЕНУИННО тяжёл: содержит
+        вложенную структуру (массив/объект внутри) ИЛИ много полей (>4). Массив
+        из небольших ПЛОСКИХ объектов (≤4 скаляр-поля: {label,description},
+        {name,type,description}, …) берётся одним ходом — это снимает лишние
+        per-item вызовы (а скаляр-поля strict держит надёжно)."""
         props = su.object_properties(item)
-        if len(props) > 2:
-            return True
-        return any(not su.is_scalar_schema(sub) for sub in props.values())
+        if any(not su.is_scalar_schema(sub) for sub in props.values()):
+            return True  # вложенная структура внутри элемента — дробим
+        return len(props) > 4
 
     # --- helpers ------------------------------------------------------------
 
