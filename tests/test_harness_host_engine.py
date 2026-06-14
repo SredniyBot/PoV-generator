@@ -224,13 +224,21 @@ def test_claude_restricted_has_no_host_shell(tmp_path: Path) -> None:
     assert "--dangerously-skip-permissions" not in cmd
 
 
-def test_claude_full_uses_skip_permissions(tmp_path: Path) -> None:
+def test_claude_full_on_host_never_uses_skip_permissions(tmp_path: Path) -> None:
+    """На HOST даже «full» НЕ использует ``--dangerously-skip-permissions``:
+    claude отказывается исполнять его в headless на неизолированном хосте и
+    выходит мгновенно (наблюдался код 126). «full» = acceptEdits со всеми
+    инструментами (рабочий максимум), но без skip-permissions и без
+    --disallowedTools (этим отличается от restricted)."""
     provider = ClaudeCodeHarnessProvider(
         sandbox=HostSandboxRuntime(root=tmp_path, runner=_RecordingRunner()),
         image="unused",
         host_security="full",
     )
-    assert "--dangerously-skip-permissions" in _command_str(provider)
+    cmd = _command_str(provider)
+    assert "--dangerously-skip-permissions" not in cmd
+    assert "--permission-mode acceptEdits" in cmd
+    assert "--disallowedTools" not in cmd
 
 
 # --- интеграция: прогон через host-песочницу ---------------------------------
