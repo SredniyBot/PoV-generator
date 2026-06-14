@@ -283,6 +283,32 @@ def test_gates_run_in_harvest_zone() -> None:
     assert "cd /work/services/svc &&" in gate_cmd
 
 
+def test_claude_code_docker_mcp_wiring(monkeypatch) -> None:
+    """Подход B: при заданном POV_HARNESS_DOCKER_MCP_CONFIG host-агент получает
+    docker-инструменты через MCP (--mcp-config + --strict-mcp-config +
+    --allowedTools mcp__*), host-shell (Bash) запрещён — исполнение через docker."""
+    monkeypatch.setenv("POV_HARNESS_DOCKER_MCP_CONFIG", "/c/Users/me/.povgen/docker-mcp.json")
+    cmd = _claude_code_cmd("full")
+    assert '--mcp-config "/c/Users/me/.povgen/docker-mcp.json"' in cmd
+    assert "--strict-mcp-config" in cmd
+    assert '--allowedTools "mcp__*"' in cmd
+    assert "--disallowedTools" in cmd and "Bash" in cmd
+
+
+def test_claude_code_no_docker_mcp_when_env_unset(monkeypatch) -> None:
+    """Без POV_HARNESS_DOCKER_MCP_CONFIG MCP не подключается — поведение как было."""
+    monkeypatch.delenv("POV_HARNESS_DOCKER_MCP_CONFIG", raising=False)
+    cmd = _claude_code_cmd("full")
+    assert "--mcp-config" not in cmd
+
+
+def test_docker_mcp_not_attached_in_docker_engine(monkeypatch) -> None:
+    """В docker-движке (host_security=None) MCP НЕ подключаем (был бы docker-in-docker)."""
+    monkeypatch.setenv("POV_HARNESS_DOCKER_MCP_CONFIG", "/x.json")
+    cmd = _claude_code_cmd(None)
+    assert "--mcp-config" not in cmd
+
+
 def test_claude_code_host_modes_never_use_dangerously_skip() -> None:
     """Регрессия (код 126): на HOST (без ОС-изоляции) НЕЛЬЗЯ
     ``--dangerously-skip-permissions`` — claude отказывает его исполнять в

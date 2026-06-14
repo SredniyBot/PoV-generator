@@ -31,11 +31,25 @@ Host-режим (Ф7e): тот же адаптер исполняется на �
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 
 from ..protocol import HarnessRunSpec, HarvestedArtifact
 from ..sandbox import ResourceLimits, SandboxHandle, SandboxRuntime
 from .base import _BRIEF_PATH, SandboxHarnessProvider, shell
+
+
+def _docker_mcp_config_path() -> str | None:
+    """Путь к MCP-конфигу Docker для host-агента (подход B: агент собирает/тестит
+    код в контейнерах через docker-инструменты и итерирует по результату).
+
+    Включается, если задан ``POV_HARNESS_DOCKER_MCP_CONFIG`` — путь к JSON
+    MCP-конфигу (формат claude CLI: ``{"mcpServers": {"docker": {...}}}``).
+    Путь должен быть в POSIX-форме (bash на хосте), напр.
+    ``/c/Users/me/.povgen/docker-mcp.json``. Пусто → MCP не подключаем (поведение
+    как раньше)."""
+    raw = (os.environ.get("POV_HARNESS_DOCKER_MCP_CONFIG") or "").strip()
+    return raw or None
 
 
 class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
@@ -82,6 +96,19 @@ class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
             # максимум — авто-приём правок со всеми инструментами. Для полностью
             # автономного агента (shell и т.п.) используйте docker-движок.
             flags.append("--permission-mode acceptEdits")
+        # Docker MCP (подход B, ТОЛЬКО host-режим): даём агенту docker-инструменты
+        # через MCP, чтобы он собирал/тестировал код в контейнерах и чинил по
+        # результату (host-claude уже авторизован подпиской — мост авторизации не
+        # нужен). В docker-движке это был бы docker-in-docker — не включаем.
+        # --strict-mcp-config: грузим ТОЛЬКО наш конфиг (не утаскиваем чужие MCP
+        # пользователя в автономного агента). Исполнение идёт через docker, host-
+        # shell не нужен → Bash запрещаем (если ещё не запрещён restricted-веткой).
+        mcp_config = _docker_mcp_config_path() if self._host_security is not None else None
+        if mcp_config:
+            flags.append(f'--mcp-config "{mcp_config}" --strict-mcp-config')
+            flags.append('--allowedTools "mcp__*"')
+            if not any("--disallowedTools" in f for f in flags):
+                flags.append('--disallowedTools "Bash"')
         # Модель: явный override подключения ИЛИ настроенная LLM-модель проекта
         # (model_hint) — не выдуманный дефолт. Пусто → claude берёт свою.
         model = self.model or spec.model_hint
