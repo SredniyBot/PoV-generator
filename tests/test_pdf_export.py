@@ -151,6 +151,22 @@ def test_rewrite_inline_svg_fonts_noop_without_svg() -> None:
     assert _rewrite_inline_svg_fonts(html, "PovBodyFont") == html
 
 
+def test_svg_numeric_font_weight_normalized_to_bold() -> None:
+    """Регрессия (жирные подписи превью = чёрные квадраты): числовой font-weight
+    (600/700) svglib не маппит на bold → ищет несуществующий «PovBodyFont-700» →
+    Helvetica → квадраты. Нормализуем ≥600 → bold (его svglib понимает)."""
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" font-family="Inter">'
+        '<text x="1" y="1" font-weight="700">Заголовок раздела</text>'
+        '<text x="2" y="2" font-weight="600">Карточка</text>'
+        '<text x="3" y="3" font-weight="400">Обычный</text></svg>'
+    )
+    out = _rewrite_inline_svg_fonts(svg, "PovBodyFont")
+    assert 'font-weight="700"' not in out and 'font-weight="600"' not in out
+    assert out.count('font-weight="bold"') == 2  # 700 и 600 → bold
+    assert 'font-weight="normal"' in out  # 400 → normal
+
+
 def test_rewrite_base64_datauri_svg_fonts() -> None:
     """Реальная форма встраивания превью UI/UX — base64 data-URI <img>. Шрифт
     должен переписываться ВНУТРИ декодированного SVG (иначе кириллица превью =

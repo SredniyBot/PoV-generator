@@ -499,11 +499,22 @@ _SVG_BLOCK_RE = re.compile(r"<svg\b.*?</svg>", re.DOTALL | re.IGNORECASE)
 _SVG_FONT_ATTR_RE = re.compile(r'font-family\s*=\s*"[^"]*"')
 _SVG_TEXT_NO_FONT_RE = re.compile(r"<text\b(?![^>]*font-family=)", re.IGNORECASE)
 _SVG_B64_DATAURI_RE = re.compile(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)")
+# Числовой font-weight (600/700/…) svglib НЕ маппит на «bold» — строит имя вида
+# «PovBodyFont-700», которого нет в его font-map → откат на Helvetica (без
+# кириллицы) → чёрные квадраты у жирных подписей («Карточка», «Заголовок
+# раздела»). Нормализуем: ≥600 → bold, иначе normal.
+_SVG_FONT_WEIGHT_RE = re.compile(r'font-weight\s*=\s*"(\d{3})"')
+
+
+def _normalize_numeric_weight(match: re.Match[str]) -> str:
+    return 'font-weight="bold"' if int(match.group(1)) >= 600 else 'font-weight="normal"'
 
 
 def _fix_svg_markup(svg: str, font_name: str) -> str:
-    """Перевести font-family SVG на ``font_name`` — на корне и на каждом ``<text>``."""
+    """Перевести font-family SVG на ``font_name`` — на корне и на каждом ``<text>``,
+    и нормализовать числовой font-weight в bold/normal (svglib понимает только их)."""
     svg = _SVG_FONT_ATTR_RE.sub(f'font-family="{font_name}"', svg)
+    svg = _SVG_FONT_WEIGHT_RE.sub(_normalize_numeric_weight, svg)
     # У <text> без явного font-family проставляем наш — svglib не всегда
     # наследует его от корневого <svg>.
     return _SVG_TEXT_NO_FONT_RE.sub(f'<text font-family="{font_name}"', svg)
