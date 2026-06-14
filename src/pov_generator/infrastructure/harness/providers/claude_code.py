@@ -64,31 +64,35 @@ class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
         self._host_security = host_security
 
     def _build_command(self, spec: HarnessRunSpec) -> list[str]:
-        # Постановку подаём как промпт (из файла, чтобы не упереться в лимиты
-        # аргументов). Печать без интерактива. Модель — опциональна (образ может
-        # задавать дефолт).
-        parts = ['claude -p "$(cat ' + _BRIEF_PATH + ')"']
+        # Печать без интерактива (``-p``). Модель — опциональна (образ/сессия
+        # может задавать дефолт).
+        flags: list[str] = []
         if self._host_security is None:
             # Docker (изоляция контейнером): полный автономный доступ безопасен.
-            parts.append("--dangerously-skip-permissions")
+            flags.append("--dangerously-skip-permissions")
         elif self._host_security == "restricted":
             # Host без ОС-изоляции: ограничиваем агента файловыми правками в
             # workspace — авто-приём правок, но без хостового shell и сети.
-            parts.append("--permission-mode acceptEdits")
-            parts.append('--disallowedTools "Bash WebFetch WebSearch"')
+            flags.append("--permission-mode acceptEdits")
+            flags.append('--disallowedTools "Bash WebFetch WebSearch"')
         else:
-            # Host «full» (опт-ин, без ОС-изоляции). НЕЛЬЗЯ
-            # ``--dangerously-skip-permissions``: claude ОТКАЗЫВАЕТ исполнять этот
-            # флаг на неизолированном хосте в headless-режиме и выходит мгновенно
-            # (наблюдался код 126, start→fail за 1с). Даём максимум РАБОЧЕГО —
-            # авто-приём правок со всеми инструментами (без ``--disallowedTools``).
-            parts.append("--permission-mode acceptEdits")
+            # Host «full» (опт-ин, без ОС-изоляции): ``--dangerously-skip-permissions``
+            # на неизолированном хосте — запуск автономного агента с полным
+            # доступом к хосту, поэтому НЕ используем его здесь; даём рабочий
+            # максимум — авто-приём правок со всеми инструментами. Для полностью
+            # автономного агента (shell и т.п.) используйте docker-движок.
+            flags.append("--permission-mode acceptEdits")
         # Модель: явный override подключения ИЛИ настроенная LLM-модель проекта
         # (model_hint) — не выдуманный дефолт. Пусто → claude берёт свою.
         model = self.model or spec.model_hint
         if model:
-            parts.append(f"--model {model}")
-        return shell("cd /work && " + " ".join(parts))
+            flags.append(f"--model {model}")
+        # Бриф подаём ЧЕРЕЗ STDIN (``cat brief | claude -p``), а НЕ аргументом
+        # (``claude -p "$(cat brief)"``): реальный бриф (системный+пользовательский
+        # промпт+контекст) большой и в виде argv упирается в лимит длины аргументов
+        # ОС → exec падает «Argument list too long» (код 126). stdin лимита не имеет.
+        cmd = f"cat {_BRIEF_PATH} | claude -p " + " ".join(flags)
+        return shell("cd /work && " + cmd.rstrip())
 
     def _harvest(
         self, handle: SandboxHandle, spec: HarnessRunSpec

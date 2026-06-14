@@ -151,6 +151,73 @@ def test_rewrite_inline_svg_fonts_noop_without_svg() -> None:
     assert _rewrite_inline_svg_fonts(html, "PovBodyFont") == html
 
 
+def test_rewrite_base64_datauri_svg_fonts() -> None:
+    """Реальная форма встраивания превью UI/UX — base64 data-URI <img>. Шрифт
+    должен переписываться ВНУТРИ декодированного SVG (иначе кириллица превью =
+    чёрные квадраты — инлайн-замена его не видит)."""
+    import base64
+    import re
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">'
+        '<text x="1" y="1">Палитра</text></svg>'
+    )
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    html = f'<div class="ui-preview"><img src="data:image/svg+xml;base64,{b64}" /></div>'
+
+    out = _rewrite_inline_svg_fonts(html, "PovBodyFont")
+    # Достаём новый data-URI и декодируем — внутри должен быть наш шрифт.
+    m = re.search(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)", out)
+    assert m is not None
+    decoded = base64.b64decode(m.group(1)).decode("utf-8")
+    assert "Inter" not in decoded
+    assert 'font-family="PovBodyFont"' in decoded
+    assert '<text font-family="PovBodyFont"' in decoded
+    assert "Палитра" in decoded
+
+
+def test_ui_design_pdf_preview_uses_unicode_font_end_to_end() -> None:
+    """Сквозь весь конвейер: артефакт ui_design с кириллицей в превью →
+    в HTML/data-URI превью font-family заменён на зарегистрированный шрифт, а
+    svglib резолвит его (не Helvetica), и весь PDF собирается валидным."""
+    import base64 as _b64
+    import re
+
+    from pov_generator.application.artifact_contracts import render_markdown
+    from pov_generator.application.pdf_export import _ensure_body_font_registered
+
+    payload = {
+        "summary": "Дизайн-система",
+        "color_palette": [{"name": "Акцент", "hex": "#3b6ef5"}],
+        "typography": [{"role": "Заголовок", "font": "Inter"}],
+        "screens": [{"name": "Главная", "purpose": "Старт"}],
+    }
+    md = render_markdown("ui_design", payload)
+    assert 'class="ui-preview"' in md
+    body_font = _ensure_body_font_registered()
+    fixed = _rewrite_inline_svg_fonts(md, body_font)
+    m = re.search(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)", fixed)
+    assert m is not None, "превью встроено как base64 svg data-URI"
+    decoded = _b64.b64decode(m.group(1)).decode("utf-8")
+    assert f'font-family="{body_font}"' in decoded
+    assert "Inter" not in decoded
+
+    # svglib должен резолвить наш шрифт (а не откатываться на Helvetica) — иначе
+    # кириллица в SVG-превью = чёрные квадраты, несмотря на переписанный font-family.
+    if body_font != "Helvetica":  # есть Unicode TTF на системе
+        from svglib.fonts import get_global_font_map
+
+        resolved, exact = get_global_font_map().find_font(body_font, "normal", "normal")
+        assert resolved.lower() != "helvetica" and exact, (
+            f"svglib не нашёл {body_font} → SVG-текст уйдёт в Helvetica (чёрные квадраты)"
+        )
+
+    # Полный конвейер: PDF собирается валидным с встроенным превью.
+    pdf_bytes = render_artifact_pdf(markdown_content=md, title="Дизайн")
+    assert pdf_bytes.startswith(b"%PDF")
+    assert len(pdf_bytes) > 1000
+
+
 def test_render_artifact_pdf_embeds_unicode_font_for_cyrillic() -> None:
     """Регрессия: кириллица не должна рендериться через core-PDF Helvetica
     (она не имеет Cyrillic-глифов → чёрные квадраты в PDF-вьюверах).

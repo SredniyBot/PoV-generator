@@ -498,29 +498,44 @@ def _replace_mermaid_blocks_with_images(markdown_text: str) -> str:
 _SVG_BLOCK_RE = re.compile(r"<svg\b.*?</svg>", re.DOTALL | re.IGNORECASE)
 _SVG_FONT_ATTR_RE = re.compile(r'font-family\s*=\s*"[^"]*"')
 _SVG_TEXT_NO_FONT_RE = re.compile(r"<text\b(?![^>]*font-family=)", re.IGNORECASE)
+_SVG_B64_DATAURI_RE = re.compile(r"data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)")
+
+
+def _fix_svg_markup(svg: str, font_name: str) -> str:
+    """Перевести font-family SVG на ``font_name`` — на корне и на каждом ``<text>``."""
+    svg = _SVG_FONT_ATTR_RE.sub(f'font-family="{font_name}"', svg)
+    # У <text> без явного font-family проставляем наш — svglib не всегда
+    # наследует его от корневого <svg>.
+    return _SVG_TEXT_NO_FONT_RE.sub(f'<text font-family="{font_name}"', svg)
 
 
 def _rewrite_inline_svg_fonts(html: str, font_name: str) -> str:
-    """Подменить font-family в инлайн-``<svg>`` на зарегистрированный Unicode-шрифт.
+    """Подменить font-family во всех SVG (инлайн и base64-data-URI) на наш шрифт.
 
-    Превью UI/UX (``_build_ui_preview_svg``) ставит ``font-family`` дизайн-шрифта
-    (напр. «Inter») — в браузере это ок, но в PDF svglib→reportlab такой шрифт не
-    знает и откатывается на Helvetica (core, БЕЗ кириллицы) → текст превью
-    становится чёрными квадратами. Подставляем наш зарегистрированный шрифт и на
-    корневой ``<svg>``, и на каждый ``<text>`` (svglib ненадёжно наследует
-    font-family от корня к тексту), чтобы кириллица в SVG рендерилась глифами."""
-    if "<svg" not in html:
+    Превью UI/UX (``_build_ui_preview_svg``) и mermaid встраиваются как
+    ``<img src="data:image/svg+xml;base64,…">``; превью ставит ``font-family``
+    дизайн-шрифта (напр. «Inter»). В браузере ок, но в PDF SVG рисует
+    svglib→reportlab: такой шрифт он не знает и откатывается на Helvetica (core,
+    БЕЗ кириллицы) → текст превью = чёрные квадраты. Декодируем data-URI,
+    переписываем font-family на зарегистрированный Unicode-шрифт (на корневой
+    ``<svg>`` и на каждый ``<text>`` — svglib ненадёжно наследует от корня) и
+    кодируем обратно. Заодно чиним инлайн-``<svg>``, если он есть."""
+    if "<svg" not in html and "image/svg" not in html:
         return html
 
-    def _fix(match: re.Match[str]) -> str:
-        block = match.group(0)
-        block = _SVG_FONT_ATTR_RE.sub(f'font-family="{font_name}"', block)
-        # У <text> без явного font-family проставляем наш — svglib не всегда
-        # наследует его от корневого <svg>.
-        block = _SVG_TEXT_NO_FONT_RE.sub(f'<text font-family="{font_name}"', block)
-        return block
+    # 1) Инлайн <svg>...</svg>.
+    html = _SVG_BLOCK_RE.sub(lambda m: _fix_svg_markup(m.group(0), font_name), html)
 
-    return _SVG_BLOCK_RE.sub(_fix, html)
+    # 2) Base64 data-URI с SVG (реальная форма встраивания превью/mermaid).
+    def _fix_datauri(match: re.Match[str]) -> str:
+        try:
+            svg = base64.b64decode(match.group(1)).decode("utf-8")
+        except Exception:  # noqa: BLE001 — битый/неожиданный data-URI не трогаем
+            return match.group(0)
+        fixed = _fix_svg_markup(svg, font_name).encode("utf-8")
+        return "data:image/svg+xml;base64," + base64.b64encode(fixed).decode("ascii")
+
+    return _SVG_B64_DATAURI_RE.sub(_fix_datauri, html)
 
 
 # --- внутреннее: пост-обработка таблиц (auto-width + landscape) ---------------
@@ -1120,6 +1135,23 @@ def _ensure_body_font_registered() -> str:
     # core-fonts без Unicode-покрытия, на наш зарегистрированный шрифт.
     default_map = _xhtml2pdf_default.DEFAULT_FONT
     _replace_core_fonts(default_map, replacement_regular=_PDF_FONT_NAME, replacement_bold=bold_alias)
+
+    # svglib держит СВОЙ font-map (НЕ reportlab pdfmetrics): SVG-текст превью
+    # UI/UX и mermaid рендерится через него. Без регистрации здесь svglib не
+    # найдёт PovBodyFont (font-family в SVG) и откатится на Helvetica (без
+    # кириллицы) → чёрные квадраты в SVG. Регистрируем сам TTF (маппинг по
+    # rlgFontName на кастомный reportlab-шрифт svglib НЕ принимает — проверено).
+    try:
+        from svglib.fonts import register_font as _svglib_register_font
+
+        _svglib_register_font(_PDF_FONT_NAME, font_path=str(regular_path))
+        _svglib_register_font(
+            _PDF_FONT_NAME,
+            font_path=str(bold_path if bold_registered else regular_path),
+            weight="bold",
+        )
+    except Exception as exc:  # noqa: BLE001 — svglib опционален; не валим экспорт
+        logger.warning("PDF export: не удалось зарегистрировать шрифт в svglib: %s", exc)
 
     logger.info(
         "PDF export: зарегистрирован шрифт %s (regular=%s, bold=%s)",

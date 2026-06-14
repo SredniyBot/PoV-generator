@@ -193,7 +193,10 @@ def test_claude_code_command_shape() -> None:
     )
 
     claude_cmd = next(c for c in captured if "claude -p" in c)
-    assert "$(cat /work/.povgen/brief.txt)" in claude_cmd
+    # Бриф подаётся через STDIN (cat | claude -p), а не аргументом (иначе большой
+    # бриф упирается в лимит длины argv → «Argument list too long», код 126).
+    assert "cat /work/.povgen/brief.txt | claude -p" in claude_cmd
+    assert "$(cat" not in claude_cmd
     assert "--dangerously-skip-permissions" in claude_cmd
     assert "--model claude-opus-4-8" in claude_cmd
 
