@@ -2932,7 +2932,13 @@ function BundleTreeNodes({
 // #2: просмотр бандла (код/файлы) — дерево файлов СВЕРХУ (папки/подпапки, как в
 // редакторе), содержимое выбранного файла — СНИЗУ. Контент тянется лениво.
 function BundleViewer({ projectId, detail }: { projectId: string; detail: ArtifactDetailView }) {
-  const files = (detail.bundle_files ?? []).slice().sort((a, b) => a.path.localeCompare(b.path));
+  // Стабильная ссылка: иначе files/tree/folderPaths пересоздаются каждый рендер,
+  // эффект «раскрыть все папки» срабатывает постоянно и тут же возвращает только
+  // что свёрнутую папку — папки «не сворачивались».
+  const files = useMemo(
+    () => (detail.bundle_files ?? []).slice().sort((a, b) => a.path.localeCompare(b.path)),
+    [detail.bundle_files],
+  );
   const tree = useMemo(() => buildBundleTree(files), [files]);
   // Все папки раскрыты по умолчанию — пользователь сразу видит структуру (как в
   // редакторе); дальше может свернуть нужные.
