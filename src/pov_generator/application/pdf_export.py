@@ -308,6 +308,9 @@ def render_artifact_pdf(
     )
 
     body_font = _ensure_body_font_registered()
+    # Инлайн-SVG (превью UI/UX) рендерится svglib'ом: переводим его font-family на
+    # зарегистрированный Unicode-шрифт, иначе кириллица в превью — чёрные квадраты.
+    html_body = _rewrite_inline_svg_fonts(html_body, body_font)
     css = _build_base_css(
         body_font, include_landscape_page=landscape_used, default_landscape=is_landscape_doc
     )
@@ -490,6 +493,34 @@ def _replace_mermaid_blocks_with_images(markdown_text: str) -> str:
         return match.group(0)
 
     return _MERMAID_FENCED_RE.sub(_replace, markdown_text)
+
+
+_SVG_BLOCK_RE = re.compile(r"<svg\b.*?</svg>", re.DOTALL | re.IGNORECASE)
+_SVG_FONT_ATTR_RE = re.compile(r'font-family\s*=\s*"[^"]*"')
+_SVG_TEXT_NO_FONT_RE = re.compile(r"<text\b(?![^>]*font-family=)", re.IGNORECASE)
+
+
+def _rewrite_inline_svg_fonts(html: str, font_name: str) -> str:
+    """Подменить font-family в инлайн-``<svg>`` на зарегистрированный Unicode-шрифт.
+
+    Превью UI/UX (``_build_ui_preview_svg``) ставит ``font-family`` дизайн-шрифта
+    (напр. «Inter») — в браузере это ок, но в PDF svglib→reportlab такой шрифт не
+    знает и откатывается на Helvetica (core, БЕЗ кириллицы) → текст превью
+    становится чёрными квадратами. Подставляем наш зарегистрированный шрифт и на
+    корневой ``<svg>``, и на каждый ``<text>`` (svglib ненадёжно наследует
+    font-family от корня к тексту), чтобы кириллица в SVG рендерилась глифами."""
+    if "<svg" not in html:
+        return html
+
+    def _fix(match: re.Match[str]) -> str:
+        block = match.group(0)
+        block = _SVG_FONT_ATTR_RE.sub(f'font-family="{font_name}"', block)
+        # У <text> без явного font-family проставляем наш — svglib не всегда
+        # наследует его от корневого <svg>.
+        block = _SVG_TEXT_NO_FONT_RE.sub(f'<text font-family="{font_name}"', block)
+        return block
+
+    return _SVG_BLOCK_RE.sub(_fix, html)
 
 
 # --- внутреннее: пост-обработка таблиц (auto-width + landscape) ---------------

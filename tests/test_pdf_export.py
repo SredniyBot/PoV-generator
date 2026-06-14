@@ -20,6 +20,7 @@ from pov_generator.application import mermaid_render, pdf_export
 from pov_generator.application.pdf_export import (
     _enhance_tables_in_html,
     _replace_mermaid_blocks_with_images,
+    _rewrite_inline_svg_fonts,
     render_artifact_pdf,
 )
 from pov_generator.interfaces.api import create_app
@@ -121,6 +122,33 @@ def test_narrow_table_keeps_portrait_only() -> None:
         assert width < height, (
             f"Узкая таблица ушла в landscape ({width}x{height}) — ложное срабатывание порога"
         )
+
+
+def test_inline_svg_fonts_rewritten_to_unicode_font() -> None:
+    """Регрессия (превью UI/UX = чёрные квадраты): инлайн-SVG ставит font-family
+    дизайн-шрифта («Inter»), который svglib не знает → кириллица превью
+    рендерится Helvetica (без глифов). Переписываем font-family на наш
+    зарегистрированный шрифт — и на корневой <svg>, и на каждый <text>."""
+    svg_html = (
+        '<div class="ui-preview"><svg xmlns="http://www.w3.org/2000/svg" '
+        'font-family="Inter, sans-serif"><rect fill="#fff"/>'
+        '<text x="1" y="1" font-size="12">Палитра</text>'
+        '<text x="2" y="2" font-size="14">Заголовок</text></svg></div>'
+    )
+    out = _rewrite_inline_svg_fonts(svg_html, "PovBodyFont")
+    # Дизайн-шрифт «Inter» больше не встречается — заменён нашим.
+    assert "Inter" not in out
+    assert 'font-family="PovBodyFont"' in out
+    # Каждый <text> получил явный font-family (svglib не наследует от корня).
+    assert out.count('<text font-family="PovBodyFont"') == 2
+    # Текст и геометрия сохранены.
+    assert "Палитра" in out and "Заголовок" in out and "<rect" in out
+
+
+def test_rewrite_inline_svg_fonts_noop_without_svg() -> None:
+    """Без инлайн-SVG функция не трогает HTML (и не падает)."""
+    html = "<p>Обычный абзац без svg</p>"
+    assert _rewrite_inline_svg_fonts(html, "PovBodyFont") == html
 
 
 def test_render_artifact_pdf_embeds_unicode_font_for_cyrillic() -> None:
