@@ -37,6 +37,35 @@ import {
 } from "lucide-react";
 import { marked } from "marked";
 import mermaid from "mermaid";
+// Подсветка кода в файлах бандла агента (модульная сборка highlight.js —
+// регистрируем только нужные языки, чтобы не тянуть весь пакет).
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import css from "highlight.js/lib/languages/css";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
+import ini from "highlight.js/lib/languages/ini";
+import javascript from "highlight.js/lib/languages/javascript";
+import jsonLang from "highlight.js/lib/languages/json";
+import markdownLang from "highlight.js/lib/languages/markdown";
+import python from "highlight.js/lib/languages/python";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
+import "highlight.js/styles/github-dark.css";
+
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("dockerfile", dockerfile);
+hljs.registerLanguage("ini", ini);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("json", jsonLang);
+hljs.registerLanguage("markdown", markdownLang);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("yaml", yaml);
 
 // Stage 6: рендеринг Mermaid-диаграмм внутри артефактных markdown'ов.
 // Инициализация один раз на модуль. `startOnLoad: false` — рендерим явно
@@ -2720,6 +2749,69 @@ function FeasibilityView({ data }: { data: FeasibilityPayload }) {
 }
 
 
+// Определение языка подсветки по имени файла (расширение + спец-случаи вроде
+// Dockerfile, у которого расширения нет). Возвращает зарегистрированный в hljs
+// язык, "markdown" для .md (рендерим как документ), либо null — показать как есть.
+function detectBundleLanguage(path: string): string | null {
+  const file = (path.split(/[\\/]/).pop() ?? "").toLowerCase();
+  if (file === "dockerfile" || file.startsWith("dockerfile.") || file.endsWith(".dockerfile")) {
+    return "dockerfile";
+  }
+  const ext = file.includes(".") ? file.slice(file.lastIndexOf(".") + 1) : "";
+  const map: Record<string, string> = {
+    py: "python", json: "json", css: "css", scss: "css", yml: "yaml", yaml: "yaml",
+    md: "markdown", markdown: "markdown",
+    js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+    ts: "typescript", tsx: "typescript",
+    sh: "bash", bash: "bash", zsh: "bash",
+    html: "xml", htm: "xml", xml: "xml", svg: "xml",
+    sql: "sql", toml: "ini", ini: "ini", cfg: "ini", env: "ini",
+  };
+  return map[ext] ?? null;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Содержимое одного файла бандла: .md — как отрендеренный markdown-документ;
+// код известных языков — с подсветкой highlight.js; прочее — как есть (экранируем).
+function BundleFileContent({ path, text }: { path: string; text: string }) {
+  const lang = useMemo(() => detectBundleLanguage(path), [path]);
+  const rendered = useMemo(() => {
+    if (lang === "markdown") return null; // markdown рисуем отдельной веткой ниже
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(text, { language: lang }).value;
+      } catch {
+        return escapeHtml(text); // на сбой подсветки — безопасный fallback
+      }
+    }
+    return escapeHtml(text);
+  }, [lang, text]);
+
+  if (lang === "markdown") {
+    const html = marked.parse(text) as string;
+    return (
+      <article
+        className="document-surface bundle-viewer__markdown"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  return (
+    <pre className="bundle-viewer__code hljs">
+      <code
+        className={lang ? `language-${lang}` : undefined}
+        dangerouslySetInnerHTML={{ __html: rendered ?? "" }}
+      />
+    </pre>
+  );
+}
+
 // #2: просмотр бандла (код/файлы) — дерево файлов слева, содержимое выбранного
 // файла справа. Контент тянется лениво (файлы бывают крупными).
 function BundleViewer({ projectId, detail }: { projectId: string; detail: ArtifactDetailView }) {
@@ -2758,9 +2850,7 @@ function BundleViewer({ projectId, detail }: { projectId: string; detail: Artifa
           <EmptyState title="Двоичный файл" description="Просмотр недоступен — это не текстовый файл." />
         ) : (
           <>
-            <pre className="bundle-viewer__code">
-              <code>{fileQuery.data?.text ?? ""}</code>
-            </pre>
+            <BundleFileContent path={selected} text={fileQuery.data?.text ?? ""} />
             {fileQuery.data?.truncated ? (
               <p className="muted bundle-viewer__truncated">Файл большой — показано начало.</p>
             ) : null}

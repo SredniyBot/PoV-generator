@@ -98,6 +98,23 @@ function flattenTree(nodes: TaskNodeView[], collapsed: Set<string>): TaskNodeVie
   return result;
 }
 
+/** Id'шники предков задачи (родители сверху вниз), [] если задача не найдена.
+ *  Нужен для дип-линка: чтобы сфокусироваться на ребёнке свёрнутого веера, его
+ *  предков надо раскрыть — иначе узла нет в лэйауте и камера целится в пустоту. */
+function ancestorIdsOf(nodes: TaskNodeView[], targetId: string): string[] {
+  function walk(items: TaskNodeView[], trail: string[]): string[] | null {
+    for (const node of items) {
+      if (node.task_id === targetId) return trail;
+      if (node.children?.length) {
+        const found = walk(node.children, [...trail, node.task_id]);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return walk(nodes, []) ?? [];
+}
+
 interface BuildLayoutOptions {
   collapsed: Set<string>;
   onToggle: (id: string) => void;
@@ -507,11 +524,19 @@ function TaskGraphCanvasInner({
 
   // Auto-collapse fan-out nodes with > 4 instances on first mount / tree change.
   // Композиты по умолчанию развёрнуты — пользователь сам решает, что свернуть.
+  // ИСКЛЮЧЕНИЕ: предков focusTaskId (дип-линк из overview) держим раскрытыми —
+  // иначе ребёнок свёрнутого веера не попадёт в лэйаут и камера сфокусируется на
+  // пустоте. Это и раскрывает уже свёрнутого родителя при переходе на его ребёнка.
   useEffect(() => {
+    const keepOpen = focusTaskId ? new Set(ancestorIdsOf(tree, focusTaskId)) : new Set<string>();
     const toCollapse = new Set<string>();
     function walk(nodes: TaskNodeView[]) {
       for (const n of nodes) {
-        if (n.template_type === "fan_out" && (n.fan_out_meta?.total_instances ?? 0) > 4) {
+        if (
+          n.template_type === "fan_out" &&
+          (n.fan_out_meta?.total_instances ?? 0) > 4 &&
+          !keepOpen.has(n.task_id)
+        ) {
           toCollapse.add(n.task_id);
         }
         if (n.children?.length) walk(n.children);
@@ -521,9 +546,10 @@ function TaskGraphCanvasInner({
     setCollapsed((prev) => {
       const next = new Set(prev);
       toCollapse.forEach((id) => next.add(id));
+      keepOpen.forEach((id) => next.delete(id)); // раскрыть предков фокуса
       return next;
     });
-  }, [tree]);
+  }, [tree, focusTaskId]);
 
   const toggleCollapse = useCallback(
     (id: string) =>
