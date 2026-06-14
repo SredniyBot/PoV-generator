@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from ....common.errors import ProviderExhaustedError
 from ..gates import run_gates
 from ..protocol import HarnessRunResult, HarnessRunSpec, HarvestedArtifact
 from ..sandbox import (
@@ -125,6 +126,16 @@ class SandboxHarnessProvider:
                     error=f"Прогон прерван по таймауту ({timeout_s} c).",
                 )
             if result.exit_code != 0:
+                # Исчерпание квоты/лимита провайдера во время прогона агента —
+                # фатально для пайплайна (как и в LLM-пути): не маскируем под
+                # обычный fail узла, а пробрасываем ProviderExhaustedError, чтобы
+                # раннер остановил прогон, а не добивал задачи в исчерпанном окне.
+                if _looks_exhausted(transcript):
+                    raise ProviderExhaustedError(
+                        "Исчерпан лимит/квота провайдера во время прогона агента "
+                        f"({self.name}). Дальнейшие задачи остановлены — повторите "
+                        "позже или подключите другого провайдера в настройках."
+                    )
                 return HarnessRunResult(
                     status="failed",
                     transcript=transcript,
@@ -136,8 +147,12 @@ class SandboxHarnessProvider:
 
             # 4. Гейты «готово» (DoD): проверяем результат в той же песочнице
             #    ДО сбора. Провал любого = узел не достиг готовности.
+            # Гейты проверяют ЗОНУ СБОРА (harvest_path: services/<сервис>/), куда
+            # агент пишет код — иначе smoke вроде ``test -d src || test -f
+            # README.md`` ложно падает на корне /work (агент туда не пишет).
             gate_results = run_gates(
-                self._sandbox, handle, spec.gates, on_log=logs.append
+                self._sandbox, handle, spec.gates, on_log=logs.append,
+                cwd=spec.harvest_path,
             )
             transcript = "".join(logs)
             failed_gates = [g for g in gate_results if not g.passed]
@@ -265,6 +280,27 @@ class SandboxHarnessProvider:
 def shell(command: str) -> list[str]:
     """Псевдоним shell_argv для адаптеров (sh -lc <command>)."""
     return shell_argv(command)
+
+
+_EXHAUSTION_MARKERS = (
+    "rate limit",
+    "rate-limit",
+    "rate_limit",
+    "overloaded",
+    "usage limit",
+    "quota",
+    "429",
+    "529",
+)
+
+
+def _looks_exhausted(transcript: str) -> bool:
+    """Похож ли вывод агента на исчерпание лимита провайдера (а не разовый сбой).
+
+    ТОЛЬКО по ЯВНЫМ маркерам лимита — как в LLM-пути (claude_subscription).
+    Неоднозначные сбои (код 126/127, упавший гейт) исчерпанием НЕ считаем."""
+    low = transcript.lower()
+    return any(marker in low for marker in _EXHAUSTION_MARKERS)
 
 
 def _exit_code_hint(code: int) -> str:

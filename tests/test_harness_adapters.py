@@ -222,6 +222,67 @@ def _claude_code_cmd(host_security: str | None) -> str:
     return next(c for c in captured if "claude -p" in c)
 
 
+def test_harness_exhaustion_raises_provider_exhausted() -> None:
+    """Issue 4: исчерпание лимита провайдера ВО ВРЕМЯ прогона агента →
+    ProviderExhaustedError (раннер остановит пайплайн), а не обычный fail узла,
+    после которого прогон добивал бы задачи в исчерпанном окне."""
+    import pytest
+
+    from pov_generator.common.errors import ProviderExhaustedError
+
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        if "claude -p" in argv[-1]:
+            return ExecResult(1, "API error 429: rate limit exceeded — overloaded", "")
+        return ExecResult(0, "", "")
+
+    provider = ClaudeCodeHarnessProvider(sandbox=StubSandboxRuntime(exec_handler=handler), image="x")
+    with pytest.raises(ProviderExhaustedError):
+        provider.run(
+            HarnessRunSpec(brief="b", expected_artifacts=(ExpectedArtifact(role="r", fmt="files"),))
+        )
+
+
+def test_harness_non_exhaustion_failure_stays_failed() -> None:
+    """Обычный сбой агента (без маркеров лимита) — НЕ исчерпание: статус failed,
+    исключение не бросаем (раннер пометит узел и пойдёт дальше)."""
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        if "claude -p" in argv[-1]:
+            return ExecResult(1, "TypeError: что-то пошло не так", "")
+        return ExecResult(0, "", "")
+
+    provider = ClaudeCodeHarnessProvider(sandbox=StubSandboxRuntime(exec_handler=handler), image="x")
+    result = provider.run(
+        HarnessRunSpec(brief="b", expected_artifacts=(ExpectedArtifact(role="r", fmt="files"),))
+    )
+    assert result.status == "failed"
+
+
+def test_gates_run_in_harvest_zone() -> None:
+    """Issue 3: гейты компонента проверяют ЗОНУ СБОРА (services/<сервис>/), куда
+    агент пишет код, а не корень /work — иначе smoke ``test -f README.md`` ложно
+    падает (агент создал services/svc/README.md, а гейт смотрел /work/README.md)."""
+    captured: list[str] = []
+
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        cmd = argv[-1]
+        captured.append(cmd)
+        if "claude -p" in cmd:
+            rt.put_files(handle, {"/work/services/svc/README.md": b"ok"})
+        return ExecResult(0, "", "")
+
+    provider = ClaudeCodeHarnessProvider(sandbox=StubSandboxRuntime(exec_handler=handler), image="x")
+    provider.run(
+        HarnessRunSpec(
+            brief="b",
+            expected_artifacts=(ExpectedArtifact(role="r", fmt="files"),),
+            gates=(HarnessGate(name="smoke", command="test -f README.md"),),
+            harvest_path="/work/services/svc",
+        )
+    )
+    gate_cmd = next(c for c in captured if "test -f README.md" in c)
+    assert "cd /work/services/svc &&" in gate_cmd
+
+
 def test_claude_code_host_modes_never_use_dangerously_skip() -> None:
     """Регрессия (код 126): на HOST (без ОС-изоляции) НЕЛЬЗЯ
     ``--dangerously-skip-permissions`` — claude отказывает его исполнять в

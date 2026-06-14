@@ -263,3 +263,28 @@ def test_host_provider_run_harvests_output(tmp_path: Path, monkeypatch) -> None:
     assert result.status == "completed"
     assert len(result.artifacts) == 1
     assert result.artifacts[0].payload == {"ok": True}
+
+
+def test_default_host_runner_honors_cancellation(tmp_path: Path) -> None:
+    """Issue 4: дефолтный host-runner прерывает подвисший/долгий процесс по
+    ambient-токену отмены, не дожидаясь его завершения (иначе долгий harness-узел
+    нельзя остановить)."""
+    import os
+
+    from pov_generator.common.cancellation import CancellationToken, cancellation_scope
+    from pov_generator.infrastructure.harness.sandbox import _default_host_runner
+
+    token = CancellationToken()
+    token.cancel()  # уже отменён → процесс убьётся на первом тике поллинга
+    sleep_cmd = (
+        ["cmd", "/c", "ping", "-n", "30", "127.0.0.1"]
+        if os.name == "nt"
+        else ["sh", "-c", "sleep 30"]
+    )
+    with cancellation_scope(token):
+        code, out, timed_out = _default_host_runner(
+            sleep_cmd, str(tmp_path), dict(os.environ), 60
+        )
+    assert code == 130  # прервано отменой (а не дождались 30с / таймаута 60с)
+    assert not timed_out
+    assert "отмена" in out.lower() or "прерван" in out.lower()

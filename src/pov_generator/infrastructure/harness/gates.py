@@ -22,8 +22,15 @@ def run_gates(
     *,
     default_timeout_s: int | None = None,
     on_log: LogSink | None = None,
+    cwd: str | None = None,
 ) -> tuple[GateResult, ...]:
     """Прогнать гейты в песочнице по порядку, вернуть результат каждого.
+
+    ``cwd`` — рабочий каталог гейтов (зона сбора, ``spec.harvest_path``). Гейты
+    компонента должны проверять ЗОНУ СЕРВИСА (куда агент пишет и что собирается),
+    а не корень ``/work``: иначе ``test -d src || test -f README.md`` падает, хотя
+    агент честно создал ``services/<сервис>/...`` (наблюдался ложный провал
+    smoke-гейта). Без ``cwd`` — корень ``/work`` (каркас/интеграция/проверка).
 
     Не бросает на провале гейта — возвращает ``passed=False`` (решение, что
     делать с провалом, принимает вызывающий слой). Все гейты выполняются (для
@@ -31,10 +38,15 @@ def run_gates(
     """
     results: list[GateResult] = []
     for gate in gates:
+        command = gate.command
+        # Гейт исполняется в зоне сбора (cwd). Строковую команду оборачиваем в
+        # ``cd <cwd> && <cmd>``; argv-команду (редкость) оставляем как есть.
+        if cwd and isinstance(command, str):
+            command = f"cd {cwd} && {command}"
         argv = (
-            shell_argv(gate.command)
-            if isinstance(gate.command, str)
-            else list(gate.command)
+            shell_argv(command)
+            if isinstance(command, str)
+            else list(command)
         )
         exec_result = sandbox.exec(
             handle,

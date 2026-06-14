@@ -23,11 +23,13 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ...common.cancellation import current_cancellation
 from ...common.errors import ConflictError
 
 # Сетевой режим песочницы. Ф2: none (egress запрещён, дефолт безопасности) или
@@ -598,23 +600,44 @@ def _default_host_runner(
     env: Mapping[str, str],
     timeout_s: int | None,
 ) -> tuple[int, str, bool]:
-    """Запустить argv на хосте: cwd=workspace, объединённый вывод, таймаут."""
+    """Запустить argv на хосте: cwd=workspace, объединённый вывод, таймаут.
+
+    Опрашивает ambient-токен отмены (``cancellation_scope`` в execution_service):
+    при отмене прогона процесс прерывается, не дожидаясь завершения — иначе
+    долгий harness-узел нельзя остановить (раннер ждал бы его минуты). Реализовано
+    через Popen + поллинг (subprocess.run блокирует и отмену не видит)."""
+    token = current_cancellation()
     try:
-        proc = subprocess.run(  # noqa: S603 — argv формируется адаптером/гейтами
+        proc = subprocess.Popen(  # noqa: S603 — argv формируется адаптером/гейтами
             _wrap_host_argv(argv),
             cwd=cwd,
             env=dict(env),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout_s,
         )
-    except subprocess.TimeoutExpired as exc:
-        out = _coerce_text(exc.stdout) + _coerce_text(exc.stderr)
-        return 124, out, True
     except FileNotFoundError as exc:
         return 127, f"Команда не найдена: {exc}", False
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode, output, False
+
+    deadline = time.monotonic() + timeout_s if timeout_s else None
+    while True:
+        try:
+            # Короткий тик: между ними проверяем отмену/дедлайн. Повторный
+            # communicate после TimeoutExpired не теряет вывод (см. docs).
+            output, _ = proc.communicate(timeout=0.5)
+            return proc.returncode or 0, output or "", False
+        except subprocess.TimeoutExpired:
+            cancelled = token is not None and token.is_cancelled
+            timed_out = deadline is not None and time.monotonic() >= deadline
+            if cancelled or timed_out:
+                proc.kill()
+                try:
+                    output, _ = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    output = ""
+                if cancelled:
+                    return 130, (output or "") + "\n[прервано: отмена прогона]", False
+                return 124, output or "", True
 
 
 def _coerce_text(value: Any) -> str:
