@@ -210,3 +210,55 @@ def test_provider_exhausted_stops_run_instead_of_grinding_through_tasks(
     assert terminal.stop_reason == "provider_exhausted"
     # Остановились на ПЕРВОЙ же задаче — не прогрызли весь граф.
     assert terminal.total_steps_completed == 0
+
+
+def test_drain_record_writes_in_flight_siblings_to_overview(tmp_path: Path, monkeypatch) -> None:
+    """Регрессия (Issue 3): при раннем останове прогона (исчерпание лимита)
+    параллельные in-flight сиблинги должны попасть в overview (steps_json), а не
+    остаться только в графе задач. ``_drain_record`` сливает пул и пишет их шаги.
+
+    Отменённые (CancellationError) — НЕ шаг (вернулись в ready)."""
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from pov_generator.application.workflow_runner_service import _DispatchedStep
+    from pov_generator.common.cancellation import CancellationError
+    from pov_generator.common.errors import ProviderExhaustedError
+
+    _workspace, _project_id, runner, _runtime = _bootstrap(tmp_path)
+
+    recorded: list[tuple[str, str | None, str]] = []
+    monkeypatch.setattr(
+        runner, "_append_step",
+        lambda ws, rid, meta, *, validation_status, planning_outcome, execution_run_id, reasons:
+            recorded.append((meta.task_key, validation_status, planning_outcome)),
+    )
+
+    def _meta(key: str) -> _DispatchedStep:
+        return _DispatchedStep(task_id=key, task_key=key, step_index=1,
+                               started_at="t", write_set=frozenset())
+
+    def _fut(result=None, exc=None) -> Future:
+        f: Future = Future()
+        if exc is not None:
+            f.set_exception(exc)
+        else:
+            f.set_result(result)
+        return f
+
+    in_flight = {
+        _fut(result=SimpleNamespace(validation_status="passed", planning_outcome="selected",
+                                    execution_run_id="r", reasons=())): _meta("ok"),
+        _fut(exc=ProviderExhaustedError("лимит")): _meta("exhausted"),
+        _fut(exc=RuntimeError("boom")): _meta("errored"),
+        _fut(exc=CancellationError("cancel")): _meta("cancelled"),
+    }
+
+    runner._drain_record(tmp_path, "run-x", in_flight)
+
+    by_key = {k: (vs, po) for k, vs, po in recorded}
+    assert by_key["ok"] == ("passed", "selected")
+    assert by_key["exhausted"] == ("failed", "error")
+    assert by_key["errored"] == ("failed", "error")
+    assert "cancelled" not in by_key  # отменённые шагом не пишем
+    assert not in_flight  # пул слит

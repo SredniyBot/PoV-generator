@@ -447,11 +447,12 @@ class WorkflowRunnerService:
                 # --- исчерпание квоты провайдера -> стоп всего пайплайна -----
                 if provider_exhausted is not None:
                     # Дальнейшие задачи не запускаем — подписка исчерпана. Ждём
-                    # текущие in-flight (они тоже упрутся в лимит) и финализируем
-                    # с явным сообщением пользователю.
+                    # текущие in-flight (они тоже упрутся в лимит) и ЗАПИСЫВАЕМ их
+                    # шаги в overview — иначе сиблинги, запущенные параллельно,
+                    # видны только в графе задач (failed), но не в обзоре прогона.
                     logger.error("прогон остановлен: исчерпан лимит провайдера")
                     if in_flight:
-                        futures_wait(set(in_flight), return_when=ALL_COMPLETED)
+                        self._drain_record(workspace, run_id, in_flight)
                     self._finalize(
                         workspace,
                         run_id,
@@ -595,6 +596,45 @@ class WorkflowRunnerService:
                         execution_run_id=result.execution_run_id,
                         reasons=result.reasons,
                     )
+
+    def _drain_record(self, workspace: Path, run_id: str, in_flight: dict) -> None:
+        """Дождаться оставшихся in-flight задач и ЗАПИСАТЬ их шаги в overview.
+
+        Вызывается при раннем останове прогона (исчерпание лимита провайдера):
+        сиблинги, запущенные параллельно, тоже завершатся (упрутся в лимит/
+        упадут). Их исход должен попасть в ``steps_json`` — иначе задача видна
+        только в графе (failed), но НЕ в обзоре прогона. ``future.result()`` на
+        ещё бегущей задаче блокирует до завершения — это и есть слив пула.
+        Отменённые (CancellationError) вернулись в ready — шагом не пишем.
+        """
+        for future in list(in_flight):
+            meta = in_flight.pop(future)
+            try:
+                result = future.result()
+            except CancellationError:
+                continue
+            except ProviderExhaustedError as exc:
+                self._append_step(
+                    workspace, run_id, meta,
+                    validation_status="failed", planning_outcome="error",
+                    execution_run_id=None,
+                    reasons=(str(exc).strip() or "Исчерпан лимит провайдера.",),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._append_step(
+                    workspace, run_id, meta,
+                    validation_status="failed", planning_outcome="error",
+                    execution_run_id=None,
+                    reasons=(str(exc).strip() or type(exc).__name__,),
+                )
+            else:
+                self._append_step(
+                    workspace, run_id, meta,
+                    validation_status=result.validation_status,
+                    planning_outcome=result.planning_outcome,
+                    execution_run_id=result.execution_run_id,
+                    reasons=result.reasons,
+                )
 
     def _finalize_drained(
         self,

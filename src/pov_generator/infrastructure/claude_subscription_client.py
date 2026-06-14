@@ -202,13 +202,19 @@ def _classification_text(exc: BaseException) -> str:
 def _is_provider_exhausted(message: str) -> bool:
     """Похоже ли на исчерпание квоты/лимита подписки (а не разовый сбой).
 
-    Подписочный CLI при 429/529 возвращает is_error с subtype=success → в
-    сообщении «returned an error result: success». Плюс прямые маркеры лимита.
-    Это НЕ транзиент: повтор в окне исчерпанной квоты бессмыслен."""
+    ТОЛЬКО по ЯВНЫМ маркерам лимита (rate-limit / usage limit / quota / 429 /
+    529 / overloaded). Исчерпание — НЕ транзиент: повтор в исчерпанном окне
+    бессмыслен, пайплайн останавливается.
+
+    ВАЖНО: «returned an error result: success» (CLI вернул is_error=true с
+    противоречивым subtype=success) сюда НЕ входит. Это неоднозначный
+    транзиентный сбой API (повтор обычно проходит), а НЕ доказательство
+    исчерпания — иначе разовый хиккап ЛОЖНО останавливал бы здоровый пайплайн
+    (наблюдалось: прогон падал provider_exhausted при неисчерпанных лимитах).
+    Этот маркер остаётся транзиентным в ``_is_transient_cli_error`` → retry."""
     low = message.lower()
     return (
-        "error result: success" in low
-        or "rate limit" in low
+        "rate limit" in low
         or "rate-limit" in low
         or "rate_limit" in low
         or "overloaded" in low

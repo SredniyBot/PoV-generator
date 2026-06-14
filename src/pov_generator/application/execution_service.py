@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -50,24 +49,6 @@ from .merge_strategies import structural_merge
 from .methodology_rules import MethodologyEvaluation, evaluate_methodology_rules
 
 logger = get_logger("execution")
-
-# Жёсткий потолок входного контекста (токены) для провайдеров с лимитом окна
-# (подписка): объём токенов выжигает 5-часовое окно, поэтому раздутый
-# ПРОИЗВОДНЫЙ контекст (до ~76k наблюдалось) срезаем по авторитету. Потолок
-# щедрый — режет лишь реальные runaway-задачи, обычные не трогает; обязательное
-# не теряется (укладчик громко падает при нехватке). Переопределяется env.
-_DEFAULT_WINDOW_LIMITED_INPUT_BUDGET = 48_000
-
-
-def _window_limited_input_budget() -> int:
-    raw = os.environ.get("POV_SUBSCRIPTION_INPUT_BUDGET")
-    if raw is None:
-        return _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
-    return value if value > 0 else _DEFAULT_WINDOW_LIMITED_INPUT_BUDGET
 
 
 def _artifact_document_title(snapshot: RegistrySnapshot, artifact_role: str, fallback: str) -> str:
@@ -437,19 +418,11 @@ class ExecutionService:
 
         # Контекст строим ПОСЛЕ резолва модели: бюджет входа ограничен окном
         # активной модели (per-model context window из настроек UI).
-        # Провайдер с лимитом окна (подписка): дополнительно срезаем раздутый
-        # производный контекст жёстким потолком (объём токенов выжигает окно).
-        input_ceiling = (
-            _window_limited_input_budget()
-            if (llm_provider is not None and getattr(llm_provider, "token_window_limited", False))
-            else None
-        )
         context_result = self._context_service.build_for_task(
             workspace,
             snapshot,
             task_id,
             model_context_window=self._llm.context_limit_for(active_model),
-            input_budget_ceiling=input_ceiling,
         )
         context_manifest = context_result.manifest
 

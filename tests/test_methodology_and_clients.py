@@ -543,24 +543,31 @@ def test_structured_output_failure_is_schema_mode_not_transient() -> None:
 
 
 def test_provider_exhausted_classifier() -> None:
-    """Исчерпание квоты (429/529/overload) распознаётся и НЕ транзиентно."""
+    """Исчерпание квоты — ТОЛЬКО по ЯВНЫМ маркерам лимита (429/529/overload/
+    rate-limit/usage limit/quota), и оно НЕ транзиентно."""
     from pov_generator.infrastructure import claude_subscription_client as mod
 
     for msg in (
-        "Claude Code returned an error result: success",
         "API error 429: rate limit exceeded",
         "Error 529: overloaded",
         "usage limit reached",
+        "monthly quota exceeded",
     ):
         assert mod._is_provider_exhausted(msg) is True, msg
         assert mod._is_transient_cli_error(msg) is False, msg
-    # Обычный транзиент — не «исчерпание».
+    # «error result: success» — НЕ доказательство исчерпания: это неоднозначный
+    # транзиентный хиккап API (is_error=true + subtype=success). Иначе разовый
+    # сбой ЛОЖНО останавливал бы здоровый пайплайн (реальный инцидент). Он
+    # остаётся ТРАНЗИЕНТНЫМ → retry.
+    assert mod._is_provider_exhausted("Claude Code returned an error result: success") is False
+    assert mod._is_transient_cli_error("Claude Code returned an error result: success") is True
+    # Обычный транзиент — тоже не «исчерпание».
     assert mod._is_provider_exhausted("Command failed with exit code 1") is False
 
 
 def test_quota_overload_raises_provider_exhausted_not_retried() -> None:
-    """Overload подписки → ProviderExhaustedError (НЕ ConflictError), без retry —
-    раннер на ней остановит пайплайн."""
+    """ЯВНЫЙ overload/лимит подписки → ProviderExhaustedError (НЕ ConflictError),
+    без retry — раннер на ней остановит пайплайн."""
     from pov_generator.common.errors import ProviderExhaustedError
     from pov_generator.infrastructure import claude_subscription_client as mod
 
@@ -570,7 +577,7 @@ def test_quota_overload_raises_provider_exhausted_not_retried() -> None:
 
     async def _query(prompt: str, options: Any):  # noqa: ARG001
         calls["n"] += 1
-        raise RuntimeError("Claude Code returned an error result: success")
+        raise RuntimeError("Error 529: overloaded — rate limit reached")
         yield  # pragma: no cover — делает функцию async-генератором
 
     fake_sdk.query = _query
@@ -580,6 +587,35 @@ def test_quota_overload_raises_provider_exhausted_not_retried() -> None:
         client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
     # Без retry: ровно один заход к провайдеру (не 3 транзит-повтора).
     assert calls["n"] == 1
+
+
+def test_error_result_success_retries_not_exhausted(monkeypatch) -> None:
+    """Регрессия (ложное исчерпание): «error result: success» — транзиент, его
+    РЕТРАЯТ, а не классифицируют как исчерпание квоты. Иначе разовый хиккап
+    останавливал бы здоровый прогон (наблюдалось: provider_exhausted при
+    неисчерпанных лимитах)."""
+    from pov_generator.common.errors import ConflictError, ProviderExhaustedError
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    monkeypatch.setenv("POV_CLAUDE_MAX_RETRIES", "2")  # ограничим backoff в тесте
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+    calls = {"n": 0}
+
+    async def _query(prompt: str, options: Any):  # noqa: ARG001
+        calls["n"] += 1
+        raise RuntimeError("Claude Code returned an error result: success")
+        yield  # pragma: no cover
+
+    fake_sdk.query = _query
+    client = _make_subscription_client(mod, fake_sdk)
+
+    # Это НЕ исчерпание (не должно подняться ProviderExhaustedError) —
+    # транзиент ретраится POV_CLAUDE_MAX_RETRIES раз, затем падает ConflictError.
+    with pytest.raises(ConflictError) as ei:
+        client.chat_json(system_prompt="s", user_prompt="u", schema={"type": "object"})
+    assert not isinstance(ei.value, ProviderExhaustedError)
+    assert calls["n"] > 1  # был хотя бы один повтор (транзиент)
 
 
 def test_claude_subscription_max_turns_message_is_actionable(monkeypatch) -> None:
