@@ -68,14 +68,21 @@ class ClaudeCodeHarnessProvider(SandboxHarnessProvider):
         # аргументов). Печать без интерактива. Модель — опциональна (образ может
         # задавать дефолт).
         parts = ['claude -p "$(cat ' + _BRIEF_PATH + ')"']
-        if self._host_security == "restricted":
+        if self._host_security is None:
+            # Docker (изоляция контейнером): полный автономный доступ безопасен.
+            parts.append("--dangerously-skip-permissions")
+        elif self._host_security == "restricted":
             # Host без ОС-изоляции: ограничиваем агента файловыми правками в
             # workspace — авто-приём правок, но без хостового shell и сети.
             parts.append("--permission-mode acceptEdits")
             parts.append('--disallowedTools "Bash WebFetch WebSearch"')
         else:
-            # Docker (изоляция) или host full (опт-ин): полный доступ.
-            parts.append("--dangerously-skip-permissions")
+            # Host «full» (опт-ин, без ОС-изоляции). НЕЛЬЗЯ
+            # ``--dangerously-skip-permissions``: claude ОТКАЗЫВАЕТ исполнять этот
+            # флаг на неизолированном хосте в headless-режиме и выходит мгновенно
+            # (наблюдался код 126, start→fail за 1с). Даём максимум РАБОЧЕГО —
+            # авто-приём правок со всеми инструментами (без ``--disallowedTools``).
+            parts.append("--permission-mode acceptEdits")
         # Модель: явный override подключения ИЛИ настроенная LLM-модель проекта
         # (model_hint) — не выдуманный дефолт. Пусто → claude берёт свою.
         model = self.model or spec.model_hint

@@ -255,9 +255,18 @@ class HarnessExecutionService:
         # Учёт расхода (даже неуспешного прогона) — для панели и governance.
         self._budget.record(result.usage)
         if result.status != "completed":
+            # Хвост транскрипта агента — в текст ошибки: без него провал
+            # (напр. код 126/127) недиагностируем, а транскрипт иначе теряется
+            # (на успехе он сохраняется, на провале — раньше выбрасывался).
+            tail = (result.transcript or "").strip()
+            tail_block = (
+                f"\n--- вывод агента (последние строки) ---\n{tail[-1500:]}"
+                if tail
+                else "\n(транскрипт пуст — агент не дал вывода)"
+            )
             raise ConflictError(
                 f"harness '{provider.name}' не завершил узел "
-                f"(status={result.status}): {result.error or 'без деталей'}."
+                f"(status={result.status}): {result.error or 'без деталей'}{tail_block}"
             )
         harvested = next((a for a in result.artifacts if a.role == artifact_role), None)
         if harvested is None:

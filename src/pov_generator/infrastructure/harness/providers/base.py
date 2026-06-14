@@ -128,7 +128,10 @@ class SandboxHarnessProvider:
                 return HarnessRunResult(
                     status="failed",
                     transcript=transcript,
-                    error=f"Команда агента вернула код {result.exit_code}.",
+                    error=(
+                        f"Команда агента вернула код {result.exit_code}."
+                        + _exit_code_hint(result.exit_code)
+                    ),
                 )
 
             # 4. Гейты «готово» (DoD): проверяем результат в той же песочнице
@@ -262,3 +265,20 @@ class SandboxHarnessProvider:
 def shell(command: str) -> list[str]:
     """Псевдоним shell_argv для адаптеров (sh -lc <command>)."""
     return shell_argv(command)
+
+
+def _exit_code_hint(code: int) -> str:
+    """Подсказка по типовым кодам выхода — чтобы провал был диагностируем.
+
+    126/127 особенно коварны в host-режиме на Windows (агент-CLI запускается
+    через POSIX-шелл): 126 — найден, но не исполняем (права/интерпретатор/.cmd-
+    шим); 127 — не найден в PATH среды агента. 124 — таймаут (см. выше). Полный
+    вывод агента всё равно в ``transcript`` (его поднимает сервис в текст ошибки)."""
+    hints = {
+        126: " (126: команда найдена, но не исполняема — права/интерпретатор; "
+             "в host-режиме на Windows проверьте, что `claude` доступен и исполняем "
+             "из bash, а не только как .cmd-шим)",
+        127: " (127: команда не найдена в PATH среды агента — проверьте установку/PATH "
+             "агент-CLI, напр. `claude`)",
+    }
+    return hints.get(code, "")

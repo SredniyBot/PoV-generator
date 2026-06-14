@@ -196,3 +196,44 @@ def test_claude_code_command_shape() -> None:
     assert "$(cat /work/.povgen/brief.txt)" in claude_cmd
     assert "--dangerously-skip-permissions" in claude_cmd
     assert "--model claude-opus-4-8" in claude_cmd
+
+
+def _claude_code_cmd(host_security: str | None) -> str:
+    captured: list[str] = []
+
+    def handler(rt: StubSandboxRuntime, handle: SandboxHandle, argv: list[str]) -> ExecResult:
+        cmd = argv[-1]
+        captured.append(cmd)
+        if "claude -p" in cmd:
+            rt.put_files(handle, {"/work/.povgen/out/r.json": b"{}"})
+        return ExecResult(0, "", "")
+
+    provider = ClaudeCodeHarnessProvider(
+        sandbox=StubSandboxRuntime(exec_handler=handler),
+        image="x",
+        host_security=host_security,
+    )
+    provider.run(
+        HarnessRunSpec(brief="b", expected_artifacts=(ExpectedArtifact(role="r", fmt="json"),))
+    )
+    return next(c for c in captured if "claude -p" in c)
+
+
+def test_claude_code_host_modes_never_use_dangerously_skip() -> None:
+    """Регрессия (код 126): на HOST (без ОС-изоляции) НЕЛЬЗЯ
+    ``--dangerously-skip-permissions`` — claude отказывает его исполнять в
+    headless и выходит мгновенно. Только docker (host_security=None) безопасно
+    использует skip-permissions."""
+    # Docker (None) — полный автономный доступ (изоляция контейнером).
+    assert "--dangerously-skip-permissions" in _claude_code_cmd(None)
+    # Host «restricted» — acceptEdits + запрет shell/сети, без skip-permissions.
+    restricted = _claude_code_cmd("restricted")
+    assert "--dangerously-skip-permissions" not in restricted
+    assert "--permission-mode acceptEdits" in restricted
+    assert "--disallowedTools" in restricted
+    # Host «full» — рабочий максимум: acceptEdits со всеми инструментами, но
+    # ВСЁ РАВНО без skip-permissions (иначе тот самый код 126).
+    full = _claude_code_cmd("full")
+    assert "--dangerously-skip-permissions" not in full
+    assert "--permission-mode acceptEdits" in full
+    assert "--disallowedTools" not in full
