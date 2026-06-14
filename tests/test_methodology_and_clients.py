@@ -81,6 +81,40 @@ def _make_async_query(response_text: str):
     return _query
 
 
+def test_claude_subscription_call_timeout_aborts_hung_cli(monkeypatch) -> None:
+    """Подвисший вызов CLI прерывается по wall-clock таймауту и поднимается как
+    транзиентный ConflictError — НЕ блокирует воркер навсегда.
+
+    Регрессия: при исчерпании 5-часового окна подписки CLI иногда молча зависал
+    (ждал rate-limit бэкенд) без ошибки → воркер-тред блокировался, пайплайн не
+    останавливался, задачи висели в ``in_progress`` часами (наблюдалось ~9ч)."""
+    import asyncio as _asyncio
+
+    from pov_generator.common.errors import ConflictError
+    from pov_generator.infrastructure import claude_subscription_client as mod
+
+    fake_sdk = MagicMock()
+    fake_sdk.ClaudeAgentOptions = lambda **kw: SimpleNamespace(**kw)
+
+    async def _hanging_query(prompt: str, options: Any):  # noqa: ARG001
+        await _asyncio.sleep(30)  # «подвисли» намного дольше таймаута
+        yield _FakeMessage("{}")  # никогда не достигается
+
+    fake_sdk.query = _hanging_query
+    monkeypatch.setattr(mod, "_resolve_call_timeout_s", lambda: 0.2)  # быстрый таймаут для теста
+    monkeypatch.setenv("POV_CLAUDE_MAX_RETRIES", "1")  # без долгих ретраев
+
+    with patch.dict("sys.modules", {"claude_agent_sdk": fake_sdk}):
+        client = mod.ClaudeSubscriptionClient(
+            mod.ClaudeSubscriptionConfig(model="claude-sonnet-4-6", max_turns=1)
+        )
+        client._sdk = fake_sdk
+        client._structured_disabled = True  # plain-путь: без второго strict-прохода
+        with pytest.raises(ConflictError) as ei:
+            client.chat_json(system_prompt="sys", user_prompt="u", schema={"type": "object"})
+    assert "таймаут" in str(ei.value).lower()
+
+
 @pytest.mark.parametrize(
     "response_text, expected",
     [

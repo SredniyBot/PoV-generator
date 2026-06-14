@@ -565,30 +565,38 @@ class ClaudeSubscriptionClient:
         cli_schema: dict[str, Any] | None,
         token: CancellationToken | None,
     ) -> tuple[str, dict[str, Any] | None, Any]:
-        """Запустить ``_collect`` с возможностью форсированной отмены.
+        """Запустить ``_collect`` с жёстким таймаутом и форсированной отменой.
 
-        Без токена — обычный await. С токеном — оборачиваем сбор в asyncio-
-        таску и подписываемся на отмену: при ``token.cancel()`` из другого
-        потока (HTTP-обработчик) безопасно отменяем таску через
-        ``loop.call_soon_threadsafe`` — это корректный кросс-тред способ
-        прервать asyncio. Отмена таски рвёт ``async for`` по ``query`` →
-        SDK закрывает CLI-subprocess. Получение ответа LLM прекращается, не
-        дожидаясь завершения.
+        Сбор всегда оборачиваем в asyncio-таску, чтобы:
+        1. **Таймаут** (``_resolve_call_timeout_s``) ограничивал ОДИН вызов CLI:
+           при исчерпании окна подписки CLI может молча зависнуть — без таймаута
+           воркер блокируется навсегда и пайплайн не останавливается. По таймауту
+           таску отменяем (SDK закрывает CLI-subprocess) и поднимаем транзиентный
+           ``ConflictError`` → retry с backoff, затем штатный fail задачи.
+        2. **Отмена пользователем** (``token``) из другого потока (HTTP) —
+           безопасно через ``loop.call_soon_threadsafe(task.cancel)``: отмена рвёт
+           ``async for`` по ``query`` → CLI-subprocess закрывается.
         """
-        if token is None:
-            return await self._collect(system_prompt, user_prompt, cli_schema)
-
+        timeout_s = _resolve_call_timeout_s()
         loop = asyncio.get_running_loop()
         collect_task: asyncio.Task[tuple[str, dict[str, Any] | None, Any]] = asyncio.ensure_future(
             self._collect(system_prompt, user_prompt, cli_schema)
         )
-        unregister = token.register(
-            lambda: loop.call_soon_threadsafe(collect_task.cancel)
+        unregister = (
+            token.register(lambda: loop.call_soon_threadsafe(collect_task.cancel))
+            if token is not None
+            else (lambda: None)
         )
         try:
-            return await collect_task
+            return await asyncio.wait_for(collect_task, timeout=timeout_s)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            # wait_for уже отменил collect_task → CLI-subprocess закрывается.
+            raise ConflictError(
+                f"Вызов claude CLI превысил таймаут {timeout_s:.0f}с (подвис) — "
+                "прерван, будет повтор."
+            ) from exc
         except asyncio.CancelledError as exc:
-            if token.is_cancelled:
+            if token is not None and token.is_cancelled:
                 raise CancellationError("LLM-вызов прерван пользователем.") from exc
             raise
         finally:
@@ -853,6 +861,30 @@ def _resolve_load_timeout_ms() -> int:
         return 3_600_000
 
 
+def _resolve_call_timeout_s() -> float:
+    """Жёсткий wall-clock таймаут на ОДИН вызов CLI (генерация ответа), сек.
+
+    Защита от ПОДВИСАНИЯ: при исчерпании 5-часового окна подписки CLI иногда
+    не возвращает ошибку, а молча зависает (ждёт rate-limit бэкенд). Без этого
+    таймаута воркер-тред блокируется навсегда → пайплайн не останавливается, а
+    задача висит в ``in_progress`` часами (наблюдалось 9ч). По таймауту вызов
+    прерывается (CLI-subprocess закрывается) и классифицируется как транзиент →
+    retry с backoff; после исчерпания попыток задача падает и раннер
+    останавливается штатно.
+
+    Дефолт 600с (обычный вызов укладывается в 1-3 мин даже на opus). Override —
+    ``POV_CLAUDE_CALL_TIMEOUT`` (сек); ноль/мусор → дефолт; минимум 60с.
+    """
+    raw = os.environ.get("POV_CLAUDE_CALL_TIMEOUT")
+    if raw is None:
+        return 600.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 600.0
+    return max(value, 60.0) if value > 0 else 600.0
+
+
 def _is_transient_cli_error(message: str) -> bool:
     """Эвристика: ошибка похожа на транзиентный сбой CLI/подписки?
 
@@ -887,9 +919,13 @@ def _is_transient_cli_error(message: str) -> bool:
         return False
     if _is_provider_exhausted(msg):
         return False
+    # Наш wall-clock таймаут ("превысил таймаут") НЕ транзиентен: 10 минут без
+    # ответа — это реальный подвис (исчерпано окно / зависший subprocess), а не
+    # мгновенная флуктуация; ретраить его — впустую жечь ещё по 10 минут. Пусть
+    # задача падает сразу, а раннер идёт дальше / останавливается.
     transient_markers = (
         "command failed with exit code",
-        "control request timeout",
+        "control request timeout",  # подвис на initialize-старте (быстрый), retry помогает
         "process exited",
         "broken pipe",
         "connection reset",
