@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   BrowserRouter,
   Link,
@@ -21,6 +21,8 @@ import {
   Download,
   FileJson2,
   FileText,
+  Folder,
+  FolderOpen,
   Layers3,
   Loader2,
   Paperclip,
@@ -2812,38 +2814,173 @@ function BundleFileContent({ path, text }: { path: string; text: string }) {
   );
 }
 
-// #2: просмотр бандла (код/файлы) — дерево файлов слева, содержимое выбранного
-// файла справа. Контент тянется лениво (файлы бывают крупными).
+// Узел дерева файлов бандла: папка (с детьми) или файл.
+interface BundleTreeNode {
+  name: string;
+  path: string;
+  isFile: boolean;
+  size?: number;
+  children: BundleTreeNode[];
+}
+
+/** Построить дерево папок/файлов из плоского списка путей (как в редакторе кода).
+ *  Папки — выше файлов, внутри — по алфавиту. */
+function buildBundleTree(files: { path: string; size_bytes: number }[]): BundleTreeNode[] {
+  const root: BundleTreeNode = { name: "", path: "", isFile: false, children: [] };
+  for (const f of files) {
+    const parts = f.path.split("/").filter(Boolean);
+    let node = root;
+    parts.forEach((part, i) => {
+      const isLast = i === parts.length - 1;
+      const childPath = parts.slice(0, i + 1).join("/");
+      let child = node.children.find((c) => c.name === part && c.isFile === isLast);
+      if (!child) {
+        child = {
+          name: part,
+          path: childPath,
+          isFile: isLast,
+          size: isLast ? f.size_bytes : undefined,
+          children: [],
+        };
+        node.children.push(child);
+      }
+      node = child;
+    });
+  }
+  const sort = (n: BundleTreeNode): void => {
+    n.children.sort((a, b) =>
+      a.isFile !== b.isFile ? (a.isFile ? 1 : -1) : a.name.localeCompare(b.name),
+    );
+    n.children.forEach(sort);
+  };
+  sort(root);
+  return root.children;
+}
+
+/** Рекурсивный рендер дерева: папки раскрываются, файлы кликабельны; отступ по
+ *  глубине. */
+function BundleTreeNodes({
+  nodes,
+  depth,
+  selected,
+  expanded,
+  onToggle,
+  onSelect,
+}: {
+  nodes: BundleTreeNode[];
+  depth: number;
+  selected: string | null;
+  expanded: Set<string>;
+  onToggle: (path: string) => void;
+  onSelect: (path: string) => void;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const pad = { paddingLeft: 6 + depth * 14 };
+        if (node.isFile) {
+          return (
+            <button
+              key={node.path}
+              type="button"
+              className={cx(
+                "bundle-tree__row",
+                selected === node.path && "bundle-tree__row--active",
+              )}
+              style={pad}
+              onClick={() => onSelect(node.path)}
+              title={`${node.path}${node.size != null ? ` · ${node.size} Б` : ""}`}
+            >
+              <FileText size={13} className="bundle-tree__chevron" />
+              <span className="bundle-tree__name">{node.name}</span>
+            </button>
+          );
+        }
+        const isOpen = expanded.has(node.path);
+        return (
+          <Fragment key={node.path}>
+            <button
+              type="button"
+              className="bundle-tree__row"
+              style={pad}
+              onClick={() => onToggle(node.path)}
+              aria-expanded={isOpen}
+            >
+              <span className="bundle-tree__chevron">
+                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </span>
+              {isOpen ? <FolderOpen size={13} /> : <Folder size={13} />}
+              <span className="bundle-tree__name">{node.name}</span>
+            </button>
+            {isOpen && (
+              <BundleTreeNodes
+                nodes={node.children}
+                depth={depth + 1}
+                selected={selected}
+                expanded={expanded}
+                onToggle={onToggle}
+                onSelect={onSelect}
+              />
+            )}
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+// #2: просмотр бандла (код/файлы) — дерево файлов СВЕРХУ (папки/подпапки, как в
+// редакторе), содержимое выбранного файла — СНИЗУ. Контент тянется лениво.
 function BundleViewer({ projectId, detail }: { projectId: string; detail: ArtifactDetailView }) {
   const files = (detail.bundle_files ?? []).slice().sort((a, b) => a.path.localeCompare(b.path));
+  const tree = useMemo(() => buildBundleTree(files), [files]);
+  // Все папки раскрыты по умолчанию — пользователь сразу видит структуру (как в
+  // редакторе); дальше может свернуть нужные.
+  const folderPaths = useMemo(() => {
+    const paths: string[] = [];
+    const walk = (nodes: BundleTreeNode[]) =>
+      nodes.forEach((n) => {
+        if (!n.isFile) {
+          paths.push(n.path);
+          walk(n.children);
+        }
+      });
+    walk(tree);
+    return paths;
+  }, [tree]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(folderPaths));
+  useEffect(() => setExpanded(new Set(folderPaths)), [folderPaths]);
   const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null);
   const fileQuery = useQuery({
     queryKey: [projectId, "bundle-file", detail.artifact_id, selected],
     queryFn: () => api.getBundleFile(projectId, detail.artifact_id, selected!),
     enabled: Boolean(selected),
   });
+  const toggleFolder = (path: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   if (files.length === 0) {
     return <EmptyState title="Бандл пуст" description="В этом артефакте нет файлов." />;
   }
   return (
     <div className="bundle-viewer">
       <div className="bundle-viewer__tree" role="tree" aria-label="Файлы бандла">
-        {files.map((f) => (
-          <button
-            key={f.path}
-            type="button"
-            className={cx("bundle-viewer__file", selected === f.path && "bundle-viewer__file--active")}
-            onClick={() => setSelected(f.path)}
-            title={`${f.path} · ${f.size_bytes} Б`}
-          >
-            <FileText size={13} />
-            <span className="bundle-viewer__path">{f.path}</span>
-          </button>
-        ))}
+        <BundleTreeNodes
+          nodes={tree}
+          depth={0}
+          selected={selected}
+          expanded={expanded}
+          onToggle={toggleFolder}
+          onSelect={setSelected}
+        />
       </div>
       <div className="bundle-viewer__content">
         {!selected ? (
-          <EmptyState title="Выберите файл" description="Откройте файл слева, чтобы посмотреть его содержимое." />
+          <EmptyState title="Выберите файл" description="Откройте файл в дереве сверху, чтобы посмотреть его содержимое." />
         ) : fileQuery.isLoading ? (
           <p className="muted">Загрузка файла…</p>
         ) : fileQuery.data?.binary ? (

@@ -2056,8 +2056,9 @@ code {
 
 /* #2: просмотр бандла (код) — дерево файлов + содержимое выбранного файла. */
 .bundle-viewer {
-  display: grid;
-  grid-template-columns: minmax(180px, 280px) 1fr;
+  /* Дерево файлов СВЕРХУ, содержимое артефакта — СНИЗУ под ним (колонка). */
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
   min-height: 0;
 }
@@ -2066,18 +2067,23 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 60vh;
+  /* Дерево на крыше: ограничиваем высоту и скроллим внутри, чтобы много файлов
+     не отталкивали содержимое слишком низко. */
+  max-height: 40vh;
   overflow: auto;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm, 6px);
   padding: var(--space-2);
 }
 
-.bundle-viewer__file {
+/* Узел дерева файлов: папка (раскрывается) или файл. Отступ по глубине задаётся
+   инлайн (padding-left), здесь — общий вид строки. */
+.bundle-tree__row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 4px 6px;
+  width: 100%;
+  padding: 3px 6px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -2087,22 +2093,26 @@ code {
   border-radius: 4px;
 }
 
-.bundle-viewer__file:hover {
+.bundle-tree__row:hover {
   background: var(--accent-soft, rgba(120, 184, 201, 0.12));
   color: var(--text-primary);
 }
 
-.bundle-viewer__file--active {
+.bundle-tree__row--active {
   background: var(--accent-soft, rgba(120, 184, 201, 0.18));
   color: var(--text-primary);
 }
 
-.bundle-viewer__path {
+.bundle-tree__chevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--text-tertiary, #8b93a3);
+}
+
+.bundle-tree__name {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  direction: rtl; /* длинные пути обрезаются слева — видно имя файла */
-  text-align: left;
 }
 
 .bundle-viewer__content {
@@ -2111,8 +2121,10 @@ code {
 
 .bundle-viewer__code {
   margin: 0;
-  max-height: 60vh;
-  overflow: auto;
+  /* Без вертикального скролла: блок РАСТЁТ на всю нужную высоту (скроллит, если
+     нужно, внешняя панель артефакта). Горизонтальный скролл оставляем для
+     длинных строк кода — без ограничения высоты вертикальная полоса не появится. */
+  overflow-x: auto;
   padding: var(--space-3);
   background: var(--surface-primary, rgba(20, 24, 30, 0.6));
   border: 1px solid var(--border-subtle);
@@ -3897,10 +3909,15 @@ code {
   background: rgba(42, 54, 62, 0.97);
 }
 
+/* Активный узел: мягкая акцентная подсветка в общем языке интерфейса (фон
+   accent-soft + дышащее свечение), БЕЗ жёсткой обводки/контура — она выбивалась
+   из стиля. Левая статус-кромка (инлайн borderLeftColor) сохраняется. */
 .tg-node--current {
-  outline: 2px solid rgba(120, 184, 201, 0.75);
-  outline-offset: 2px;
-  animation: tg-pulse 2s ease-in-out infinite;
+  border-color: var(--accent-border);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)),
+    var(--surface-primary, rgba(28, 32, 38, 0.95));
+  box-shadow: 0 8px 22px rgba(120, 184, 201, 0.18);
+  animation: tg-glow 2.4s ease-in-out infinite;
 }
 
 /* #2: узел-агент (executor: harness) — выделяем пунктирной фиолетовой рамкой и
@@ -3941,6 +3958,13 @@ code {
 @keyframes tg-pulse {
   0%, 100% { outline-color: rgba(120, 184, 201, 0.75); box-shadow: 0 0 0 0 rgba(120, 184, 201, 0.25); }
   50%       { outline-color: rgba(120, 184, 201, 0.35); box-shadow: 0 0 8px 3px rgba(120, 184, 201, 0.15); }
+}
+
+/* Дышащее акцентное свечение активного узла — мягкая замена жёсткому
+   outline-пульсу (в общем визуальном языке проекта). */
+@keyframes tg-glow {
+  0%, 100% { box-shadow: 0 6px 16px rgba(120, 184, 201, 0.14); }
+  50%       { box-shadow: 0 8px 26px rgba(120, 184, 201, 0.30); }
 }
 
 /* Статус-строка узла: точка + подпись + (предупреждение) + иконка типа.
@@ -4121,13 +4145,15 @@ code {
   opacity: 1;
 }
 
-/* Дип-линк из overview: задача, на которую перешли, подсвечена «как при
-   наведении» — акцентное кольцо + видимое меню действий. Поднимаем узел над
-   соседями, чтобы оверлей меню (bottom: -2rem) не перекрывался. */
+/* Дип-линк из overview: задача, на которую перешли, подсвечена мягко — акцентный
+   фон + чуть более выраженное свечение и акцентная рамка (в общем стиле, без
+   жёсткой обводки) + видимое меню действий. Узел поднимаем над соседями, чтобы
+   оверлей меню (bottom: -2rem) не перекрывался. */
 .tg-node--highlight {
-  outline: 2px solid var(--accent, rgba(120, 184, 201, 0.95));
-  outline-offset: 1px;
-  box-shadow: 0 0 0 4px rgba(120, 184, 201, 0.18);
+  border-color: var(--accent, #78b8c9);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)),
+    var(--surface-primary, rgba(28, 32, 38, 0.95));
+  box-shadow: 0 10px 28px rgba(120, 184, 201, 0.30);
 }
 .react-flow__node:has(.tg-node--highlight) {
   z-index: 10;
