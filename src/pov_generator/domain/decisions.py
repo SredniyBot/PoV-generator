@@ -194,6 +194,31 @@ def light_decision_item_schema() -> dict:
                 "enum": ["business", "architecture", "detail"],
                 "description": "Уровень вовлечения (business/architecture/detail).",
             },
+            # v3.11 (transparency): три ПЛОСКИХ опциональных поля. Намеренно не в
+            # `required` и без вложенности — именно глубокая вложенность давала
+            # strict-coercion штормы на дешёвой модели, а плоские скаляры/строки
+            # их не реинтродуцируют. Толерантный разбор + нормализация добивают
+            # форму; на отсутствие модель не штрафуется.
+            "level_rationale": {
+                "type": "string",
+                "description": "1-2 предложения: почему именно этот уровень (со ссылкой на критерии).",
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Что в контексте вынудило эту развилку и почему выбран этот дефолт. "
+                    "Конкретно, плоским текстом (не общие слова)."
+                ),
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": (
+                    "Насколько ты уверен(а) в предложенном дефолте (0..1). Низкая "
+                    "уверенность подсветится пользователю как «система не уверена»."
+                ),
+            },
         },
     }
 
@@ -339,6 +364,19 @@ class Decision:
     # из-за общей неопределённости — пользователь не хочет шумных меток.
     user_verified: bool = False
     user_verified_at: str | None = None
+    # v3.11 (transparency) — обоснование выбора уровня и «доказательная база».
+    # ``evidence`` отвечает на «почему именно этот дефолт» конкретно, со ссылкой
+    # на контекст; ``level_rationale`` (выше) — «почему этот уровень». Оба
+    # заполняются обоими источниками (identification + emergent); пустые на
+    # legacy-записях. Снимают претензию «непонятно, как LLM приняла решение».
+    evidence: str = ""
+    # Снимок провенанса вызова, породившего решение: provider/model/token_usage
+    # и, для identification, system/user-промпт + сырой item; для emergent —
+    # ссылка на ``execution_run_id`` генерации (тяжёлый prompt/response не
+    # дублируем — гидрируется из execution_traces на чтении). Сырьё drill-down
+    # «под капотом». Зеркало паттерна ``ArtifactMetadata.reasoning`` (тоже dict
+    # на frozen-датаклассе) — пустой dict на legacy-записях.
+    provenance: dict[str, object] = field(default_factory=dict)
 
     # ---- удобные производные свойства -------------------------------------
 

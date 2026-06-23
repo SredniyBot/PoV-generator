@@ -13,6 +13,7 @@ from ..common.cancellation import (
 )
 from ..common.errors import ConflictError, ProviderExhaustedError
 from ..common.llm_modes import force_compositional_scope
+from ..common.llm_observation import llm_observation_scope
 from ..common.logging import get_logger
 from ..common.serialization import json_dumps, utc_now_iso
 from ..domain.artifacts import ArtifactMetadata, ArtifactRecord, ArtifactRelations
@@ -717,26 +718,35 @@ class ExecutionService:
                 )
                 return payload, [*usages, *repair_usages] if repair_usages else usages
 
-            payload, live_reasoning, self_reported_decisions, llm_usages = _generate()
-            payload, llm_usages = _shape(payload, llm_usages)
-
-            # Реактивная сборка по частям — крайняя мера ТОЛЬКО для провайдера с
-            # лимитом окна (subscription идёт одним плоским проходом ради экономии
-            # cache-read). Если плоский проход + нормализация + self-repair не
-            # уложились в схему — добираем форму compositional-сборкой (дорого по
-            # вызовам, потому только при реальном провале, а не на каждой задаче).
-            if (
-                getattr(llm_provider, "token_window_limited", False)
-                and not matches_schema(payload, primary_schema)
+            # v3.11: помечаем генерацию для трассировки (purpose + project/task).
+            # Покрывает первичный _generate, self-repair внутри _shape и
+            # реактивный fallback ниже (тот же ambient-скоуп).
+            with llm_observation_scope(
+                purpose="primary_generation",
+                project_id=manifest.project_id,
+                task_id=task.task_id,
+                artifact_role=artifact_role,
             ):
-                logger.warning(
-                    "execution: плоский проход не уложился в схему "
-                    f"(role={artifact_role}) → реактивная сборка по частям"
-                )
-                with force_compositional_scope():
-                    payload, live_reasoning, self_reported_decisions, fb_usages = _generate()
-                payload, fb_usages = _shape(payload, fb_usages)
-                llm_usages = [*llm_usages, *fb_usages]
+                payload, live_reasoning, self_reported_decisions, llm_usages = _generate()
+                payload, llm_usages = _shape(payload, llm_usages)
+
+                # Реактивная сборка по частям — крайняя мера ТОЛЬКО для провайдера с
+                # лимитом окна (subscription идёт одним плоским проходом ради экономии
+                # cache-read). Если плоский проход + нормализация + self-repair не
+                # уложились в схему — добираем форму compositional-сборкой (дорого по
+                # вызовам, потому только при реальном провале, а не на каждой задаче).
+                if (
+                    getattr(llm_provider, "token_window_limited", False)
+                    and not matches_schema(payload, primary_schema)
+                ):
+                    logger.warning(
+                        "execution: плоский проход не уложился в схему "
+                        f"(role={artifact_role}) → реактивная сборка по частям"
+                    )
+                    with force_compositional_scope():
+                        payload, live_reasoning, self_reported_decisions, fb_usages = _generate()
+                    payload, fb_usages = _shape(payload, fb_usages)
+                    llm_usages = [*llm_usages, *fb_usages]
         else:
             raise ConflictError(f"Неподдерживаемый provider: {active_provider}")
         # self_reported_decisions заполняет только LLM-ветка (идея А);
@@ -808,12 +818,25 @@ class ExecutionService:
         extracted_decisions: tuple[Decision, ...] = ()
         if self._decision_extraction is not None and self_reported_decisions:
             try:
+                # v3.11: reference-снимок провенанса. Тяжёлый prompt/response
+                # генерации уже в execution_traces под этим execution_run_id —
+                # эмерджентное решение ссылается на него (не дублирует), а
+                # /reasoning гидрирует трейсы на чтении.
+                emergent_provenance_base = {
+                    "execution_run_id": execution_run_id,
+                    "provider": active_provider,
+                    "model": active_model,
+                    "token_usage": dict(
+                        artifact_token_usage.get("primary_generation", {})
+                    ),
+                }
                 extracted_decisions = self._decision_extraction.persist_self_reported(
                     workspace,
                     project_id=manifest.project_id,
                     artifact_id=artifact_id,
                     task_id=task.task_id,
                     raw_decisions=self_reported_decisions,
+                    provenance_base=emergent_provenance_base,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(

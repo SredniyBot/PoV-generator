@@ -1038,6 +1038,43 @@ export interface DecisionItemView {
   // false means list endpoint returned a compact item; load detail for
   // alternatives/rationale/description.
   details_included: boolean;
+  // v3.11 (transparency): «доказательная база» решения — что в контексте
+  // вынудило развилку и почему этот дефолт. Пусто для compact-элементов.
+  evidence?: string;
+}
+
+// v3.11 (transparency): провенанс решения «под капотом» — чем руководствовалась
+// модель. Отдельный (тяжёлый) endpoint, грузится лениво по раскрытию.
+export interface DecisionExecutionTrace {
+  trace_id: string;
+  execution_run_id: string;
+  trace_type: string; // "prompt_bundle" | "response"
+  title: string;
+  content: string; // JSON-строка
+  created_at: string;
+}
+
+export interface DecisionProvenance {
+  source_kind?: "identification" | "emergent" | string;
+  schema_version?: string;
+  provider?: string;
+  model?: string;
+  token_usage?: Record<string, number>;
+  // identification: сырой промпт вызова выявления.
+  prompt?: { system?: string; user?: string };
+  // emergent: ссылка на вызов генерации (трейсы гидрируются на бэке).
+  execution_run_id?: string;
+  // исходный JSON-объект решения от модели.
+  raw_item?: unknown;
+  [key: string]: unknown;
+}
+
+export interface DecisionReasoningView {
+  decision_id: string;
+  title: string;
+  source: DecisionSource;
+  provenance: DecisionProvenance;
+  execution_traces: DecisionExecutionTrace[];
 }
 
 export interface ProjectDecisionsView {

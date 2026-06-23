@@ -10,12 +10,17 @@ from __future__ import annotations
 import pytest
 
 from pov_generator.common.errors import ConflictError
+from pov_generator.common.llm_observation import llm_observation_scope
 from pov_generator.infrastructure.llm import LLMProvider, LLMProviderRegistry
+from pov_generator.infrastructure.llm.protocol import LLMResult, LLMUsage
 from pov_generator.infrastructure.llm.providers.claude_sdk import ClaudeSdkProvider
 from pov_generator.infrastructure.llm.providers.claude_subscription import (
     ClaudeSubscriptionProvider,
 )
 from pov_generator.infrastructure.llm.providers.openrouter import OpenRouterProvider
+from pov_generator.infrastructure.llm.registry import LoggingLLMProvider
+from pov_generator.infrastructure.observability import NullSink, reset_llm_sink, set_llm_sink
+from pov_generator.infrastructure.observability.langfuse_sink import get_llm_sink
 
 
 def test_registry_lists_all_supported_providers() -> None:
@@ -142,3 +147,93 @@ def test_registry_from_env_raises_if_nothing_configured(monkeypatch) -> None:
 
     with pytest.raises(ConflictError, match="Не задан LLM-провайдер"):
         registry.from_env()
+
+
+# ---------------------------------------------------------------------------
+# v3.11 — наблюдаемость через LoggingLLMProvider (ships dark)
+# ---------------------------------------------------------------------------
+
+
+class _FakeInner:
+    name = "fake"
+    model = "fake-model"
+
+    def __init__(self, result: LLMResult) -> None:
+        self._result = result
+
+    def chat_json(self, *, system_prompt, user_prompt, schema) -> LLMResult:  # noqa: ANN001
+        del system_prompt, user_prompt, schema
+        return self._result
+
+
+class _RecordingSink:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def emit(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
+def test_logging_provider_emits_observation_with_bound_context() -> None:
+    """Чокпоинт эмитит в синк provider/model/usage/prompt/response + ambient
+    контекст (purpose/task_id из llm_observation_scope)."""
+    usage = LLMUsage(input_tokens=10, output_tokens=5, total_tokens=15, source="actual")
+    provider = LoggingLLMProvider(
+        _FakeInner(LLMResult(payload={"ok": True}, usage=usage)),
+        purpose="decision_identification",
+    )
+    sink = _RecordingSink()
+    set_llm_sink(sink)
+    try:
+        with llm_observation_scope(purpose="decision_identification", task_id="t-1", project_id="p-1"):
+            result = provider.chat_json(system_prompt="SYS", user_prompt="USR", schema={})
+    finally:
+        reset_llm_sink()
+
+    assert result.payload == {"ok": True}
+    assert len(sink.calls) == 1
+    call = sink.calls[0]
+    assert call["purpose"] == "decision_identification"
+    assert call["provider"] == "fake"
+    assert call["model"] == "fake-model"
+    assert call["usage"] is usage
+    assert call["system_prompt"] == "SYS"
+    assert call["response"] == {"ok": True}
+    assert call["context"]["task_id"] == "t-1"
+    assert call["context"]["project_id"] == "p-1"
+
+
+def test_logging_provider_emits_observation_on_error() -> None:
+    class _Boom:
+        name = "boom"
+        model = "m"
+
+        def chat_json(self, **_kwargs):
+            raise RuntimeError("down")
+
+    provider = LoggingLLMProvider(_Boom(), purpose="primary_generation")
+    sink = _RecordingSink()
+    set_llm_sink(sink)
+    try:
+        with pytest.raises(RuntimeError):
+            provider.chat_json(system_prompt="s", user_prompt="u", schema={})
+    finally:
+        reset_llm_sink()
+
+    assert len(sink.calls) == 1
+    assert sink.calls[0]["error"] == "down"
+    assert sink.calls[0]["response"] is None
+
+
+def test_default_sink_is_nullsink_without_env(monkeypatch) -> None:
+    """Без Langfuse-env синк — NullSink (no-op), а chat_json работает как раньше."""
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    reset_llm_sink()
+    try:
+        assert isinstance(get_llm_sink(), NullSink)
+        provider = LoggingLLMProvider(_FakeInner(LLMResult(payload={"x": 1}, usage=None)))
+        result = provider.chat_json(system_prompt="s", user_prompt="u", schema={})
+        assert result.payload == {"x": 1}
+    finally:
+        reset_llm_sink()

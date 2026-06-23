@@ -116,6 +116,8 @@ def _decision_to_row(decision: Decision, *, created_at: str, updated_at: str) ->
         "chosen_option_ids_json": json_dumps(list(decision.chosen_option_ids)),
         "user_verified": 1 if decision.user_verified else 0,
         "user_verified_at": decision.user_verified_at,
+        "evidence": decision.evidence,
+        "provenance_json": json_dumps(decision.provenance or {}),
     }
 
 
@@ -174,6 +176,18 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         category = str(row["category"] or "")
     except (KeyError, IndexError):
         category = ""
+    # v3.11 — evidence + provenance. Защитный read для legacy баз.
+    try:
+        evidence = str(row["evidence"] or "")
+    except (KeyError, IndexError):
+        evidence = ""
+    try:
+        provenance_raw = row["provenance_json"]
+        provenance = json_loads(provenance_raw) if provenance_raw else {}
+        if not isinstance(provenance, dict):
+            provenance = {}
+    except (KeyError, IndexError):
+        provenance = {}
     return Decision(
         decision_id=row["decision_id"],
         project_id=row["project_id"],
@@ -201,6 +215,8 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         chosen_option_ids=chosen_option_ids,
         user_verified=user_verified,
         user_verified_at=user_verified_at,
+        evidence=evidence,
+        provenance=provenance,
     )
 
 
@@ -2511,7 +2527,8 @@ class SqliteRuntime:
                     user_action, original_chosen_option_id, user_free_text_answer,
                     free_form_level_override, created_at, updated_at,
                     category, answer_mode, chosen_option_ids_json,
-                    user_verified, user_verified_at
+                    user_verified, user_verified_at,
+                    evidence, provenance_json
                 )
                 values (
                     :decision_id, :project_id, :title, :description, :chosen_option_id,
@@ -2521,7 +2538,8 @@ class SqliteRuntime:
                     :user_action, :original_chosen_option_id, :user_free_text_answer,
                     :free_form_level_override, :created_at, :updated_at,
                     :category, :answer_mode, :chosen_option_ids_json,
-                    :user_verified, :user_verified_at
+                    :user_verified, :user_verified_at,
+                    :evidence, :provenance_json
                 )
                 on conflict(decision_id) do update set
                     title = excluded.title,
@@ -2546,7 +2564,9 @@ class SqliteRuntime:
                     answer_mode = excluded.answer_mode,
                     chosen_option_ids_json = excluded.chosen_option_ids_json,
                     user_verified = excluded.user_verified,
-                    user_verified_at = excluded.user_verified_at
+                    user_verified_at = excluded.user_verified_at,
+                    evidence = excluded.evidence,
+                    provenance_json = excluded.provenance_json
                 """,
                 payload,
             )
@@ -3102,7 +3122,9 @@ class SqliteRuntime:
               answer_mode text not null default 'single',
               chosen_option_ids_json text not null default '[]',
               user_verified integer not null default 0,
-              user_verified_at text
+              user_verified_at text,
+              evidence text not null default '',
+              provenance_json text not null default '{}'
             );
             create index if not exists decisions_project_idx
                 on decisions(project_id, created_at);
@@ -3142,6 +3164,14 @@ class SqliteRuntime:
         # выявления решений до сборки). Мигрируем legacy-строки идемпотентно.
         connection.execute(
             "update decisions set source = 'identification' where source = 'pre_flight'"
+        )
+        # v3.11 (transparency): «доказательная база» решения и снимок провенанса
+        # вызова, его породившего. Legacy-строки получают пустую строку / '{}'.
+        self._ensure_column(
+            connection, "decisions", "evidence", "text not null default ''"
+        )
+        self._ensure_column(
+            connection, "decisions", "provenance_json", "text not null default '{}'"
         )
 
         # Реквизиты v2: структурный payload предоставления. Старые строки

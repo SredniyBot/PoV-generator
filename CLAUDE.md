@@ -75,6 +75,17 @@ UI renders Mermaid diagrams via `mermaid.js` in the browser. The PDF pipeline (`
 
 Settings live in `<runtime>/settings.db` (Fernet-encrypted via `POV_SECRET_KEY` or auto-generated `<runtime>/.secret_key`), managed from the UI's `/settings` page. `.env` is only for bootstrap (first-run import) and CI/dev fallback. Three provider types: `openrouter`, `claude_sdk` (direct Anthropic API), `claude_subscription` (local `claude` CLI — needs `claude login` once; the bundled CLI from `claude-agent-sdk` is **not** used because it isn't logged in). Default execution provider is `stub` (deterministic fixtures from `templates/stub_fixtures/`, no network) — keep it that way for tests.
 
+## Observability (Langfuse, optional)
+
+Every LLM call flows through one chokepoint — `LoggingLLMProvider.chat_json` (`infrastructure/llm/registry.py`) — which calls `record_llm_observation(...)`. By default the sink is `NullSink` (full no-op): the feature **ships dark**, so absent env the flow and tests are unchanged. A real `LangfuseSink` is built only when **both** `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are set (optional `LANGFUSE_HOST` for self-hosted) **and** the `langfuse` package is importable. Env-first by design (deploy/infra config alongside `POV_SECRET_KEY`), not the encrypted settings store — and it keeps prompts on your own host (no SaaS egress by default).
+
+- **Caller context** rides an ambient contextvar (`common/llm_observation.py::llm_observation_scope(**fields)`) — mirrors `plain_json_scope()`, so it adds span attributes without touching the `chat_json` signature. Two emission points set it: `decision_identification_service` (`purpose=decision_identification`, +`complexity`) and `execution_service` primary generation (`purpose=primary_generation`, +`artifact_role`), both with `project_id`/`task_id`.
+- **What the span carries** (`infrastructure/observability/langfuse_sink.py`): `session_id = project_id` (groups a run into one Langfuse session), `tags=[purpose, provider]`, and rich `metadata` (token detail incl. `retry_count`/`cache`/`reasoning`/`cost_usd`/`source`, `duration_ms`, bound context, `response_keys`).
+- **SDK compat:** API is detected at build time — v3 (OTEL `start_generation` + `update_trace`) or v2 (`trace` + `generation`). An unrecognized SDK logs a loud `warning` and degrades to `NullSink` (never a silent no-op). `flush_llm_observations()` (called in the CLI `finally`) forces the batch out for short-lived runs.
+- **`decision_id` is intentionally NOT in the span** — per-decision provenance (prompt/response/tokens) lives in the `decisions.provenance_json` column and is served via the `/decisions/{id}/reasoning` endpoint; Langfuse is the per-call engineer X-ray, in-system provenance is the per-decision product trace.
+
+When touching providers, keep the chokepoint best-effort: `record_llm_observation` and every `emit` are wrapped in try/except — observability must never break the LLM flow.
+
 ## Dependency notes
 
 `starlette` is pinned `>=0.40,<0.42` on purpose: `claude-agent-sdk → mcp` transitively pulls `starlette 1.0`, which breaks `fastapi 0.115`. Regenerate the lockfile via `uv pip compile pyproject.toml --extra dev -o requirements.lock`.

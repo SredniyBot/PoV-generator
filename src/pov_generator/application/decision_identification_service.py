@@ -53,11 +53,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..common.errors import ConflictError, ProviderExhaustedError
 from ..common.llm_modes import plain_json_scope
+from ..common.llm_observation import llm_observation_scope
 from ..common.serialization import utc_now_iso
 from ..domain.decisions import (
     DECISION_CATEGORIES,
@@ -73,10 +74,21 @@ from .decision_light_parsing import light_alternatives, resolve_recommended_opti
 logger = logging.getLogger(__name__)
 
 
-# Сложность задачи для resolve_for_purpose. Выявление решений — это
-# структурное перечисление, не глубокий анализ. Standard уровня достаточно;
-# на Claude-провайдерах маппится на sonnet (см. claude_sdk_client).
-_IDENTIFICATION_COMPLEXITY = "standard"
+# Сложность задачи для resolve_for_purpose. v3.11: подняли до "complex" —
+# теперь выявление возвращает обогащённую схему (level_rationale + evidence +
+# confidence), и качество формулировок важнее экономии. На Claude-фолбэке это
+# маппится sonnet→opus (см. model_for_complexity); основной рычаг — явное
+# назначение модели purpose "Вычленение решений" в Settings → Default Models,
+# которое перекрывает complexity.
+_IDENTIFICATION_COMPLEXITY = "complex"
+
+
+def _clamp01(value: Any, *, default: float) -> float:
+    """Привести произвольное значение к float в [0, 1] (или default при мусоре)."""
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
@@ -330,7 +342,14 @@ class DecisionIdentificationService:
         # best-effort на дешёвой модели; форму ответа добивают tolerant-разбор и
         # нормализация. Это убирает strict-штормы, бывшие главной статьёй времени.
         try:
-            with plain_json_scope():
+            # v3.11: помечаем вызов для трассировки (purpose + project/task) —
+            # ambient-скоуп, без изменения сигнатуры chat_json.
+            with llm_observation_scope(
+                purpose="decision_identification",
+                project_id=project_id,
+                task_id=task_id,
+                complexity=_IDENTIFICATION_COMPLEXITY,
+            ), plain_json_scope():
                 result = llm.chat_json(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -366,6 +385,22 @@ class DecisionIdentificationService:
             if usage is not None
             else {}
         )
+
+        # v3.11: домешиваем call-level провенанс в каждое решение (self-contained,
+        # вариант iii плана). raw_item уже положен в _build_single_decision; здесь
+        # добавляем provider/model/usage и промпт. Решения одного вызова делят
+        # prompt — осознанное дублирование на ≤5 sibling (R2 плана), без shared-key.
+        call_provenance: dict[str, Any] = {
+            "provider": llm.name,
+            "model": llm.model,
+            "token_usage": usage_dict,
+            "prompt": {"system": system_prompt, "user": user_prompt},
+        }
+        decisions = tuple(
+            replace(d, provenance={**d.provenance, **call_provenance})
+            for d in decisions
+        )
+
         return IdentificationResult(
             decisions=decisions,
             provider=llm.name,
@@ -545,6 +580,12 @@ class DecisionIdentificationService:
 
         description = strip_decision_category_prefix(str(raw.get("description") or ""))
 
+        # v3.11: обогащённые поля. Схема снова их запрашивает (плоско, опционально);
+        # читаем с фолбэком — отсутствие не критично, но обычно присутствуют.
+        level_rationale = str(raw.get("level_rationale") or "")
+        evidence = str(raw.get("evidence") or "")
+        confidence = _clamp01(raw.get("confidence"), default=0.5)
+
         return Decision(
             decision_id=str(uuid.uuid4()),
             project_id=project_id,
@@ -555,13 +596,21 @@ class DecisionIdentificationService:
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),
             level=level,  # type: ignore[arg-type]
-            level_rationale="",  # облегчённая схема не запрашивает — не критично для ценности
-            confidence=0.5,  # дефолт: уверенность отдельным полем больше не запрашиваем
+            level_rationale=level_rationale,
+            confidence=confidence,
             status="proposed",
             source=SOURCE_IDENTIFICATION,
             source_task_id=task_id,
             created_at=now,
             updated_at=now,
+            evidence=evidence,
+            # Per-decision часть провенанса (raw_item). Call-level поля
+            # (provider/model/usage/prompt) домешиваются в identify_for_task.
+            provenance={
+                "source_kind": SOURCE_IDENTIFICATION,
+                "schema_version": "light-v2",
+                "raw_item": raw,
+            },
         )
 
 

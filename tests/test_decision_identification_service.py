@@ -304,6 +304,107 @@ def test_decisions_field_not_a_list_raises_conflict() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# v3.11 — обогащённые поля (level_rationale/evidence/confidence) + провенанс
+# ---------------------------------------------------------------------------
+
+
+def _enriched_response(confidence: float = 0.8) -> dict[str, Any]:
+    return {
+        "decisions": [
+            {
+                "title": "Выбор СУБД",
+                "description": "Какую СУБД использовать",
+                "alternatives": [
+                    {"label": "PostgreSQL", "description": "Реляционная"},
+                    {"label": "MongoDB", "description": "Документная"},
+                ],
+                "recommended": "PostgreSQL",
+                "rationale": "Реляционные запросы",
+                "level": "architecture",
+                "category": "tech_stack",
+                "level_rationale": "Затрагивает несколько компонентов — архитектурный уровень.",
+                "evidence": "Бизнес-запрос требует транзакций и сложных JOIN'ов.",
+                "confidence": confidence,
+            }
+        ]
+    }
+
+
+def test_enriched_fields_are_parsed() -> None:
+    service, _llm = _make_service(_enriched_response(confidence=0.8))
+    result = service.plan_for_task(
+        project_id="p-1",
+        task_id="task-1",
+        task_title="x",
+        artifact_role="x",
+        task_summary="x",
+        context_text="x",
+    )
+    d = result.decisions[0]
+    assert d.level_rationale.startswith("Затрагивает несколько компонентов")
+    assert "транзакций" in d.evidence
+    assert d.confidence == pytest.approx(0.8)
+    assert d.is_low_confidence is False
+
+
+def test_low_confidence_fires_when_below_threshold() -> None:
+    """Реальный confidence из ответа оживляет пилл «система не уверена»."""
+    service, _llm = _make_service(_enriched_response(confidence=0.3))
+    result = service.plan_for_task(
+        project_id="p-1",
+        task_id="task-1",
+        task_title="x",
+        artifact_role="x",
+        task_summary="x",
+        context_text="x",
+    )
+    d = result.decisions[0]
+    assert d.confidence == pytest.approx(0.3)
+    assert d.is_low_confidence is True
+
+
+def test_missing_enriched_fields_fall_back_to_defaults() -> None:
+    """Облегчённый ответ без новых полей — поля пустые/0.5, не падаем."""
+    service, _llm = _make_service(_basic_response())
+    result = service.plan_for_task(
+        project_id="p-1",
+        task_id="task-1",
+        task_title="x",
+        artifact_role="x",
+        task_summary="x",
+        context_text="x",
+    )
+    d = result.decisions[0]
+    assert d.level_rationale == ""
+    assert d.evidence == ""
+    assert d.confidence == pytest.approx(0.5)
+
+
+def test_provenance_snapshot_attached_to_each_decision() -> None:
+    """Каждое решение несёт self-contained снимок провенанса: raw_item +
+    provider/model + промпт (для drill-down «под капотом»)."""
+    service, llm = _make_service(_enriched_response())
+    result = service.plan_for_task(
+        project_id="p-1",
+        task_id="task-1",
+        task_title="x",
+        artifact_role="architecture_proposal",
+        task_summary="x",
+        context_text="UNIQUE_CTX",
+    )
+    prov = result.decisions[0].provenance
+    assert prov["source_kind"] == "identification"
+    assert prov["schema_version"] == "light-v2"
+    assert prov["provider"] == llm.name
+    assert prov["model"] == llm.model
+    # raw_item — исходный dict решения от LLM.
+    assert prov["raw_item"]["title"] == "Выбор СУБД"
+    # промпт сохранён целиком (system содержит критерии, user — контекст).
+    assert "business" in prov["prompt"]["system"]
+    assert "UNIQUE_CTX" in prov["prompt"]["user"]
+
+
 def test_llm_call_failure_wraps_to_conflict() -> None:
     """Если LLM-провайдер бросил — оборачиваем в ConflictError с
     контекстом, не пробрасываем сырое исключение наверх."""

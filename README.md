@@ -120,6 +120,48 @@ API-ключи шифруются перед записью в `<runtime>/settin
 
 ---
 
+## Наблюдаемость (Langfuse, опционально)
+
+Чтобы понять, **как и почему** LLM приняла конкретное решение, каждый
+LLM-вызов можно экспортировать в self-hosted [Langfuse](https://langfuse.com).
+По умолчанию выключено («ships dark»): без ключей трассировка — полный no-op,
+поток и тесты не меняются. Промпты уходят только на **ваш** host — никакого
+SaaS-эгресса.
+
+**Включить:**
+
+```bash
+# в .env (или окружении процесса):
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=http://localhost:3000   # ваш self-hosted инстанс
+
+pip install langfuse                  # пакет опционален; без него — no-op
+```
+
+Поддерживаются оба поколения SDK (v2 `trace`/`generation` и v3 OTEL
+`start_generation`). Если SDK слишком старый/новый и API не распознан —
+в лог пишется явный `warning`, трассировка отключается (а не молча no-op).
+
+**Что искать в Langfuse-UI:**
+
+| Где | Что увидите |
+|---|---|
+| **Sessions** | `session_id = project_id` — все вызовы одного прогона как единый поток (выявление решений, генерация артефактов, выбор domain-pack…) |
+| **Tags** | `purpose` (`decision_identification` / `primary_generation` / …) + `provider` (+ `error`) — фильтр в один клик |
+| **Generation → Input/Output** | полный system+user промпт и сырой ответ модели |
+| **Metadata** | детализация токенов (`retry_count` — индикатор schema-штормов, `tokens_cache_read`, `tokens_reasoning`, `cost_usd`, `usage_source`), `duration_ms`, bound-контекст (`task_id`, `artifact_role`, `complexity`), `response_keys` |
+
+Для коротких CLI-прогонов (`povgen workflow run-until-blocked`) спаны
+форсированно отправляются на выходе — батч не теряется.
+
+> Привязка к конкретному решению (`decision_id`) в спан намеренно не кладётся:
+> per-decision провенанс (промпт/ответ/токены) хранится **в самой БД** и
+> доступен в UI реестра решений через «под капотом». Langfuse — инженерный
+> X-ray по вызовам, in-system провенанс — продуктовая трассировка по решениям.
+
+---
+
 ## Разработка
 
 ```bash

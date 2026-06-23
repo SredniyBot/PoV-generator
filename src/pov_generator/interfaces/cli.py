@@ -62,6 +62,12 @@ def main(argv: list[str] | None = None) -> None:
     except PovGeneratorError as exc:
         print(f"ОШИБКА: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+    finally:
+        # Короткий CLI-прогон может выйти раньше, чем фоновый поток Langfuse
+        # отправит батч спанов — форсируем (no-op без Langfuse).
+        from ..infrastructure.observability import flush_llm_observations
+
+        flush_llm_observations()
 
 
 def _dispatch(

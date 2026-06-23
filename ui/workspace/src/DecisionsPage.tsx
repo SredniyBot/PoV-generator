@@ -26,6 +26,7 @@ import type {
   CheckpointSessionView,
   DecisionItemView,
   DecisionLevel,
+  DecisionReasoningView,
   DecisionStatus,
   ProjectDecisionsView,
 } from "./types";
@@ -80,6 +81,81 @@ function humanLevelsForMode(mode: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// DecisionReasoningPanel — провенанс «под капотом» (v3.11)
+//
+// Рендерит снимок провенанса решения: provider/model/usage + сырой промпт
+// (identification) ИЛИ трейсы генерации (emergent) + исходный JSON решения.
+// Лёгкий, на нативных <details>/<pre> — это инженерный drill-down, не парадный UI.
+// ---------------------------------------------------------------------------
+
+function DecisionReasoningPanel({ data }: { data: DecisionReasoningView }) {
+  const p = data.provenance ?? {};
+  const usage = p.token_usage ?? {};
+  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : undefined;
+  const prompt = p.prompt;
+  const traces = data.execution_traces ?? [];
+  const fmt = (v: unknown) => {
+    try {
+      return typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  };
+  const empty = !prompt?.system && !prompt?.user && traces.length === 0 && p.raw_item == null;
+  return (
+    <div className="reasoning-panel">
+      <div className="reasoning-panel__meta">
+        {p.source_kind ? <span className="reasoning-panel__tag">{p.source_kind}</span> : null}
+        {p.provider || p.model ? (
+          <span className="reasoning-panel__model">
+            {[p.provider, p.model].filter(Boolean).join(" / ")}
+          </span>
+        ) : null}
+        {totalTokens != null ? (
+          <span className="reasoning-panel__tokens">{totalTokens} ток.</span>
+        ) : null}
+      </div>
+
+      {/* identification: сырой промпт вызова выявления. */}
+      {prompt?.system ? (
+        <details className="reasoning-panel__block">
+          <summary>Системный промпт</summary>
+          <pre className="reasoning-panel__pre">{prompt.system}</pre>
+        </details>
+      ) : null}
+      {prompt?.user ? (
+        <details className="reasoning-panel__block">
+          <summary>Промпт с контекстом задачи</summary>
+          <pre className="reasoning-panel__pre">{prompt.user}</pre>
+        </details>
+      ) : null}
+
+      {/* emergent: трейсы основного вызова генерации (prompt_bundle / response). */}
+      {traces.map((t) => (
+        <details key={t.trace_id} className="reasoning-panel__block">
+          <summary>{t.title || t.trace_type}</summary>
+          <pre className="reasoning-panel__pre">{t.content}</pre>
+        </details>
+      ))}
+
+      {/* исходный JSON этого решения от модели. */}
+      {p.raw_item != null ? (
+        <details className="reasoning-panel__block">
+          <summary>Сырой ответ модели по этому решению</summary>
+          <pre className="reasoning-panel__pre">{fmt(p.raw_item)}</pre>
+        </details>
+      ) : null}
+
+      {empty ? (
+        <p className="decision-card__under-hood-note">
+          Решение из старого реестра — провенанс не сохранён.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // DecisionCard — переиспользуемая карточка решения
 // ---------------------------------------------------------------------------
 
@@ -118,6 +194,8 @@ function DecisionCard({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [freeTextDraft, setFreeTextDraft] = useState<string>("");
   const [freeTextOpen, setFreeTextOpen] = useState(false);
+  // v3.11: ленивое раскрытие провенанса «под капотом» (тяжёлый endpoint).
+  const [showReasoning, setShowReasoning] = useState(false);
   const queryClient = useQueryClient();
   const isInteractive = interactive !== undefined;
 
@@ -127,6 +205,12 @@ function DecisionCard({
     enabled: !isInteractive && expanded && !initialDecision.details_included,
   });
   const decision = detailQuery.data ?? initialDecision;
+
+  const reasoningQuery = useQuery({
+    queryKey: ["decision-reasoning", decision.project_id, decision.decision_id],
+    queryFn: () => api.getDecisionReasoning(decision.project_id, decision.decision_id),
+    enabled: !isInteractive && showReasoning,
+  });
 
   // v3.4: пометить рискованное решение как «просмотрено» — снимает badge.
   // Доступно только в read-only-режиме (реестр), не в checkpoint-сессии.
@@ -357,6 +441,21 @@ function DecisionCard({
               {decision.rationale && decision.rationale !== chosenAlt?.description ? (
                 <p className="decision-card__answer-why">{decision.rationale}</p>
               ) : null}
+              {/* v3.11: «доказательная база» — что в контексте вынудило развилку. */}
+              {decision.evidence ? (
+                <p className="decision-card__answer-evidence">
+                  <span className="decision-card__answer-tag">Почему так</span>
+                  {decision.evidence}
+                </p>
+              ) : null}
+              {/* v3.11: обоснование выбранного уровня (раньше хранилось, но не
+                  показывалось). Объясняет, почему «бизнес»/«архитектура»/«детали». */}
+              {decision.level_rationale ? (
+                <p className="decision-card__answer-level-why">
+                  <span className="decision-card__answer-tag">Уровень</span>
+                  {decision.level_rationale}
+                </p>
+              ) : null}
               {decision.user_free_text_answer ? (
                 <p className="decision-card__answer-free">«{decision.user_free_text_answer}»</p>
               ) : null}
@@ -392,6 +491,34 @@ function DecisionCard({
                     </li>
                   ))}
               </ul>
+            </div>
+          ) : null}
+
+          {/* READ-ONLY: «под капотом» — провенанс решения (чем руководствовалась
+              модель). Ленивая загрузка по раскрытию, тяжёлый endpoint. */}
+          {!isInteractive ? (
+            <div className="decision-card__under-hood">
+              <button
+                type="button"
+                className="decision-card__under-hood-toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowReasoning((v) => !v);
+                }}
+                aria-expanded={showReasoning}
+              >
+                {showReasoning ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                Под капотом
+              </button>
+              {showReasoning ? (
+                reasoningQuery.isLoading ? (
+                  <p className="decision-card__under-hood-note">Загрузка провенанса…</p>
+                ) : reasoningQuery.data ? (
+                  <DecisionReasoningPanel data={reasoningQuery.data} />
+                ) : (
+                  <p className="decision-card__under-hood-note">Провенанс недоступен.</p>
+                )
+              ) : null}
             </div>
           ) : null}
 

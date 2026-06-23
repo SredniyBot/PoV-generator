@@ -958,6 +958,18 @@ def create_app(
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.get("/api/projects/{project_id}/decisions/{decision_id}/reasoning")
+    def project_decision_reasoning(project_id: str, decision_id: str) -> Any:
+        """v3.11 — провенанс решения «под капотом»: чем руководствовалась
+        модель (provider/model/usage, prompt/response). Для emergent —
+        гидрированные execution_traces генерации. 404 при отсутствии / чужом
+        проекте (паттерн detail-эндпоинта выше)."""
+        from ..common.errors import NotFoundError
+        try:
+            return to_primitive(query_service.decision_reasoning(project_id, decision_id))
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     @app.post("/api/projects/{project_id}/decisions/{decision_id}/verify")
     def project_decision_verify(
         project_id: str, decision_id: str, body: dict[str, Any] | None = None

@@ -79,6 +79,55 @@ def test_persist_self_reported_empty_is_noop(tmp_path: Path) -> None:
     ) == ()
 
 
+def test_persist_self_reported_parses_enriched_fields(tmp_path: Path) -> None:
+    """v3.11: level_rationale/evidence/confidence из ответа генерации
+    попадают в Decision; низкая confidence оживляет is_low_confidence."""
+    runtime = SqliteRuntime()
+    ws = tmp_path / "ws"
+    svc = DecisionExtractionService(runtime)
+
+    raw = _raw("Выбор СУБД")
+    raw["level_rationale"] = "Долгоиграющий технический выбор — архитектурный уровень."
+    raw["evidence"] = "Артефакт закладывает реляционную модель данных."
+    raw["confidence"] = 0.25
+
+    saved = svc.persist_self_reported(
+        ws, project_id="p1", artifact_id="art-1", task_id="t-1", raw_decisions=[raw]
+    )
+    d = saved[0]
+    assert d.level_rationale.startswith("Долгоиграющий технический выбор")
+    assert "реляционную модель" in d.evidence
+    assert d.confidence == 0.25
+    assert d.is_low_confidence is True
+
+
+def test_persist_self_reported_attaches_reference_provenance(tmp_path: Path) -> None:
+    """Эмерджентное решение несёт reference-снимок: call-level поля из
+    provenance_base + raw_item. Тяжёлый prompt НЕ дублируется (ссылка на
+    execution_run_id, трейсы гидрируются на чтении)."""
+    runtime = SqliteRuntime()
+    ws = tmp_path / "ws"
+    svc = DecisionExtractionService(runtime)
+
+    base = {
+        "execution_run_id": "run-9",
+        "provider": "claude_sdk",
+        "model": "opus",
+        "token_usage": {"total_tokens": 100},
+    }
+    saved = svc.persist_self_reported(
+        ws, project_id="p1", artifact_id="art-1", task_id="t-1",
+        raw_decisions=[_raw("Выбор СУБД")], provenance_base=base,
+    )
+    prov = saved[0].provenance
+    assert prov["source_kind"] == "emergent"
+    assert prov["execution_run_id"] == "run-9"
+    assert prov["provider"] == "claude_sdk"
+    assert prov["raw_item"]["title"] == "Выбор СУБД"
+    # reference-снимок не хранит сырой prompt — он за execution_run_id.
+    assert "prompt" not in prov
+
+
 def test_decisions_schema_is_optional_array_of_decisions() -> None:
     schema = decisions_schema()
     assert schema["type"] == "array"

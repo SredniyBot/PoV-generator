@@ -558,6 +558,42 @@ class WorkspaceQueryService:
             raise NotFoundError(f"decision {decision_id!r} не принадлежит проекту {project_id!r}")
         return self._decision_view(decision)
 
+    def decision_reasoning(self, project_id: str, decision_id: str) -> dict:
+        """v3.11 — провенанс решения для drill-down «под капотом».
+
+        Возвращает снимок провенанса (provider/model/token_usage и, для
+        identification, сырой system/user-prompt + raw_item; для emergent —
+        ссылку на ``execution_run_id`` генерации). Для emergent дополнительно
+        гидрирует ``execution_traces`` (prompt_bundle/response основного вызова),
+        чтобы не дублировать тяжёлый промпт на строке решения.
+
+        Scope-protected: id привязан к проекту (NotFoundError → 404 на API).
+        """
+        context = self._load_context(project_id)
+        decision = self._runtime.get_decision(context.workspace, decision_id)
+        if decision.project_id != project_id:
+            from ..common.errors import NotFoundError
+            raise NotFoundError(
+                f"decision {decision_id!r} не принадлежит проекту {project_id!r}"
+            )
+        provenance = dict(decision.provenance or {})
+        execution_traces: list[dict] = []
+        run_id = provenance.get("execution_run_id")
+        if provenance.get("source_kind") == "emergent" and run_id:
+            try:
+                execution_traces = self._runtime.list_execution_traces(
+                    context.workspace, str(run_id)
+                )
+            except Exception:  # noqa: BLE001 — трейсы best-effort, detail не валим
+                execution_traces = []
+        return {
+            "decision_id": decision.decision_id,
+            "title": decision.title,
+            "source": decision.source,
+            "provenance": provenance,
+            "execution_traces": execution_traces,
+        }
+
     # ---- v3.0 — Checkpoint sessions ------------------------------------------
 
     def project_checkpoints(self, project_id: str) -> ProjectCheckpointsView:
@@ -650,6 +686,7 @@ class WorkspaceQueryService:
             user_verified=decision.user_verified,
             user_verified_at=decision.user_verified_at,
             details_included=include_details,
+            evidence=decision.evidence if include_details else "",
         )
 
     # bundle_kind → категория подвкладки списка артефактов.

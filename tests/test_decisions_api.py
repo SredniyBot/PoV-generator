@@ -11,12 +11,18 @@ runtime не разделяется между тестами.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from test_m9_api import init_project  # type: ignore
 
 from pov_generator.domain.decisions import Decision, DecisionAlternative
+from pov_generator.domain.execution import (
+    ExecutionRequest,
+    ExecutionResult,
+    ExecutionTrace,
+)
 from pov_generator.domain.positions import Position
 from pov_generator.domain.project_knowledge import UpsertPositionPatch
 from pov_generator.infrastructure.sqlite_runtime import SqliteRuntime
@@ -390,3 +396,100 @@ def test_detail_endpoint_blocks_cross_project_access(tmp_path: Path) -> None:
     # (workspace разные → runtime.get_decision из workspace B не найдёт)
     leaked = client.get(f"/api/projects/{project_b}/decisions/d-secret")
     assert leaked.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# v3.11 — /reasoning endpoint (провенанс «под капотом»)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_endpoint_returns_identification_provenance(tmp_path: Path) -> None:
+    """Для identification — self-contained снимок: prompt + raw_item, без
+    обращения к execution_traces (их нет у этого источника)."""
+    client, project_id, workspace = _build_client_with_project(tmp_path)
+    runtime = SqliteRuntime()
+    decision = replace(
+        _make_decision(decision_id="d-prov", project_id=project_id),
+        provenance={
+            "source_kind": "identification",
+            "schema_version": "light-v2",
+            "provider": "claude_sdk",
+            "model": "opus",
+            "token_usage": {"total_tokens": 42},
+            "prompt": {"system": "SYS_CRITERIA", "user": "USER_CTX"},
+            "raw_item": {"title": "Test decision"},
+        },
+    )
+    runtime.upsert_decision(workspace, decision)
+
+    response = client.get(f"/api/projects/{project_id}/decisions/d-prov/reasoning")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision_id"] == "d-prov"
+    prov = body["provenance"]
+    assert prov["source_kind"] == "identification"
+    assert prov["provider"] == "claude_sdk"
+    assert prov["prompt"]["user"] == "USER_CTX"
+    assert prov["raw_item"]["title"] == "Test decision"
+    assert body["execution_traces"] == []
+
+
+def test_reasoning_endpoint_hydrates_emergent_traces(tmp_path: Path) -> None:
+    """Для emergent — reference-снимок: тяжёлый prompt/response не дублируется
+    на строке решения, а гидрируется из execution_traces по execution_run_id."""
+    client, project_id, workspace = _build_client_with_project(tmp_path)
+    runtime = SqliteRuntime()
+    runtime.record_execution_run(
+        workspace,
+        request=ExecutionRequest(
+            execution_run_id="run-x",
+            project_id=project_id,
+            task_id="t-1",
+            template_ref="tmpl@1.0.0",
+            context_manifest_id="",
+            provider="claude_sdk",
+            model="opus",
+            actor="test",
+        ),
+        result=ExecutionResult(execution_run_id="run-x", status="succeeded"),
+        traces=(
+            ExecutionTrace(
+                trace_id="tr-1",
+                trace_type="prompt_bundle",
+                title="Промпт сборки",
+                content='{"system":"s","user":"u"}',
+            ),
+            ExecutionTrace(
+                trace_id="tr-2",
+                trace_type="response",
+                title="Ответ",
+                content='{"ok":true}',
+            ),
+        ),
+    )
+    decision = replace(
+        _make_decision(decision_id="d-em", project_id=project_id),
+        source="emergent",
+        provenance={
+            "source_kind": "emergent",
+            "execution_run_id": "run-x",
+            "provider": "claude_sdk",
+            "model": "opus",
+        },
+    )
+    runtime.upsert_decision(workspace, decision)
+
+    body = client.get(
+        f"/api/projects/{project_id}/decisions/d-em/reasoning"
+    ).json()
+    assert body["provenance"]["execution_run_id"] == "run-x"
+    trace_types = {t["trace_type"] for t in body["execution_traces"]}
+    assert trace_types == {"prompt_bundle", "response"}
+
+
+def test_reasoning_endpoint_404_when_not_found(tmp_path: Path) -> None:
+    client, project_id, _ws = _build_client_with_project(tmp_path)
+    response = client.get(
+        f"/api/projects/{project_id}/decisions/non-existent/reasoning"
+    )
+    assert response.status_code == 404

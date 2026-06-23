@@ -116,6 +116,7 @@ class DecisionExtractionService:
         artifact_id: str,
         task_id: str | None,
         raw_decisions: list[Any],
+        provenance_base: dict[str, Any] | None = None,
     ) -> tuple[Decision, ...]:
         """Сохранить самоотчётные решения из ответа генерации.
 
@@ -136,6 +137,7 @@ class DecisionExtractionService:
             project_id=project_id,
             task_id=task_id,
             artifact_id=artifact_id,
+            provenance_base=provenance_base,
         )
         saved: list[Decision] = []
         for decision in built:
@@ -159,6 +161,7 @@ class DecisionExtractionService:
         project_id: str,
         task_id: str | None,
         artifact_id: str,
+        provenance_base: dict[str, Any] | None = None,
     ) -> tuple[Decision, ...]:
         if not isinstance(raw_decisions, list):
             return ()
@@ -175,6 +178,7 @@ class DecisionExtractionService:
                         task_id=task_id,
                         artifact_id=artifact_id,
                         now=now,
+                        provenance_base=provenance_base,
                     )
                 )
             except (KeyError, TypeError, ValueError):
@@ -189,6 +193,7 @@ class DecisionExtractionService:
         task_id: str | None,
         artifact_id: str,
         now: str,
+        provenance_base: dict[str, Any] | None = None,
     ) -> Decision:
         # Облегчённая схема (alternatives={label, description}) → богатый domain
         # через ОБЩИЙ маппинг, единый с identification-путём: option_id=opt-N,
@@ -209,6 +214,30 @@ class DecisionExtractionService:
 
         description = strip_decision_category_prefix(str(raw.get("description") or ""))
 
+        # v3.11: обогащённые поля. level_rationale теперь может прийти от модели;
+        # при отсутствии — прежний дефолтный текст. evidence — «доказательная
+        # база». confidence — реальный self-report (clamp), оживляет
+        # is_low_confidence для эмерджентных решений.
+        level_rationale = str(
+            raw.get("level_rationale")
+            or "Указано генерацией как принятое при сборке артефакта."
+        )
+        evidence = str(raw.get("evidence") or "")
+        try:
+            confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.5)))
+        except (TypeError, ValueError):
+            confidence = 0.5
+
+        # Reference-снимок провенанса: call-level поля (execution_run_id/
+        # provider/model/usage) из provenance_base + per-decision raw_item.
+        # Тяжёлый prompt/response не дублируем — гидрируется из execution_traces.
+        provenance: dict[str, Any] = {
+            "source_kind": SOURCE_EMERGENT,
+            "schema_version": "light-v2",
+            "raw_item": raw,
+            **(provenance_base or {}),
+        }
+
         return Decision(
             decision_id=str(uuid.uuid4()),
             project_id=project_id,
@@ -219,8 +248,8 @@ class DecisionExtractionService:
             alternatives=alternatives,
             rationale=str(raw.get("rationale") or ""),
             level=level,  # type: ignore[arg-type]
-            level_rationale="Указано генерацией как принятое при сборке артефакта.",
-            confidence=float(raw.get("confidence") or 0.5),
+            level_rationale=level_rationale,
+            confidence=confidence,
             # Auto-accepted: уже зафиксировано в артефакте, отражаем в реестре.
             # Пользователь может переиграть override'ом в любой момент.
             status="accepted_default",
@@ -230,4 +259,6 @@ class DecisionExtractionService:
             affected_artifact_ids=(artifact_id,),
             created_at=now,
             updated_at=now,
+            evidence=evidence,
+            provenance=provenance,
         )

@@ -364,6 +364,10 @@ export const api = {
     request<import("./types").DecisionItemView>(
       `/api/projects/${projectId}/decisions/${decisionId}`,
     ),
+  getDecisionReasoning: (projectId: string, decisionId: string) =>
+    request<import("./types").DecisionReasoningView>(
+      `/api/projects/${projectId}/decisions/${decisionId}/reasoning`,
+    ),
   verifyDecision: (
     projectId: string,
     decisionId: string,

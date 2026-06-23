@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...common.errors import ConflictError
+from ...common.llm_observation import current_llm_observation
 from ...common.logging import get_logger
 from ...domain.llm_settings import (
     PURPOSE_EXECUTION_COMPLEX,
@@ -40,6 +41,7 @@ from ...domain.llm_settings import (
     ProviderConnection,
     resolve_context_limit,
 )
+from ..observability import record_llm_observation
 from .compositional import CompositionalLLMProvider
 from .protocol import LLMProvider, LLMResult
 from .providers.claude_sdk import ClaudeSdkProvider
@@ -114,6 +116,19 @@ class LoggingLLMProvider:
                 duration_ms=dur,
                 exc_info=False,
             )
+            # v3.11: опциональный спан трассировки (no-op без Langfuse-env).
+            record_llm_observation(
+                purpose=self._purpose,
+                context=current_llm_observation(),
+                provider=self._inner.name,
+                model=self._inner.model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response=None,
+                usage=None,
+                duration_ms=dur,
+                error=str(exc).strip() or type(exc).__name__,
+            )
             raise
         dur = round((time.perf_counter() - start) * 1000)
         usage = getattr(result, "usage", None)
@@ -125,6 +140,19 @@ class LoggingLLMProvider:
             in_tokens=getattr(usage, "input_tokens", None) or None,
             out_tokens=getattr(usage, "output_tokens", None) or None,
             total_tokens=getattr(usage, "total_tokens", None) or None,
+            duration_ms=dur,
+        )
+        # v3.11: опциональный спан трассировки. record_llm_observation сам
+        # best-effort (внутренний try/except) — поток LLM не зависит от Langfuse.
+        record_llm_observation(
+            purpose=self._purpose,
+            context=current_llm_observation(),
+            provider=self._inner.name,
+            model=self._inner.model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response=getattr(result, "payload", None),
+            usage=usage,
             duration_ms=dur,
         )
         return result

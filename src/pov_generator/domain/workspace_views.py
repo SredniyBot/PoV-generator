@@ -246,6 +246,11 @@ class DecisionItemView:
     # v3.9: list endpoints can return compact items and let callers lazy-load
     # heavy alternatives/rationale through the detail endpoint.
     details_included: bool = True
+    # v3.11 (transparency): «доказательная база» решения — что в контексте
+    # вынудило развилку и почему этот дефолт. Inline на детали (как rationale);
+    # пусто для compact-элементов. Сырой провенанс (промпт/ответ) НЕ здесь —
+    # он за отдельным /reasoning endpoint.
+    evidence: str = ""
 
 
 @dataclass(frozen=True)
